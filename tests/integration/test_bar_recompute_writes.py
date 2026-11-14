@@ -862,3 +862,393 @@ def test_revert_restores_the_old_values(recompute_db, monkeypatch, tmp_path):
     assert table[("SPY", key_of("spy_late"))]["written"] == "true"
     # The first run's ledger rows are still there: nothing is deleted.
     assert len(br.ledger_of_run("exits-run-A", br.TARGET_EXITS)) == 4
+
+
+# ── --recompute-premarket and --revert-run, through the fetcher's main() ──
+
+import uuid  # noqa: E402
+from datetime import timedelta  # noqa: E402
+
+PREMARKET_FIELDS = (
+    "pre_high", "pre_low", "pre_vwap", "pre_volume", "gap_pct", "pre_range_atr",
+    "pre_fetched_at", "pre_excluded_stale_prints", "pre_excluded_spikes",
+    "pre_filter_status", "pre_filter_params", "pre_recompute_run",
+)
+SEPTEMBER = (date(2026, 9, 29), date(2026, 9, 30))
+OCTOBER = (date(2026, 10, 5), date(2026, 10, 6))
+PREMARKET_WINDOW = ("--from", "2026-09-29", "--to", "2026-10-06")
+
+
+def seed_daily(engine, ticker: str, first: date, last: date) -> None:
+    """One daily row a weekday: open 99, high 100, low 98, close 99, so the
+    ATR of every session is 2.0."""
+    execute(engine, """
+        INSERT INTO market_data_daily (ticker, date, open, high, low, close, volume)
+        SELECT :ticker, CAST(g AS DATE), 99.0, 100.0, 98.0, 99.0, 1000000
+          FROM generate_series(CAST(:first AS DATE), CAST(:last AS DATE), INTERVAL '1 day') AS g
+         WHERE extract(isodow FROM g) < 6
+    """, {"ticker": ticker, "first": first, "last": last})
+
+
+def seed_premarket_bars(engine, ticker: str, day: date) -> None:
+    """330 bars, 04:00 to 09:29 Eastern: open 100.0, high 100.5, low 99.5,
+    close 100.0, volume 1000. Inserted now, so every row is proven."""
+    start, end = eastern_bounds_utc(day, time(4), time(9, 29))
+    execute(engine, """
+        INSERT INTO market_data_intraday (ticker, interval, ts, open, high, low, close, volume)
+        SELECT :ticker, '1min', g, 100.0, 100.5, 99.5, 100.0, 1000
+          FROM generate_series(CAST(:start AS TIMESTAMPTZ), CAST(:end AS TIMESTAMPTZ),
+                               INTERVAL '1 minute') AS g
+    """, {"ticker": ticker, "start": start, "end": end})
+
+
+def seed_stored_premarket(engine, ticker: str, day: date, **overrides) -> None:
+    values = {"pre_high": 100.25, "pre_low": 99.75, "pre_vwap": 100.01, "pre_volume": 300000,
+              "gap_pct": 0.9, "pre_range_atr": 0.4}
+    values.update(overrides)
+    assignments = ", ".join(f"{column} = :{column}" for column in values)
+    execute(engine, f"UPDATE market_data_daily SET {assignments} "
+                    "WHERE ticker = :ticker AND date = :day",
+            {**values, "ticker": ticker, "day": day})
+
+
+def seed_level_params(engine, ticker: str, effective_from: date) -> None:
+    for key, value in (("pm_stale_print_atr", 0.1), ("pm_spike_atr", 0.5)):
+        execute(engine, """
+            INSERT INTO ticker_level_params (ticker, param_key, value, status, atr_basis,
+                method_id, policy_effective_from, sample_n, input_from, input_to,
+                effective_from, run_id, source, calibrated_at)
+            VALUES (:ticker, :key, :value, 'ok', 'atr_14', 'fixture', '2015-01-02', 750,
+                    '2023-01-03', :eff, :eff, :run_id, 'history', NOW())
+        """, {"ticker": ticker, "key": key, "value": value, "eff": effective_from,
+              "run_id": str(uuid.uuid4())})
+
+
+def seed_premarket_world(engine, *, qqq_october_bars: bool = True) -> None:
+    """SPY and QQQ: two sessions in September (no parameters yet) and two in
+    October (parameters in force from 2026-10-01), each holding stored
+    premarket values, with daily history before them and premarket bars."""
+    for ticker in ("SPY", "QQQ"):
+        seed_daily(engine, ticker, date(2026, 7, 27), date(2026, 10, 6))
+        seed_level_params(engine, ticker, date(2026, 10, 1))
+        for day in (*SEPTEMBER, *OCTOBER):
+            seed_stored_premarket(engine, ticker, day)
+            if ticker == "QQQ" and day in OCTOBER and not qqq_october_bars:
+                continue
+            seed_premarket_bars(engine, ticker, day)
+
+
+def run_fetcher(monkeypatch, tmp_path, run_id: str, *argv: str) -> int:
+    from gcp.fetchers import fetch_market_data as fmd
+
+    def no_http(*_args, **_kwargs):
+        raise AssertionError("the recompute made an HTTP request")
+
+    monkeypatch.setattr(fmd.requests, "get", no_http)
+    monkeypatch.delenv("GCS_BUCKET", raising=False)
+    monkeypatch.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
+    monkeypatch.setenv("CLOUD_RUN_EXECUTION", run_id)
+    monkeypatch.setattr(sys, "argv", ["fetch_market_data", *argv, "--report-dir", str(tmp_path)])
+    return fmd.main()
+
+
+def daily_rows(engine, where: str = "TRUE", params: dict | None = None) -> list[dict]:
+    """Daily rows with pre_filter_params as the database's own text too."""
+    with engine.connect() as conn:
+        result = conn.execute(sqlalchemy.text(
+            "SELECT *, pre_filter_params::text AS pre_filter_params_text "
+            f"FROM market_data_daily WHERE {where} ORDER BY ticker, date"), params or {})
+        return [dict(r) for r in result.mappings()]
+
+
+def daily_row(engine, ticker: str, day: date) -> dict:
+    found = daily_rows(engine, "ticker = :t AND date = :d", {"t": ticker, "d": day})
+    assert len(found) == 1
+    return found[0]
+
+
+SELECTED_DAILY = "pre_high IS NOT NULL AND ticker IN ('SPY', 'QQQ') AND date <= '2026-10-06'"
+
+
+def test_a_committed_run_overwrites_the_twelve_columns(recompute_db, monkeypatch, tmp_path):
+    from lib.eastern_time import market_today
+
+    engine = recompute_db
+    seed_premarket_world(engine)
+    # Never selected: another ticker, a row with no premarket value, today's row.
+    seed_daily(engine, "AMD", date(2026, 10, 6), date(2026, 10, 6))
+    seed_stored_premarket(engine, "AMD", date(2026, 10, 6))
+    today = market_today()
+    execute(engine, "INSERT INTO market_data_daily (ticker, date, close, pre_high, gap_pct) "
+                    "VALUES ('SPY', :today, 99.0, 100.25, 0.9)", {"today": today})
+    untouched_where = ("ticker = 'AMD' OR (ticker = 'SPY' AND date = :today) "
+                       "OR (ticker IN ('SPY', 'QQQ') AND pre_high IS NULL)")
+    untouched = daily_rows(engine, untouched_where, {"today": today})
+    assert len(untouched) > 50
+    before = {(r["ticker"], r["date"]): r for r in daily_rows(engine, SELECTED_DAILY)}
+    assert len(before) == 8
+
+    code = run_fetcher(monkeypatch, tmp_path, "premarket-run-1", "--recompute-premarket",
+                       *PREMARKET_WINDOW, "--commit")
+
+    assert code == 0
+    after = {(r["ticker"], r["date"]): r for r in daily_rows(engine, SELECTED_DAILY)}
+    for key, row_after in after.items():
+        ticker, day = key
+        assert (row_after["pre_high"], row_after["pre_low"], row_after["pre_vwap"],
+                row_after["pre_volume"], row_after["gap_pct"]) == (
+            100.5, 99.5, 100.0, 330000, 1.0101), key
+        assert row_after["pre_recompute_run"] == "premarket-run-1"
+        assert row_after["pre_fetched_at"] is not None
+        if day in OCTOBER:
+            assert row_after["pre_filter_status"] == "ok"
+            assert row_after["pre_range_atr"] == 0.5
+            assert (row_after["pre_excluded_stale_prints"], row_after["pre_excluded_spikes"]) == (0, 0)
+            assert row_after["pre_filter_params"]["pm_spike_atr"]["value"] == 0.5
+            assert row_after["pre_filter_params"]["pm_spike_atr"]["effective_from"] == "2026-10-01"
+        else:
+            # No parameters in force yet: unfiltered, and the stored 0.4 is
+            # replaced by NULL, not kept beside the new values.
+            assert row_after["pre_filter_status"] == "params_unavailable"
+            assert row_after["pre_range_atr"] is None
+            assert row_after["pre_excluded_stale_prints"] is None
+            assert row_after["pre_excluded_spikes"] is None
+            assert row_after["pre_filter_params"]["pm_spike_atr"]["status"] == "params_unavailable"
+        changed_columns = differing(before[key], row_after)
+        assert changed_columns <= {*PREMARKET_FIELDS, "pre_filter_params_text", "updated_at"}, key
+
+    assert daily_rows(engine, untouched_where, {"today": today}) == untouched
+
+    table, summary = read_report(tmp_path, "daily-premarket", "premarket-run-1")
+    assert len(table) == 8
+    assert {r["status"] for r in table.values()} == {"recomputed"}
+    assert {r["written"] for r in table.values()} == {"true"}
+    assert summary["written"] == 8
+
+
+def test_a_premarket_row_changed_underneath_is_left(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_premarket_world(engine)
+    real_save = br.save_report
+    saves = []
+
+    def save_after_another_writer(*args, **kwargs):
+        if not saves:
+            execute(engine, "UPDATE market_data_daily SET pre_high = 1.0 "
+                            "WHERE ticker = 'SPY' AND date = '2026-10-06'")
+        saves.append(1)
+        return real_save(*args, **kwargs)
+
+    monkeypatch.setattr(br, "save_report", save_after_another_writer)
+    code = run_fetcher(monkeypatch, tmp_path, "premarket-run-1", "--recompute-premarket",
+                       *PREMARKET_WINDOW, "--commit")
+
+    assert code == 1
+    left = daily_row(engine, "SPY", date(2026, 10, 6))
+    assert left["pre_high"] == 1.0
+    assert left["pre_low"] == 99.75
+    assert left["pre_recompute_run"] is None
+    table, _summary = read_report(tmp_path, "daily-premarket", "premarket-run-1")
+    assert table[("SPY", "2026-10-06")]["status"] == "changed_underneath"
+    assert table[("SPY", "2026-10-06")]["written"] == "false"
+    held = br.ledger_of_run("premarket-run-1", br.TARGET_PREMARKET)
+    assert len(held) == 7
+    assert ("SPY", "2026-10-06") not in {(h["ticker"], h["row_key"]) for h in held}
+    # The other row of the same group was written in the same transaction.
+    assert daily_row(engine, "SPY", date(2026, 10, 5))["pre_recompute_run"] == "premarket-run-1"
+
+
+def test_each_written_premarket_row_has_one_ledger_row(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_premarket_world(engine)
+    run_fetcher(monkeypatch, tmp_path, "premarket-run-1", "--recompute-premarket",
+                *PREMARKET_WINDOW, "--commit")
+
+    held = br.ledger_of_run("premarket-run-1", br.TARGET_PREMARKET)
+    assert sorted((h["ticker"], h["row_key"]) for h in held) == sorted(
+        (t, d.isoformat()) for t in ("SPY", "QQQ") for d in (*SEPTEMBER, *OCTOBER))
+    entry = next(h for h in held if (h["ticker"], h["row_key"]) == ("SPY", "2026-09-29"))
+    assert entry["action"] == "recompute" and entry["changed"] is True
+    assert entry["session_date"] == date(2026, 9, 29)
+    assert entry["old_values"] == {"market_data_daily": {
+        "pre_high": 100.25, "pre_low": 99.75, "pre_vwap": 100.01, "gap_pct": 0.9,
+        "pre_range_atr": 0.4, "pre_volume": 300000, "pre_fetched_at": None,
+        "pre_excluded_stale_prints": None, "pre_excluded_spikes": None,
+        "pre_filter_status": None, "pre_filter_params": None, "pre_recompute_run": None}}
+    new = entry["new_values"]["market_data_daily"]
+    stored = daily_row(engine, "SPY", date(2026, 9, 29))
+    assert new["pre_recompute_run"] == "premarket-run-1"
+    assert new["pre_range_atr"] is None
+    assert new["pre_volume"] == 330000
+    assert new["pre_fetched_at"] == br.json_value(stored["pre_fetched_at"])
+    assert json.loads(new["pre_filter_params"]) == stored["pre_filter_params"]
+    basis = entry["basis"]
+    assert basis["bars"]["rows"] == 330 and len(basis["bars"]["sha256"]) == 64
+    assert basis["bars"]["first_ts"] == "2026-09-29T08:00:00.000000+00:00"
+    assert basis["bars"]["last_ts"] == "2026-09-29T13:29:00.000000+00:00"
+    assert basis["prior"] == {"close": 99.0, "open": 99.0, "atr_14": 2.0, "atr_5": 2.0}
+    assert basis["filter"]["status"] == "params_unavailable"
+    assert "git_commit" in basis["code"]
+
+
+def test_a_retry_under_the_same_run_id_reports_from_the_ledger(recompute_db, monkeypatch,
+                                                                tmp_path):
+    engine = recompute_db
+    seed_premarket_world(engine)
+    real_write = br.write_group
+    calls = []
+    failure = RuntimeError("the second group fails")
+
+    def failing_second(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise failure
+        return real_write(*args, **kwargs)
+
+    with monkeypatch.context() as first_attempt:
+        first_attempt.setattr(br, "write_group", failing_second)
+        with pytest.raises(RuntimeError) as caught:
+            run_fetcher(first_attempt, tmp_path, "premarket-run-1", "--recompute-premarket",
+                        *PREMARKET_WINDOW, "--commit")
+        assert caught.value is failure
+    # The first group (QQQ 2026-09) is committed; nothing after it is.
+    assert len(br.ledger_of_run("premarket-run-1", br.TARGET_PREMARKET)) == 2
+
+    # The retry: the same execution, so the same run id.
+    code = run_fetcher(monkeypatch, tmp_path, "premarket-run-1", "--recompute-premarket",
+                       *PREMARKET_WINDOW, "--commit")
+
+    assert code == 0
+    held = br.ledger_of_run("premarket-run-1", br.TARGET_PREMARKET)
+    assert len(held) == 8
+    assert len({(h["ticker"], h["row_key"]) for h in held}) == 8
+    table, summary = read_report(tmp_path, "daily-premarket", "premarket-run-1")
+    for day in SEPTEMBER:
+        first_group_row = table[("QQQ", day.isoformat())]
+        # The values stored before the first attempt, not the new ones read back.
+        assert first_group_row["old_pre_high"] == "100.25"
+        assert first_group_row["old_pre_range_atr"] == "0.4"
+        assert first_group_row["new_pre_high"] == "100.5"
+        assert first_group_row["written"] == "true"
+        assert first_group_row["changed"] == "true"
+        assert first_group_row["status"] == "recomputed"
+    assert {r["written"] for r in table.values()} == {"true"}
+    assert summary["written"] == 8
+    assert marker_count(engine, "market_data_daily", "pre_recompute_run", "premarket-run-1") == 8
+
+
+def test_a_second_run_at_a_later_instant_writes_nothing(recompute_db, monkeypatch, tmp_path):
+    from gcp.fetchers import fetch_market_data as fmd
+
+    engine = recompute_db
+    seed_premarket_world(engine)
+    assert run_fetcher(monkeypatch, tmp_path, "premarket-run-1", "--recompute-premarket",
+                       *PREMARKET_WINDOW, "--commit") == 0
+    recorded = {(r["ticker"], r["date"]): (r["pre_fetched_at"], r["pre_recompute_run"],
+                                           r["updated_at"])
+                for r in daily_rows(engine, SELECTED_DAILY)}
+    ledger = rows(engine, "bar_recompute_ledger")
+
+    later = fmd.utc_now() + timedelta(hours=1)
+    monkeypatch.setattr(fmd, "utc_now", lambda: later)
+    code = run_fetcher(monkeypatch, tmp_path, "premarket-run-2", "--recompute-premarket",
+                       *PREMARKET_WINDOW, "--commit")
+
+    assert code == 0
+    assert rows(engine, "bar_recompute_ledger") == ledger
+    assert {(r["ticker"], r["date"]): (r["pre_fetched_at"], r["pre_recompute_run"],
+                                       r["updated_at"])
+            for r in daily_rows(engine, SELECTED_DAILY)} == recorded
+    table, summary = read_report(tmp_path, "daily-premarket", "premarket-run-2")
+    assert {r["status"] for r in table.values()} == {"already_current"}
+    assert summary["written"] == 0
+    # The report shows the read time this run would have written, had a value changed.
+    assert all(r["new_pre_fetched_at"] == br.json_value(later) for r in table.values())
+
+
+def test_premarket_markers_per_run_and_coverage_are_two_checks(recompute_db, monkeypatch,
+                                                               tmp_path):
+    engine = recompute_db
+    seed_premarket_world(engine, qqq_october_bars=False)
+    assert run_fetcher(monkeypatch, tmp_path, "premarket-run-A", "--recompute-premarket",
+                       "--from", "2026-09-29", "--to", "2026-09-30", "--commit") == 0
+    assert run_fetcher(monkeypatch, tmp_path, "premarket-run-B", "--recompute-premarket",
+                       *PREMARKET_WINDOW, "--commit") == 1
+
+    table, _summary = read_report(tmp_path, "daily-premarket", "premarket-run-B")
+    written = [r for r in table.values() if r["written"] == "true"]
+    refused_or_left = {k for k, r in table.items() if r["status"] in br.REFUSED_STATUSES}
+
+    # Per run.
+    assert marker_count(engine, "market_data_daily", "pre_recompute_run",
+                        "premarket-run-B") == len(written) == 2
+    assert len(br.ledger_of_run("premarket-run-B", br.TARGET_PREMARKET)) == len(written)
+    assert len(written) < len(table) == 8
+
+    # Coverage.
+    unmarked = daily_rows(engine, SELECTED_DAILY + " AND pre_recompute_run IS NULL")
+    assert {(r["ticker"], r["date"].isoformat()) for r in unmarked} == refused_or_left
+    assert refused_or_left == {("QQQ", "2026-10-05"), ("QQQ", "2026-10-06")}
+    assert {table[k]["status"] for k in refused_or_left} == {"no_bars"}
+
+    # Run A's rows were already current for B and keep A's id.
+    assert marker_count(engine, "market_data_daily", "pre_recompute_run", "premarket-run-A") == 4
+
+
+def test_revert_restores_the_eleven_columns(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_premarket_world(engine)
+    # One row with every column set, a read time to the microsecond and a
+    # stored number with more digits than a float holds.
+    execute(engine, """
+        UPDATE market_data_daily
+           SET pre_fetched_at = '2026-10-06T13:31:00.123456+00:00', pre_excluded_stale_prints = 2,
+               pre_excluded_spikes = 3, pre_filter_status = 'ok', pre_vwap = :vwap,
+               pre_filter_params = CAST('{"atr": 1.23456789012345678901, "b": null}' AS JSONB)
+         WHERE ticker = 'SPY' AND date = '2026-10-06'
+    """, {"vwap": 0.1 + 0.2})
+    before = {(r["ticker"], r["date"]): r for r in daily_rows(engine, SELECTED_DAILY)}
+    assert before[("SPY", date(2026, 10, 6))]["pre_filter_params_text"] == \
+        '{"b": null, "atr": 1.23456789012345678901}'
+
+    assert run_fetcher(monkeypatch, tmp_path, "premarket-run-A", "--recompute-premarket",
+                       *PREMARKET_WINDOW, "--commit") == 0
+    after_run = daily_rows(engine, SELECTED_DAILY)
+    assert {r["pre_recompute_run"] for r in after_run} == {"premarket-run-A"}
+
+    # Dry: nothing is written.
+    assert run_fetcher(monkeypatch, tmp_path, "revert-dry", "--revert-run",
+                       "premarket-run-A") == 0
+    assert daily_rows(engine, SELECTED_DAILY) == after_run
+    table, _summary = read_report(tmp_path, "daily-premarket", "revert-dry")
+    assert {r["status"] for r in table.values()} == {"would_revert"}
+
+    # A later write changes one row; the revert leaves it.
+    execute(engine, "UPDATE market_data_daily SET pre_low = 5.0 "
+                    "WHERE ticker = 'QQQ' AND date = '2026-09-29'")
+
+    assert run_fetcher(monkeypatch, tmp_path, "revert-1", "--revert-run", "premarket-run-A",
+                       "--commit") == 1
+
+    restored = {(r["ticker"], r["date"]): r for r in daily_rows(engine, SELECTED_DAILY)}
+    for key, original in before.items():
+        if key == ("QQQ", date(2026, 9, 29)):
+            assert restored[key]["pre_low"] == 5.0
+            assert restored[key]["pre_recompute_run"] == "premarket-run-A"
+            continue
+        assert differing(original, restored[key]) == {"pre_recompute_run", "updated_at"}, key
+        assert restored[key]["pre_recompute_run"] == "revert-1"
+    full = restored[("SPY", date(2026, 10, 6))]
+    assert full["pre_fetched_at"] == utc("2026-10-06T13:31:00.123456")
+    assert full["pre_vwap"] == 0.1 + 0.2
+    assert full["pre_filter_params_text"] == '{"b": null, "atr": 1.23456789012345678901}'
+    assert restored[("SPY", date(2026, 9, 29))]["pre_fetched_at"] is None
+    assert restored[("SPY", date(2026, 9, 29))]["pre_range_atr"] == 0.4
+
+    reverted = br.ledger_of_run("revert-1", br.TARGET_PREMARKET)
+    assert len(reverted) == 7
+    assert {h["action"] for h in reverted} == {"revert"}
+    table, _summary = read_report(tmp_path, "daily-premarket", "revert-1")
+    assert table[("QQQ", "2026-09-29")]["status"] == "changed_underneath"
+    assert table[("SPY", "2026-10-06")]["status"] == "reverted"
+    assert len(br.ledger_of_run("premarket-run-A", br.TARGET_PREMARKET)) == 8

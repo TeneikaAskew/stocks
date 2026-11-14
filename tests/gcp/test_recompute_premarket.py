@@ -724,3 +724,28 @@ def test_a_backfill_that_wrote_rows_still_exits_zero(monkeypatch):
 def test_the_module_exits_with_the_code_main_returns():
     source = open(fmd.__file__).read().rstrip().splitlines()
     assert source[-2:] == ["if __name__ == '__main__':", "    sys.exit(main())"]
+
+
+# ── --revert-run ──────────────────────────────────────────────────────
+
+
+def test_revert_of_an_unknown_run_is_exit_one(premarket_run, monkeypatch, tmp_path, caplog):
+    """An exits run id given to the fetcher: its ledger rows have another
+    target, so this entry point finds none."""
+    asked = []
+
+    def held_for(run_id, target):
+        asked.append((run_id, target))
+        return [] if target == br.TARGET_PREMARKET else [{"row_key": "an exits row"}]
+
+    monkeypatch.setattr(br, "ledger_of_run", held_for)
+    reader = Reader([("information_schema.columns", schema_ready)])
+    with caplog.at_level(logging.ERROR):
+        code, reader = premarket_run("--revert-run", "exits-run-A", "--commit", reader=reader)
+
+    assert code == 1
+    assert asked == [("exits-run-A", "daily-premarket")]
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "exits-run-A" in errors[0] and "daily-premarket" in errors[0]
+    assert not (tmp_path / "bar-recompute").exists()
