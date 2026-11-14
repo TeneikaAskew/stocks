@@ -6839,3 +6839,63 @@ def test_a_spec_status_outside_the_three_is_refused(repo):
         on_base(repo, {SPEC: spec(status=status)})
         r = pr(repo, BRANCH, CODE)
         assert r.returncode == 1 and f"{SPEC}: status must be draft | approved | superseded" in r.stdout, (status, r.stdout)
+
+
+# FEAT-CICD-001 Part A pin prerequisite: what a gate-suite run reads from the checkout once pytest-xdist is installed
+XDIST_IMPORTS = ("xdist", "execnet", "setproctitle", "psutil")
+PYTEST_CONFIG_PATHS = tuple(folder + name for folder in ("", "tests/", "tests/scripts/") for name in
+                            ("pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg", "pyproject.toml"))
+
+
+def test_the_modules_pytest_xdist_imports_are_process_files(repo):
+    """With pytest-xdist installed, `python3 -m pytest` imports a root `xdist/` or `execnet/` package in
+    place of the installed one even on a serial run, every worker imports a root `setproctitle.py`, and
+    a CPU count imports `psutil`; so those names, where the gate's suites import from, are FEAT-CICD-001's
+    work like the gate's other startup modules. The same names elsewhere stay ordinary code."""
+    cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
+    on_base(repo, {CATALOG: cicd_row})
+    sg = load_gate(repo)
+    for name in XDIST_IMPORTS:
+        for path in (f"{name}.py", f"{name}/__init__.py", f"tests/{name}.py", f"tests/scripts/{name}/__init__.py"):
+            assert sg.is_process_file(path), path
+        assert not sg.is_process_file(f"lib/{name}.py") and not sg.is_process_file(f"{name}-notes.md"), name
+    refused = pr(repo, BRANCH, {**CODE, "setproctitle.py": "# x\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
+    assert refused.returncode == 1 and "process change(s) (setproctitle.py) belong to FEAT-CICD-001" in refused.stdout, refused.stdout
+    elsewhere = pr(repo, BRANCH, {**CODE, "lib/setproctitle.py": "# x\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
+    assert elsewhere.returncode == 0, elsewhere.stdout
+
+
+def test_a_pytest_config_beside_the_gate_suites_is_a_process_file(repo):
+    """pytest reads its options from the first config file in the suites' directory or a parent up to the
+    checkout, so `addopts = --co` in any of them makes the gate suite run nothing and pass, and every later
+    PR's base-suite check with it; each such file is FEAT-CICD-001's work. A config file anywhere else, and a
+    file only named like one, stays ordinary."""
+    cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
+    on_base(repo, {CATALOG: cicd_row})
+    sg = load_gate(repo)
+    assert [p for p in PYTEST_CONFIG_PATHS if not sg.is_process_file(p)] == []
+    ordinary = ("lib/pytest.ini", "tests/lib/setup.cfg", "tests/scripts/fixtures/tox.ini", "docs/pytest.toml", "pytest.ini.bak", "tests/old-setup.cfg")
+    assert [p for p in ordinary if sg.is_process_file(p)] == []
+    refused = pr(repo, BRANCH, {**CODE, "tests/scripts/pytest.ini": "[pytest]\naddopts = --co\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
+    assert refused.returncode == 1 and "process change(s) (tests/scripts/pytest.ini) belong to FEAT-CICD-001" in refused.stdout, refused.stdout
+    elsewhere = pr(repo, BRANCH, {**CODE, "lib/pytest.ini": "[pytest]\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
+    assert elsewhere.returncode == 0, elsewhere.stdout
+
+
+def test_the_worker_count_path_and_a_root_package_initializer_are_process_files(repo):
+    """pytest locates its config before plugins load, so the `4` of `-n 4` is read as a path: a folder `4`
+    holding a config file, or a link `4` to one, sets the four-worker suite's options (`addopts = --co` runs
+    nothing and passes). A root `__init__.py` makes the checkout a package both suites import. Each is
+    FEAT-CICD-001's work; other worker-like names and other `__init__.py` files stay ordinary."""
+    cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
+    on_base(repo, {CATALOG: cicd_row})
+    sg = load_gate(repo)
+    process = ("4", "4/pytest.ini", "4/setup.cfg", "4/pyproject.toml", "4/notes.md", "4/x/y.py", "__init__.py")
+    assert [p for p in process if not sg.is_process_file(p)] == []
+    ordinary = ("40", "4.md", "44/pytest.ini", "lib/4/pytest.ini", "lib/__init__.py", "docs/__init__.py", "__init__.py.bak")
+    assert [p for p in ordinary if sg.is_process_file(p)] == []
+    for path, text in (("4/pytest.ini", "[pytest]\naddopts = --co\n"), ("__init__.py", "import os\n")):
+        refused = pr(repo, BRANCH, {**CODE, path: text}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
+        assert refused.returncode == 1 and f"process change(s) ({path}) belong to FEAT-CICD-001" in refused.stdout, refused.stdout
+    elsewhere = pr(repo, BRANCH, {**CODE, "lib/4/pytest.ini": "[pytest]\n", "lib/__init__.py": "\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
+    assert elsewhere.returncode == 0, elsewhere.stdout
