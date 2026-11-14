@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-10-31-feat-data-001-retire-ew-module-shim.md
 branch: fix/feat-data-001-retire-ew-module-shim
-pr: null
+pr: 1914
 status: ready
 ---
 
@@ -37,8 +37,8 @@ Spec: done_when items 1–3, 5–6; Sequencing with #1546.
 Spec: done_when items 4–5, 7–8; Source identity and close-out.
 
 - [x] Mark MODEL-EWV-001 Retired / REMOVE with date, retain history; add retirement header, exact historical counts and preserved-test pointers to its model document. Regenerate model export and run model-pointer/vocabulary checks.
-- [ ] Refresh only FEAT-DATA catalog, own lineage after Draft number exists, and declared SHARED-07 note; preserve previous own prose and all foreign SITE bytes. Use supported generated-inventory renderer and fixed-bound source producer/verifier.
-- [ ] Run matched main/head documentation audits, unchanged source/audit suites, normal commit and PR gates. Record full counts, failures and boundaries. Name P-J docs/ew-retirement-product-docs as separate follow-up, never alter 06-DATA-ARCHITECTURE here.
+- [x] Refresh only FEAT-DATA catalog, own lineage after Draft number exists, and declared SHARED-07 note; preserve previous own prose and all foreign SITE bytes. Use supported generated-inventory renderer and fixed-bound source producer/verifier.
+- [x] Run matched main/head documentation audits, unchanged source/audit suites, normal commit and PR gates. Record full counts, failures and boundaries. Name P-J docs/ew-retirement-product-docs as separate follow-up, never alter 06-DATA-ARCHITECTURE here.
 - [ ] Publish Draft only after prerequisite receipts and shared-file coordination, bind the number, then spend the first complete review on the final qualified head. Preserve the two-round limit; no reset from spec history.
 
 ## Close-out
@@ -76,3 +76,16 @@ calendar consumers, shared library, collector tests, schema and deployment scrip
 are byte-identical to current main. Original receipts remain historical; fresh
 matched audits/source identity, governance tests and external review are recorded
 separately. #1824 and Yahoo safety worktrees remain untouched.
+
+
+## Draft publication — November 14
+
+Draft #1914 opened after #1869 landed. Final prepublication base db0e4ba3 adds
+only two independent plans after fdb005df; runtime/tests/policy are byte-identical.
+Fresh focused unique cases:290passed,1existing integration-only skip; two model-doc
+pointer failures from conflict reconciliation were repaired and the68-test suite
+passed. Source/audit suites804passed in293.99s; generated CLI1passed in40.67s.
+Matched current-base audits311/311 with no new finding; trusted base Draft gate
+passes. Bounded source identity714e2180698a103b147359145dd92c7a7725fc9f51950697354d0544f9c7af3e
+matches under unchanged ceilings. Hosted CI and first external CODE review remain
+pending; no Ready/merge/release completion is inferred from local checks.
