@@ -392,14 +392,36 @@ doubles its vendor calls and can still land before the 09:27 deadline. This spec
 
 ## Close-out steps (the owner's, on their yes; none is a `done_when` item)
 
-1. After the prerequisite PR and this PR have merged: `./gcp/deploy.sh premarket` (the image with the
-   late slot), then `./gcp/deploy.sh schedulers`.
+1. After the prerequisite PR and this PR have merged, three deploys, in this order:
+   - `./gcp/deploy.sh premarket`: the brief's image with the late slot. This target runs
+     `build_image` and `deploy_premarket` only (`gcp/deploy.sh:5370`).
+   - `./gcp/deploy.sh market-data`: the refresh job's image with the prerequisite's newest-bar log
+     line. `fetch-premarket-refresh` keeps the image its own deploy function last gave it, and
+     `market-data` is the one single target that calls `deploy_fetch_premarket_refresh` (`:5397`; it
+     also redeploys `fetch-market-data` on the same image, and `fetchers` reaches it too, with
+     the rest of the fetcher group). This command is dropped only if the prerequisite's own close-out already
+     deployed the refresh job from a commit that holds the log line, and then the job's image digest
+     and build commit are read and recorded here instead.
+   - `./gcp/deploy.sh schedulers`.
 2. `gcloud scheduler jobs describe premarket-refresh-late --location=us-east1` and the same for
    `premarket-brief-late`: `20 9 * * 1-5`, `America/New_York`, `ENABLED`, and for the brief the body
-   with both variables. Record the output on the PR.
-3. The same day, outside 09:20 to 09:29 ET, `gcloud scheduler jobs run` for both entries once. The
-   expected result is a late brief that logs its slot and refuses the canonical write as past the
-   cutoff: that proves the override arrives and the cutoff holds without touching the day's levels.
+   with both variables. Also `gcloud run jobs describe` for `premarket-brief` and
+   `fetch-premarket-refresh`: each job's image is the digest step 1 built. Record the output on the
+   PR.
+3. On a session day, at or after 09:35 ET and never before: `gcloud scheduler jobs run` for both
+   entries once. The expected result is a late brief that logs its slot and refuses the canonical
+   write as past the cutoff: that proves the override arrives and the cutoff holds without touching
+   the day's levels.
+   - Not before 09:20 either. A late brief started early, at 09:19 for example, waits for the
+     scheduled 09:20 refresh, accepts its `pre_fetched_at` and rewrites the canonical rows before
+     09:29:30, beside the scheduled late run: a second history row and a second Discord note, not a smoke test. 09:35
+     leaves five minutes past the cutoff for clock differences.
+   - What the refresh entry's run writes: today's premarket columns of `market_data_daily` and a
+     new `pre_fetched_at`, from the whole premarket window, since the computation stops at the
+     09:30 open (`lib/indicators.py`, `calculate_premarket_context`, `time_of_day < market_open`;
+     read, not run). The nightly fetch writes the same columns the same evening. It does not touch
+     the canonical `premarket_analysis` row the monitor and the site read. Its log must hold the
+     newest-bar line for each brief ticker, which is the check that step 1's second deploy took.
 4. Replay now, not next session (CLAUDE.md 3.5): the prerequisite's replay of a past date in the late
    slot, per its own spec.
 5. After the first scheduled late run: `gcloud run jobs executions list` for both jobs; a query
