@@ -262,7 +262,9 @@ def test_watched_tickers_target_deploys_the_ingest_job_and_the_jobs_sharing_its_
     its code paths: fetch-market-data and fetch-earnings-history run
     fetch_market_data._run_backfill inside their own images and must carry
     the watched-ticker exclusion, and freshness-watchdog must carry the
-    heartbeat check before the scheduler exists."""
+    heartbeat check before the scheduler exists. The command and the cron
+    are pinned too: without them a function running another module every
+    minute would pass (Codex on #1918)."""
     arm = _dispatch_arms()["watched-tickers"]
     fns = _called_from(arm) & set(DEPLOY_FNS)
     assert _created_by(fns) == {
@@ -271,11 +273,19 @@ def test_watched_tickers_target_deploys_the_ingest_job_and_the_jobs_sharing_its_
 
     body = FNS["deploy_fetch_watched_tickers"]
     create, update = body.split("gcloud run jobs update", 1)
-    assert "--max-retries 0" in create, create
-    assert "--max-retries 0" in update, "the update branch must converge max-retries too"
+    for branch in (create, update):
+        assert "--max-retries 0" in branch, branch
+        assert "--task-timeout 2400" in branch, branch
+        assert '--command "python,-m,gcp.fetchers.fetch_watched_tickers"' in branch, branch
     assert "WATCHED_TICKERS_URL" not in body
     assert "WATCHED_TICKERS_READ_SECRET" not in body
+
     assert "fetch-watched-tickers" in SCHEDULED
+    # The script column-aligns its _schedule lines; collapse the padding.
+    lines = [" ".join(l.split()) for l in FNS["deploy_schedulers"].splitlines()
+             if "fetch-watched-tickers" in l]
+    assert lines == ['_schedule "watched-tickers-nightly" "45 23 * * 1-5" "fetch-watched-tickers"'], lines
+    assert '--time-zone "America/New_York"' in FNS["_schedule"]
 
 
 # ── the DB_SECRET_FLAG exemption list (#1022) ─────────────────────────────
