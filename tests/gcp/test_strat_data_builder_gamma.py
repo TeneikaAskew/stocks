@@ -152,7 +152,8 @@ def test_load_1m_bars_keeps_the_regular_session_in_either_convention(monkeypatch
     minute = wall.hour * 60 + wall.minute
     rows = pd.DataFrame({"ts": ts, "open": 1.0, "high": 1.0, "low": 1.0,
                          "close": minute.astype(float),
-                         "volume": [5000 if 570 <= m < 600 else 100 for m in minute]})
+                         "volume": [5000 if 570 <= m < 600 else 100 for m in minute],
+                         "inserted_at": pd.Timestamp("2026-02-23 03:00", tz="UTC")})
 
     class _Conn:
         def __enter__(self):

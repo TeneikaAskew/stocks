@@ -21,7 +21,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from gcp.database import get_engine
-from lib.eastern_time import eastern_index_to_utc, stored_intraday_to_eastern, utc_to_eastern_naive
+from lib.eastern_time import place_stored_rows, utc_to_eastern_naive
 
 logger = logging.getLogger(__name__)
 
@@ -287,12 +287,15 @@ def load_intraday_bars(
     that MarketAnalyzer expects: Time / Open / High / Low / Last / Volume.
 
     ``Time`` is the bar's true instant, tz-aware UTC, in BOTH stored
-    conventions: each row is read by its own convention through
-    lib.eastern_time.stored_intraday_to_eastern and converted back, so a
-    legacy Eastern-labelled row is not handed out 4-5 h early (CLAUDE.md 3.9).
-    Callers comparing against other instants (signal_quality_report) use it
-    as is; callers reading the market clock convert it to Eastern
-    (scripts/run_historical_signals.py).
+    conventions: each row is placed by lib.eastern_time.place_stored_rows. A
+    row proven a true UTC instant (by its date or its ``inserted_at``) is
+    handed out where it is stored; any other row is read by its own convention
+    through the resolver, so a legacy Eastern-labelled row is not handed out
+    4-5 h early (CLAUDE.md 3.9; FEAT-DATA-001, Design H). Rows that come back
+    without ``inserted_at`` raise KeyError: there is no fallback to the
+    resolver alone. Callers comparing against other instants
+    (signal_quality_report) use ``Time`` as is; callers reading the market
+    clock convert it to Eastern (scripts/run_historical_signals.py).
 
     ``end`` defaults to NOW(). ``start`` is inclusive, ``end`` exclusive.
     """
@@ -317,17 +320,21 @@ def load_intraday_bars(
                high AS "High",
                low AS "Low",
                close AS "Last",
-               volume AS "Volume"
+               volume AS "Volume",
+               inserted_at
         FROM market_data_intraday
         WHERE {where}
         ORDER BY ts
     """)
     df = pd.read_sql(sql, engine, params=params)
     if df.empty:
+        # Before the placement: an empty read has no row to place.
+        if 'inserted_at' in df.columns:
+            df = df.drop(columns='inserted_at')
         return df
-    idx, keep = stored_intraday_to_eastern(df['Time'], df['Volume'])
-    df = df.loc[keep].copy()
-    df['Time'] = eastern_index_to_utc(idx[keep])
+    instants, keep, _proven = place_stored_rows(df['Time'], df['Volume'], df['inserted_at'])
+    df = df.loc[keep].drop(columns='inserted_at')
+    df['Time'] = instants[keep]
     inside = df['Time'] >= lo
     if hi is not None:
         inside &= df['Time'] < hi
