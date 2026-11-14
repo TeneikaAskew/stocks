@@ -16,7 +16,7 @@ outages masked silent. Tests cover:
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -1010,3 +1010,26 @@ def test_calendar_failure_is_unknown_and_strict_exits_2(monkeypatch, failing_cal
     tables = json.loads(capsys.readouterr().out)["tables"]
     assert any(t["table"] == "nyse_calendar" and "RuntimeError: boom" in t["detail"]
                for t in tables)
+
+
+def test_calendar_failure_with_heartbeat_table_present_still_reports(monkeypatch, failing_calendar):
+    """With job_runs present and a success row, a calendar failure still
+    yields the explicit nyse_calendar row and the session-independent rows;
+    the session-dependent heartbeat never runs and nothing escapes."""
+    from gcp import database
+    from scripts import audit_data_freshness as mod
+
+    _patch_non_calendar_checks(monkeypatch, mod)
+    monkeypatch.setattr(database, "table_exists", lambda t: True)
+    monkeypatch.setattr(database, "query_to_dataframe_strict",
+                        lambda sql, params=None, timeout_s=None: (
+                            pd.DataFrame(columns=["job_name", "variant", "latest_s",
+                                                  "median_prior_s", "n_runs"])
+                            if "WITH recent" in sql else pd.DataFrame([
+                                {"kind": "success", "status": "success",
+                                 "started_at": datetime(2026, 10, 16, 22, tzinfo=UTC),
+                                 "note": None, "items_failed": 0}])))
+
+    report = mod.audit_all(datetime(2026, 10, 19, 22, 0))
+    assert len([r for r in report.rows if r.table == "nyse_calendar"]) == 1
+    assert not any("fetch-watched-tickers" in r.table for r in report.rows)

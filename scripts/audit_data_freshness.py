@@ -1376,6 +1376,101 @@ def _query_job_duration_regression(now_utc: datetime) -> list[FreshnessRow]:
     return rows
 
 
+_WATCHED_HEARTBEAT_JOB = "fetch-watched-tickers"
+
+
+def _query_watched_tickers_heartbeat(now_utc: datetime) -> list[FreshnessRow]:
+    """Heartbeat for the fetch-watched-tickers job (reads job_runs).
+
+    Stale when the job has no success row, or its latest success started
+    before the session two sessions back from today's Eastern date (both
+    session steps go through _calendar, so a calendar failure surfaces as
+    the explicit nyse_calendar row). Warn rows carry the latest run's
+    overflow note and non-zero failure count. Stale, not warn, for the
+    missed heartbeat: the watchdog's --strict exit code fires only on
+    stale (see _query_job_duration_regression).
+
+    No fabricated freshness (Rule 3.7): a strict-read failure propagates,
+    and the window compares the Eastern date of started_at, never a UTC
+    date. A job_runs table that does not exist yet logs and skips.
+    """
+    from gcp.database import query_to_dataframe_strict, table_exists
+    import pandas as pd
+    from lib.eastern_time import localize_assuming_utc
+
+    if not table_exists('job_runs'):
+        log.warning("job_runs table absent - watched-ticker heartbeat check "
+                    "skipped (run the schema migration to enable it)")
+        return []
+
+    sql = f"""
+        (SELECT 'latest' AS kind, status, started_at, note, items_failed
+           FROM job_runs
+          WHERE job_name = '{_WATCHED_HEARTBEAT_JOB}'
+          ORDER BY started_at DESC LIMIT 1)
+        UNION ALL
+        (SELECT 'success' AS kind, status, started_at, note, items_failed
+           FROM job_runs
+          WHERE job_name = '{_WATCHED_HEARTBEAT_JOB}' AND status = 'success'
+          ORDER BY started_at DESC LIMIT 1)
+    """
+    df = query_to_dataframe_strict(sql, {}, timeout_s=_CHECK_QUERY_TIMEOUT_S)
+    latest = success = None
+    for _, r in df.iterrows():
+        if r['kind'] == 'latest':
+            latest = r
+        elif r['kind'] == 'success':
+            success = r
+
+    heartbeat_table = f"job_runs.{_WATCHED_HEARTBEAT_JOB} heartbeat"
+    # audit_all passes naive UTC; an aware value is also accepted.
+    now_aware = localize_assuming_utc(now_utc) if now_utc.tzinfo is None else now_utc
+    today_et = now_aware.astimezone(ET).date()
+    cutoff = _calendar(previous_session, _calendar(previous_session, today_et))
+
+    rows: list[FreshnessRow] = []
+    if success is None:
+        rows.append(FreshnessRow(
+            table=heartbeat_table, ticker=None, last_row_at=None,
+            expected_latest=f"a success run on or after {cutoff}",
+            lag_hours=None, expected_max_hours=0, status="stale",
+            writer_job=_WATCHED_HEARTBEAT_JOB,
+            detail="no success row in job_runs"))
+    else:
+        started = success['started_at'].to_pydatetime() \
+            if hasattr(success['started_at'], 'to_pydatetime') else success['started_at']
+        if started.tzinfo is None:
+            started = localize_assuming_utc(started)
+        started_et = started.astimezone(ET).date()
+        if started_et < cutoff:
+            rows.append(FreshnessRow(
+                table=heartbeat_table, ticker=None,
+                last_row_at=f"latest success {started_et}",
+                expected_latest=f"a success run on or after {cutoff}",
+                lag_hours=None, expected_max_hours=0, status="stale",
+                writer_job=_WATCHED_HEARTBEAT_JOB,
+                detail=f"latest success started {started_et} ET, before {cutoff}"))
+
+    if latest is not None:
+        note = latest['note'] if isinstance(latest['note'], str) else None
+        if note and 'overflow=' in note:
+            rows.append(FreshnessRow(
+                table=f"job_runs.{_WATCHED_HEARTBEAT_JOB} overflow", ticker=None,
+                last_row_at=None, expected_latest="no overflow",
+                lag_hours=None, expected_max_hours=0, status="warn",
+                writer_job=_WATCHED_HEARTBEAT_JOB,
+                detail=note[:_DETAIL_MAX_CHARS]))
+        failed = latest['items_failed']
+        if failed is not None and not pd.isna(failed) and int(failed) > 0:
+            rows.append(FreshnessRow(
+                table=f"job_runs.{_WATCHED_HEARTBEAT_JOB} failures", ticker=None,
+                last_row_at=None, expected_latest="0 failed items",
+                lag_hours=None, expected_max_hours=0, status="warn",
+                writer_job=_WATCHED_HEARTBEAT_JOB,
+                detail=(note or f"items_failed={int(failed)}")[:_DETAIL_MAX_CHARS]))
+    return rows
+
+
 def _timed(name: str, fn, *args):
     """Run one check group, logging its wall-clock either way.
 
@@ -1498,6 +1593,11 @@ def _session_dependent_late_checks(report: FreshnessReport, now: datetime) -> No
     # 02:30 ET indicator-enrich stage; a break there must page directly
     # instead of surfacing as a downstream job's timeout (issue #751).
     report.rows.extend(_timed("enrichment_coverage", _query_enrichment_coverage, now))
+
+    # Watched-ticker job heartbeat: session-dependent (two sessions back),
+    # so a calendar failure must reach audit_all's CalendarUnavailable handler.
+    report.rows.extend(_timed("watched_tickers_heartbeat",
+                              _query_watched_tickers_heartbeat, now))
 
 
 # ── Output formats ───────────────────────────────────────────────────────────

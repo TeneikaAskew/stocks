@@ -433,3 +433,115 @@ def test_timed_reraises_and_does_not_degrade_the_audit():
         _timed("boom", boom, datetime(2026, 8, 25, 14, 0))
 
     assert _timed("fine", lambda _n: ["row"], datetime(2026, 8, 25, 14, 0)) == ["row"]
+
+
+# ── watched-ticker heartbeat ─────────────────────────────────────────
+
+_HB_NOW = datetime(2026, 11, 12, 15, 0)  # Thu; two sessions back = Tue 11-10
+
+
+def _hb_df(latest=None, success=None):
+    rows = []
+    for kind, r in (("latest", latest), ("success", success)):
+        if r is not None:
+            rows.append({"kind": kind, "status": "success", "note": None,
+                         "items_failed": 0, **r})
+    return pd.DataFrame(rows, columns=["kind", "status", "started_at", "note",
+                                       "items_failed"])
+
+
+def _hb_run(monkeypatch, df):
+    from gcp import database
+    from scripts.audit_data_freshness import _query_watched_tickers_heartbeat
+    monkeypatch.setattr(database, "table_exists", lambda t: True)
+    calls = _patch_strict(monkeypatch, df)
+    out = _query_watched_tickers_heartbeat(_HB_NOW)
+    assert calls[0]["timeout_s"] is not None
+    assert "fetch-watched-tickers" in calls[0]["sql"]
+    return out
+
+
+def _utc(y, m, d, h=22):
+    from datetime import UTC
+    return datetime(y, m, d, h, tzinfo=UTC)
+
+
+def test_heartbeat_no_rows_is_stale(monkeypatch):
+    out = _hb_run(monkeypatch, _hb_df())
+    assert len(out) == 1
+    assert out[0].status == "stale"
+    assert out[0].table == "job_runs.fetch-watched-tickers heartbeat"
+    assert out[0].writer_job == "fetch-watched-tickers"
+
+
+def test_heartbeat_success_three_sessions_ago_is_stale(monkeypatch):
+    run = {"started_at": _utc(2026, 11, 9)}
+    out = _hb_run(monkeypatch, _hb_df(latest=run, success=run))
+    assert [r.status for r in out] == ["stale"]
+
+
+def test_heartbeat_success_yesterday_is_silent(monkeypatch):
+    run = {"started_at": _utc(2026, 11, 11)}
+    assert _hb_run(monkeypatch, _hb_df(latest=run, success=run)) == []
+
+
+def test_heartbeat_window_uses_eastern_date(monkeypatch):
+    """11-10 22:00 ET is 11-11 03:00 UTC; 11-09 22:00 ET is 11-10 03:00 UTC.
+    The Eastern date decides, so the second is stale although its UTC date
+    equals the cutoff."""
+    ok = {"started_at": _utc(2026, 11, 11, 3)}
+    assert _hb_run(monkeypatch, _hb_df(latest=ok, success=ok)) == []
+    late = {"started_at": _utc(2026, 11, 10, 3)}
+    out = _hb_run(monkeypatch, _hb_df(latest=late, success=late))
+    assert [r.status for r in out] == ["stale"]
+
+
+def test_heartbeat_overflow_note_warns(monkeypatch):
+    run = {"started_at": _utc(2026, 11, 12, 13), "note": "overflow=10"}
+    out = _hb_run(monkeypatch, _hb_df(latest=run, success=run))
+    assert len(out) == 1
+    assert out[0].status == "warn"
+    assert out[0].table == "job_runs.fetch-watched-tickers overflow"
+    assert "overflow=10" in out[0].detail
+
+
+def test_heartbeat_failed_items_warn(monkeypatch):
+    run = {"started_at": _utc(2026, 11, 12, 13), "items_failed": 2,
+           "note": "failed=AAA,BBB"}
+    out = _hb_run(monkeypatch, _hb_df(latest=run, success=run))
+    assert len(out) == 1
+    assert out[0].status == "warn"
+    assert out[0].table == "job_runs.fetch-watched-tickers failures"
+    assert "failed=AAA,BBB" in out[0].detail
+
+
+def test_heartbeat_skips_without_table(monkeypatch):
+    from gcp import database
+    from scripts.audit_data_freshness import _query_watched_tickers_heartbeat
+    monkeypatch.setattr(database, "table_exists", lambda t: False)
+    assert _query_watched_tickers_heartbeat(_HB_NOW) == []
+
+
+def test_heartbeat_strict_read_failure_propagates(monkeypatch):
+    import pytest
+    from gcp import database
+    from scripts.audit_data_freshness import _query_watched_tickers_heartbeat
+    monkeypatch.setattr(database, "table_exists", lambda t: True)
+
+    def boom(sql, params=None, timeout_s=None):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(database, "query_to_dataframe_strict", boom)
+    with pytest.raises(RuntimeError, match="db down"):
+        _query_watched_tickers_heartbeat(_HB_NOW)
+
+
+def test_heartbeat_runs_through_timed_after_enrichment(monkeypatch):
+    from scripts import audit_data_freshness as mod
+    order = []
+    monkeypatch.setattr(mod, "_timed",
+                        lambda name, fn, *a: order.append(name) or [])
+    mod._session_dependent_late_checks(mod.FreshnessReport(
+        checked_at="x", expected_market_close="y"), _HB_NOW)
+    assert order.index("watched_tickers_heartbeat") > order.index("enrichment_coverage")
+    assert order[-1] == "watched_tickers_heartbeat"
