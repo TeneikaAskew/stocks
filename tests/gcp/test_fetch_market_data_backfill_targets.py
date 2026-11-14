@@ -129,3 +129,79 @@ def test_removed_and_other_owner_rows_are_not_backfill_targets():
 def test_an_empty_default_watchlist_leaves_the_calendar_arm():
     targets = _targets_over([("default", "AAA", 1, 1, 1, REMOVED_AT, "seed")])
     assert [t for t, _, _ in targets] == ["EEE"], targets
+
+
+# ── FEAT-DATA-001 ingest v2: the all-history union counts only real bars from other writers ──────────
+
+WATCHED_ARM = (
+    "SELECT ticker FROM market_data_daily GROUP BY ticker "
+    "HAVING bool_or(close IS NOT NULL AND data_source IS DISTINCT FROM 'av_watched_backfill')"
+)
+
+
+def _all_history_sql(monkeypatch) -> str:
+    """The SQL _backfill_targets sends with BACKFILL_ALL_HISTORY=true."""
+    from gcp.fetchers import fetch_market_data
+
+    monkeypatch.setenv("BACKFILL_ALL_HISTORY", "true")
+    captured: dict[str, str] = {}
+
+    def fake_query(sql):
+        captured["sql"] = sql
+        return pd.DataFrame()
+
+    with patch.object(fetch_market_data, "is_cloud_sql_configured", return_value=True), \
+         patch("gcp.database.query_to_dataframe", side_effect=fake_query):
+        fetch_market_data._backfill_targets()
+    return captured["sql"]
+
+
+def test_all_history_market_data_daily_arm_counts_only_real_bars_from_other_writers(monkeypatch):
+    sql = _normalised(_all_history_sql(monkeypatch))
+    assert WATCHED_ARM in sql, sql
+    # The earnings_history arm is unchanged and still unions with it.
+    assert "SELECT DISTINCT ticker FROM earnings_history UNION " + WATCHED_ARM in sql, sql
+
+
+# (ticker, date, close, data_source)
+DAILY_ROWS = [
+    ("WATCHED", "2026-11-12", 10.0, "av_watched_backfill"),    # watched-only: absent
+    ("WATCHED", "2026-11-13", 11.0, "av_watched_backfill"),
+    ("INDONLY", "2026-11-12", 20.0, "av_watched_backfill"),    # watched plus an indicator-only row: absent
+    ("INDONLY", "2026-11-13", None, None),
+    ("MIXED", "2026-11-12", 30.0, "av_watched_backfill"),      # another writer's real bar: present
+    ("MIXED", "2026-11-13", 31.0, "alphavantage"),
+    ("NULLSRC", "2026-11-13", 40.0, None),                     # null-sourced with a close: present
+]
+
+
+def test_all_history_union_skips_watched_only_and_indicator_only_tickers(monkeypatch):
+    from gcp.fetchers import fetch_market_data
+
+    # SQLite lacks bool_or and IS DISTINCT FROM (older builds), so the test rewrites the captured
+    # Postgres text for evaluation only. The Postgres text is what the SQL-text test above pins.
+    sql = _normalised(_all_history_sql(monkeypatch))
+    translated = sql.replace(
+        "bool_or(close IS NOT NULL AND data_source IS DISTINCT FROM 'av_watched_backfill')",
+        "MAX(CASE WHEN close IS NOT NULL AND data_source IS NOT 'av_watched_backfill' "
+        "THEN 1 ELSE 0 END) = 1")
+    assert translated != sql
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE TABLE earnings_history (ticker TEXT)")
+        conn.execute("CREATE TABLE market_data_daily "
+                     "(ticker TEXT, date TEXT, close REAL, data_source TEXT)")
+        conn.executemany("INSERT INTO market_data_daily VALUES (?, ?, ?, ?)", DAILY_ROWS)
+        conn.execute("INSERT INTO earnings_history VALUES ('EARN')")
+        conn.commit()
+
+        monkeypatch.setenv("BACKFILL_ALL_HISTORY", "true")
+        with patch.object(fetch_market_data, "is_cloud_sql_configured", return_value=True), \
+             patch("gcp.database.query_to_dataframe",
+                   side_effect=lambda _sql: pd.read_sql_query(translated, conn)):
+            targets = fetch_market_data._backfill_targets()
+    finally:
+        conn.close()
+
+    assert [t for t, _, _ in targets] == ["EARN", "MIXED", "NULLSRC"], targets

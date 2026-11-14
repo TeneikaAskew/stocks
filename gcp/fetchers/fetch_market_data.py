@@ -818,12 +818,18 @@ def _backfill_targets() -> list:
     if backfill_all:
         # Skip the eligible filter — every earnings_history ticker counts,
         # PLUS every ticker already in market_data_daily (catches
-        # universe-expansion orphans not yet in earnings_history).
+        # universe-expansion orphans not yet in earnings_history). Only real
+        # bars from other writers count: a ticker whose daily rows all came
+        # from the watched-ticker job, or are indicator-only (null close),
+        # is not a target, so leaving the watched set stops its pulls.
         sql = """
             WITH targets AS (
                 SELECT DISTINCT ticker FROM earnings_history
               UNION
-                SELECT DISTINCT ticker FROM market_data_daily
+                SELECT ticker FROM market_data_daily
+                 GROUP BY ticker
+                HAVING bool_or(close IS NOT NULL
+                               AND data_source IS DISTINCT FROM 'av_watched_backfill')
             )
             SELECT t.ticker,
                    COALESCE(mdd.n, 0)        AS bar_count,
