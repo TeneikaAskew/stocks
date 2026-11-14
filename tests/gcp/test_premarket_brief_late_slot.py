@@ -109,6 +109,7 @@ class Harness:
         self.queries = 0              # every database read, of any kind
         self.last_brief: Optional[dict] = None
         self.hooks: dict = {}         # stamp_read, row_read, generate, built, upsert, insert, send
+        self.built_was: dict = {}     # ticker -> built() of the row in force before the last run
         self.now: Optional[datetime] = None
 
     # ── clock ────────────────────────────────────────────────────────────
@@ -313,6 +314,10 @@ class Harness:
                 mp.delenv(key, raising=False)
             else:
                 mp.setenv(key, value)
+        # What the rows in force said they were built at before this run.
+        self.built_was = {t: self.built(t) for (day, t) in self.tables['premarket_analysis']
+                          if day == self.session
+                          and self.tables['premarket_analysis'][(day, t)].get('level_basis')}
         try:
             pb.main(list(argv))
         except SystemExit as stop:
@@ -1185,3 +1190,157 @@ class TestLateNotAppliedNote:
         assert payload['embeds'][0]['description'] == \
             'Late brief run failed (KeyError). Check the brief row before the open.'
         assert set(payload['embeds'][0]) == {'title', 'description', 'color'}
+
+
+# ── The late flow, end to end ──────────────────────────────────────────────
+
+def _cents(value) -> int:
+    from lib.strat_levels import price_cents
+    return price_cents(value)
+
+
+def _canonical(h) -> dict:
+    return h.tables['premarket_analysis']
+
+
+def _late_record(caplog, outcome: str) -> str:
+    """The one `late_slot outcome=<outcome>` log record of a run."""
+    (record,) = [r for r in caplog.records if f'late_slot outcome={outcome}' in r.getMessage()]
+    assert record.levelno == logging.INFO
+    return record.getMessage()
+
+
+class TestLateSlotEndToEnd:
+    def test_late_run_rewrites_the_early_rows(self, harness, caplog):
+        h = harness
+        h.snapshot(stamp=EARLY_STAMP, up=0.6)
+        assert h.run('2026-11-13 08:30:50') is None
+        early = copy.deepcopy(_canonical(h))
+        sent, writes = len(h.sent), len(h.writes)
+        h.snapshot(stamp=LATE_STAMP, up=0.9)
+        with caplog.at_level(logging.INFO, logger='gcp.premarket_brief'):
+            assert h.run('2026-11-13 09:21:30', late=True) == 0
+        for t in TICKERS:
+            row, was = _canonical(h)[(SESSION, t)], early[(SESSION, t)]
+            assert row['run_kind'] == 'live' and row['analysis_ts'] == h.at('2026-11-13 09:21:30')
+            assert was['analysis_ts'] == h.at('2026-11-13 08:30:50')
+            assert row['level_basis']['premarket']['fetched_at'] == LATE_STAMP_ISO
+            assert row['calls_trigger_name'] == 'PMK_H' and row['llm_analysis'] is None   # BRIEF_LLM_DISABLE=1
+            assert _cents(row['calls_trigger_price']) == _cents(was['calls_trigger_price']) + 30
+            assert _cents(row['puts_stop_price']) == _cents(was['puts_stop_price']) + 30
+            for col in LEVEL_COLUMNS:
+                assert row[col] == h.last_brief['tickers'][t][col]
+        late_history = h.tables['premarket_analysis_history'][3:]
+        assert len(late_history) == 3
+        assert {(r['run_kind'], r['triggered_by'], r['notes']) for r in late_history} == {
+            ('scheduled', 'cloud-scheduler:premarket-brief-late', 'LATE_SLOT_APPLIED')}
+        # One message, to the main webhook; nothing to the earnings webhook.
+        assert [url for url, _ in h.sent[sent:]] == [MAIN_HOOK]
+        (embed,) = h.sent[-1][1]['embeds']
+        assert embed['title'] == 'Levels updated: Fri Nov 13, 09:21 ET'
+        for t in TICKERS:
+            assert f'{t}  premarket high' in embed['description']
+            assert f'(fetched 08:20, 09:20; earlier row built {h.built_was[t]} ET)' in embed['description']
+        assert h.writes[writes:] == [('upsert', 'premarket_analysis'),
+                                     ('insert', 'premarket_analysis_history')]
+        assert (h.stamp_reads, h.row_reads) == (1, 2)
+        record = _late_record(caplog, 'applied')
+        for part in ('session=2026-11-13', 'tickers=IWM,QQQ,SPY', 'polls=1', 'waited_s=0',
+                     'stamps=IWM=09:20:40,QQQ=09:20:40,SPY=09:20:40', 'applied=True'):
+            assert part in record
+
+
+class TestLateSlotRows:
+    def test_no_earlier_row(self, harness):
+        harness.snapshot(stamp=LATE_STAMP, up=0.9)
+        assert harness.run('2026-11-13 09:21:30', late=True) == 0
+        text = harness.sent[-1][1]['embeds'][0]['description']
+        assert len(harness.sent) == 1
+        for t in TICKERS:
+            row = _canonical(harness)[(SESSION, t)]
+            assert row['run_kind'] == 'live' and f'{t}  no earlier row for the session' in text
+            for col in ('calls_trigger_price', 'calls_stop_price', 'calls_t1_price',
+                        'puts_trigger_price', 'puts_stop_price', 'puts_t1_price'):
+                assert pb._fmt_price(row[col]) in text
+            pm = row['level_basis']['premarket']
+            assert pb._fmt_price(pm['pre_high']) in text and pb._fmt_price(pm['pre_low']) in text
+        assert {r['notes'] for r in harness.tables['premarket_analysis_history']} == {'LATE_SLOT_APPLIED'}
+
+    def test_a_replay_row_becomes_live(self, harness):
+        h = harness
+        h.snapshot(stamp=EARLY_STAMP)
+        assert h.run('2026-11-13 08:30:50') is None
+        for row in _canonical(h).values():
+            row['run_kind'] = 'replay'
+        h.snapshot(stamp=LATE_STAMP, up=0.9)
+        assert h.run('2026-11-13 09:21:30', late=True) == 0
+        assert {r['run_kind'] for r in _canonical(h).values()} == {'live'}
+        assert all(r['level_basis']['premarket']['fetched_at'] == LATE_STAMP_ISO
+                   for r in _canonical(h).values())
+
+    def test_an_operators_update_row_is_replaced(self, harness):
+        h = harness
+        h.snapshot(stamp=EARLY_STAMP)
+        assert h.run('2026-11-13 08:30:50') is None
+        assert h.run('2026-11-13 08:50:00', env={'BRIEF_UPDATE': 'true'}) is None
+        # the operator's overwrite does not move analysis_ts
+        assert all(r['analysis_ts'] == h.at('2026-11-13 08:30:50') for r in _canonical(h).values())
+        h.snapshot(stamp=LATE_STAMP, up=0.9)
+        assert h.run('2026-11-13 09:21:30', late=True) == 0
+        assert all(r['analysis_ts'] == h.at('2026-11-13 09:21:30') for r in _canonical(h).values())
+        assert all(r['level_basis']['premarket']['fetched_at'] == LATE_STAMP_ISO
+                   for r in _canonical(h).values())
+
+    def test_a_hand_started_late_run_applies_as_manual_replay(self, harness):
+        h = harness
+        h.snapshot(stamp=EARLY_STAMP)
+        assert h.run('2026-11-13 08:30:50') is None
+        h.snapshot(stamp=LATE_STAMP, up=0.9)
+        assert h.run('2026-11-13 09:21:30', late=True, env={'BRIEF_TRIGGERED_BY': 'operator:late'}) == 0
+        history = h.tables['premarket_analysis_history']
+        assert {(r['run_kind'], r['notes']) for r in history[3:]} == {('manual_replay', 'LATE_SLOT_APPLIED')}
+        assert all(r['level_basis']['premarket']['fetched_at'] == LATE_STAMP_ISO
+                   for r in _canonical(h).values())
+
+    @pytest.mark.parametrize('off', [{'env': {'BRIEF_POST_TO_DISCORD': 'false'}},
+                                     {'argv': ['--no-discord']}])
+    def test_posting_turned_off_prints_and_exits_0(self, harness, capsys, off):
+        harness.snapshot(stamp=LATE_STAMP, up=0.9)
+        assert harness.run('2026-11-13 09:21:30', late=True, **off) == 0
+        assert harness.sent == [] and harness.send_attempts == 0
+        assert 'Levels updated' in capsys.readouterr().out
+        assert len(_canonical(harness)) == 3
+
+    def test_no_brief_tickers_is_an_error(self, harness, monkeypatch):
+        harness.snapshot(stamp=LATE_STAMP, up=0.9)
+        real_install = harness._install
+
+        def install():
+            real_install()
+            monkeypatch.setattr(pb, '_resolve_brief_tickers', lambda default: [])
+
+        harness._install = install
+        with pytest.raises(RuntimeError, match='no brief tickers'):
+            harness.run('2026-11-13 09:21:30', late=True)
+        assert harness.writes == [] and harness.stamp_reads == 0 and harness.generated == 0
+
+
+class TestLateSlotSessionGate:
+    @pytest.mark.parametrize('at', ['2026-11-26 09:20:30', '2026-11-14 09:20:30'])
+    def test_holiday_and_weekend_exit_clean(self, harness, caplog, at):     # the real is_session
+        harness.snapshot(stamp=LATE_STAMP)
+        with caplog.at_level(logging.INFO, logger='gcp.premarket_brief'):
+            assert harness.run(at, late=True) == 0
+        assert (harness.queries, harness.generated, harness.writes, harness.sent) == (0, 0, [], [])
+        assert harness.send_attempts == 0
+        record = _late_record(caplog, 'not_session')
+        for part in (f'session={at[:10]}', 'tickers=-', 'polls=0', 'waited_s=0', 'stamps=-',
+                     'applied=False'):
+            assert part in record
+
+    def test_a_half_day_passes_the_gate(self, make_harness):
+        h = make_harness(session='2026-11-27', last_bar='2026-11-25')
+        h.snapshot(stamp='2026-11-27 09:20:10')
+        assert h.run('2026-11-27 09:20:30', late=True) == 0
+        assert h.stamp_reads >= 1
+        assert sorted(_canonical(h)) == [('2026-11-27', t) for t in TICKERS]

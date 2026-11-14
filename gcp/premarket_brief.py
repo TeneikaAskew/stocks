@@ -4039,6 +4039,92 @@ def render_existing_brief_to_discord(
         return False
 
 
+def _log_late_slot(outcome: str, session_date: date, *, tickers=(),
+                   wait: Optional[LateSlotWait] = None, applied: bool = False) -> None:
+    """The one record a late run leaves (REQ-OBS-001): its outcome, the
+    session, the tickers, the polls, the seconds waited and each ticker's
+    stamp on the exchange's clock."""
+    if wait is None:
+        polls, waited_s, stamps = 0, 0, '-'
+    else:
+        polls, waited_s = wait.polls, int(wait.waited_s)
+        stamps = ','.join(
+            f"{t}={'none' if wait.stamps.get(t) is None else _note_time(wait.stamps[t], '%H:%M:%S')}"
+            for t in tickers) or '-'
+    logger.info("late_slot outcome=%s session=%s tickers=%s polls=%d waited_s=%d stamps=%s applied=%s",
+                outcome, session_date, ','.join(tickers) or '-', polls, waited_s, stamps, applied)
+
+
+def _post_late_note(payload: dict, webhook_url: str, timeout: int) -> bool:
+    """Post the late slot's one message to the main webhook. With posting
+    turned off (an empty webhook) the payload is printed instead. A post
+    that raises is logged and reported as False: the caller exits nonzero,
+    because a late run that could not tell the owner must not look like a
+    morning with no late run (decision E)."""
+    if not webhook_url:
+        print("\nDISCORD_WEBHOOK_URL not set -- printing the late slot note only")
+        print(json.dumps(payload, indent=2))
+        return True
+    try:
+        send_to_discord(payload, webhook_url, timeout=timeout)
+        return True
+    except Exception:  # noqa: BLE001 -- reported: False makes the run exit 1
+        logger.exception("late slot: the Discord post failed")
+        return False
+
+
+def _run_late_slot(*, cfg, data_dir: str, run_kind: str, triggered_by: str,
+                   webhook_url: str) -> int:
+    """The late slot (BRIEF_RUN_SLOT=late): wait for the 09:20 premarket
+    refresh, rebuild the day's levels from that snapshot, replace the
+    session's canonical rows in one guarded statement before the write
+    cutoff, and post one short note. Returns the process exit code: 0 when
+    the rows were rewritten and the owner was told (or posting is turned
+    off) and the history row recorded, and on a day that is not a session;
+    1 otherwise. The earnings webhook is never used."""
+    timeout = cfg.monitor.discord_timeout
+
+    # 1. Session. A holiday or a weekend: one record, nothing read or written.
+    session_date = market_today()
+    if not is_session(session_date):
+        _log_late_slot('not_session', session_date)
+        return 0
+
+    # 2. The brief's own tickers, and the slot's three instants.
+    tickers = _resolve_brief_tickers(cfg.market.tickers)
+    if not tickers:
+        # "Every ticker passes" is true of nothing: never applied over zero rows.
+        raise RuntimeError('late slot has no brief tickers')
+    clock = _late_slot_clock(session_date)
+
+    # 3. Wait for the refresh. Not ready: no build, so the early levels stand.
+    wait = _wait_for_late_snapshot(session_date, tickers, clock)
+    if not wait.ready:
+        return 1
+
+    # 4. The rows in force (a failed read raises).
+    rows = _read_rows_in_force(session_date, tickers)
+
+    # 5. Build, exactly as the early run builds.
+    brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
+    print(json.dumps(brief, indent=2, default=str))
+
+    # 6 and 7. Check the build, then the one guarded write.
+    late = LateSlotWrite(clock, tickers, rows,
+                         refusal=_late_build_refusal(brief, tickers, clock))
+    n = persist_to_cloud_sql(brief, allow_update=False, run_kind=run_kind,
+                             triggered_by=triggered_by, late_slot=late)
+    print(f"Late slot: {late.outcome}; {n} rows written to premarket_analysis")
+
+    # 8 and 9. The note and the record.
+    if late.outcome == 'applied':
+        posted = _post_late_note(
+            format_levels_updated_note(session_date, rows, brief, late), webhook_url, timeout)
+        _log_late_slot('applied', session_date, tickers=tickers, wait=wait, applied=True)
+        return 0 if posted and late.history_recorded else 1
+    return 1
+
+
 def main(argv: Optional[list[str]] = None):
     # Cloud Run Jobs pass overrides via env vars, not CLI flags. Translate
     # the env-var equivalent of --post-existing into argv when the caller
@@ -4155,6 +4241,12 @@ def main(argv: Optional[list[str]] = None):
 
     cfg = load_config()
     data_dir = os.environ.get('DATA_DIR', cfg.market.data_dir)
+
+    if run_slot == 'late' and _as_of_override() is None:
+        # The late slot owns its exit code, 0 included. --no-discord and
+        # BRIEF_POST_TO_DISCORD=false reach it as an empty webhook_url.
+        sys.exit(_run_late_slot(cfg=cfg, data_dir=data_dir, run_kind=run_kind,
+                                triggered_by=triggered_by, webhook_url=webhook_url))
 
     print(f"Generating pre-market brief... (allow_update={allow_update}, "
           f"run_kind={run_kind}, triggered_by={triggered_by})")
