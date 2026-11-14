@@ -137,7 +137,7 @@ def av_intraday_month(ticker: str, year_month: str, api_key: str) -> pd.DataFram
     r = requests.get(AV_BASE, params={
         "function": "TIME_SERIES_INTRADAY", "symbol": ticker,
         "interval": "1min", "month": year_month,
-        "outputsize": "full", "adjusted": "true",
+        "outputsize": "full", "adjusted": "false",  # as traded, like every 1-min request
         "extended_hours": "true", "entitlement": "realtime",
         "datatype": "json", "apikey": api_key,
     }, timeout=120)
