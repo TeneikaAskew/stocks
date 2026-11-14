@@ -63,7 +63,7 @@ from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.eastern_time import ET, eastern_index_to_utc
+from lib.eastern_time import ET, eastern_index_to_utc, session_close
 
 import pandas as pd
 import requests
@@ -75,7 +75,11 @@ from lib.indicators import calculate_rsi
 
 logger = logging.getLogger(__name__)
 _ET = ET
-_SESSION_CLOSE_ET = dt_time(16, 0)  # 4:00 PM ET — same as MarketConfig default
+# `eod_close` is written only when the day's stored bars reach this far before
+# the session close. A day whose bars stop earlier (premarket only at 16:30 ET,
+# a session the vendor served thin) has no known closing price: the alert is
+# left unresolved rather than closed at whatever bar happens to be last.
+EOD_CLOSE_REACH = timedelta(minutes=5)
 # `av-intraday-nightly` (gcp/deploy.sh) writes a calendar day's own intraday
 # partition at 21:00 ET. Before this, a same-day skip is the expected
 # pre-ingestion race (see EODResolver._same_day_skip_is_benign); at or after
@@ -92,6 +96,16 @@ def _exit_return_pct(direction: str, entry_price: float, exit_price: float) -> f
     if direction == 'CALL':
         return (exit_price - entry_price) / entry_price * 100.0
     return (entry_price - exit_price) / entry_price * 100.0
+
+
+def _alert_day(alert_date):
+    """`alert_date` as a calendar date: the column arrives as a date, an ISO
+    string, or (from a grouped frame) a naive midnight timestamp."""
+    if isinstance(alert_date, datetime):
+        return alert_date.date()
+    if isinstance(alert_date, str):
+        return datetime.fromisoformat(alert_date).date()
+    return alert_date
 
 
 class EODResolver:
@@ -287,11 +301,22 @@ class EODResolver:
                 return 'rsi_extreme'
         return None
 
-    def resolve_one(self, alert: pd.Series) -> Optional[dict]:
+    def resolve_one(self, alert: pd.Series,
+                    bars: Optional[pd.DataFrame] = None) -> Optional[dict]:
         """Walk one alert's bar-by-bar history; return the resolution dict.
 
-        Returns None when the day's intraday partition is missing — the
-        caller logs and continues to the next alert.
+        The walk ends at the session close (`lib.eastern_time.session_close`:
+        16:00 ET, 13:00 ET on a half day). A bar after the close is never an
+        exit, and `eod_close` is the last bar before the close.
+
+        `bars`, when given, is the day's frame as `_load_day` shapes it; the
+        loader is then not called (the bounded re-resolve hands in a frame it
+        read itself).
+
+        Returns None when the day's intraday partition is missing, or when
+        nothing triggered and the stored bars do not reach the last
+        `EOD_CLOSE_REACH` before the close — the caller logs and continues to
+        the next alert.
         """
         ticker = alert['ticker']
         alert_ts = pd.Timestamp(alert['alert_ts'])
@@ -303,17 +328,25 @@ class EODResolver:
         target_price = float(alert['target_price'])
         time_stop = int(alert['time_stop_minutes'] or 30)
 
-        bars = self._load_day(ticker, alert_date)
+        if bars is None:
+            bars = self._load_day(ticker, alert_date)
         if bars.empty:
             return None
 
+        # The day's frame holds premarket and after-hours bars too (the RSI is
+        # computed over all of them). Only bars before the session close can
+        # be an exit or price one.
+        close_utc = pd.Timestamp(session_close(_alert_day(alert_date))).tz_convert(None)
+        session = bars[bars.index < close_utc]
+
         # Walk only bars at or after the alert timestamp.
-        forward = bars[bars.index >= alert_ts]
+        forward = session[session.index >= alert_ts]
         if forward.empty:
-            # Alert fired after the day's last logged bar (e.g. alert at 15:59,
-            # AV's last bar is 15:58). Fall through to eod_close at session close.
+            # Alert fired after the session's last logged bar (e.g. alert at
+            # 15:59, AV's last bar is 15:58). Fall through to eod_close at
+            # session close.
             return self._eod_close_resolution(
-                alert, entry_price, alert_ts, alert_date, bars,
+                alert, entry_price, alert_ts, alert_date, session,
             )
 
         for ts, bar in forward.iterrows():
@@ -334,9 +367,9 @@ class EODResolver:
                     ),
                 }
 
-        # No trigger fired before the day's last bar → eod_close at session close.
+        # No trigger fired before the session close → eod_close at session close.
         return self._eod_close_resolution(
-            alert, entry_price, alert_ts, alert_date, bars,
+            alert, entry_price, alert_ts, alert_date, session,
         )
 
     def _eod_close_resolution(
@@ -346,24 +379,24 @@ class EODResolver:
         alert_ts: pd.Timestamp,
         alert_date,
         bars: pd.DataFrame,
-    ) -> dict:
+    ) -> Optional[dict]:
         """Fall-back resolution: nothing fired before session close.
 
-        Use the day's last bar's Close as the exit price (the value the
-        position would have liquidated at). exit_ts is set to 16:00 ET
-        converted to naive UTC so comparisons with alert_ts (naive UTC)
-        align.
+        `bars` holds the day's bars before the session close. The exit price
+        is the close of the last of them (the value the position would have
+        liquidated at) and exit_ts is the session close as naive UTC, so
+        comparisons with alert_ts (naive UTC) align.
+
+        Returns None when there is no such bar, or when the last one is more
+        than `EOD_CLOSE_REACH` before the close: the closing price is not
+        known from bars that stop early.
         """
+        close_et = session_close(_alert_day(alert_date)).astimezone(_ET)
+        close_utc_naive = close_et.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+        if bars.empty or bars.index[-1] < close_utc_naive - EOD_CLOSE_REACH:
+            return None
         last_bar = bars.iloc[-1]
         exit_price = float(last_bar['Close'])
-        # Build session-close timestamp as 16:00 ET, then convert to naive UTC
-        # so it lines up with alert_ts which is also naive UTC.
-        date_obj = (
-            alert_date if isinstance(alert_date, (datetime, pd.Timestamp))
-            else datetime.fromisoformat(str(alert_date))
-        )
-        close_et = datetime.combine(date_obj.date(), _SESSION_CLOSE_ET, tzinfo=_ET)
-        close_utc_naive = close_et.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
         return {
             'ticker': alert['ticker'],
             'alert_ts': alert['alert_ts'],

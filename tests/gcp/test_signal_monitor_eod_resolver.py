@@ -165,17 +165,17 @@ def test_resolve_one_eod_close_fallback(make_resolver):
     # only 5 bars vs period=14), target never reached, time_stop
     # never elapses. Forces the eod_close branch.
     bars = _intraday([
-        ('2026-05-07 15:30', 100.0),
-        ('2026-05-07 15:31', 100.0),
-        ('2026-05-07 15:32', 100.0),
-        ('2026-05-07 15:33', 100.0),
-        ('2026-05-07 15:34', 100.0),
+        ('2026-05-07 19:55', 100.0),
+        ('2026-05-07 19:56', 100.0),
+        ('2026-05-07 19:57', 100.0),
+        ('2026-05-07 19:58', 100.0),
+        ('2026-05-07 19:59', 100.0),
     ])
     resolver = make_resolver(bars)
 
     alert = pd.Series({
         'ticker': 'SPY',
-        'alert_ts': datetime(2026, 5, 7, 15, 30, 0),
+        'alert_ts': datetime(2026, 5, 7, 19, 55, 0),
         'alert_date': '2026-05-07',
         'direction': 'CALL',
         'price_at_signal': 100.0,
@@ -195,15 +195,15 @@ def test_resolve_one_eod_close_when_alert_after_last_bar(make_resolver):
     """Alert fires at 15:59 but AV's last logged bar is 15:58 — the
     forward window is empty. Must still resolve to eod_close, not None."""
     bars = _intraday([
-        ('2026-05-07 15:55', 100.0),
-        ('2026-05-07 15:56', 100.05),
-        ('2026-05-07 15:57', 100.1),
-        ('2026-05-07 15:58', 100.1),  # last logged bar
+        ('2026-05-07 19:55', 100.0),
+        ('2026-05-07 19:56', 100.05),
+        ('2026-05-07 19:57', 100.1),
+        ('2026-05-07 19:58', 100.1),  # last logged bar
     ])
     resolver = make_resolver(bars)
     alert = pd.Series({
         'ticker': 'SPY',
-        'alert_ts': datetime(2026, 5, 7, 15, 59, 0),  # AFTER last bar
+        'alert_ts': datetime(2026, 5, 7, 19, 59, 0),  # AFTER last bar
         'alert_date': '2026-05-07',
         'direction': 'CALL',
         'price_at_signal': 100.1,
@@ -720,3 +720,121 @@ def test_eastern_loader_bars_line_up_with_a_utc_alert(make_resolver):
     r = resolver.resolve_one(alert)
     assert r['exit_reason'] == 'target_hit'
     assert pd.Timestamp(r['exit_ts']) == pd.Timestamp('2026-05-07 13:31')
+
+
+# ── The walk ends at the session close (FEAT-DATA-001) ────────────────────────
+#
+# Each case hands resolve_one a whole day through _load_day and stubs no loader
+# method. Times in the names are Eastern; alert_ts and exit_ts are naive UTC.
+
+
+def _session_frame(resolver, day, first_et, last_et, closes=None):
+    """One bar a minute from *first_et* to *last_et* Eastern on *day*, shaped as
+    _load_day shapes a day: a naive UTC index and the RSI over all of it.
+
+    The close is 100.00 on even minutes and 100.02 on odd ones, so the RSI
+    settles near 50 after the first bars; *closes* overrides by "HH:MM"
+    Eastern."""
+    from datetime import date as _date, time as _time
+    from lib.eastern_time import eastern_bounds_utc
+    from lib.indicators import calculate_rsi
+
+    start, end = eastern_bounds_utc(
+        _date.fromisoformat(day), _time.fromisoformat(first_et), _time.fromisoformat(last_et))
+    index = pd.date_range(start, end, freq='1min')
+    eastern = index.tz_convert('America/New_York')
+    overrides = closes or {}
+    close = [
+        overrides.get(f'{t.hour:02d}:{t.minute:02d}', 100.02 if t.minute % 2 else 100.0)
+        for t in eastern
+    ]
+    frame = pd.DataFrame(
+        {'Open': close, 'High': close, 'Low': close, 'Close': close, 'Volume': 1000},
+        index=index.tz_convert(None))
+    frame.index.name = 'Time'
+    frame[resolver.indicator_cfg.rsi_col] = calculate_rsi(
+        frame['Close'], resolver.indicator_cfg.rsi_period)
+    return frame
+
+
+def _resolve_on(frame_args, alert_fields):
+    from gcp.signal_monitor_eod_resolver import EODResolver
+    resolver = EODResolver()
+    resolver.loader = None  # no case here may reach the loader
+    frame = _session_frame(resolver, *frame_args[:3], closes=frame_args[3] if len(frame_args) > 3 else None)
+    alert = pd.Series({
+        'ticker': 'SPY', 'alert_date': frame_args[0], 'price_at_signal': 100.0,
+        'target_price': 110.0, **alert_fields,
+    })
+    with patch.object(EODResolver, '_load_day', return_value=frame):
+        return resolver.resolve_one(alert)
+
+
+def test_a_late_call_resolves_to_eod_close():
+    """Fired at 15:50 with a 30-minute stop: the stop would elapse at 16:20,
+    after the close, so the exit is the close."""
+    res = _resolve_on(
+        ('2026-10-06', '09:30', '19:59'),
+        {'alert_ts': datetime(2026, 10, 6, 19, 50, 0), 'direction': 'CALL',
+         'time_stop_minutes': 30})
+    assert res['exit_reason'] == 'eod_close'
+    assert res['exit_ts'] == datetime(2026, 10, 6, 20, 0)
+    assert res['exit_price'] == 100.02
+
+
+def test_a_target_only_after_hours_is_not_an_exit():
+    """Only the 19:59 after-hours print reaches the target."""
+    res = _resolve_on(
+        ('2026-10-06', '09:30', '19:59', {'19:59': 111.0}),
+        {'alert_ts': datetime(2026, 10, 6, 19, 50, 0), 'direction': 'CALL',
+         'time_stop_minutes': 600})
+    assert res['exit_reason'] == 'eod_close'
+    assert res['exit_ts'] == datetime(2026, 10, 6, 20, 0)
+    assert res['exit_price'] == 100.02
+
+
+def test_premarket_bars_alone_do_not_resolve():
+    """Bars from 04:00 to 07:37 only: a PUT fired at 09:50 has no session bar."""
+    res = _resolve_on(
+        ('2026-10-06', '04:00', '07:37'),
+        {'alert_ts': datetime(2026, 10, 6, 13, 50, 9), 'direction': 'PUT',
+         'target_price': 90.0, 'time_stop_minutes': 30})
+    assert res is None
+
+
+def test_bars_that_stop_early_do_not_resolve():
+    """Bars stop at 15:40 and nothing triggered: the close is not known."""
+    res = _resolve_on(
+        ('2026-10-06', '09:30', '15:40'),
+        {'alert_ts': datetime(2026, 10, 6, 19, 30, 7), 'direction': 'CALL',
+         'time_stop_minutes': 600})
+    assert res is None
+
+
+def test_a_half_day_ends_at_one():
+    """2026-11-27 closes at 13:00 Eastern; the 13:10 print is after it."""
+    res = _resolve_on(
+        ('2026-11-27', '09:30', '16:30', {'13:10': 111.0}),
+        {'alert_ts': datetime(2026, 11, 27, 17, 50, 7), 'direction': 'CALL',
+         'time_stop_minutes': 600})
+    assert res['exit_reason'] == 'eod_close'
+    assert res['exit_ts'] == datetime(2026, 11, 27, 18, 0)
+    assert res['exit_price'] == 100.02
+
+
+def test_the_five_minute_rule_at_its_boundary():
+    late_call = {'alert_ts': datetime(2026, 10, 6, 19, 30, 7), 'direction': 'CALL',
+                 'time_stop_minutes': 600}
+
+    reaches = _resolve_on(('2026-10-06', '09:30', '15:55'), late_call)
+    assert reaches['exit_reason'] == 'eod_close'
+    assert reaches['exit_ts'] == datetime(2026, 10, 6, 20, 0)
+    assert reaches['exit_price'] == 100.02  # the 15:55 close
+
+    assert _resolve_on(('2026-10-06', '09:30', '15:54'), late_call) is None
+
+    # A trigger on a stored bar is an exit on an incomplete day too.
+    hit = _resolve_on(('2026-10-06', '09:30', '15:40', {'15:35': 110.5}), late_call)
+    assert hit['exit_reason'] == 'target_hit'
+    assert hit['exit_ts'] == datetime(2026, 10, 6, 19, 35)
+    assert hit['exit_price'] == 110.5
