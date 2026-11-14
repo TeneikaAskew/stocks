@@ -2,7 +2,7 @@
 feat_id: FEAT-REPLAY-001
 spec: docs/superpowers/specs/2026-11-13-feat-replay-001-replay-bars-from-the-table.md
 branch: fix/feat-replay-001-replay-bars-from-the-table
-pr: null
+pr: 1891
 status: ready
 ---
 
