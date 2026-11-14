@@ -593,7 +593,10 @@ def _load_chain_entry(ticker: str, date_str: str) -> "tuple[dict, dict | None, b
         """
         df = query_to_dataframe(sql, {"ticker": ticker_upper, "snap_date": parsed_date})
 
-        if df.empty:
+        # A chain with no call or put row (including rows whose option_type is
+        # unrecognised) is the same 404 as no rows (FEAT-OPTION-001).
+        contracts = _df_to_contracts(df) if not df.empty else []
+        if gamma.chain_sides(contracts) == gamma.SIDES_EMPTY:
             # Look up the nearest available date for a helpful error message.
             nearest_sql = """
                 SELECT MAX(snapshot_date) AS nearest
@@ -617,8 +620,6 @@ def _load_chain_entry(ticker: str, date_str: str) -> "tuple[dict, dict | None, b
             )
             raise HTTPException(status_code=404, detail=msg)
 
-        contracts = _df_to_contracts(df)
-
         # Take the max snapshot_ts as the "as of" marker.
         snapshot_ts_val = df["snapshot_ts"].max() if "snapshot_ts" in df.columns else None
         if isinstance(snapshot_ts_val, (pd.Timestamp, datetime)):
@@ -637,6 +638,7 @@ def _load_chain_entry(ticker: str, date_str: str) -> "tuple[dict, dict | None, b
                 "row_count": len(contracts),
             },
         }
+        _apply_chain_state(response)
         # Group validation of the selected rows' own clocks and sessions lives
         # in the provenance object; the legacy `snapshot_timestamp` string above
         # is unchanged. The `data_source = 'alphavantage'` literal in the WHERE
@@ -646,6 +648,27 @@ def _load_chain_entry(ticker: str, date_str: str) -> "tuple[dict, dict | None, b
         )
         _CHAIN_CACHE[cache_key] = {"payload": response, "provenance": provenance}
         return response, provenance, False
+
+
+def _chain_state_fields(contracts: list[dict]) -> tuple[str, str, str | None]:
+    """(sides_present, chain_state, reason) for a non-empty normalised chain.
+
+    A one-sided chain keeps its rows but is `unavailable` (FEAT-OPTION-001).
+    """
+    sides = gamma.chain_sides(contracts)
+    if sides == gamma.SIDES_BOTH:
+        return sides, "available", None
+    return sides, "unavailable", gamma.partial_chain_reason(sides)
+
+
+def _apply_chain_state(payload: dict) -> None:
+    """Set sides_present / chain_state / reason on a chain payload in place,
+    before it is cached so hits and misses carry identical state."""
+    sides, state, reason = _chain_state_fields(payload["options"])
+    payload["metadata"]["sides_present"] = sides
+    payload["chain_state"] = state
+    if reason is not None:
+        payload["reason"] = reason
 
 
 @router.get("/api/options/{ticker}/{date_str}", response_model=OptionsChainResponse, response_model_exclude_unset=True)
@@ -717,7 +740,7 @@ async def get_options_live(ticker: str, date_str: str, response: Response):
 
     rows = data.get("data") or []
     contracts = _av_to_contracts(rows)
-    if not contracts:
+    if gamma.chain_sides(contracts) == gamma.SIDES_EMPTY:
         raise HTTPException(
             status_code=404,
             detail=(
@@ -737,6 +760,7 @@ async def get_options_live(ticker: str, date_str: str, response: Response):
             "row_count": len(contracts),
         },
     }
+    _apply_chain_state(payload)
     _LIVE_CACHE[cache_key] = payload
     response.headers["Cache-Control"] = "public, max-age=300"
     return {**payload, "cached": False}
