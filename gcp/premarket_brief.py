@@ -3255,6 +3255,128 @@ def _wait_for_late_snapshot(session_date: date, tickers: list[str], clock: LateS
     return _result(False, reasons)
 
 
+def _aware_or_none(value) -> Optional[datetime]:
+    """An instant from a level_basis (an ISO string, or a datetime) as an
+    aware UTC datetime; None when it is missing, unreadable or carries no
+    zone. A zone is never assumed."""
+    value = _null_to_none(value)
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime()
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        return None
+    return as_utc_instant(value)
+
+
+_ROWS_IN_FORCE_LEVELS = (
+    'calls_trigger_name', 'calls_trigger_price', 'calls_stop_price', 'calls_t1_price',
+    'puts_trigger_name', 'puts_trigger_price', 'puts_stop_price', 'puts_t1_price',
+)
+
+
+def _read_rows_in_force(session_date: date, tickers: list[str]) -> dict[str, dict]:
+    """The session's canonical premarket_analysis rows for the brief
+    tickers, whatever their run_kind (a replay row must be seen), as
+    {ticker: {...}}; a ticker with no row is absent.
+
+    Per row: run_kind; analysis_ts (aware UTC); built_at (the level_basis's
+    own string, or None); built (aware: built_at when it parses with a zone,
+    else analysis_ts); fetched_at (aware, the basis's premarket fetch time,
+    or None); pre_high and pre_low of that snapshot; and the trigger name
+    and price, stop and first target of each side. NULL and NaN are None.
+    One keyed statement through the strict reader: a failed read raises and
+    is never read as "no earlier row" (CLAUDE.md 3.7)."""
+    from gcp import database  # noqa: PLC0415
+    from lib.strat_levels import parse_level_basis  # noqa: PLC0415
+    placeholders, params = _late_slot_binds(session_date, tickers)
+    df = database.query_to_dataframe_strict(
+        "SELECT ticker, run_kind, analysis_ts, level_basis, "
+        "calls_trigger_name, calls_trigger_price, calls_stop_price, calls_t1_price, "
+        "puts_trigger_name, puts_trigger_price, puts_stop_price, puts_t1_price "
+        "FROM premarket_analysis "
+        f"WHERE analysis_date = :session_date AND ticker IN ({placeholders})",
+        params)
+    out: dict[str, dict] = {}
+    for record in df.to_dict('records'):
+        written = record.get('analysis_ts')
+        if isinstance(written, pd.Timestamp):
+            written = written.to_pydatetime()
+        analysis_ts = as_utc_instant(written)      # raises on a value with no zone
+        basis = parse_level_basis(_null_to_none(record.get('level_basis'))) or {}
+        premarket = basis.get('premarket') if isinstance(basis.get('premarket'), dict) else {}
+        built_at = _null_to_none(basis.get('built_at')) or None
+        row = {
+            'run_kind': _null_to_none(record.get('run_kind')),
+            'analysis_ts': analysis_ts,
+            'built_at': built_at,
+            'built': _aware_or_none(built_at) or analysis_ts,
+            'fetched_at': _aware_or_none(premarket.get('fetched_at')),
+            'pre_high': _null_to_none(premarket.get('pre_high')),
+            'pre_low': _null_to_none(premarket.get('pre_low')),
+        }
+        for column in _ROWS_IN_FORCE_LEVELS:
+            row[column] = _null_to_none(record.get(column))
+        out[str(record['ticker'])] = row
+    return out
+
+
+def _rows_current(rows: dict, stamps: dict, tickers: list[str]) -> bool:
+    """True only when every brief ticker's row is live and was built on a
+    premarket snapshot fetched at or after the stamp this run waited on.
+    A missing row, a missing stamp or a row with no recorded fetch time is
+    not current; neither is an empty ticker list."""
+    if not tickers:
+        return False
+    for ticker in tickers:
+        row, stamp = rows.get(ticker), stamps.get(ticker)
+        if row is None or stamp is None or row.get('run_kind') != 'live':
+            return False
+        fetched = row.get('fetched_at')
+        if fetched is None or fetched < stamp:
+            return False
+    return True
+
+
+_LATE_UNUSABLE_STATUSES = ('NO DATA', 'STALE_DAILY_DATA', 'PLAYBOOK_FAILED')
+
+
+def _late_build_refusal(brief: dict, tickers: list[str], clock: LateSlotClock) -> Optional[str]:
+    """Why a late build may not replace the canonical rows, or None when it
+    may. Every brief ticker must be built, with a status that is not NO DATA,
+    STALE_DAILY_DATA or PLAYBOOK_FAILED, a level_basis whose premarket_status
+    is ok, and a premarket snapshot fetched at or after the slot's start;
+    and the build's tickers must be the set the wait checked. The first
+    ticker that fails is named, in the order of `tickers`."""
+    built = brief.get('tickers') or {}
+    for ticker in tickers:
+        if ticker not in built:
+            return f"{ticker}: not built"
+        data = built[ticker] or {}
+        if data.get('status') in _LATE_UNUSABLE_STATUSES:
+            return f"{ticker}: status {data['status']}"
+        basis = data.get('level_basis')
+        if not isinstance(basis, dict):
+            return f"{ticker}: no level_basis"
+        if basis.get('premarket_status') != 'ok':
+            return f"{ticker}: premarket_status {basis.get('premarket_status')}"
+        premarket = basis.get('premarket') if isinstance(basis.get('premarket'), dict) else {}
+        fetched = _aware_or_none(premarket.get('fetched_at'))
+        if fetched is None:
+            return f"{ticker}: snapshot has no fetch time"
+        if fetched < clock.start:
+            return (f"{ticker}: snapshot fetched {as_eastern_time(fetched):%H:%M:%S} ET, "
+                    f"before {as_eastern_time(clock.start):%H:%M:%S} ET")
+    if set(built) != set(tickers):
+        return f"built {sorted(built)}, waited on {sorted(tickers)}"
+    return None
+
+
 # ── Cloud SQL Persistence ───────────────────────────────────────────────────
 
 def _resolve_run_kind_and_update(allow_update_arg: bool) -> tuple[bool, str]:

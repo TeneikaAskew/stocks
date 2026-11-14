@@ -608,3 +608,190 @@ class TestLateSlotWait:
         monkeypatch.setattr(database, 'query_to_dataframe_strict', raise_(ConnectionError('down')))
         with pytest.raises(ConnectionError):
             pb._read_late_slot_stamps(D, T)
+
+
+# ── The rows in force, "current", and the build check ──────────────────────
+
+EARLY_FETCHED_ISO = '2026-11-13T13:20:33.123456+00:00'     # 08:20:33.123456 Eastern
+EARLY_BUILT_AT = '2026-11-13T08:30:50.100000-05:00'
+ROW_LEVELS = ('calls_trigger_name', 'calls_trigger_price', 'calls_stop_price', 'calls_t1_price',
+              'puts_trigger_name', 'puts_trigger_price', 'puts_stop_price', 'puts_t1_price')
+
+
+def _basis(*, fetched=EARLY_FETCHED_ISO, built_at=EARLY_BUILT_AT, high=759.737, low=755.73,
+           premarket_status='ok') -> dict:
+    return {'built_at': built_at, 'premarket_status': premarket_status,
+            'premarket': {'date': SESSION, 'fetched_at': fetched, 'pre_high': high, 'pre_low': low,
+                          'pre_filter_status': 'ok'}}
+
+
+def _stored(ticker, *, run_kind='live', analysis_ts='08:30:54', level_basis='default', **levels):
+    """One premarket_analysis row as the strict reader hands it back."""
+    row = {'ticker': ticker, 'run_kind': run_kind,
+           'analysis_ts': pd.Timestamp(_utc(analysis_ts)),
+           'level_basis': _basis() if level_basis == 'default' else level_basis,
+           'calls_trigger_name': 'PMK_H', 'calls_trigger_price': 759.737,
+           'calls_stop_price': 758.10, 'calls_t1_price': 762.63,
+           'puts_trigger_name': 'PMK_L', 'puts_trigger_price': 755.73,
+           'puts_stop_price': 759.737, 'puts_t1_price': 753.20}
+    row.update(levels)
+    return row
+
+
+def _answer_rows(monkeypatch, records):
+    """Answer gcp.database's strict reader with `records`; returns the calls."""
+    import gcp.database as database
+    seen = []
+
+    def strict(sql, params=None, timeout_s=None):
+        seen.append((sql, dict(params or {}), timeout_s))
+        return pd.DataFrame(records, columns=['ticker', 'run_kind', 'analysis_ts', 'level_basis',
+                                              *ROW_LEVELS])
+
+    monkeypatch.setattr(database, 'query_to_dataframe_strict', strict)
+    return seen
+
+
+class TestRowsInForce:
+    def test_shape_of_the_read(self, monkeypatch):
+        seen = _answer_rows(monkeypatch, [])
+        assert pb._read_rows_in_force(D, T) == {}
+        ((sql, params, timeout_s),) = seen
+        assert 'FROM premarket_analysis' in sql and 'analysis_date = :session_date' in sql
+        assert 'run_kind =' not in sql and timeout_s is None
+        assert not any(t in sql for t in T)
+        assert params['session_date'] == D
+        assert {v for k, v in params.items() if k != 'session_date'} == set(T)
+        selected = [c.strip() for c in sql.split('SELECT', 1)[1].split('FROM', 1)[0].split(',')]
+        assert selected == ['ticker', 'run_kind', 'analysis_ts', 'level_basis', *ROW_LEVELS]
+
+    def test_a_live_a_replay_and_a_bare_row(self, monkeypatch):
+        import json
+        _answer_rows(monkeypatch, [
+            _stored('SPY'),
+            _stored('QQQ', run_kind='replay', level_basis=json.dumps(_basis(high=691.94, low=685.0))),
+            _stored('IWM', level_basis=None)])
+        rows = pb._read_rows_in_force(D, T + ['DIA'])
+        assert rows['SPY']['fetched_at'] == datetime.fromisoformat('2026-11-13T13:20:33.123456+00:00')
+        assert rows['SPY']['built_at'] == '2026-11-13T08:30:50.100000-05:00'
+        assert rows['SPY']['built'] == datetime.fromisoformat(EARLY_BUILT_AT)
+        assert (rows['SPY']['run_kind'], rows['SPY']['pre_high'], rows['SPY']['pre_low']) == (
+            'live', 759.737, 755.73)
+        assert rows['SPY']['analysis_ts'] == _utc('08:30:54')
+        assert {k: rows['SPY'][k] for k in ROW_LEVELS} == {
+            'calls_trigger_name': 'PMK_H', 'calls_trigger_price': 759.737,
+            'calls_stop_price': 758.10, 'calls_t1_price': 762.63,
+            'puts_trigger_name': 'PMK_L', 'puts_trigger_price': 755.73,
+            'puts_stop_price': 759.737, 'puts_t1_price': 753.20}
+        assert rows['QQQ']['run_kind'] == 'replay' and rows['QQQ']['pre_high'] == 691.94
+        assert rows['IWM']['built_at'] is None and rows['IWM']['fetched_at'] is None
+        assert rows['IWM']['pre_high'] is None and rows['IWM']['pre_low'] is None
+        assert rows['IWM']['built'] == rows['IWM']['analysis_ts'] == _utc('08:30:54')
+        assert 'DIA' not in rows
+
+    def test_null_and_nan_prices_are_none(self, monkeypatch):
+        _answer_rows(monkeypatch, [_stored('SPY', calls_stop_price=float('nan'), puts_t1_price=None,
+                                           puts_trigger_name=None)])
+        rows = pb._read_rows_in_force(D, T)
+        assert rows['SPY']['calls_stop_price'] is None and rows['SPY']['puts_t1_price'] is None
+        assert rows['SPY']['puts_trigger_name'] is None
+        assert rows['SPY']['calls_trigger_price'] == 759.737
+
+    def test_a_basis_with_no_usable_times(self, monkeypatch):
+        # A fetch time with no zone is not a fetch time; a build time with no
+        # zone falls back to the row's own write time. Neither is localized.
+        _answer_rows(monkeypatch, [_stored('SPY', level_basis=_basis(
+            fetched='2026-11-13T13:20:33', built_at='2026-11-13T08:30:50'))])
+        rows = pb._read_rows_in_force(D, T)
+        assert rows['SPY']['fetched_at'] is None
+        assert rows['SPY']['built'] == rows['SPY']['analysis_ts']
+        assert rows['SPY']['built_at'] == '2026-11-13T08:30:50'
+
+    def test_a_failed_read_raises(self, monkeypatch):
+        import gcp.database as database
+        monkeypatch.setattr(database, 'query_to_dataframe_strict', raise_(ConnectionError('down')))
+        with pytest.raises(ConnectionError):
+            pb._read_rows_in_force(D, T)
+
+    @pytest.mark.parametrize('edit,current', [
+        (None, True), ('equal instant', True), ('SPY replay', False), ('SPY missing', False),
+        ('SPY fetched before its stamp', False), ('SPY stamp None', False), ('SPY fetched None', False)])
+    def test_current(self, edit, current):
+        late = LATE['pre_fetched_at']
+        rows = {t: {'run_kind': 'live', 'fetched_at': late + timedelta(seconds=3)} for t in T}
+        stamps = {t: late for t in T}
+        if edit == 'equal instant':
+            rows['SPY']['fetched_at'] = late
+        elif edit == 'SPY replay':
+            rows['SPY']['run_kind'] = 'replay'
+        elif edit == 'SPY missing':
+            del rows['SPY']
+        elif edit == 'SPY fetched before its stamp':
+            rows['SPY']['fetched_at'] = late - timedelta(microseconds=1)
+        elif edit == 'SPY stamp None':
+            stamps['SPY'] = None
+        elif edit == 'SPY fetched None':
+            rows['SPY']['fetched_at'] = None
+        assert pb._rows_current(rows, stamps, T) is current
+
+    def test_current_of_no_tickers_is_false(self):
+        assert pb._rows_current({}, {}, []) is False
+
+
+def _late_brief(tickers=TICKERS) -> dict:
+    """A three-ticker brief dated the session whose every level_basis was
+    built on the late snapshot."""
+    return {
+        'date': 'Fri Nov 13, 2026', 'analysis_date': D, 'llm_overview': None,
+        'tickers': {t: {
+            'price': 760.0, 'level_basis': _basis(fetched=LATE_STAMP_ISO, high=762.693,
+                                                  built_at='2026-11-13T09:21:20.000000-05:00'),
+            'calls_trigger_name': 'PMK_H', 'calls_trigger_price': 762.693,
+            'calls_stop_price': 758.10, 'calls_t1_price': 763.04,
+            'puts_trigger_name': 'PMK_L', 'puts_trigger_price': 755.73,
+            'puts_stop_price': 762.693, 'puts_t1_price': 753.20,
+        } for t in tickers}}
+
+
+class TestLateBuildCheck:
+    def test_a_usable_build(self):
+        assert pb._late_build_refusal(_late_brief(), T, CLOCK) is None
+
+    @pytest.mark.parametrize('edit,text', [
+        (lambda b: b['tickers']['QQQ']['level_basis'].update(premarket_status='premarket_unfiltered'),
+         'QQQ: premarket_status premarket_unfiltered'),
+        (lambda b: b['tickers']['QQQ']['level_basis']['premarket'].update(
+            fetched_at='2026-11-13T13:20:33.123456+00:00'),
+         'QQQ: snapshot fetched 08:20:33 ET, before 09:20:00 ET'),
+        (lambda b: b['tickers']['QQQ']['level_basis']['premarket'].update(fetched_at=None),
+         'QQQ: snapshot has no fetch time'),
+        (lambda b: b['tickers']['QQQ']['level_basis'].update(premarket=None),
+         'QQQ: snapshot has no fetch time'),
+        (lambda b: b['tickers']['QQQ'].update(status='NO DATA'), 'QQQ: status NO DATA'),
+        (lambda b: b['tickers']['QQQ'].update(status='STALE_DAILY_DATA'), 'QQQ: status STALE_DAILY_DATA'),
+        (lambda b: b['tickers']['QQQ'].update(status='PLAYBOOK_FAILED'), 'QQQ: status PLAYBOOK_FAILED'),
+        (lambda b: b['tickers'].__setitem__('QQQ', {'status': 'NO DATA (all rows null)'}),
+         'QQQ: no level_basis'),
+        (lambda b: b['tickers']['QQQ'].pop('level_basis'), 'QQQ: no level_basis'),
+        (lambda b: b['tickers'].pop('QQQ'), 'QQQ: not built'),
+        (lambda b: b['tickers'].__setitem__('DIA', dict(b['tickers']['SPY'])),
+         "built ['DIA', 'IWM', 'QQQ', 'SPY'], waited on ['IWM', 'QQQ', 'SPY']")])
+    def test_refusals(self, edit, text):
+        brief = _late_brief()
+        edit(brief)
+        assert pb._late_build_refusal(brief, T, CLOCK) == text
+
+    def test_the_first_ticker_that_fails_is_named(self):
+        brief = _late_brief()
+        brief['tickers']['SPY']['status'] = 'PLAYBOOK_FAILED'
+        brief['tickers']['IWM']['level_basis']['premarket_status'] = 'premarket_unavailable'
+        assert pb._late_build_refusal(brief, T, CLOCK) == 'IWM: premarket_status premarket_unavailable'
+
+    def test_a_snapshot_stamped_at_the_start_is_usable(self):
+        brief = _late_brief()
+        for t in T:
+            brief['tickers'][t]['level_basis']['premarket']['fetched_at'] = '2026-11-13T14:20:00+00:00'
+        assert pb._late_build_refusal(brief, T, CLOCK) is None
+
+    def test_a_build_of_no_tickers_is_refused(self):
+        assert pb._late_build_refusal({'tickers': {}}, T, CLOCK) == 'IWM: not built'
