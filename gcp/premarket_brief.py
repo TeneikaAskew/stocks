@@ -4097,13 +4097,51 @@ def _run_late_slot(*, cfg, data_dir: str, run_kind: str, triggered_by: str,
         raise RuntimeError('late slot has no brief tickers')
     clock = _late_slot_clock(session_date)
 
-    # 3. Wait for the refresh. Not ready: no build, so the early levels stand.
-    wait = _wait_for_late_snapshot(session_date, tickers, clock)
-    if not wait.ready:
+    def _not_applied(outcome: str, reason: str, rows: Optional[dict] = None,
+                     wait: Optional[LateSlotWait] = None) -> int:
+        """A late run that did not rewrite the rows: the one "not applied"
+        line (with when each row in force was built, and on which
+        snapshot), the record, exit 1. The rows are read here when the run
+        has not read them yet; a failed read raises."""
+        if rows is None:
+            rows = _read_rows_in_force(session_date, tickers)
+        _post_late_note(
+            format_late_not_applied_note(session_date, outcome, reason, rows, tickers),
+            webhook_url, timeout)
+        _log_late_slot(outcome, session_date, tickers=tickers, wait=wait)
         return 1
 
-    # 4. The rows in force (a failed read raises).
+    # The slot's window, at the first check: a run started before the slot
+    # opens, or at or after the write cutoff, neither waits nor builds.
+    started = _eastern_now()
+    if as_utc_instant(started) < clock.start:
+        return _not_applied(
+            'before_slot',
+            f"started {as_eastern_time(started):%H:%M:%S} ET, before the slot opens at "
+            f"{as_eastern_time(clock.start):%H:%M:%S} ET")
+    if as_utc_instant(started) >= clock.write_cutoff:
+        return _not_applied(
+            'past_cutoff',
+            f"started {as_eastern_time(started):%H:%M:%S} ET, at or after the write cutoff "
+            f"{as_eastern_time(clock.write_cutoff):%H:%M:%S} ET")
+
+    # 3. Wait for the refresh. Not ready: no build (no model call, no
+    # strat_levels write), so the early levels stand. The run never
+    # rebuilds from the early snapshot and calls the result late.
+    wait = _wait_for_late_snapshot(session_date, tickers, clock)
+    if not wait.ready:
+        named = ', '.join(f"{t} ({wait.reasons[t]})" for t in tickers if t in wait.reasons)
+        return _not_applied(
+            'snapshot_not_ready',
+            f"no usable snapshot by {as_eastern_time(clock.wait_deadline):%H:%M:%S} ET "
+            f"for {named}", wait=wait)
+
+    # 4. The rows in force (a failed read raises). Rows already built on
+    # this snapshot: a duplicate trigger or a rerun after a success.
     rows = _read_rows_in_force(session_date, tickers)
+    if _rows_current(rows, wait.stamps, tickers):
+        _log_late_slot('already_current', session_date, tickers=tickers, wait=wait)
+        return 0
 
     # 5. Build, exactly as the early run builds.
     brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
@@ -4122,7 +4160,7 @@ def _run_late_slot(*, cfg, data_dir: str, run_kind: str, triggered_by: str,
             format_levels_updated_note(session_date, rows, brief, late), webhook_url, timeout)
         _log_late_slot('applied', session_date, tickers=tickers, wait=wait, applied=True)
         return 0 if posted and late.history_recorded else 1
-    return 1
+    return _not_applied(late.outcome, late.reason, rows=late.rows_now or rows, wait=wait)
 
 
 def main(argv: Optional[list[str]] = None):

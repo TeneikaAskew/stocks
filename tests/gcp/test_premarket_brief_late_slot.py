@@ -1249,6 +1249,35 @@ class TestLateSlotEndToEnd:
                      'stamps=IWM=09:20:40,QQQ=09:20:40,SPY=09:20:40', 'applied=True'):
             assert part in record
 
+    @pytest.mark.parametrize('moved,status,named', [
+        ((), {}, {'IWM': 'stamp 08:20:33', 'QQQ': 'stamp 08:20:33', 'SPY': 'stamp 08:20:33'}),
+        (('SPY',), {}, {'IWM': 'stamp 08:20:33', 'QQQ': 'stamp 08:20:33'}),
+        (TICKERS, {'QQQ': 'level_params_unavailable'}, {'QQQ': 'status level_params_unavailable'})],
+        ids=['no-stamp-moves', 'one-stamp-moves', 'one-unfiltered'])
+    def test_no_late_snapshot_leaves_the_early_levels(self, harness, caplog, moved, status, named):
+        h = harness
+        before = _After(h)
+        for t in moved:
+            h.snapshot((t,), stamp=LATE_STAMP, up=0.9, status=status.get(t, 'ok'))
+        with caplog.at_level(logging.INFO, logger='gcp.premarket_brief'):
+            # the sleep double walks the clock past 09:27:00
+            assert h.run('2026-11-13 09:20:30', late=True) == 1
+        assert h.generated == 1 and len(h.strat_levels) == before.levels        # the early build only
+        assert before.unchanged(h) and h.writes[before.writes:] == []
+        assert h.stamp_reads == 78 and [u for u, _ in h.sent[before.sent:]] == [MAIN_HOOK]
+        assert h.now == h.at('2026-11-13 09:27:00')
+        lines = _note_lines(h)
+        assert lines[0].startswith('snapshot_not_ready: no usable snapshot by 09:27:00 ET for ')
+        for t in TICKERS:
+            if t in named:
+                assert f'{t} ({named[t]})' in lines[0]
+            else:
+                assert f'{t} (' not in lines[0]
+            assert _in_force_line(h, t) in lines
+        assert h.sent[-1][1]['embeds'][0]['title'] == 'Late levels not applied: Fri Nov 13'
+        record = _late_record(caplog, 'snapshot_not_ready')
+        assert 'polls=78 waited_s=390' in record and 'applied=False' in record
+
 
 class TestLateSlotRows:
     def test_no_earlier_row(self, harness):
@@ -1344,3 +1373,165 @@ class TestLateSlotSessionGate:
         assert h.run('2026-11-27 09:20:30', late=True) == 0
         assert h.stamp_reads >= 1
         assert sorted(_canonical(h)) == [('2026-11-27', t) for t in TICKERS]
+
+
+# ── Every late run that does not apply ─────────────────────────────────────
+
+class _After:
+    """The state after the early run of 08:30:50 on the 08:20 snapshot."""
+
+    def __init__(self, h):
+        h.snapshot(stamp=EARLY_STAMP)
+        assert h.run('2026-11-13 08:30:50') is None
+        self.tables = copy.deepcopy(h.tables)
+        self.sent, self.writes, self.levels = len(h.sent), len(h.writes), len(h.strat_levels)
+        self.attempts = h.send_attempts
+
+    def unchanged(self, h) -> bool:
+        """Both brief tables are as the early run left them (the stamp
+        table is left out: the tests move it)."""
+        return all(h.tables[name] == self.tables[name]
+                   for name in ('premarket_analysis', 'premarket_analysis_history'))
+
+
+def _note_lines(h) -> list:
+    (embed,) = h.sent[-1][1]['embeds']
+    return embed['description'].splitlines()
+
+
+def _in_force_line(h, ticker: str) -> str:
+    return f'{ticker}: row in force built {h.built(ticker)} ET on the snapshot fetched 08:20:33 ET'
+
+
+class TestLateSlotCutoff:
+    @pytest.mark.parametrize('at,outcome,reason', [
+        ('2026-11-13 09:29:30', 'past_cutoff',
+         'started 09:29:30 ET, at or after the write cutoff 09:29:30 ET'),
+        ('2026-11-13 09:35:00', 'past_cutoff',
+         'started 09:35:00 ET, at or after the write cutoff 09:29:30 ET'),
+        ('2026-11-13 09:19:59', 'before_slot',
+         'started 09:19:59 ET, before the slot opens at 09:20:00 ET')])
+    def test_outside_the_window_at_the_first_check(self, harness, caplog, at, outcome, reason):
+        h = harness
+        before = _After(h)
+        h.snapshot(stamp=LATE_STAMP, up=0.9)
+        with caplog.at_level(logging.INFO, logger='gcp.premarket_brief'):
+            assert h.run(at, late=True) == 1
+        assert (h.stamp_reads, h.generated, len(h.strat_levels)) == (0, 1, before.levels)
+        assert before.unchanged(h) and h.writes[before.writes:] == []
+        assert [u for u, _ in h.sent[before.sent:]] == [MAIN_HOOK]
+        lines = _note_lines(h)
+        assert lines[0] == f'{outcome}: {reason}'
+        for t in TICKERS:
+            assert _in_force_line(h, t) in lines
+        record = _late_record(caplog, outcome)
+        assert 'polls=0' in record and 'applied=False' in record
+
+    def test_the_cutoff_passes_between_the_wait_and_the_write(self, harness):
+        h = harness
+        before = _After(h)
+        h.snapshot(stamp=LATE_STAMP, up=0.9)
+        h.hooks['generate'] = lambda h: h.set_clock('2026-11-13 09:29:30')
+        assert h.run('2026-11-13 09:21:30', late=True) == 1
+        assert _canonical(h) == before.tables['premarket_analysis']
+        late_history = h.tables['premarket_analysis_history'][3:]
+        assert len(late_history) == 3
+        assert all(r['notes'].startswith('LATE_SLOT_NOT_APPLIED: past_cutoff') for r in late_history)
+        assert _note_lines(h)[0] == ('past_cutoff: write check at 09:29:30 ET, at or after the '
+                                     'write cutoff 09:29:30 ET')
+        assert len(h.sent) == before.sent + 1
+        assert h.writes[before.writes:] == [('insert', 'premarket_analysis_history')]
+
+    def test_one_second_before_the_cutoff_writes(self, harness):
+        h = harness
+        _After(h)
+        h.snapshot(stamp=LATE_STAMP, up=0.9)
+        h.hooks['generate'] = lambda h: h.set_clock('2026-11-13 09:29:29')
+        assert h.run('2026-11-13 09:21:30', late=True) == 0
+        assert all(r['analysis_ts'] == h.at('2026-11-13 09:29:29') for r in _canonical(h).values())
+        assert all(r['level_basis']['premarket']['fetched_at'] == LATE_STAMP_ISO
+                   for r in _canonical(h).values())
+
+
+class TestLateSlotRepeat:
+    def test_a_second_late_run_on_the_same_stamps_does_nothing(self, harness, caplog):
+        h = harness
+        _After(h)
+        h.snapshot(stamp=LATE_STAMP, up=0.9)
+        assert h.run('2026-11-13 09:21:30', late=True) == 0
+        after = copy.deepcopy(h.tables)
+        writes_after, sent_after, levels_after = list(h.writes), list(h.sent), len(h.strat_levels)
+        with caplog.at_level(logging.INFO, logger='gcp.premarket_brief'):
+            assert h.run('2026-11-13 09:24:00', late=True) == 0
+        assert h.tables == after and h.writes == writes_after and h.sent == sent_after
+        assert h.generated == 2 and len(h.strat_levels) == levels_after
+        record = _late_record(caplog, 'already_current')
+        assert 'tickers=IWM,QQQ,SPY' in record and 'applied=False' in record
+
+    def test_one_newer_stamp_rebuilds_all(self, harness):
+        h = harness
+        _After(h)
+        h.snapshot(stamp=LATE_STAMP, up=0.9)
+        assert h.run('2026-11-13 09:21:30', late=True) == 0
+        h.snapshot(('QQQ',), stamp='2026-11-13 09:23:10', up=0.9)
+        assert h.run('2026-11-13 09:24:00', late=True) == 0
+        assert all(r['analysis_ts'] == h.at('2026-11-13 09:24:00') for r in _canonical(h).values())
+        assert len(h.tables['premarket_analysis_history']) == 9
+        assert h.generated == 3
+
+
+class TestLateSlotRefusals:
+    @pytest.mark.parametrize('edit,rows', [
+        (lambda b: b['tickers']['QQQ']['level_basis'].update(premarket_status='premarket_unfiltered'), 3),
+        (lambda b: b['tickers']['QQQ']['level_basis']['premarket'].update(
+            fetched_at='2026-11-13T13:20:33.123456+00:00'), 3),
+        (lambda b: b['tickers']['QQQ'].update(status='NO DATA'), 2),   # a NO DATA ticker builds no row
+        (lambda b: b['tickers']['QQQ'].update(status='STALE_DAILY_DATA'), 3),
+        (lambda b: b['tickers']['QQQ'].update(status='PLAYBOOK_FAILED'), 3)],
+        ids=['unfiltered', 'early-snapshot', 'no-data', 'stale', 'playbook-failed'])
+    def test_a_build_that_cannot_be_used(self, harness, edit, rows):
+        h = harness
+        before = _After(h)
+        h.snapshot(stamp=LATE_STAMP, up=0.9)
+        h.hooks['built'] = lambda h, brief: edit(brief)
+        assert h.run('2026-11-13 09:21:30', late=True) == 1
+        assert _canonical(h) == before.tables['premarket_analysis']
+        late_history = h.tables['premarket_analysis_history'][3:]
+        assert len(late_history) == rows
+        assert all(r['notes'].startswith('LATE_SLOT_NOT_APPLIED: build_not_usable')
+                   for r in late_history)
+        assert h.writes[before.writes:] == [('insert', 'premarket_analysis_history')]
+        lines = _note_lines(h)
+        assert lines[0].startswith('build_not_usable: QQQ: ') and len(h.sent) == before.sent + 1
+        for t in TICKERS:
+            assert _in_force_line(h, t) in lines
+
+    @pytest.mark.parametrize('change', [
+        {'run_kind': 'replay'}, {'analysis_ts': '2026-11-13 09:22:00'},
+        {'built_at': '2026-11-13T09:22:00-05:00'}], ids=['run_kind', 'analysis_ts', 'built_at'])
+    def test_a_row_changed_under_the_run(self, harness, change):
+        h = harness
+        before = _After(h)
+        h.snapshot(stamp=LATE_STAMP, up=0.9)
+        state = {}
+
+        def another_writer(h):       # lands while this run builds
+            row = _canonical(h)[(SESSION, 'SPY')]
+            if 'run_kind' in change:
+                row['run_kind'] = change['run_kind']
+            if 'analysis_ts' in change:
+                row['analysis_ts'] = h.at(change['analysis_ts'])
+            if 'built_at' in change:
+                row['level_basis']['built_at'] = change['built_at']
+            state['changed'] = copy.deepcopy(_canonical(h))
+
+        h.hooks['generate'] = another_writer
+        assert h.run('2026-11-13 09:21:30', late=True) == 1
+        assert _canonical(h) == state['changed']                       # nothing rewritten
+        late_history = h.tables['premarket_analysis_history'][3:]
+        assert len(late_history) == 3
+        assert all(r['notes'].startswith('LATE_SLOT_NOT_APPLIED: row_changed') for r in late_history)
+        assert h.writes[before.writes:] == [('insert', 'premarket_analysis_history')]
+        lines = _note_lines(h)
+        assert lines[0] == 'row_changed: changed since this run read them: SPY'
+        assert _in_force_line(h, 'SPY') in lines and len(h.sent) == before.sent + 1
