@@ -290,8 +290,12 @@ REQUESTS: list[Req] = [
         note="deterministic miss: the on-disk cache is redirected to tmp"),
     Req("GET", f"/api/insights/ticker/{T}/quote", 404),
     Req("GET", f"/api/insights/ticker/{T}/peers", 200),
-    Req("POST", "/api/insights/watchlist/add", 503, json={"ticker": T}),
-    Req("DELETE", f"/api/insights/watchlist/{T}", 503),
+    # Retired (FEAT-INSIGHT-001 stage B): a route dependency answers 410
+    # before any backend is reached, so no backend is not a 503 here.
+    Req("POST", "/api/insights/watchlist/add", 410, json={"ticker": T},
+        note="retired web write path; was 503 with no backend"),
+    Req("DELETE", f"/api/insights/watchlist/{T}", 410,
+        note="retired web write path; was 503 with no backend"),
     Req("GET", "/api/insights/watchlist", 200),
     # Reads through the strict query helper: no backend is a 503 with the
     # exception text, never an empty 200 (FEAT-INSIGHT-001 stage A).
@@ -890,8 +894,9 @@ def test_the_allowlist_is_empty():
 # asynchronous job tomorrow must not fail the crash check when the table
 # expects exactly that status -- the exact-status assertion below is what
 # pins the contract (Codex P2 on #999). The error side stays a closed list:
-# these are the envelopes the handlers raise.
-ANSWERED_ERRORS = {304, 400, 401, 403, 404, 409, 422, 429, 500, 502, 503}
+# these are the envelopes the handlers raise. 410 is the retired web watchlist
+# write path (FEAT-INSIGHT-001 stage B), raised by a route dependency.
+ANSWERED_ERRORS = {304, 400, 401, 403, 404, 409, 410, 422, 429, 500, 502, 503}
 
 
 def _answered(status: int) -> bool:
@@ -1255,7 +1260,7 @@ def test_every_success_status_is_an_answer():
     """201 and 202 are answers, as any 2xx is; 500 and a redirect are not."""
     for status in (200, 201, 202, 204, 205, 206):
         assert _not_a_crash(status), status
-    for status in (304, 400, 401, 403, 404, 409, 422, 429, 502, 503):
+    for status in (304, 400, 401, 403, 404, 409, 410, 422, 429, 502, 503):
         assert _not_a_crash(status), status
     for status in (500, 302, 307, 501):
         assert not _not_a_crash(status), status

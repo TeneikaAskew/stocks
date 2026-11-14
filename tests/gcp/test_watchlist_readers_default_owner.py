@@ -22,13 +22,11 @@ How a reader is classified. ``READERS`` lists every path of the inventory with t
 A file whose tag is not ``own-sql`` must hold no ``FROM watchlists`` of its own: a reader that grows a
 query of its own has to be inventoried as such.
 
-The one exclusion. platform/api/routers/insights.py's two web write routes still write and read back the
-caller's own rows through ``_watchlist_owner`` until stage B
-(docs/superpowers/specs/2026-11-13-feat-insight-001-watchlist-write-routes-410.md) turns them into 410
-and deletes the helper; ``WRITE_ROUTE_EXCLUSION`` names that file, the aliased ``wl_load(user_id=owner)``
-calls inside ``add_to_watchlist`` and ``remove_from_watchlist`` are the only reads allowed a non-default
-owner, and ``test_write_routes_are_the_only_callers_of_watchlist_owner`` fails the moment anything else
-calls the helper. Stage B removes the exclusion together with the routes.
+No exclusion. Stage B (docs/superpowers/specs/2026-11-14-feat-insight-001-watchlist-write-routes-410-r2.md)
+turned platform/api/routers/insights.py's two web write routes into 410 and deleted ``_watchlist_owner``,
+so every file in the inventory, the router included, is held to the same rules, and
+``test_insights_router_imports_nothing_from_watchlist_helper`` fails if the router imports the helper
+module or defines the owner resolver again.
 
 Writers. ``WRITERS`` are the production files whose SQL text inserts into or updates ``watchlists``;
 ``MENTIONS_ONLY`` are the files whose only match is a log hint, a comment or a docstring, pinned to the
@@ -115,10 +113,6 @@ MENTIONS_ONLY = {
     "scripts/maintenance/doc_inventory.py":
         "to run `UPDATE watchlists SET signals = TRUE ...`. The process only READS",
 }
-
-# Removed by stage B, which turns the two web write routes into 410 and deletes _watchlist_owner.
-WRITE_ROUTE_EXCLUSION = "platform/api/routers/insights.py"
-WRITE_ROUTES = {"add_to_watchlist", "remove_from_watchlist"}
 
 FORWARDING_SITE = (
     "lib/agents/ranker/candidates.py",
@@ -243,23 +237,6 @@ def _production_files(suffix: str | None = None):
             yield path
 
 
-def _enclosing_functions(tree: ast.AST) -> dict[int, str]:
-    """Map every call node id to the name of the function definition it sits in."""
-    enclosing: dict[int, str] = {}
-
-    def walk(node: ast.AST, current: str | None) -> None:
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                walk(child, child.name)
-            else:
-                if isinstance(child, ast.Call) and current is not None:
-                    enclosing[id(child)] = current
-                walk(child, current)
-
-    walk(tree, None)
-    return enclosing
-
-
 def _call_name(call: ast.Call) -> str | None:
     func = call.func
     if isinstance(func, ast.Name):
@@ -275,7 +252,7 @@ def _call_name(call: ast.Call) -> str | None:
 def test_every_inventory_path_exists():
     """The scan must fail loud, not pass vacuously, when a listed file is gone (Review Focus 4)."""
     listed = (set(READERS) | WRITERS | set(MENTIONS_ONLY) | set(OWN_SQL_PINS) | RANK_TICKERS_CALLERS
-              | {WRITE_ROUTE_EXCLUSION, FORWARDING_SITE[0]})
+              | {FORWARDING_SITE[0]})
     missing = sorted(rel for rel in listed if not (REPO / rel).is_file())
     assert missing == [], f"inventory paths missing from the tree: {missing}"
     assert set(OWN_SQL_PINS) <= {rel for rel, tags in READERS.items() if OWN_SQL in tags}
@@ -295,9 +272,8 @@ def test_every_reader_calls_the_helper_it_is_inventoried_with(rel):
         assert f"from gcp.calibrate_level_params import {STRICT_HELPER}" in text, rel
     if UNIVERSE in tags:
         assert UNIVERSE in text and not calls, rel
-    if rel != WRITE_ROUTE_EXCLUSION:
-        assert not ALIASED_HELPER_IMPORT.search(text), (
-            f"{rel}: an aliased import hides a helper call from the scan")
+    assert not ALIASED_HELPER_IMPORT.search(text), (
+        f"{rel}: an aliased import hides a helper call from the scan")
 
 
 # ── readers ──────────────────────────────────────────────────────────────────
@@ -307,8 +283,6 @@ def test_no_reader_passes_a_non_default_user_id():
     offending: list[str] = []
     forwarding_sites: list[str] = []
     for rel, tags in READERS.items():
-        if rel == WRITE_ROUTE_EXCLUSION:
-            continue   # its aliased calls are read by ast in test_write_routes_read_back_their_own_rows
         for helper, line, positional, keywords in _helper_calls(rel):
             owner = _owner_expression(helper, positional, keywords)
             if owner is None or owner in DEFAULT_OWNER_EXPRESSIONS:
@@ -359,38 +333,6 @@ def test_own_sql_readers_keep_their_recorded_text():
             assert " ".join(pin.split()) in source, f"{rel}: pinned text not found: {pin}"
 
 
-def test_write_routes_read_back_their_own_rows_and_nothing_else_does():
-    """The exclusion, read precisely: in insights.py every helper call that passes a non-default owner
-    is a ``load_watchlist`` read-back inside add_to_watchlist or remove_from_watchlist, with the owner
-    ``owner`` that _watchlist_owner resolved. Stage B deletes both and this exclusion with them."""
-    tree = ast.parse(_read(WRITE_ROUTE_EXCLUSION))
-    aliases: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "gcp.fetchers._watchlist":
-            for alias in node.names:
-                if alias.name in (LOAD, RESOLVE):
-                    aliases[alias.asname or alias.name] = alias.name
-    assert aliases, "the write routes no longer import the read helper: remove the exclusion"
-    enclosing = _enclosing_functions(tree)
-    excluded = 0
-    offending: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or _call_name(node) not in aliases:
-            continue
-        helper = aliases[_call_name(node)]
-        positional = [ast.unparse(a) for a in node.args]
-        keywords = {k.arg or "**": ast.unparse(k.value) for k in node.keywords}
-        owner = _owner_expression(helper, positional, keywords)
-        if owner is None or owner in DEFAULT_OWNER_EXPRESSIONS:
-            continue
-        if helper == LOAD and owner == "owner" and enclosing.get(id(node)) in WRITE_ROUTES:
-            excluded += 1
-            continue
-        offending.append(f"{WRITE_ROUTE_EXCLUSION}:{node.lineno} {helper}(user_id={owner})")
-    assert offending == [], "\n  ".join(["non-default reads outside the write routes:"] + offending)
-    assert excluded == 2, f"the two write routes each read back the caller's rows once; found {excluded}"
-
-
 def test_rank_tickers_callers_pass_the_default_owner():
     """The static half of the forwarding chain: every production call of rank_tickers carries
     user_id="default" or no user_id at all (the behavioural half is tests/agents/test_ranker.py)."""
@@ -432,18 +374,11 @@ def test_only_the_named_writers_insert_or_update_watchlists():
         f"files with INSERT INTO or UPDATE watchlists: {sorted(matches)}")
     for rel, recorded in MENTIONS_ONLY.items():
         assert matches[rel] == [recorded], f"{rel}: {matches[rel]} is not the recorded mention {recorded!r}"
-    assert WRITE_ROUTE_EXCLUSION not in matches, "the write routes call the helpers, they hold no SQL text"
 
 
-def test_write_routes_are_the_only_callers_of_watchlist_owner():
-    tree = ast.parse(_read(WRITE_ROUTE_EXCLUSION))
-    assert any(isinstance(n, ast.FunctionDef) and n.name == "_watchlist_owner" for n in ast.walk(tree)), (
-        "_watchlist_owner is gone: stage B landed, remove the exclusion from this scan")
-    enclosing = _enclosing_functions(tree)
-    callers = sorted(
-        f"{enclosing.get(id(node), '<module>')}:{node.lineno}"
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and _call_name(node) == "_watchlist_owner"
-    )
-    assert {c.split(":")[0] for c in callers} == WRITE_ROUTES, callers
-    assert len(callers) == 2, callers
+def test_insights_router_imports_nothing_from_watchlist_helper():
+    """Stage B: the web write routes answer 410, so the API router holds no path to the add and
+    remove helpers and no owner resolver for them."""
+    source = _read("platform/api/routers/insights.py")
+    assert "gcp.fetchers._watchlist" not in source
+    assert "_watchlist_owner" not in source

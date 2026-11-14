@@ -60,7 +60,6 @@ KNOWN_BACKLOG = {
     "routers/admin.py": 8,
     "routers/earnings.py": 1,
     "routers/grid.py": 1,
-    "routers/insights.py": 2,
     "routers/preferences.py": 2,
     "routers/profile.py": 2,
     "routers/waitlist.py": 1,

@@ -27,7 +27,7 @@ from uuid import UUID, uuid4
 
 from typing import Generator
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Path as PathParam, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path as PathParam, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -41,8 +41,10 @@ from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
 import lib.agents.vertex_adapter  # noqa: F401, E402 — registers adapter
 
-# Server-verified identity for per-user watchlist scoping (mirrors journal.py).
-from api.auth import current_user_email  # noqa: E402
+# Server-verified identity. No handler here reads it since the watchlist write routes were retired
+# (FEAT-INSIGHT-001 stage B); the name stays bound so the stage A tests that sign a caller in by
+# patching it keep proving every caller is ranked and listed as the default owner.
+from api.auth import current_user_email  # noqa: E402, F401
 from api.http_errors import unavailable  # noqa: E402
 from lib.infra_errors import is_infrastructure_error  # noqa: E402
 from api.schemas import (
@@ -58,21 +60,22 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _watchlist_owner(request: Request) -> str:
-    """Owner key the personal watchlist is scoped by (mirrors journal.py).
+# FEAT-INSIGHT-001 stage B: the web watchlist write routes are retired. Discord /watchlist owns the
+# shared list and solyra keeps per-user lists in its own store, so both routes answer 410 with this
+# detail for every caller and write nothing.
+WATCHLIST_WRITE_RETIRED_DETAIL = (
+    "The watchlist is managed in Discord (/watchlist add, /watchlist remove); "
+    "the web app keeps per-user lists in solyra."
+)
 
-    In firebase/iap mode (deployed) the middleware/IAP guarantees a verified
-    identity, so this is the user's email and one user can never see another's
-    watchlist. In open/local dev there is no auth, so it falls back to the
-    shared "default" owner — which is also the admin-curated row set the
-    premarket-brief / insight-pipeline read via the in_brief/in_insight flags,
-    so local dev keeps working against the existing rows.
 
-    Called by the two web write routes only (add_to_watchlist and
-    remove_from_watchlist); every read names 'default' in code. Stage B of
-    FEAT-INSIGHT-001 turns those routes into 410 and deletes this helper.
+def _watchlist_writes_retired() -> None:
+    """Route dependency of the two retired write routes.
+
+    FastAPI solves dependencies before it validates the request body, so a body that fails
+    WatchlistAddRequest still answers 410, not 422.
     """
-    return current_user_email(request) or "default"
+    raise HTTPException(status_code=410, detail=WATCHLIST_WRITE_RETIRED_DETAIL)
 
 
 # ---------------------------------------------------------------------------
@@ -604,109 +607,32 @@ def get_ticker_peers(ticker: str):
     return {"ticker": ticker.upper(), "peers": peers}
 
 
-@router.post("/api/insights/watchlist/add", response_model=WatchlistAddResponse, response_model_exclude_unset=True)
-def add_to_watchlist(body: WatchlistAddRequest, request: Request):
-    """Add a ticker to the watchlist and return its info + quote.
+@router.post(
+    "/api/insights/watchlist/add",
+    response_model=WatchlistAddResponse,
+    response_model_exclude_unset=True,
+    dependencies=[Depends(_watchlist_writes_retired)],
+    responses={410: {"description": "The web write path is retired"}},
+)
+def add_to_watchlist(body: WatchlistAddRequest, request: Request) -> WatchlistAddResponse:
+    """Retired (FEAT-INSIGHT-001 stage B): answers 410 and writes nothing.
 
-    Persists to the `watchlists` Cloud SQL table (durable, per-user)
-    instead of the old `alert_config.json` file path which only existed
-    on the Cloud Run service's ephemeral filesystem and never reached
-    the fetcher containers.
-
-    Fetches AV OVERVIEW (cached) and GLOBAL_QUOTE so the UI can
-    immediately display the ticker details without a second round-trip.
+    The dependency raises first; this raise keeps the retirement visible in the handler. The
+    typed body stays so the operation's requestBody in the OpenAPI document is unchanged.
     """
-    from lib.ticker_info import (
-        get_ticker_info as av_info,
-        get_quote as av_quote,
-        get_peers,
-    )
-    from gcp.fetchers._watchlist import (
-        add_to_watchlist as wl_add,
-        load_watchlist as wl_load,
-    )
-
-    owner = _watchlist_owner(request)
-    ticker = body.ticker.strip().upper()
-    if not ticker:
-        raise HTTPException(status_code=400, detail="ticker required")
-
-    # Persist to Cloud SQL — durable, propagates to fetcher containers.
-    added = False
-    try:
-        added = wl_add(ticker, user_id=owner, source="ui")
-    except Exception as exc:
-        # If Cloud SQL is unreachable surface a 503 — the legacy file
-        # write would have silently disappeared on the next restart.
-        logger.exception("Cloud SQL watchlist add failed: %s", exc)
-        raise HTTPException(
-            status_code=503,
-            detail=f"watchlist write to Cloud SQL failed: {exc}",
-        )
-
-    # Load the freshly-updated active watchlist for the response.
-    try:
-        watchlist = wl_load(user_id=owner)
-    except Exception:
-        watchlist = []
-
-    # Fetch info + quote + peers
-    info_raw = av_info(ticker)
-    info = None
-    if info_raw:
-        info = TickerInfoResult(
-            symbol=info_raw.get("Symbol"),
-            name=info_raw.get("Name"),
-            exchange=info_raw.get("Exchange"),
-            sector=info_raw.get("Sector"),
-            industry=info_raw.get("Industry"),
-            market_cap=info_raw.get("MarketCapitalization"),
-            asset_type=info_raw.get("AssetType"),
-            description=info_raw.get("Description"),
-        )
-
-    quote_raw = av_quote(ticker)
-    quote = TickerQuoteResult(**quote_raw) if quote_raw else None
-
-    # Fetch peers from FinViz (cached after first call)
-    peers = get_peers(ticker)
-
-    return WatchlistAddResponse(
-        ticker=ticker,
-        added=added,
-        info=info,
-        quote=quote,
-        peers=peers or None,
-        watchlist=[t.upper() for t in watchlist],
-    )
+    raise HTTPException(status_code=410, detail=WATCHLIST_WRITE_RETIRED_DETAIL)
 
 
-@router.delete("/api/insights/watchlist/{ticker}", response_model=WatchlistRemoveResponse, response_model_exclude_unset=True)
-def remove_from_watchlist(ticker: str, request: Request):
-    """Soft-delete a ticker from the watchlist (sets removed_at=NOW()).
-
-    Persists to the `watchlists` Cloud SQL table; the alert_config.json
-    file is no longer touched at runtime — it's a seed-only artefact."""
-    from gcp.fetchers._watchlist import (
-        remove_from_watchlist as wl_remove,
-        load_watchlist as wl_load,
-    )
-
-    owner = _watchlist_owner(request)
-    ticker = ticker.strip().upper()
-    if not ticker:
-        raise HTTPException(status_code=400, detail="ticker required")
-
-    try:
-        removed = wl_remove(ticker, user_id=owner)
-        watchlist = wl_load(user_id=owner)
-        return {"ticker": ticker, "removed": removed, "watchlist": watchlist}
-    except Exception as exc:
-        logger.exception("Cloud SQL watchlist remove failed: %s", exc)
-        raise HTTPException(
-            status_code=503,
-            detail=f"watchlist write to Cloud SQL failed: {exc}",
-        )
+@router.delete(
+    "/api/insights/watchlist/{ticker}",
+    response_model=WatchlistRemoveResponse,
+    response_model_exclude_unset=True,
+    dependencies=[Depends(_watchlist_writes_retired)],
+    responses={410: {"description": "The web write path is retired"}},
+)
+def remove_from_watchlist(ticker: str, request: Request) -> WatchlistRemoveResponse:
+    """Retired (FEAT-INSIGHT-001 stage B): answers 410 and writes nothing."""
+    raise HTTPException(status_code=410, detail=WATCHLIST_WRITE_RETIRED_DETAIL)
 
 
 # ---------------------------------------------------------------------------
