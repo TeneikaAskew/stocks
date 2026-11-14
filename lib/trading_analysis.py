@@ -615,7 +615,7 @@ class MarketAnalyzer:
         from datetime import datetime, timedelta
 
         # Calculate the ORB end time
-        orb_end_time = (datetime.combine(datetime.today(), market_open) +
+        orb_end_time = (datetime.combine(datetime(2000, 1, 1), market_open) +
                        timedelta(minutes=minutes)).time()
 
         # Identify rows within ORB period

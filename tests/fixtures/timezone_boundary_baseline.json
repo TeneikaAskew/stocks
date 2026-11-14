@@ -363,16 +363,7 @@
    "signal_recent_8k::str#d76536fd1833"
   ]
  },
- "lib/agents/summarizers.py": {
-  "host-today": [
-   "_check_chain_freshness::date_type.today()",
-   "summarize_gamma_levels::date_type.today()"
-  ]
- },
  "lib/data_loader.py": {
-  "host-today": [
-   "_check_staleness::date.today()"
-  ],
   "tz-localize-none": [
    "DataLoader._strip_timezone::df.index.tz_localize(None)",
    "DataLoader._strip_timezone::df['Time'].dt.tz_localize(None)"
@@ -432,11 +423,6 @@
    "reconstruct_day::pd.to_datetime(out['ts'], utc=True)"
   ]
  },
- "lib/indicators.py": {
-  "host-today": [
-   "calculate_orb::datetime.today()"
-  ]
- },
  "lib/options_exec_backtest/iv_lookup.py": {
   "utc-parse": [
    "IVLookup.preload::pd.to_datetime(df['snapshot_ts'], utc=True)"
@@ -457,20 +443,9 @@
    "_compute_current_levels::ad_ts.tz_convert('UTC').tz_localize(None)"
   ]
  },
- "lib/strategies/calibration.py": {
-  "host-today": [
-   "_latest_calibration::date.today()"
-  ]
- },
- "lib/strategies/exit_config_overrides.py": {
-  "host-today": [
-   "_latest_overrides::date.today()"
-  ]
- },
  "lib/trading_analysis.py": {
   "host-today": [
-   "MarketAnalyzer._archive_file::datetime.now()",
-   "MarketAnalyzer._calculate_orb::datetime.today()"
+   "MarketAnalyzer._archive_file::datetime.now()"
   ]
  },
  "platform/api/main.py": {
