@@ -98,13 +98,21 @@ D8_LEVELS = {'PDH': 253.00, 'PMH': 275.00, 'PQH': 280.00, 'PYH': 285.00,
 D8_PREMARKET = {'pre_high': 252.10, 'pre_low': 248.20, 'pre_vwap': 250.00}
 
 
-def d8_params(*, window=2.6, spacing=0.25, statuses=None, **overrides):
+def d8_params(*, window=2.6, spacing=0.25, statuses=None, anchors=None, **overrides):
     """The Design 8 ticker's LevelParams: both windows `window`, the spacing
-    `spacing`, every other key ok; `statuses` marks keys not ok."""
-    return fixture_params('TST', overrides={'trigger_window_long_atr': window,
-                                            'trigger_window_short_atr': window,
-                                            'target_min_spacing_atr': spacing, **overrides},
-                          statuses=statuses)
+    `spacing`, every other key ok; `statuses` marks keys not ok. `anchors`
+    replaces the atr_rung_anchors policy row's list (ATR levels spec), as a
+    later policy row would."""
+    lp = fixture_params('TST', overrides={'trigger_window_long_atr': window,
+                                          'trigger_window_short_atr': window,
+                                          'target_min_spacing_atr': spacing, **overrides},
+                        statuses=statuses)
+    if anchors is not None:
+        from dataclasses import replace
+        p = lp.params['atr_rung_anchors']
+        lp.params['atr_rung_anchors'] = replace(p, value=float(len(anchors)),
+                                                extra={'anchors': list(anchors)})
+    return lp
 
 
 def d8_basis(levels=None, *, atr=14.0, params=None, **kw) -> dict:

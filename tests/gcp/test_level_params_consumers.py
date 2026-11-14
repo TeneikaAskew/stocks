@@ -233,7 +233,12 @@ def test_level_basis_records_every_parameter_and_the_policy(monkeypatch):
     assert b["atr_5"] == pytest.approx(calculate_atr(d["High"], d["Low"], d["Close"], 5).iloc[-1])
     # The exits spec's policy-wide keys are recorded beside the ticker rows,
     # with the policy row they came from.
-    assert set(b["params"]) == set(LEGACY_1753_VALUES) | {"exit_legs", "entry_cutoff_et"}
+    assert set(b["params"]) == set(LEGACY_1753_VALUES) | {"exit_legs", "entry_cutoff_et",
+                                                         "atr_rung_anchors"}
+    # ATR levels spec: the anchor list is policy-wide, recorded with its row.
+    anchors = b["params"]["atr_rung_anchors"]
+    assert (anchors["value"], anchors["status"], anchors["method_id"]) == (4.0, "ok", "policy")
+    assert anchors["extra"] == {"anchors": ["PDH", "PDL", "PMK_H", "PMK_L"]}
     assert (b["params"]["exit_legs"]["value"], b["params"]["exit_legs"]["status"]) == (3.0, "ok")
     assert b["params"]["exit_legs"]["method_id"] == "policy"
     assert b["params"]["exit_legs"]["effective_from"] == "2015-01-02"

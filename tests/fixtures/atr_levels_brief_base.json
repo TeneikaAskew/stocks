@@ -1,0 +1,3845 @@
+{
+ "IWM": {
+  "above_sma200": false,
+  "atr14": 4.697463222798839,
+  "atr5": 6.363888992933101,
+  "bb_lower": 269.3603627763827,
+  "bb_upper": 284.8516372236173,
+  "calls_plan_t1_price": 276.0,
+  "calls_plan_t2_price": 277.41,
+  "calls_plan_t3_price": 277.89,
+  "calls_stop_name": "PDC",
+  "calls_stop_price": 270.98,
+  "calls_t1_price": 276.0,
+  "calls_t2_price": 277.41,
+  "calls_t3_price": 277.89,
+  "calls_trigger_name": "PMK_H",
+  "calls_trigger_price": 272.5,
+  "change_pct": -4.5912259700021005,
+  "consecutive_down": 1,
+  "consecutive_up": 2,
+  "data_as_of": "2026-11-05 16:00:00-05:00",
+  "data_freshness_status": "fresh",
+  "ema20": 278.6189994054957,
+  "ema9": 278.3157115254113,
+  "freshness_gap_days": 1,
+  "ftfc_direction": "bearish",
+  "ftfc_labels": {
+   "1d": "2D",
+   "1mo": "2U",
+   "1w": "3"
+  },
+  "ftfc_score": -0.7499999999999999,
+  "gamma_data_source": "unavailable",
+  "gamma_days_behind": null,
+  "gamma_snapshot_date": null,
+  "gamma_snapshot_ts": null,
+  "level_basis": {
+   "atr": 4.697463222798839,
+   "atr_14": 4.697463222798839,
+   "atr_5": 6.363888992933101,
+   "atr_basis": "atr_14",
+   "cleared_above": 272.5,
+   "cleared_below": 269.13,
+   "last_bar_date": "2026-11-05",
+   "levels": [
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PDH",
+     "period_label": "2026-11-05",
+     "price": 284.7,
+     "strat_class": "2D",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PDL",
+     "period_label": "2026-11-05",
+     "price": 270.52,
+     "strat_class": "2D",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PDC",
+     "period_label": "2026-11-05",
+     "price": 270.98,
+     "strat_class": "2D",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PWH",
+     "period_label": "2026-10-26/2026-11-01",
+     "price": 285.26,
+     "strat_class": "2U",
+     "timeframe": "week"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PWL",
+     "period_label": "2026-10-26/2026-11-01",
+     "price": 276.0,
+     "strat_class": "2U",
+     "timeframe": "week"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PWC",
+     "period_label": "2026-10-26/2026-11-01",
+     "price": 279.33,
+     "strat_class": "2U",
+     "timeframe": "week"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PMH",
+     "period_label": "2026-10",
+     "price": 285.26,
+     "strat_class": "Failed_2D",
+     "timeframe": "month"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PML",
+     "period_label": "2026-10",
+     "price": 269.875,
+     "strat_class": "Failed_2D",
+     "timeframe": "month"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PMC",
+     "period_label": "2026-10",
+     "price": 279.33,
+     "strat_class": "Failed_2D",
+     "timeframe": "month"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PQH",
+     "period_label": "2026Q3",
+     "price": 305.18,
+     "strat_class": "Failed_2U",
+     "timeframe": "quarter"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PQL",
+     "period_label": "2026Q3",
+     "price": 277.41,
+     "strat_class": "Failed_2U",
+     "timeframe": "quarter"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PQC",
+     "period_label": "2026Q3",
+     "price": 277.89,
+     "strat_class": "Failed_2U",
+     "timeframe": "quarter"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PYH",
+     "period_label": "2025",
+     "price": 258.2,
+     "strat_class": "3",
+     "timeframe": "year"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PYL",
+     "period_label": "2025",
+     "price": 171.73,
+     "strat_class": "3",
+     "timeframe": "year"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PYC",
+     "period_label": "2025",
+     "price": 246.16,
+     "strat_class": "3",
+     "timeframe": "year"
+    },
+    {
+     "is_current": false,
+     "level_type": "open",
+     "name": "PDO",
+     "period_label": "2026-11-05",
+     "price": 283.75,
+     "strat_class": "2D",
+     "timeframe": "day"
+    },
+    {
+     "is_current": true,
+     "level_type": "open",
+     "name": "CWO",
+     "period_label": "2026-11-02/2026-11-08",
+     "price": 281.64,
+     "strat_class": "3",
+     "timeframe": "week"
+    },
+    {
+     "is_current": true,
+     "level_type": "open",
+     "name": "CMO",
+     "period_label": "2026-11",
+     "price": 281.64,
+     "strat_class": "Failed_2U",
+     "timeframe": "month"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "parent_bar_high",
+     "period_label": "2026-11-05",
+     "price": 284.7,
+     "strat_class": "",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "parent_bar_low",
+     "period_label": "2026-11-05",
+     "price": 270.52,
+     "strat_class": "",
+     "timeframe": "day"
+    },
+    {
+     "is_current": true,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period_label": "premarket",
+     "price": 272.5,
+     "strat_class": "",
+     "timeframe": "intraday"
+    },
+    {
+     "is_current": true,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period_label": "premarket",
+     "price": 269.13,
+     "strat_class": "",
+     "timeframe": "intraday"
+    }
+   ],
+   "long": {
+    "candidates": [
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 27250,
+      "distance_atr": 0.196,
+      "in_window": true,
+      "level_type": "high",
+      "name": "PMK_H",
+      "period": "premarket",
+      "price": 272.5,
+      "timeframe": "intraday"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 27600,
+      "distance_atr": 0.941,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PWL",
+      "period": "2026-10-26/2026-11-01",
+      "price": 276.0,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 27741,
+      "distance_atr": 1.241,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PQL",
+      "period": "2026Q3",
+      "price": 277.41,
+      "timeframe": "quarter"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 27789,
+      "distance_atr": 1.343,
+      "in_window": true,
+      "level_type": "close",
+      "name": "PQC",
+      "period": "2026Q3",
+      "price": 277.89,
+      "timeframe": "quarter"
+     },
+     {
+      "aliases": [
+       "PMC"
+      ],
+      "broken": false,
+      "cents": 27933,
+      "distance_atr": 1.65,
+      "in_window": true,
+      "level_type": "close",
+      "name": "PWC",
+      "period": "2026-10-26/2026-11-01",
+      "price": 279.33,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [
+       "parent_bar_high"
+      ],
+      "broken": false,
+      "cents": 28470,
+      "distance_atr": 2.793,
+      "in_window": true,
+      "level_type": "high",
+      "name": "PDH",
+      "period": "2026-11-05",
+      "price": 284.7,
+      "timeframe": "day"
+     },
+     {
+      "aliases": [
+       "PMH"
+      ],
+      "broken": false,
+      "cents": 28526,
+      "distance_atr": 2.912,
+      "in_window": true,
+      "level_type": "high",
+      "name": "PWH",
+      "period": "2026-10-26/2026-11-01",
+      "price": 285.26,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 30518,
+      "distance_atr": 7.153,
+      "in_window": false,
+      "level_type": "high",
+      "name": "PQH",
+      "period": "2026Q3",
+      "price": 305.18,
+      "timeframe": "quarter"
+     }
+    ],
+    "distance_atr": 0.196,
+    "gate_targets": [
+     {
+      "aliases": [],
+      "level_type": "low",
+      "name": "PWL",
+      "period": "2026-10-26/2026-11-01",
+      "price": 276.0,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [],
+      "level_type": "low",
+      "name": "PQL",
+      "period": "2026Q3",
+      "price": 277.41,
+      "timeframe": "quarter"
+     },
+     {
+      "aliases": [],
+      "level_type": "close",
+      "name": "PQC",
+      "period": "2026Q3",
+      "price": 277.89,
+      "timeframe": "quarter"
+     }
+    ],
+    "ladder": [
+     {
+      "distance_pct": 0.34,
+      "level_type": "high",
+      "name": "PMK_H",
+      "period": "intraday",
+      "price": 272.5
+     },
+     {
+      "distance_pct": 1.63,
+      "level_type": "low",
+      "name": "PWL",
+      "period": "week",
+      "price": 276.0
+     }
+    ],
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.0,
+     "spacing_price": 0.0
+    },
+    "reason": null,
+    "regime": "normal",
+    "room_pct": 0.338,
+    "side": "long",
+    "skipped": [],
+    "stop": {
+     "aliases": [],
+     "level_type": "close",
+     "name": "PDC",
+     "period": "2026-11-05",
+     "price": 270.98,
+     "timeframe": "day"
+    },
+    "target_status": "ok",
+    "targets": [
+     {
+      "aliases": [],
+      "level_type": "low",
+      "name": "PWL",
+      "period": "2026-10-26/2026-11-01",
+      "price": 276.0,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [],
+      "level_type": "low",
+      "name": "PQL",
+      "period": "2026Q3",
+      "price": 277.41,
+      "timeframe": "quarter"
+     },
+     {
+      "aliases": [],
+      "level_type": "close",
+      "name": "PQC",
+      "period": "2026Q3",
+      "price": 277.89,
+      "timeframe": "quarter"
+     }
+    ],
+    "trigger": {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 272.5,
+     "timeframe": "intraday"
+    },
+    "window": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "key": "trigger_window_long_atr",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 250,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.99,
+     "status": "ok",
+     "ticker": "IWM",
+     "value": 3.0
+    }
+   },
+   "params": {
+    "entry_buffer_aggressive_hi_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.75,
+     "status": "ok",
+     "value": 0.5
+    },
+    "entry_buffer_aggressive_lo_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 0.0
+    },
+    "entry_buffer_conservative_hi_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.65,
+     "status": "ok",
+     "value": 0.4
+    },
+    "entry_buffer_conservative_lo_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.2,
+     "status": "ok",
+     "value": 0.1
+    },
+    "entry_buffer_neutral_hi_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.5,
+     "status": "ok",
+     "value": 0.25
+    },
+    "entry_buffer_neutral_lo_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 0.0
+    },
+    "entry_cutoff_et": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "extra": {
+      "time_et": "10:00"
+     },
+     "input_from": null,
+     "input_to": null,
+     "lookback_sessions": null,
+     "method_id": "policy",
+     "min_sample": null,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": null,
+     "source": "policy",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 600.0
+    },
+    "exit_legs": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "extra": {
+      "legs": 3
+     },
+     "input_from": null,
+     "input_to": null,
+     "lookback_sessions": null,
+     "method_id": "policy",
+     "min_sample": null,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": null,
+     "source": "policy",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 3.0
+    },
+    "gap_fill_flag_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": null,
+     "method_id": "fixture",
+     "min_sample": null,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 0.5
+    },
+    "level_cluster_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 60,
+     "method_id": "fixture",
+     "min_sample": 40,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.5,
+     "status": "ok",
+     "value": 0.15
+    },
+    "min_stop_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.5,
+     "status": "ok",
+     "value": 0.5
+    },
+    "pm_spike_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 60,
+     "method_id": "fixture",
+     "min_sample": 40,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.999,
+     "status": "ok",
+     "value": 0.5
+    },
+    "pm_stale_print_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 60,
+     "method_id": "fixture",
+     "min_sample": 40,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.95,
+     "status": "ok",
+     "value": 0.1
+    },
+    "stop_aggressive_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.9,
+     "status": "ok",
+     "value": 2.0
+    },
+    "stop_conservative_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.6,
+     "status": "ok",
+     "value": 0.7
+    },
+    "stop_neutral_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.75,
+     "status": "ok",
+     "value": 1.0
+    },
+    "target_aggressive_1_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.4,
+     "status": "ok",
+     "value": 2.0
+    },
+    "target_aggressive_2_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.25,
+     "status": "ok",
+     "value": 3.5
+    },
+    "target_aggressive_3_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.15,
+     "status": "ok",
+     "value": 5.0
+    },
+    "target_conservative_1_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.65,
+     "status": "ok",
+     "value": 1.0
+    },
+    "target_conservative_2_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.5,
+     "status": "ok",
+     "value": 1.75
+    },
+    "target_min_spacing_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": null,
+     "method_id": "fixture",
+     "min_sample": null,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 0.0
+    },
+    "target_neutral_1_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.6,
+     "status": "ok",
+     "value": 1.0
+    },
+    "target_neutral_2_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.45,
+     "status": "ok",
+     "value": 2.0
+    },
+    "target_neutral_3_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.3,
+     "status": "ok",
+     "value": 3.0
+    },
+    "trigger_window_long_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 250,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.99,
+     "status": "ok",
+     "value": 3.0
+    },
+    "trigger_window_short_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 250,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.99,
+     "status": "ok",
+     "value": 3.0
+    }
+   },
+   "pmg_status": "ok",
+   "pmg_zones": [
+    {
+     "center_price": 285.07,
+     "count": 3,
+     "level_names": [
+      "PDH",
+      "PWH",
+      "PMH"
+     ],
+     "strength": 4.0,
+     "timeframes": [
+      "day",
+      "month",
+      "week"
+     ]
+    },
+    {
+     "center_price": 270.2,
+     "count": 2,
+     "level_names": [
+      "PML",
+      "PDL"
+     ],
+     "strength": 2.5,
+     "timeframes": [
+      "day",
+      "month"
+     ]
+    },
+    {
+     "center_price": 279.33,
+     "count": 2,
+     "level_names": [
+      "PWC",
+      "PMC"
+     ],
+     "strength": 2.5,
+     "timeframes": [
+      "month",
+      "week"
+     ]
+    },
+    {
+     "center_price": 281.64,
+     "count": 2,
+     "level_names": [
+      "CWO",
+      "CMO"
+     ],
+     "strength": 2.5,
+     "timeframes": [
+      "month",
+      "week"
+     ]
+    },
+    {
+     "center_price": 277.65,
+     "count": 2,
+     "level_names": [
+      "PQL",
+      "PQC"
+     ],
+     "strength": 2.0,
+     "timeframes": [
+      "quarter"
+     ]
+    }
+   ],
+   "policy_effective_from": "2015-01-02",
+   "premarket": {
+    "date": "2026-11-06",
+    "excluded_bars": null,
+    "excluded_spikes": null,
+    "excluded_stale_prints": null,
+    "fetched_at": null,
+    "gap_pct": -0.0627,
+    "pre_filter_params": null,
+    "pre_filter_status": "ok",
+    "pre_high": 272.5,
+    "pre_low": 269.13,
+    "pre_vwap": 271.5807182578323
+   },
+   "premarket_status": "ok",
+   "prior_close": 270.98,
+   "reference": 271.5807182578323,
+   "reference_source": "pre_vwap",
+   "rule_version": "feat-strat-001.v3",
+   "session_date": "2026-11-06",
+   "short": {
+    "candidates": [
+     {
+      "aliases": [],
+      "broken": true,
+      "cents": 27098,
+      "distance_atr": 0.128,
+      "in_window": true,
+      "level_type": "close",
+      "name": "PDC",
+      "period": "2026-11-05",
+      "price": 270.98,
+      "timeframe": "day"
+     },
+     {
+      "aliases": [
+       "parent_bar_low"
+      ],
+      "broken": true,
+      "cents": 27052,
+      "distance_atr": 0.226,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PDL",
+      "period": "2026-11-05",
+      "price": 270.52,
+      "timeframe": "day"
+     },
+     {
+      "aliases": [],
+      "broken": true,
+      "cents": 26988,
+      "distance_atr": 0.363,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PML",
+      "period": "2026-10",
+      "price": 269.875,
+      "timeframe": "month"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 26913,
+      "distance_atr": 0.522,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PMK_L",
+      "period": "premarket",
+      "price": 269.13,
+      "timeframe": "intraday"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 25820,
+      "distance_atr": 2.848,
+      "in_window": true,
+      "level_type": "high",
+      "name": "PYH",
+      "period": "2025",
+      "price": 258.2,
+      "timeframe": "year"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 24616,
+      "distance_atr": 5.412,
+      "in_window": false,
+      "level_type": "close",
+      "name": "PYC",
+      "period": "2025",
+      "price": 246.16,
+      "timeframe": "year"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 17173,
+      "distance_atr": 21.256,
+      "in_window": false,
+      "level_type": "low",
+      "name": "PYL",
+      "period": "2025",
+      "price": 171.73,
+      "timeframe": "year"
+     }
+    ],
+    "distance_atr": 0.522,
+    "gate_targets": [
+     {
+      "aliases": [],
+      "level_type": "high",
+      "name": "PYH",
+      "period": "2025",
+      "price": 258.2,
+      "timeframe": "year"
+     }
+    ],
+    "ladder": [
+     {
+      "distance_pct": -0.9,
+      "level_type": "low",
+      "name": "PMK_L",
+      "period": "intraday",
+      "price": 269.13
+     },
+     {
+      "distance_pct": -4.93,
+      "level_type": "high",
+      "name": "PYH",
+      "period": "year",
+      "price": 258.2
+     }
+    ],
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.0,
+     "spacing_price": 0.0
+    },
+    "reason": null,
+    "regime": "normal",
+    "room_pct": 0.902,
+    "side": "short",
+    "skipped": [],
+    "stop": {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 272.5,
+     "timeframe": "intraday"
+    },
+    "target_status": "ok",
+    "targets": [
+     {
+      "aliases": [],
+      "level_type": "high",
+      "name": "PYH",
+      "period": "2025",
+      "price": 258.2,
+      "timeframe": "year"
+     }
+    ],
+    "trigger": {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 269.13,
+     "timeframe": "intraday"
+    },
+    "window": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "key": "trigger_window_short_atr",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 250,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.99,
+     "status": "ok",
+     "ticker": "IWM",
+     "value": 3.0
+    }
+   },
+   "status": "ok",
+   "strat_class": "2D",
+   "ticker": "IWM"
+  },
+  "macd": -0.8866582950830093,
+  "macd_cross": "Bullish",
+  "macd_signal_val": -1.2871908821408782,
+  "playbook": "  CALLS above 272.50 (PMK_H) -- only if bias denied, new entries 09:30 to 10:00 ET\n    No entry if the open is at or above 272.50.\n    Stop: 270.98 (PDC)\n    T1: 276.00 (PWL), sell 1/3\n    T2: 277.41 (PQL), sell 1/3\n    T3: 277.89 (PQC), sell the last 1/3, or hold to the close or the stop\n    Room to trigger: 0.34%\n\n  PUTS below 269.13 (PMK_L), new entries 09:30 to 10:00 ET\n    No entry if the open is at or below 269.13.\n    Stop: 272.50 (PMK_H)\n    T1: 258.20 (PYH), sell 1/3, hold the last 2/3 to the close or the stop\n    Room to trigger: 0.90%\n\n  NEXT LEVELS:\n    Calls (up):  272.50 PMK_H (intraday) +0.34%, 276.00 PWL (week) +1.63%\n    Puts (down): 269.13 PMK_L (intraday) -0.90%, 258.20 PYH (year) -4.93%\n\n  PMG ZONES:\n    285.07 (PDH, PWH, PMH) [strength: 4.0]\n    270.20 (PML, PDL) [strength: 2.5]\n    279.33 (PWC, PMC) [strength: 2.5]",
+  "premarket_status": "ok",
+  "prev_day_close": 270.98,
+  "prev_day_high": 284.7,
+  "prev_day_low": 270.52,
+  "prev_day_open": 283.75,
+  "prev_day_volume": 50885526.0,
+  "price": 270.98,
+  "puts_plan_t1_price": 258.2,
+  "puts_plan_t2_price": null,
+  "puts_plan_t3_price": null,
+  "puts_stop_name": "PMK_H",
+  "puts_stop_price": 272.5,
+  "puts_t1_price": 258.2,
+  "puts_t2_price": null,
+  "puts_t3_price": null,
+  "puts_trigger_name": "PMK_L",
+  "puts_trigger_price": 269.13,
+  "reason_long": null,
+  "reason_short": null,
+  "recommended_orb_reason": "5-min ORB (default scalp window, no high-impact catalyst)",
+  "recommended_orb_window": "5m",
+  "regime": "normal",
+  "regime_long": "normal",
+  "regime_short": "normal",
+  "rsi": 38.93224712858412,
+  "rsi_band_calibration_date": null,
+  "rsi_band_tier": "B",
+  "rsi_call_band": [
+   25.0,
+   50.0
+  ],
+  "rsi_direction": "down",
+  "rsi_put_band": [
+   50.0,
+   75.0
+  ],
+  "rvol": 2.029780041749932,
+  "signal_status": "PUT setup (3/5)",
+  "sma200": 278.9818,
+  "stoch_d": 70.42041594144978,
+  "stoch_k": 62.58927232149327,
+  "strat_available": true,
+  "strat_candle": "2D",
+  "strat_combo": "22_bear_reversal",
+  "strat_observation_ts": "2026-11-06T08:30:00-05:00",
+  "strat_reason": null,
+  "strat_setup": false,
+  "tf_continuity": "bearish",
+  "tf_continuity_frames": {
+   "1mo": {
+    "observation_ts": "2026-11-06T08:30:00-05:00",
+    "observed_price": 270.98,
+    "open": 281.64,
+    "period_start": "2026-11-02T09:30:00-05:00",
+    "price_provenance": "latest_completed_close",
+    "price_session": "2026-11-05",
+    "reasons": [],
+    "relation": "red",
+    "rule_version": "price-open-v1"
+   },
+   "1q": {
+    "observation_ts": "2026-11-06T08:30:00-05:00",
+    "observed_price": 270.98,
+    "open": 277.36,
+    "period_start": "2026-10-01T09:30:00-04:00",
+    "price_provenance": "latest_completed_close",
+    "price_session": "2026-11-05",
+    "reasons": [],
+    "relation": "red",
+    "rule_version": "price-open-v1"
+   },
+   "1w": {
+    "observation_ts": "2026-11-06T08:30:00-05:00",
+    "observed_price": 270.98,
+    "open": 281.64,
+    "period_start": "2026-11-02T09:30:00-05:00",
+    "price_provenance": "latest_completed_close",
+    "price_session": "2026-11-05",
+    "reasons": [],
+    "relation": "red",
+    "rule_version": "price-open-v1"
+   }
+  },
+  "vol_regime": "High",
+  "volatility_20d": 0.23188254890383359
+ },
+ "QQQ": {
+  "above_sma200": false,
+  "atr14": 15.292354226027289,
+  "atr5": 20.93129790178952,
+  "bb_lower": 664.1524775106423,
+  "bb_upper": 760.6425224893578,
+  "calls_plan_t1_price": 661.14,
+  "calls_plan_t2_price": 683.45,
+  "calls_plan_t3_price": 683.65,
+  "calls_stop_name": "PMK_L",
+  "calls_stop_price": 649.62,
+  "calls_t1_price": 661.14,
+  "calls_t2_price": 683.45,
+  "calls_t3_price": 683.65,
+  "calls_trigger_name": "PMK_H",
+  "calls_trigger_price": 660.398,
+  "change_pct": -6.488908158103921,
+  "consecutive_down": 1,
+  "consecutive_up": 2,
+  "data_as_of": "2026-11-05 16:00:00-05:00",
+  "data_freshness_status": "fresh",
+  "ema20": 705.9381284995046,
+  "ema9": 689.7758284037957,
+  "freshness_gap_days": 1,
+  "ftfc_direction": "bearish",
+  "ftfc_labels": {
+   "1d": "2D",
+   "1mo": "2D",
+   "1w": "2D"
+  },
+  "ftfc_score": -1.0,
+  "gamma_data_source": "unavailable",
+  "gamma_days_behind": null,
+  "gamma_snapshot_date": null,
+  "gamma_snapshot_ts": null,
+  "level_basis": {
+   "atr": 15.292354226027289,
+   "atr_14": 15.292354226027289,
+   "atr_5": 20.93129790178952,
+   "atr_basis": "atr_14",
+   "cleared_above": 660.398,
+   "cleared_below": 649.62,
+   "last_bar_date": "2026-11-05",
+   "levels": [
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PDH",
+     "period_label": "2026-11-05",
+     "price": 683.65,
+     "strat_class": "2D",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PDL",
+     "period_label": "2026-11-05",
+     "price": 647.05,
+     "strat_class": "2D",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PDC",
+     "period_label": "2026-11-05",
+     "price": 647.05,
+     "strat_class": "2D",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PWH",
+     "period_label": "2026-10-26/2026-11-01",
+     "price": 726.14,
+     "strat_class": "2D",
+     "timeframe": "week"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PWL",
+     "period_label": "2026-10-26/2026-11-01",
+     "price": 683.45,
+     "strat_class": "2D",
+     "timeframe": "week"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PWC",
+     "period_label": "2026-10-26/2026-11-01",
+     "price": 690.49,
+     "strat_class": "2D",
+     "timeframe": "week"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PMH",
+     "period_label": "2026-10",
+     "price": 762.86,
+     "strat_class": "3",
+     "timeframe": "month"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PML",
+     "period_label": "2026-10",
+     "price": 683.45,
+     "strat_class": "3",
+     "timeframe": "month"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PMC",
+     "period_label": "2026-10",
+     "price": 690.49,
+     "strat_class": "3",
+     "timeframe": "month"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PQH",
+     "period_label": "2026Q3",
+     "price": 748.349,
+     "strat_class": "1",
+     "timeframe": "quarter"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PQL",
+     "period_label": "2026Q3",
+     "price": 661.14,
+     "strat_class": "1",
+     "timeframe": "quarter"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PQC",
+     "period_label": "2026Q3",
+     "price": 739.77,
+     "strat_class": "1",
+     "timeframe": "quarter"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PYH",
+     "period_label": "2025",
+     "price": 637.01,
+     "strat_class": "3",
+     "timeframe": "year"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PYL",
+     "period_label": "2025",
+     "price": 402.39,
+     "strat_class": "3",
+     "timeframe": "year"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PYC",
+     "period_label": "2025",
+     "price": 614.31,
+     "strat_class": "3",
+     "timeframe": "year"
+    },
+    {
+     "is_current": false,
+     "level_type": "open",
+     "name": "PDO",
+     "period_label": "2026-11-05",
+     "price": 683.12,
+     "strat_class": "2D",
+     "timeframe": "day"
+    },
+    {
+     "is_current": true,
+     "level_type": "open",
+     "name": "CWO",
+     "period_label": "2026-11-02/2026-11-08",
+     "price": 695.315,
+     "strat_class": "2D",
+     "timeframe": "week"
+    },
+    {
+     "is_current": true,
+     "level_type": "open",
+     "name": "CMO",
+     "period_label": "2026-11",
+     "price": 695.315,
+     "strat_class": "2D",
+     "timeframe": "month"
+    },
+    {
+     "is_current": false,
+     "level_type": "gap_high",
+     "name": "GAP_H_2026-10-13",
+     "period_label": "2026-10-13",
+     "price": 744.845,
+     "strat_class": "gap_down",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "gap_low",
+     "name": "GAP_L_2026-10-13",
+     "period_label": "2026-10-13",
+     "price": 744.2,
+     "strat_class": "gap_down",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "gap_high",
+     "name": "GAP_H_2026-10-29",
+     "period_label": "2026-10-29",
+     "price": 720.3,
+     "strat_class": "gap_down",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "gap_low",
+     "name": "GAP_L_2026-10-29",
+     "period_label": "2026-10-29",
+     "price": 718.07,
+     "strat_class": "gap_down",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "gap_high",
+     "name": "GAP_H_2026-10-30",
+     "period_label": "2026-10-30",
+     "price": 711.62,
+     "strat_class": "gap_down",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "gap_low",
+     "name": "GAP_L_2026-10-30",
+     "period_label": "2026-10-30",
+     "price": 698.63,
+     "strat_class": "gap_down",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "gap_high",
+     "name": "GAP_H_2026-11-05",
+     "period_label": "2026-11-05",
+     "price": 687.87,
+     "strat_class": "gap_down",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "gap_low",
+     "name": "GAP_L_2026-11-05",
+     "period_label": "2026-11-05",
+     "price": 683.65,
+     "strat_class": "gap_down",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "parent_bar_high",
+     "period_label": "2026-11-05",
+     "price": 683.65,
+     "strat_class": "",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "parent_bar_low",
+     "period_label": "2026-11-05",
+     "price": 647.05,
+     "strat_class": "",
+     "timeframe": "day"
+    },
+    {
+     "is_current": true,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period_label": "premarket",
+     "price": 660.398,
+     "strat_class": "",
+     "timeframe": "intraday"
+    },
+    {
+     "is_current": true,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period_label": "premarket",
+     "price": 649.62,
+     "strat_class": "",
+     "timeframe": "intraday"
+    }
+   ],
+   "long": {
+    "candidates": [
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 66040,
+      "distance_atr": 0.209,
+      "in_window": true,
+      "level_type": "high",
+      "name": "PMK_H",
+      "period": "premarket",
+      "price": 660.398,
+      "timeframe": "intraday"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 66114,
+      "distance_atr": 0.258,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PQL",
+      "period": "2026Q3",
+      "price": 661.14,
+      "timeframe": "quarter"
+     },
+     {
+      "aliases": [
+       "PML"
+      ],
+      "broken": false,
+      "cents": 68345,
+      "distance_atr": 1.717,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PWL",
+      "period": "2026-10-26/2026-11-01",
+      "price": 683.45,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [
+       "parent_bar_high"
+      ],
+      "broken": false,
+      "cents": 68365,
+      "distance_atr": 1.73,
+      "in_window": true,
+      "level_type": "high",
+      "name": "PDH",
+      "period": "2026-11-05",
+      "price": 683.65,
+      "timeframe": "day"
+     },
+     {
+      "aliases": [
+       "PMC"
+      ],
+      "broken": false,
+      "cents": 69049,
+      "distance_atr": 2.177,
+      "in_window": true,
+      "level_type": "close",
+      "name": "PWC",
+      "period": "2026-10-26/2026-11-01",
+      "price": 690.49,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 72614,
+      "distance_atr": 4.508,
+      "in_window": false,
+      "level_type": "high",
+      "name": "PWH",
+      "period": "2026-10-26/2026-11-01",
+      "price": 726.14,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 73977,
+      "distance_atr": 5.399,
+      "in_window": false,
+      "level_type": "close",
+      "name": "PQC",
+      "period": "2026Q3",
+      "price": 739.77,
+      "timeframe": "quarter"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 74835,
+      "distance_atr": 5.96,
+      "in_window": false,
+      "level_type": "high",
+      "name": "PQH",
+      "period": "2026Q3",
+      "price": 748.349,
+      "timeframe": "quarter"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 76286,
+      "distance_atr": 6.909,
+      "in_window": false,
+      "level_type": "high",
+      "name": "PMH",
+      "period": "2026-10",
+      "price": 762.86,
+      "timeframe": "month"
+     }
+    ],
+    "distance_atr": 0.209,
+    "gate_targets": [
+     {
+      "aliases": [],
+      "level_type": "low",
+      "name": "PQL",
+      "period": "2026Q3",
+      "price": 661.14,
+      "timeframe": "quarter"
+     },
+     {
+      "aliases": [
+       "PML"
+      ],
+      "level_type": "low",
+      "name": "PWL",
+      "period": "2026-10-26/2026-11-01",
+      "price": 683.45,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [
+       "parent_bar_high"
+      ],
+      "level_type": "high",
+      "name": "PDH",
+      "period": "2026-11-05",
+      "price": 683.65,
+      "timeframe": "day"
+     }
+    ],
+    "ladder": [
+     {
+      "distance_pct": 0.49,
+      "level_type": "high",
+      "name": "PMK_H",
+      "period": "intraday",
+      "price": 660.4
+     },
+     {
+      "distance_pct": 0.6,
+      "level_type": "low",
+      "name": "PQL",
+      "period": "quarter",
+      "price": 661.14
+     }
+    ],
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.0,
+     "spacing_price": 0.0
+    },
+    "reason": null,
+    "regime": "normal",
+    "room_pct": 0.487,
+    "side": "long",
+    "skipped": [],
+    "stop": {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 649.62,
+     "timeframe": "intraday"
+    },
+    "target_status": "ok",
+    "targets": [
+     {
+      "aliases": [],
+      "level_type": "low",
+      "name": "PQL",
+      "period": "2026Q3",
+      "price": 661.14,
+      "timeframe": "quarter"
+     },
+     {
+      "aliases": [
+       "PML"
+      ],
+      "level_type": "low",
+      "name": "PWL",
+      "period": "2026-10-26/2026-11-01",
+      "price": 683.45,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [
+       "parent_bar_high"
+      ],
+      "level_type": "high",
+      "name": "PDH",
+      "period": "2026-11-05",
+      "price": 683.65,
+      "timeframe": "day"
+     }
+    ],
+    "trigger": {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 660.398,
+     "timeframe": "intraday"
+    },
+    "window": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "key": "trigger_window_long_atr",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 250,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.99,
+     "status": "ok",
+     "ticker": "QQQ",
+     "value": 3.0
+    }
+   },
+   "params": {
+    "entry_buffer_aggressive_hi_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.75,
+     "status": "ok",
+     "value": 0.5
+    },
+    "entry_buffer_aggressive_lo_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 0.0
+    },
+    "entry_buffer_conservative_hi_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.65,
+     "status": "ok",
+     "value": 0.4
+    },
+    "entry_buffer_conservative_lo_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.2,
+     "status": "ok",
+     "value": 0.1
+    },
+    "entry_buffer_neutral_hi_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.5,
+     "status": "ok",
+     "value": 0.25
+    },
+    "entry_buffer_neutral_lo_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 0.0
+    },
+    "entry_cutoff_et": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "extra": {
+      "time_et": "10:00"
+     },
+     "input_from": null,
+     "input_to": null,
+     "lookback_sessions": null,
+     "method_id": "policy",
+     "min_sample": null,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": null,
+     "source": "policy",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 600.0
+    },
+    "exit_legs": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "extra": {
+      "legs": 3
+     },
+     "input_from": null,
+     "input_to": null,
+     "lookback_sessions": null,
+     "method_id": "policy",
+     "min_sample": null,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": null,
+     "source": "policy",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 3.0
+    },
+    "gap_fill_flag_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": null,
+     "method_id": "fixture",
+     "min_sample": null,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 0.5
+    },
+    "level_cluster_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 60,
+     "method_id": "fixture",
+     "min_sample": 40,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.5,
+     "status": "ok",
+     "value": 0.15
+    },
+    "min_stop_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.5,
+     "status": "ok",
+     "value": 0.5
+    },
+    "pm_spike_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 60,
+     "method_id": "fixture",
+     "min_sample": 40,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.999,
+     "status": "ok",
+     "value": 0.5
+    },
+    "pm_stale_print_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 60,
+     "method_id": "fixture",
+     "min_sample": 40,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.95,
+     "status": "ok",
+     "value": 0.1
+    },
+    "stop_aggressive_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.9,
+     "status": "ok",
+     "value": 2.0
+    },
+    "stop_conservative_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.6,
+     "status": "ok",
+     "value": 0.7
+    },
+    "stop_neutral_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.75,
+     "status": "ok",
+     "value": 1.0
+    },
+    "target_aggressive_1_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.4,
+     "status": "ok",
+     "value": 2.0
+    },
+    "target_aggressive_2_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.25,
+     "status": "ok",
+     "value": 3.5
+    },
+    "target_aggressive_3_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.15,
+     "status": "ok",
+     "value": 5.0
+    },
+    "target_conservative_1_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.65,
+     "status": "ok",
+     "value": 1.0
+    },
+    "target_conservative_2_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.5,
+     "status": "ok",
+     "value": 1.75
+    },
+    "target_min_spacing_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": null,
+     "method_id": "fixture",
+     "min_sample": null,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 0.0
+    },
+    "target_neutral_1_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.6,
+     "status": "ok",
+     "value": 1.0
+    },
+    "target_neutral_2_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.45,
+     "status": "ok",
+     "value": 2.0
+    },
+    "target_neutral_3_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.3,
+     "status": "ok",
+     "value": 3.0
+    },
+    "trigger_window_long_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 250,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.99,
+     "status": "ok",
+     "value": 3.0
+    },
+    "trigger_window_short_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 250,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.99,
+     "status": "ok",
+     "value": 3.0
+    }
+   },
+   "pmg_status": "ok",
+   "pmg_zones": [
+    {
+     "center_price": 683.46,
+     "count": 5,
+     "level_names": [
+      "PDO",
+      "PWL",
+      "PML",
+      "PDH",
+      "GAP_L_2026-11-05"
+     ],
+     "strength": 6.0,
+     "timeframes": [
+      "day",
+      "month",
+      "week"
+     ]
+    },
+    {
+     "center_price": 690.49,
+     "count": 2,
+     "level_names": [
+      "PWC",
+      "PMC"
+     ],
+     "strength": 2.5,
+     "timeframes": [
+      "month",
+      "week"
+     ]
+    },
+    {
+     "center_price": 695.32,
+     "count": 2,
+     "level_names": [
+      "CWO",
+      "CMO"
+     ],
+     "strength": 2.5,
+     "timeframes": [
+      "month",
+      "week"
+     ]
+    },
+    {
+     "center_price": 647.05,
+     "count": 2,
+     "level_names": [
+      "PDL",
+      "PDC"
+     ],
+     "strength": 2.0,
+     "timeframes": [
+      "day"
+     ]
+    },
+    {
+     "center_price": 719.18,
+     "count": 2,
+     "level_names": [
+      "GAP_L_2026-10-29",
+      "GAP_H_2026-10-29"
+     ],
+     "strength": 2.0,
+     "timeframes": [
+      "day"
+     ]
+    },
+    {
+     "center_price": 744.52,
+     "count": 2,
+     "level_names": [
+      "GAP_L_2026-10-13",
+      "GAP_H_2026-10-13"
+     ],
+     "strength": 2.0,
+     "timeframes": [
+      "day"
+     ]
+    }
+   ],
+   "policy_effective_from": "2015-01-02",
+   "premarket": {
+    "date": "2026-11-06",
+    "excluded_bars": null,
+    "excluded_spikes": null,
+    "excluded_stale_prints": null,
+    "fetched_at": null,
+    "gap_pct": 1.3739,
+    "pre_filter_params": null,
+    "pre_filter_status": "ok",
+    "pre_high": 660.398,
+    "pre_low": 649.62,
+    "pre_vwap": 657.199106242108
+   },
+   "premarket_status": "ok",
+   "prior_close": 647.05,
+   "reference": 657.199106242108,
+   "reference_source": "pre_vwap",
+   "rule_version": "feat-strat-001.v3",
+   "session_date": "2026-11-06",
+   "short": {
+    "candidates": [
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 64962,
+      "distance_atr": 0.496,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PMK_L",
+      "period": "premarket",
+      "price": 649.62,
+      "timeframe": "intraday"
+     },
+     {
+      "aliases": [
+       "PDC",
+       "parent_bar_low"
+      ],
+      "broken": false,
+      "cents": 64705,
+      "distance_atr": 0.664,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PDL",
+      "period": "2026-11-05",
+      "price": 647.05,
+      "timeframe": "day"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 63701,
+      "distance_atr": 1.32,
+      "in_window": true,
+      "level_type": "high",
+      "name": "PYH",
+      "period": "2025",
+      "price": 637.01,
+      "timeframe": "year"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 61431,
+      "distance_atr": 2.805,
+      "in_window": true,
+      "level_type": "close",
+      "name": "PYC",
+      "period": "2025",
+      "price": 614.31,
+      "timeframe": "year"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 40239,
+      "distance_atr": 16.663,
+      "in_window": false,
+      "level_type": "low",
+      "name": "PYL",
+      "period": "2025",
+      "price": 402.39,
+      "timeframe": "year"
+     }
+    ],
+    "distance_atr": 0.496,
+    "gate_targets": [
+     {
+      "aliases": [
+       "PDC",
+       "parent_bar_low"
+      ],
+      "level_type": "low",
+      "name": "PDL",
+      "period": "2026-11-05",
+      "price": 647.05,
+      "timeframe": "day"
+     },
+     {
+      "aliases": [],
+      "level_type": "high",
+      "name": "PYH",
+      "period": "2025",
+      "price": 637.01,
+      "timeframe": "year"
+     },
+     {
+      "aliases": [],
+      "level_type": "close",
+      "name": "PYC",
+      "period": "2025",
+      "price": 614.31,
+      "timeframe": "year"
+     }
+    ],
+    "ladder": [
+     {
+      "distance_pct": -1.15,
+      "level_type": "low",
+      "name": "PMK_L",
+      "period": "intraday",
+      "price": 649.62
+     },
+     {
+      "distance_pct": -1.54,
+      "level_type": "low",
+      "name": "PDL",
+      "period": "day",
+      "price": 647.05
+     }
+    ],
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.0,
+     "spacing_price": 0.0
+    },
+    "reason": null,
+    "regime": "normal",
+    "room_pct": 1.153,
+    "side": "short",
+    "skipped": [],
+    "stop": {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 660.398,
+     "timeframe": "intraday"
+    },
+    "target_status": "ok",
+    "targets": [
+     {
+      "aliases": [
+       "PDC",
+       "parent_bar_low"
+      ],
+      "gap_fill_atr": 0.66,
+      "level_type": "low",
+      "name": "PDL",
+      "period": "2026-11-05",
+      "price": 647.05,
+      "timeframe": "day"
+     },
+     {
+      "aliases": [],
+      "level_type": "high",
+      "name": "PYH",
+      "period": "2025",
+      "price": 637.01,
+      "timeframe": "year"
+     },
+     {
+      "aliases": [],
+      "level_type": "close",
+      "name": "PYC",
+      "period": "2025",
+      "price": 614.31,
+      "timeframe": "year"
+     }
+    ],
+    "trigger": {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 649.62,
+     "timeframe": "intraday"
+    },
+    "window": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "key": "trigger_window_short_atr",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 250,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.99,
+     "status": "ok",
+     "ticker": "QQQ",
+     "value": 3.0
+    }
+   },
+   "status": "ok",
+   "strat_class": "2D",
+   "ticker": "QQQ"
+  },
+  "macd": -14.55193345742714,
+  "macd_cross": "Bearish",
+  "macd_signal_val": -8.332427256050707,
+  "playbook": "  CALLS above 660.40 (PMK_H) -- only if bias denied, new entries 09:30 to 10:00 ET\n    No entry if the open is at or above 660.40.\n    Stop: 649.62 (PMK_L)\n    T1: 661.14 (PQL), sell 1/3\n    T2: 683.45 (PWL), sell 1/3\n    T3: 683.65 (PDH), sell the last 1/3, or hold to the close or the stop\n    Room to trigger: 0.49%\n\n  PUTS below 649.62 (PMK_L), new entries 09:30 to 10:00 ET\n    No entry if the open is at or below 649.62.\n    Stop: 660.40 (PMK_H)\n    T1: 647.05 (PDL, gap fill: gap 0.66 x ATR), sell 1/3\n    T2: 637.01 (PYH), sell 1/3\n    T3: 614.31 (PYC), sell the last 1/3, or hold to the close or the stop\n    Room to trigger: 1.15%\n\n  NEXT LEVELS:\n    Calls (up):  660.40 PMK_H (intraday) +0.49%, 661.14 PQL (quarter) +0.60%\n    Puts (down): 649.62 PMK_L (intraday) -1.15%, 647.05 PDL (day) -1.54%\n\n  PMG ZONES:\n    683.46 (PDO, PWL, PML, PDH, 11/5 Gap Low) [strength: 6.0]\n    690.49 (PWC, PMC) [strength: 2.5]\n    695.32 (CWO, CMO) [strength: 2.5]",
+  "premarket_status": "ok",
+  "prev_day_close": 647.05,
+  "prev_day_high": 683.65,
+  "prev_day_low": 647.05,
+  "prev_day_open": 683.12,
+  "prev_day_volume": 130677395.0,
+  "price": 647.05,
+  "puts_plan_t1_price": 647.05,
+  "puts_plan_t2_price": 637.01,
+  "puts_plan_t3_price": 614.31,
+  "puts_stop_name": "PMK_H",
+  "puts_stop_price": 660.398,
+  "puts_t1_price": 647.05,
+  "puts_t2_price": 637.01,
+  "puts_t3_price": 614.31,
+  "puts_trigger_name": "PMK_L",
+  "puts_trigger_price": 649.62,
+  "reason_long": null,
+  "reason_short": null,
+  "recommended_orb_reason": "5-min ORB (default scalp window, no high-impact catalyst)",
+  "recommended_orb_window": "5m",
+  "regime": "normal",
+  "regime_long": "normal",
+  "regime_short": "normal",
+  "rsi": 26.864112582375796,
+  "rsi_band_calibration_date": null,
+  "rsi_band_tier": "B",
+  "rsi_call_band": [
+   25.0,
+   50.0
+  ],
+  "rsi_direction": "down",
+  "rsi_put_band": [
+   50.0,
+   75.0
+  ],
+  "rvol": 2.7729278747591457,
+  "signal_status": "PUT setup (3/5)",
+  "sma200": 680.70925,
+  "stoch_d": 12.963000324942877,
+  "stoch_k": 17.04509477786976,
+  "strat_available": true,
+  "strat_candle": "2D",
+  "strat_combo": "22_bear_reversal",
+  "strat_observation_ts": "2026-11-06T08:30:00-05:00",
+  "strat_reason": null,
+  "strat_setup": false,
+  "tf_continuity": "bearish",
+  "tf_continuity_frames": {
+   "1mo": {
+    "observation_ts": "2026-11-06T08:30:00-05:00",
+    "observed_price": 647.05,
+    "open": 695.315,
+    "period_start": "2026-11-02T09:30:00-05:00",
+    "price_provenance": "latest_completed_close",
+    "price_session": "2026-11-05",
+    "reasons": [],
+    "relation": "red",
+    "rule_version": "price-open-v1"
+   },
+   "1q": {
+    "observation_ts": "2026-11-06T08:30:00-05:00",
+    "observed_price": 647.05,
+    "open": 742.51,
+    "period_start": "2026-10-01T09:30:00-04:00",
+    "price_provenance": "latest_completed_close",
+    "price_session": "2026-11-05",
+    "reasons": [],
+    "relation": "red",
+    "rule_version": "price-open-v1"
+   },
+   "1w": {
+    "observation_ts": "2026-11-06T08:30:00-05:00",
+    "observed_price": 647.05,
+    "open": 695.315,
+    "period_start": "2026-11-02T09:30:00-05:00",
+    "price_provenance": "latest_completed_close",
+    "price_session": "2026-11-05",
+    "reasons": [],
+    "relation": "red",
+    "rule_version": "price-open-v1"
+   }
+  },
+  "vol_regime": "Extreme",
+  "volatility_20d": 0.3142798826859469
+ },
+ "SPY": {
+  "above_sma200": true,
+  "atr14": 10.597599738532947,
+  "atr5": 15.81187567589715,
+  "bb_lower": 744.6099228219944,
+  "bb_upper": 786.4450771780055,
+  "calls_plan_t1_price": 750.36,
+  "calls_plan_t2_price": 755.72,
+  "calls_plan_t3_price": 762.63,
+  "calls_stop_name": "PDC",
+  "calls_stop_price": 733.0,
+  "calls_t1_price": 750.36,
+  "calls_t2_price": 755.72,
+  "calls_t3_price": 762.63,
+  "calls_trigger_name": "PMK_H",
+  "calls_trigger_price": 738.04,
+  "change_pct": -4.409175675851899,
+  "consecutive_down": 1,
+  "consecutive_up": 2,
+  "data_as_of": "2026-11-05 16:00:00-05:00",
+  "data_freshness_status": "fresh",
+  "ema20": 762.2003405943327,
+  "ema9": 756.6600202792554,
+  "freshness_gap_days": 1,
+  "ftfc_direction": "bearish",
+  "ftfc_labels": {
+   "1d": "2D",
+   "1mo": "2D",
+   "1w": "3"
+  },
+  "ftfc_score": -0.7499999999999999,
+  "gamma_data_source": "unavailable",
+  "gamma_days_behind": null,
+  "gamma_snapshot_date": null,
+  "gamma_snapshot_ts": null,
+  "level_basis": {
+   "atr": 10.597599738532947,
+   "atr_14": 10.597599738532947,
+   "atr_5": 15.81187567589715,
+   "atr_basis": "atr_14",
+   "cleared_above": 738.04,
+   "cleared_below": 730.64,
+   "last_bar_date": "2026-11-05",
+   "levels": [
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PDH",
+     "period_label": "2026-11-05",
+     "price": 765.97,
+     "strat_class": "2D",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PDL",
+     "period_label": "2026-11-05",
+     "price": 732.71,
+     "strat_class": "2D",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PDC",
+     "period_label": "2026-11-05",
+     "price": 733.0,
+     "strat_class": "2D",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PWH",
+     "period_label": "2026-10-26/2026-11-01",
+     "price": 773.36,
+     "strat_class": "2D",
+     "timeframe": "week"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PWL",
+     "period_label": "2026-10-26/2026-11-01",
+     "price": 750.36,
+     "strat_class": "2D",
+     "timeframe": "week"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PWC",
+     "period_label": "2026-10-26/2026-11-01",
+     "price": 755.72,
+     "strat_class": "2D",
+     "timeframe": "week"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PMH",
+     "period_label": "2026-10",
+     "price": 781.62,
+     "strat_class": "Failed_2U",
+     "timeframe": "month"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PML",
+     "period_label": "2026-10",
+     "price": 750.36,
+     "strat_class": "Failed_2U",
+     "timeframe": "month"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PMC",
+     "period_label": "2026-10",
+     "price": 755.72,
+     "strat_class": "Failed_2U",
+     "timeframe": "month"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PQH",
+     "period_label": "2026Q3",
+     "price": 779.37,
+     "strat_class": "2U",
+     "timeframe": "quarter"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PQL",
+     "period_label": "2026Q3",
+     "price": 729.1,
+     "strat_class": "2U",
+     "timeframe": "quarter"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PQC",
+     "period_label": "2026Q3",
+     "price": 762.63,
+     "strat_class": "2U",
+     "timeframe": "quarter"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "PYH",
+     "period_label": "2025",
+     "price": 691.66,
+     "strat_class": "3",
+     "timeframe": "year"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "PYL",
+     "period_label": "2025",
+     "price": 481.8,
+     "strat_class": "3",
+     "timeframe": "year"
+    },
+    {
+     "is_current": false,
+     "level_type": "close",
+     "name": "PYC",
+     "period_label": "2025",
+     "price": 681.92,
+     "strat_class": "3",
+     "timeframe": "year"
+    },
+    {
+     "is_current": false,
+     "level_type": "open",
+     "name": "PDO",
+     "period_label": "2026-11-05",
+     "price": 765.47,
+     "strat_class": "2D",
+     "timeframe": "day"
+    },
+    {
+     "is_current": true,
+     "level_type": "open",
+     "name": "CWO",
+     "period_label": "2026-11-02/2026-11-08",
+     "price": 759.45,
+     "strat_class": "3",
+     "timeframe": "week"
+    },
+    {
+     "is_current": true,
+     "level_type": "open",
+     "name": "CMO",
+     "period_label": "2026-11",
+     "price": 759.45,
+     "strat_class": "2D",
+     "timeframe": "month"
+    },
+    {
+     "is_current": false,
+     "level_type": "high",
+     "name": "parent_bar_high",
+     "period_label": "2026-11-05",
+     "price": 765.97,
+     "strat_class": "",
+     "timeframe": "day"
+    },
+    {
+     "is_current": false,
+     "level_type": "low",
+     "name": "parent_bar_low",
+     "period_label": "2026-11-05",
+     "price": 732.71,
+     "strat_class": "",
+     "timeframe": "day"
+    },
+    {
+     "is_current": true,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period_label": "premarket",
+     "price": 738.04,
+     "strat_class": "",
+     "timeframe": "intraday"
+    },
+    {
+     "is_current": true,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period_label": "premarket",
+     "price": 730.64,
+     "strat_class": "",
+     "timeframe": "intraday"
+    }
+   ],
+   "long": {
+    "candidates": [
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 73804,
+      "distance_atr": 0.3,
+      "in_window": true,
+      "level_type": "high",
+      "name": "PMK_H",
+      "period": "premarket",
+      "price": 738.04,
+      "timeframe": "intraday"
+     },
+     {
+      "aliases": [
+       "PML"
+      ],
+      "broken": false,
+      "cents": 75036,
+      "distance_atr": 1.462,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PWL",
+      "period": "2026-10-26/2026-11-01",
+      "price": 750.36,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [
+       "PMC"
+      ],
+      "broken": false,
+      "cents": 75572,
+      "distance_atr": 1.968,
+      "in_window": true,
+      "level_type": "close",
+      "name": "PWC",
+      "period": "2026-10-26/2026-11-01",
+      "price": 755.72,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 76263,
+      "distance_atr": 2.62,
+      "in_window": true,
+      "level_type": "close",
+      "name": "PQC",
+      "period": "2026Q3",
+      "price": 762.63,
+      "timeframe": "quarter"
+     },
+     {
+      "aliases": [
+       "parent_bar_high"
+      ],
+      "broken": false,
+      "cents": 76597,
+      "distance_atr": 2.935,
+      "in_window": true,
+      "level_type": "high",
+      "name": "PDH",
+      "period": "2026-11-05",
+      "price": 765.97,
+      "timeframe": "day"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 77336,
+      "distance_atr": 3.632,
+      "in_window": false,
+      "level_type": "high",
+      "name": "PWH",
+      "period": "2026-10-26/2026-11-01",
+      "price": 773.36,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 77937,
+      "distance_atr": 4.199,
+      "in_window": false,
+      "level_type": "high",
+      "name": "PQH",
+      "period": "2026Q3",
+      "price": 779.37,
+      "timeframe": "quarter"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 78162,
+      "distance_atr": 4.412,
+      "in_window": false,
+      "level_type": "high",
+      "name": "PMH",
+      "period": "2026-10",
+      "price": 781.62,
+      "timeframe": "month"
+     }
+    ],
+    "distance_atr": 0.3,
+    "gate_targets": [
+     {
+      "aliases": [
+       "PML"
+      ],
+      "level_type": "low",
+      "name": "PWL",
+      "period": "2026-10-26/2026-11-01",
+      "price": 750.36,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [
+       "PMC"
+      ],
+      "level_type": "close",
+      "name": "PWC",
+      "period": "2026-10-26/2026-11-01",
+      "price": 755.72,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [],
+      "level_type": "close",
+      "name": "PQC",
+      "period": "2026Q3",
+      "price": 762.63,
+      "timeframe": "quarter"
+     }
+    ],
+    "ladder": [
+     {
+      "distance_pct": 0.43,
+      "level_type": "high",
+      "name": "PMK_H",
+      "period": "intraday",
+      "price": 738.04
+     },
+     {
+      "distance_pct": 2.11,
+      "level_type": "low",
+      "name": "PWL",
+      "period": "week",
+      "price": 750.36
+     }
+    ],
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.0,
+     "spacing_price": 0.0
+    },
+    "reason": null,
+    "regime": "normal",
+    "room_pct": 0.432,
+    "side": "long",
+    "skipped": [],
+    "stop": {
+     "aliases": [],
+     "level_type": "close",
+     "name": "PDC",
+     "period": "2026-11-05",
+     "price": 733.0,
+     "timeframe": "day"
+    },
+    "target_status": "ok",
+    "targets": [
+     {
+      "aliases": [
+       "PML"
+      ],
+      "level_type": "low",
+      "name": "PWL",
+      "period": "2026-10-26/2026-11-01",
+      "price": 750.36,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [
+       "PMC"
+      ],
+      "level_type": "close",
+      "name": "PWC",
+      "period": "2026-10-26/2026-11-01",
+      "price": 755.72,
+      "timeframe": "week"
+     },
+     {
+      "aliases": [],
+      "level_type": "close",
+      "name": "PQC",
+      "period": "2026Q3",
+      "price": 762.63,
+      "timeframe": "quarter"
+     }
+    ],
+    "trigger": {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 738.04,
+     "timeframe": "intraday"
+    },
+    "window": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "key": "trigger_window_long_atr",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 250,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.99,
+     "status": "ok",
+     "ticker": "SPY",
+     "value": 3.0
+    }
+   },
+   "params": {
+    "entry_buffer_aggressive_hi_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.75,
+     "status": "ok",
+     "value": 0.5
+    },
+    "entry_buffer_aggressive_lo_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 0.0
+    },
+    "entry_buffer_conservative_hi_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.65,
+     "status": "ok",
+     "value": 0.4
+    },
+    "entry_buffer_conservative_lo_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.2,
+     "status": "ok",
+     "value": 0.1
+    },
+    "entry_buffer_neutral_hi_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.5,
+     "status": "ok",
+     "value": 0.25
+    },
+    "entry_buffer_neutral_lo_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 0.0
+    },
+    "entry_cutoff_et": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "extra": {
+      "time_et": "10:00"
+     },
+     "input_from": null,
+     "input_to": null,
+     "lookback_sessions": null,
+     "method_id": "policy",
+     "min_sample": null,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": null,
+     "source": "policy",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 600.0
+    },
+    "exit_legs": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "extra": {
+      "legs": 3
+     },
+     "input_from": null,
+     "input_to": null,
+     "lookback_sessions": null,
+     "method_id": "policy",
+     "min_sample": null,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": null,
+     "source": "policy",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 3.0
+    },
+    "gap_fill_flag_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": null,
+     "method_id": "fixture",
+     "min_sample": null,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 0.5
+    },
+    "level_cluster_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 60,
+     "method_id": "fixture",
+     "min_sample": 40,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.5,
+     "status": "ok",
+     "value": 0.15
+    },
+    "min_stop_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.5,
+     "status": "ok",
+     "value": 0.5
+    },
+    "pm_spike_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 60,
+     "method_id": "fixture",
+     "min_sample": 40,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.999,
+     "status": "ok",
+     "value": 0.5
+    },
+    "pm_stale_print_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 60,
+     "method_id": "fixture",
+     "min_sample": 40,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.95,
+     "status": "ok",
+     "value": 0.1
+    },
+    "stop_aggressive_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.9,
+     "status": "ok",
+     "value": 2.0
+    },
+    "stop_conservative_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.6,
+     "status": "ok",
+     "value": 0.7
+    },
+    "stop_neutral_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.75,
+     "status": "ok",
+     "value": 1.0
+    },
+    "target_aggressive_1_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.4,
+     "status": "ok",
+     "value": 2.0
+    },
+    "target_aggressive_2_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.25,
+     "status": "ok",
+     "value": 3.5
+    },
+    "target_aggressive_3_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.15,
+     "status": "ok",
+     "value": 5.0
+    },
+    "target_conservative_1_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.65,
+     "status": "ok",
+     "value": 1.0
+    },
+    "target_conservative_2_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.5,
+     "status": "ok",
+     "value": 1.75
+    },
+    "target_min_spacing_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": null,
+     "method_id": "fixture",
+     "min_sample": null,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": null,
+     "status": "ok",
+     "value": 0.0
+    },
+    "target_neutral_1_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.6,
+     "status": "ok",
+     "value": 1.0
+    },
+    "target_neutral_2_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.45,
+     "status": "ok",
+     "value": 2.0
+    },
+    "target_neutral_3_r": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 150,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.3,
+     "status": "ok",
+     "value": 3.0
+    },
+    "trigger_window_long_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 250,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.99,
+     "status": "ok",
+     "value": 3.0
+    },
+    "trigger_window_short_atr": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 250,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.99,
+     "status": "ok",
+     "value": 3.0
+    }
+   },
+   "pmg_status": "ok",
+   "pmg_zones": [
+    {
+     "center_price": 750.36,
+     "count": 2,
+     "level_names": [
+      "PWL",
+      "PML"
+     ],
+     "strength": 2.5,
+     "timeframes": [
+      "month",
+      "week"
+     ]
+    },
+    {
+     "center_price": 755.72,
+     "count": 2,
+     "level_names": [
+      "PWC",
+      "PMC"
+     ],
+     "strength": 2.5,
+     "timeframes": [
+      "month",
+      "week"
+     ]
+    },
+    {
+     "center_price": 759.45,
+     "count": 2,
+     "level_names": [
+      "CWO",
+      "CMO"
+     ],
+     "strength": 2.5,
+     "timeframes": [
+      "month",
+      "week"
+     ]
+    },
+    {
+     "center_price": 732.86,
+     "count": 2,
+     "level_names": [
+      "PDL",
+      "PDC"
+     ],
+     "strength": 2.0,
+     "timeframes": [
+      "day"
+     ]
+    },
+    {
+     "center_price": 765.72,
+     "count": 2,
+     "level_names": [
+      "PDO",
+      "PDH"
+     ],
+     "strength": 2.0,
+     "timeframes": [
+      "day"
+     ]
+    }
+   ],
+   "policy_effective_from": "2015-01-02",
+   "premarket": {
+    "date": "2026-11-06",
+    "excluded_bars": null,
+    "excluded_spikes": null,
+    "excluded_stale_prints": null,
+    "fetched_at": null,
+    "gap_pct": 0.2224,
+    "pre_filter_params": null,
+    "pre_filter_status": "ok",
+    "pre_high": 738.04,
+    "pre_low": 730.64,
+    "pre_vwap": 734.8656233378887
+   },
+   "premarket_status": "ok",
+   "prior_close": 733.0,
+   "reference": 734.8656233378887,
+   "reference_source": "pre_vwap",
+   "rule_version": "feat-strat-001.v3",
+   "session_date": "2026-11-06",
+   "short": {
+    "candidates": [
+     {
+      "aliases": [],
+      "broken": true,
+      "cents": 73300,
+      "distance_atr": 0.176,
+      "in_window": true,
+      "level_type": "close",
+      "name": "PDC",
+      "period": "2026-11-05",
+      "price": 733.0,
+      "timeframe": "day"
+     },
+     {
+      "aliases": [
+       "parent_bar_low"
+      ],
+      "broken": true,
+      "cents": 73271,
+      "distance_atr": 0.203,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PDL",
+      "period": "2026-11-05",
+      "price": 732.71,
+      "timeframe": "day"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 73064,
+      "distance_atr": 0.399,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PMK_L",
+      "period": "premarket",
+      "price": 730.64,
+      "timeframe": "intraday"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 72910,
+      "distance_atr": 0.544,
+      "in_window": true,
+      "level_type": "low",
+      "name": "PQL",
+      "period": "2026Q3",
+      "price": 729.1,
+      "timeframe": "quarter"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 69166,
+      "distance_atr": 4.077,
+      "in_window": false,
+      "level_type": "high",
+      "name": "PYH",
+      "period": "2025",
+      "price": 691.66,
+      "timeframe": "year"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 68192,
+      "distance_atr": 4.996,
+      "in_window": false,
+      "level_type": "close",
+      "name": "PYC",
+      "period": "2025",
+      "price": 681.92,
+      "timeframe": "year"
+     },
+     {
+      "aliases": [],
+      "broken": false,
+      "cents": 48180,
+      "distance_atr": 23.88,
+      "in_window": false,
+      "level_type": "low",
+      "name": "PYL",
+      "period": "2025",
+      "price": 481.8,
+      "timeframe": "year"
+     }
+    ],
+    "distance_atr": 0.399,
+    "gate_targets": [
+     {
+      "aliases": [],
+      "level_type": "low",
+      "name": "PQL",
+      "period": "2026Q3",
+      "price": 729.1,
+      "timeframe": "quarter"
+     }
+    ],
+    "ladder": [
+     {
+      "distance_pct": -0.58,
+      "level_type": "low",
+      "name": "PMK_L",
+      "period": "intraday",
+      "price": 730.64
+     },
+     {
+      "distance_pct": -0.78,
+      "level_type": "low",
+      "name": "PQL",
+      "period": "quarter",
+      "price": 729.1
+     }
+    ],
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.0,
+     "spacing_price": 0.0
+    },
+    "reason": null,
+    "regime": "normal",
+    "room_pct": 0.575,
+    "side": "short",
+    "skipped": [],
+    "stop": {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 738.04,
+     "timeframe": "intraday"
+    },
+    "target_status": "ok",
+    "targets": [
+     {
+      "aliases": [],
+      "level_type": "low",
+      "name": "PQL",
+      "period": "2026Q3",
+      "price": 729.1,
+      "timeframe": "quarter"
+     }
+    ],
+    "trigger": {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 730.64,
+     "timeframe": "intraday"
+    },
+    "window": {
+     "atr_basis": "atr_14",
+     "effective_from": "2015-01-02",
+     "input_from": "2023-01-03",
+     "input_to": "2015-01-02",
+     "key": "trigger_window_short_atr",
+     "lookback_sessions": 750,
+     "method_id": "fixture",
+     "min_sample": 250,
+     "policy_effective_from": "2015-01-02",
+     "sample_n": 750,
+     "source": "history",
+     "statistic_q": 0.99,
+     "status": "ok",
+     "ticker": "SPY",
+     "value": 3.0
+    }
+   },
+   "status": "ok",
+   "strat_class": "2D",
+   "ticker": "SPY"
+  },
+  "macd": -4.530288621873865,
+  "macd_cross": "Bearish",
+  "macd_signal_val": -1.796200932827488,
+  "playbook": "  CALLS above 738.04 (PMK_H) -- only if bias denied, new entries 09:30 to 10:00 ET\n    No entry if the open is at or above 738.04.\n    Stop: 733.00 (PDC)\n    T1: 750.36 (PWL), sell 1/3\n    T2: 755.72 (PWC), sell 1/3\n    T3: 762.63 (PQC), sell the last 1/3, or hold to the close or the stop\n    Room to trigger: 0.43%\n\n  PUTS below 730.64 (PMK_L), new entries 09:30 to 10:00 ET\n    No entry if the open is at or below 730.64.\n    Stop: 738.04 (PMK_H)\n    T1: 729.10 (PQL), sell 1/3, hold the last 2/3 to the close or the stop\n    Room to trigger: 0.57%\n\n  NEXT LEVELS:\n    Calls (up):  738.04 PMK_H (intraday) +0.43%, 750.36 PWL (week) +2.11%\n    Puts (down): 730.64 PMK_L (intraday) -0.58%, 729.10 PQL (quarter) -0.78%\n\n  PMG ZONES:\n    750.36 (PWL, PML) [strength: 2.5]\n    755.72 (PWC, PMC) [strength: 2.5]\n    759.45 (CWO, CMO) [strength: 2.5]",
+  "premarket_status": "ok",
+  "prev_day_close": 733.0,
+  "prev_day_high": 765.97,
+  "prev_day_low": 732.71,
+  "prev_day_open": 765.47,
+  "prev_day_volume": 125892776.0,
+  "price": 733.0,
+  "puts_plan_t1_price": 729.1,
+  "puts_plan_t2_price": null,
+  "puts_plan_t3_price": null,
+  "puts_stop_name": "PMK_H",
+  "puts_stop_price": 738.04,
+  "puts_t1_price": 729.1,
+  "puts_t2_price": null,
+  "puts_t3_price": null,
+  "puts_trigger_name": "PMK_L",
+  "puts_trigger_price": 730.64,
+  "reason_long": null,
+  "reason_short": null,
+  "recommended_orb_reason": "5-min ORB (default scalp window, no high-impact catalyst)",
+  "recommended_orb_window": "5m",
+  "regime": "normal",
+  "regime_long": "normal",
+  "regime_short": "normal",
+  "rsi": 33.50306961862374,
+  "rsi_band_calibration_date": null,
+  "rsi_band_tier": "B",
+  "rsi_call_band": [
+   25.0,
+   50.0
+  ],
+  "rsi_direction": "down",
+  "rsi_put_band": [
+   50.0,
+   75.0
+  ],
+  "rvol": 2.7854047610653208,
+  "signal_status": "PUT setup (3/5)",
+  "sma200": 730.1510000000001,
+  "stoch_d": 22.99676328356746,
+  "stoch_k": 32.11312695514076,
+  "strat_available": true,
+  "strat_candle": "2D",
+  "strat_combo": "22_bear_reversal",
+  "strat_observation_ts": "2026-11-06T08:30:00-05:00",
+  "strat_reason": null,
+  "strat_setup": false,
+  "tf_continuity": "bearish",
+  "tf_continuity_frames": {
+   "1mo": {
+    "observation_ts": "2026-11-06T08:30:00-05:00",
+    "observed_price": 733.0,
+    "open": 759.45,
+    "period_start": "2026-11-02T09:30:00-05:00",
+    "price_provenance": "latest_completed_close",
+    "price_session": "2026-11-05",
+    "reasons": [],
+    "relation": "red",
+    "rule_version": "price-open-v1"
+   },
+   "1q": {
+    "observation_ts": "2026-11-06T08:30:00-05:00",
+    "observed_price": 733.0,
+    "open": 764.36,
+    "period_start": "2026-10-01T09:30:00-04:00",
+    "price_provenance": "latest_completed_close",
+    "price_session": "2026-11-05",
+    "reasons": [],
+    "relation": "red",
+    "rule_version": "price-open-v1"
+   },
+   "1w": {
+    "observation_ts": "2026-11-06T08:30:00-05:00",
+    "observed_price": 733.0,
+    "open": 759.45,
+    "period_start": "2026-11-02T09:30:00-05:00",
+    "price_provenance": "latest_completed_close",
+    "price_session": "2026-11-05",
+    "reasons": [],
+    "relation": "red",
+    "rule_version": "price-open-v1"
+   }
+  },
+  "vol_regime": "High",
+  "volatility_20d": 0.20078960927418602
+ }
+}

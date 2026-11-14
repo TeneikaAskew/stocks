@@ -515,3 +515,112 @@ def test_a_replay_with_no_spacing_row_publishes_no_unspaced_target():
     for side in (sl.long, sl.short):
         assert side.trigger is not None and side.stop is not None
         assert side.targets == [] and side.target_status == "params_unavailable"
+
+
+# ── ATR levels spec (2026-11-11): level_basis and replay ────────────────
+
+ATR_RUNG_PARAM_KEYS = ("atr_rung_anchors", "atr_rung_step_atr", "atr_rung_max_atr",
+                       "atr_rung_stretch_atr")
+SESSION_D8 = "2026-11-06"     # the Design 8 fixture's session
+ATR_BASIS_KEYS = ("atr_rungs", "atr_rungs_dropped", "atr_rung_status", "atr_rung_anchors",
+                  "atr_rung_params")
+
+
+def _rungs(sl):
+    return ([(r["price"], r["name"]) for r in sl.atr_rungs],
+            [(r["price"], r["name"], r["reason"]) for r in sl.atr_rungs_dropped])
+
+
+def test_basis_records_the_atr_rungs_and_their_parameters():
+    from tests.lib.session_levels_helpers import d8_basis
+    stored = json.loads(json.dumps(SessionLevels.from_basis(d8_basis()).to_basis()))
+    assert stored["atr_rung_status"] == "ok"
+    kept = stored["atr_rungs"]
+    assert [(r["price"], r["anchor"], r["multiple"], r["sign"], r["stretch"], r["aliases"])
+            for r in kept] == [(234.2, "PMK_L", 1.0, "-", False, []),
+                               (241.2, "PMK_L", 0.5, "-", False, []),
+                               (259.1, "PMK_H", 0.5, "+", False, []),
+                               (266.1, "PMK_H", 1.0, "+", False, [])]
+    dropped = stored["atr_rungs_dropped"]
+    assert len(dropped) == 28
+    assert all({"price", "anchor", "multiple", "reason"} <= set(r) for r in dropped)
+    assert [(a["name"], a["price"], a["status"]) for a in stored["atr_rung_anchors"]] == [
+        ("PDH", 253.0, "ok"), ("PDL", 247.5, "ok"), ("PMK_H", 252.1, "ok"), ("PMK_L", 248.2, "ok")]
+    params = stored["atr_rung_params"]
+    assert set(params) == set(ATR_RUNG_PARAM_KEYS)
+    for key in ATR_RUNG_PARAM_KEYS:
+        assert set(params[key]) == {"value", "status", "method_id", "effective_from"}
+        assert params[key]["status"] == "ok" and params[key]["effective_from"]
+    assert params["atr_rung_anchors"]["value"] == ["PDH", "PDL", "PMK_H", "PMK_L"]
+    assert params["atr_rung_anchors"]["method_id"] == "policy"
+    assert (params["atr_rung_step_atr"]["value"], params["atr_rung_max_atr"]["value"],
+            params["atr_rung_stretch_atr"]["value"]) == (0.5, 2.0, 1.5)
+    # The rungs are never levels, candidates or targets in the stored basis.
+    names = [lv["name"] for lv in stored["levels"]]
+    names += [c["name"] for side in ("long", "short") for c in stored[side]["candidates"]]
+    assert not any(n.endswith("ATR") for n in names)
+
+
+def test_from_basis_rebuilds_the_recorded_rungs_after_the_rows_change():
+    """A later ticker_level_params or policy row (offered as params) does
+    not move a recorded basis's rungs: the recorded parameters rebuild."""
+    from tests.lib.session_levels_helpers import d8_basis, d8_params
+    first = SessionLevels.from_basis(d8_basis())
+    stored = json.loads(json.dumps(first.to_basis()))
+    rebuilt = SessionLevels.from_basis(stored)
+    offered = SessionLevels.from_basis(stored, params=d8_params(
+        anchors=["PDC"], atr_rung_step_atr=0.25, atr_rung_max_atr=3.0))
+    assert _rungs(rebuilt) == _rungs(offered) == _rungs(first)
+    assert rebuilt.to_basis()["atr_rungs"] == stored["atr_rungs"]
+    assert rebuilt.to_basis()["atr_rungs_dropped"] == stored["atr_rungs_dropped"]
+
+
+def test_a_basis_without_the_atr_keys_rebuilds_no_rungs_and_the_same_targets():
+    """A level_basis stored before ATR rungs (no rung keys, no rung
+    parameters recorded) rebuilds none, even when the rows in force are
+    offered, and its targets, stop and gate targets are unchanged."""
+    from tests.lib.session_levels_helpers import d8_basis, d8_params
+    new = SessionLevels.from_basis(d8_basis())
+    stored = json.loads(json.dumps(new.to_basis()))
+    for k in ATR_BASIS_KEYS:
+        stored.pop(k)
+    for k in ATR_RUNG_PARAM_KEYS:
+        stored["params"].pop(k)
+    old = SessionLevels.from_basis(stored, params=d8_params())
+    assert old.atr_rungs == [] and old.atr_rungs_dropped == [] and old.atr_rung_status is None
+    assert not set(ATR_BASIS_KEYS) & set(old.to_basis())
+    assert old.to_level_map().atr_levels is None
+    assert _exit_picks(old) == _exit_picks(new)
+    assert (old.long.stop, old.short.stop) == (new.long.stop, new.short.stop)
+    assert old.with_premarket({"date": SESSION_D8, "pre_high": 253.5, "pre_low": 246.0,
+                               "pre_vwap": 250.0, "pre_filter_status": "ok"}).atr_rungs == []
+
+
+def test_with_premarket_rebuilds_the_premarket_rungs():
+    from tests.lib.session_levels_helpers import d8_basis
+    sl = SessionLevels.from_basis(d8_basis())
+    newer = sl.with_premarket({"date": SESSION_D8, "pre_high": 253.60, "pre_low": 247.80,
+                               "pre_vwap": 250.00, "pre_filter_status": "ok"})
+    pmk = sorted((r["price"], r["label"]) for r in newer.atr_rungs + newer.atr_rungs_dropped
+                 if r["anchor"] in ("PMK_H", "PMK_L"))
+    assert (260.6, "PMK_H+0.5") in pmk and (240.8, "PMK_L-0.5") in pmk
+    assert (259.1, "PMK_H+0.5") not in pmk and (241.2, "PMK_L-0.5") not in pmk
+    anchors = {a["name"]: a["price"] for a in newer.atr_rung_anchors}
+    assert (anchors["PMK_H"], anchors["PMK_L"]) == (253.6, 247.8)
+    # PDH and PDL rungs are the same as before the newer snapshot.
+    def pd(s):
+        return sorted(r["cents"] for r in s.atr_rungs + s.atr_rungs_dropped
+                      if r["anchor"] in ("PDH", "PDL"))
+    assert pd(newer) == pd(sl)
+
+
+def test_published_prices_include_the_kept_rungs():
+    from lib.strat_levels import price_cents
+    from tests.lib.session_levels_helpers import d8_basis
+    sl = SessionLevels.from_basis(d8_basis())
+    known = sl.published_prices()
+    assert {25910, 26610, 24120, 23420} <= known
+    assert {price_cents(lv.price) for lv in sl.levels} <= known
+    level_cents = {price_cents(lv.price) for lv in sl.levels}
+    dropped_off_level = {r["cents"] for r in sl.atr_rungs_dropped} - level_cents
+    assert dropped_off_level and not (dropped_off_level & known)

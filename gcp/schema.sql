@@ -2298,7 +2298,20 @@ INSERT INTO level_param_policy (
     ('exit_legs', 'policy', NULL, NULL, NULL, '{"legs": 3}', '2015-01-02',
      'equal legs the exit plan sells, one at each spaced target'),
     ('entry_cutoff_et', 'policy', NULL, NULL, NULL, '{"time_et": "10:00"}', '2015-01-02',
-     'last minute (ET, exclusive) a first cross of the trigger is an entry')
+     'last minute (ET, exclusive) a first cross of the trigger is an entry'),
+    -- ATR levels (docs/superpowers/specs/2026-11-11-feat-strat-001-brief-atr-levels.md).
+    -- Display only: the brief's NEXT LEVELS ATR line; never a trigger, stop
+    -- or target. The anchor list is policy-wide (it names levels, in name
+    -- priority, each a trigger candidate); the three distances are
+    -- policy_seed, one ticker_level_params row per ticker at the seed.
+    ('atr_rung_anchors', 'policy', NULL, NULL, NULL, '{"anchors": ["PDH", "PDL", "PMK_H", "PMK_L"]}', '2015-01-02',
+     'levels the ATR rungs hang from, in name priority'),
+    ('atr_rung_step_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 0.5}', '2015-01-02',
+     'distance between ATR rungs / ATR'),
+    ('atr_rung_max_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 2.0}', '2015-01-02',
+     'farthest ATR rung from its anchor / ATR'),
+    ('atr_rung_stretch_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 1.5}', '2015-01-02',
+     'distance from its anchor / ATR at which an ATR rung is marked stretch')
 ON CONFLICT (param_key, effective_from) DO NOTHING;
 
 
