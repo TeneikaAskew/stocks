@@ -257,6 +257,27 @@ def test_backfill_ticker_declares_max_retries_zero_on_both_branches():
     assert "--max-retries 0" in update, "the update branch must converge max-retries too"
 
 
+def test_watched_tickers_target_deploys_the_ingest_job_and_the_jobs_sharing_its_code():
+    """The arm redeploys the new ingest job plus the three jobs that share
+    its code paths: fetch-market-data and fetch-earnings-history run
+    fetch_market_data._run_backfill inside their own images and must carry
+    the watched-ticker exclusion, and freshness-watchdog must carry the
+    heartbeat check before the scheduler exists."""
+    arm = _dispatch_arms()["watched-tickers"]
+    fns = _called_from(arm) & set(DEPLOY_FNS)
+    assert _created_by(fns) == {
+        "fetch-watched-tickers", "fetch-market-data",
+        "fetch-earnings-history", "freshness-watchdog"}, fns
+
+    body = FNS["deploy_fetch_watched_tickers"]
+    create, update = body.split("gcloud run jobs update", 1)
+    assert "--max-retries 0" in create, create
+    assert "--max-retries 0" in update, "the update branch must converge max-retries too"
+    assert "WATCHED_TICKERS_URL" not in body
+    assert "WATCHED_TICKERS_READ_SECRET" not in body
+    assert "fetch-watched-tickers" in SCHEDULED
+
+
 # ── the DB_SECRET_FLAG exemption list (#1022) ─────────────────────────────
 
 

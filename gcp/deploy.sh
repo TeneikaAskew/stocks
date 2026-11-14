@@ -2208,6 +2208,39 @@ deploy_backfill_daily_indicators() {
         --quiet
 }
 
+deploy_fetch_watched_tickers() {
+    echo "Deploying fetch-watched-tickers job..."
+    # Nightly ingest for user-watched tickers outside the curated universe
+    # (watched-ticker ingest v2). The Alpha Vantage key arrives through
+    # DB_SECRET_FLAG like every other fetcher; no new secret.
+    #
+    # Sizing (Rule 0, spec Capacity):
+    #   volume   : WATCHED_TICKERS_MAX=50 tickers, one daily-bars AV call each
+    #   velocity : ~50 AV calls + 1.0s sleep each, plus indicators and
+    #              per-ticker verification
+    #   wall-clock: well under 40 min; task-timeout 2400s is the spec figure
+    # max-retries 0: a retry on a permanent failure (bad ticker, AV outage)
+    # only repeats the AV calls; the next nightly run converges.
+    gcloud run jobs create fetch-watched-tickers \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 2400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_watched_tickers" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING},WATCHED_TICKERS_MAX=50,AV_BACKFILL_SLEEP_SECS=1.0" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-watched-tickers \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 2400 \
+        --command "python,-m,gcp.fetchers.fetch_watched_tickers" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING},WATCHED_TICKERS_MAX=50,AV_BACKFILL_SLEEP_SECS=1.0" \
+        --quiet
+}
+
 deploy_fetch_alphavantage() {
     echo "Deploying fetch-alphavantage-intraday job..."
     # ALPHA_VANTAGE_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per
@@ -3207,6 +3240,7 @@ deploy_fetch_news_sentiment_topics() {
 deploy_fetchers() {
     deploy_fetch_market_data
     deploy_backfill_daily_indicators
+    deploy_fetch_watched_tickers
     deploy_fetch_alphavantage
     deploy_av_options_backfill
     deploy_av_options_realtime
@@ -5037,6 +5071,7 @@ deploy_schedulers() {
     # daily mode (default env on the job) at 02:30 ET Mon-Sat —
     # auto-discovers tickers with NULL atr_14 in last 7d, re-computes.
     _schedule "backfill-indicators-daily"  "30 2 * * 1-6"  "backfill-daily-indicators"
+    _schedule "watched-tickers-nightly"    "45 23 * * 1-5"  "fetch-watched-tickers"
 
     # full mode at 03:00 ET Sunday via containerOverride — sweeps every
     # ticker. Persisted job env stays "daily" for the weekday entries.
@@ -5395,6 +5430,7 @@ case "${1:-help}" in
     insights) _run build_image setup_insight_tasks_queue deploy_insight_pipeline deploy_insight_discord_push deploy_historical_signals_watchlist deploy_auto_refresh_top_n ;;
     historical-signals) _run build_image deploy_historical_signals_watchlist ;;
     market-data) _run build_image deploy_fetch_market_data deploy_fetch_premarket_refresh ;;
+    watched-tickers) _run build_image deploy_fetch_watched_tickers deploy_fetch_market_data deploy_fetch_earnings_history deploy_freshness_watchdog ;;
     schedulers)  _PIN_AFTER=0; deploy_schedulers ;;
     backfill)    _PIN_AFTER=0; shift; backfill_watchlist "$@" ;;
     apply-schema) _run build_image deploy_apply_schema_migrations apply_schema_via_build ;;
@@ -5517,6 +5553,8 @@ case "${1:-help}" in
         echo "  insights   Deploy AI insight pipeline job + Cloud Tasks queue"
         echo "  historical-signals  Deploy only the nightly historical-signals-watchlist job"
         echo "  market-data         Deploy only fetch-market-data and fetch-premarket-refresh"
+        echo "  watched-tickers     Deploy fetch-watched-tickers plus fetch-market-data,"
+        echo "                      fetch-earnings-history and freshness-watchdog (shared code paths)"
         echo "  schedulers Create/update all Cloud Scheduler triggers"
         echo "  backfill   Idempotently backfill data for every watchlist ticker."
         echo "             Pass --tickers AVGO,NVDA to override. Writes to Cloud SQL."
