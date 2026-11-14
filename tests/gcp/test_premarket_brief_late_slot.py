@@ -992,3 +992,196 @@ class TestLateWrite:
         pb.persist_to_cloud_sql(_late_brief(), run_kind='scheduled', triggered_by='x')
         assert db.kinds() == ['insert', 'exists', 'exists', 'exists', 'upsert']
         assert 'analysis_ts' not in db.calls[-1][1].columns and db.calls[0][1]['notes'].isna().all()
+
+
+# ── The three notes ────────────────────────────────────────────────────────
+
+PUTS = ('PMK_L', 755.73, 759.90, 753.20)
+
+
+def _earlier(*, high=759.737, low=755.73, fetched='08:20:33', built='08:30:50',
+             calls=('PMK_H', 759.737, 758.10, 762.63), puts=PUTS, run_kind='live') -> dict:
+    """A row in force, in the shape _read_rows_in_force returns."""
+    built_at = datetime.fromisoformat(f'{D} {built}').replace(tzinfo=ET)
+    return {'run_kind': run_kind, 'analysis_ts': _utc('08:30:54'),
+            'built_at': built_at.isoformat(), 'built': _utc(built),
+            'fetched_at': _utc(fetched) if fetched else None, 'pre_high': high, 'pre_low': low,
+            'calls_trigger_name': calls[0], 'calls_trigger_price': calls[1],
+            'calls_stop_price': calls[2], 'calls_t1_price': calls[3],
+            'puts_trigger_name': puts[0], 'puts_trigger_price': puts[1],
+            'puts_stop_price': puts[2], 'puts_t1_price': puts[3]}
+
+
+def _bare_row(analysis_ts='08:30:54') -> dict:
+    """A row in force with no level_basis: its write time is all it has."""
+    row = _earlier(fetched=None, high=None, low=None)
+    row.update(analysis_ts=_utc(analysis_ts), built_at=None, built=_utc(analysis_ts))
+    return row
+
+
+def _late_entry(*, high=762.693, low=755.73, fetched='09:20:40',
+                calls=('PMK_H', 762.693, 758.10, 763.04), puts=PUTS) -> dict:
+    """One ticker of a late brief."""
+    return {'level_basis': {'premarket_status': 'ok',
+                            'premarket': {'fetched_at': _utc(fetched).isoformat(),
+                                          'pre_high': high, 'pre_low': low}},
+            'calls_trigger_name': calls[0], 'calls_trigger_price': calls[1],
+            'calls_stop_price': calls[2], 'calls_t1_price': calls[3],
+            'puts_trigger_name': puts[0], 'puts_trigger_price': puts[1],
+            'puts_stop_price': puts[2], 'puts_t1_price': puts[3]}
+
+
+def _note(*, earlier: dict, late: dict, history_recorded=True):
+    """(payload, description) of the levels-updated note for a write at
+    09:21:30 Eastern."""
+    result = pb.LateSlotWrite(CLOCK, list(late), earlier)
+    result.outcome, result.written_at, result.history_recorded = 'applied', _utc('09:21:30'), history_recorded
+    payload = pb.format_levels_updated_note(D, earlier, {'tickers': late}, result)
+    (embed,) = payload['embeds']
+    return payload, embed['description']
+
+
+def _block_of(desc: str, ticker: str) -> str:
+    lines, out = desc.splitlines(), []
+    for line in lines:
+        if line.startswith(f'{ticker}  '):
+            out = [line]
+        elif out and line.startswith(' '):
+            out.append(line)
+        elif out:
+            break
+    return '\n'.join(out)
+
+
+class TestLevelsUpdatedNote:
+    def test_the_spec_example(self):
+        payload, text = _note(earlier={'SPY': _earlier()}, late={'SPY': _late_entry()})
+        assert 'premarket high $759.74 to $762.69, low $755.73 unchanged' in text
+        assert '(fetched 08:20, 09:20; earlier row built 08:30:50 ET)' in text
+        assert 'calls: trigger PMK_H $759.74 to PMK_H $762.69; first target $762.63 to $763.04' in text
+        assert 'puts:' not in text and 'stop' not in text
+        assert payload['embeds'][0]['title'] == 'Levels updated: Fri Nov 13, 09:21 ET'
+        assert text.splitlines()[0].startswith('SPY  premarket high')
+
+    def test_the_same_cent_is_unchanged(self):
+        same = ('PMK_H', 759.7401, 758.10, 762.63)
+        _, text = _note(earlier={'SPY': _earlier()},
+                        late={'SPY': _late_entry(high=759.7401, calls=same)})
+        assert 'premarket high $759.74 unchanged, low $755.73 unchanged' in text
+        assert 'trigger, stop and first target unchanged' in text and 'calls:' not in text
+        assert 'puts:' not in text
+
+    def test_a_new_name_at_the_same_price_is_a_change(self):
+        _, text = _note(earlier={'SPY': _earlier()},
+                        late={'SPY': _late_entry(calls=('PDH', 759.737, 758.10, 762.63))})
+        assert 'calls: trigger PMK_H $759.74 to PDH $759.74' in text
+        assert 'unchanged\n' not in text.split('(fetched')[1]      # no "unchanged" phrase line
+
+    def test_a_puts_change_is_listed_on_its_side(self):
+        _, text = _note(earlier={'SPY': _earlier()},
+                        late={'SPY': _late_entry(calls=('PMK_H', 759.737, 758.10, 762.63),
+                                                 puts=('PMK_L', 755.73, 762.693, 753.20))})
+        assert 'puts: stop $759.90 to $762.69' in text and 'calls:' not in text
+
+    @pytest.mark.parametrize('missing', [None, float('nan')])
+    def test_a_missing_price_is_na_never_zero(self, missing):
+        gone = ('PMK_L', 755.73, 759.90, missing)       # the puts first target, missing on both sides
+        _, text = _note(
+            earlier={'SPY': _earlier(calls=('PMK_H', 759.737, missing, 762.63), puts=gone)},
+            late={'SPY': _late_entry(calls=('PMK_H', 759.737, 758.10, 762.63), puts=gone)})
+        assert 'stop N/A to $758.10' in text
+        assert '$nan' not in text and '$0.00' not in text and 'first target N/A to N/A' not in text
+        assert 'puts:' not in text
+
+    @pytest.mark.parametrize('missing', [None, float('nan')])
+    def test_a_missing_premarket_value_is_na(self, missing):
+        _, text = _note(earlier={'SPY': _earlier(high=missing, low=missing)},
+                        late={'SPY': _late_entry(low=missing)})
+        assert 'premarket high N/A to $762.69, low N/A unchanged' in text
+        assert '$nan' not in text and '$0.00' not in text
+
+    def test_a_missing_name_prints_none(self):
+        _, text = _note(earlier={'SPY': _earlier(calls=(None, None, None, None))},
+                        late={'SPY': _late_entry()})
+        assert 'calls: trigger none N/A to PMK_H $762.69; stop N/A to $758.10; first target N/A to $763.04' in text
+
+    def test_no_earlier_row_is_shown_in_full(self):
+        _, text = _note(earlier={}, late={'SPY': _late_entry()})
+        assert 'SPY  no earlier row for the session; premarket high $762.69, low $755.73 (fetched 09:20)' in text
+        assert 'calls: trigger PMK_H $762.69; stop $758.10; first target $763.04' in text
+        assert 'puts: trigger PMK_L $755.73; stop $759.90; first target $753.20' in text
+
+    def test_an_earlier_row_with_no_basis_gives_its_write_time(self):
+        _, text = _note(earlier={'SPY': _bare_row()}, late={'SPY': _late_entry()})
+        assert 'premarket high N/A to $762.69, low N/A to $755.73' in text
+        assert '(fetched N/A, 09:20; earlier row built 08:30:54 ET)' in text
+
+    def test_blocks_follow_the_brief_order(self):
+        late = {t: _late_entry() for t in ('SPY', 'IWM', 'QQQ')}
+        _, text = _note(earlier={t: _earlier() for t in late}, late=late)
+        firsts = [line.split('  ')[0] for line in text.splitlines() if not line.startswith(' ')]
+        assert firsts == ['SPY', 'IWM', 'QQQ']
+
+    def test_twelve_tickers_stay_inside_discord(self):
+        import json
+        tickers12 = [f'T{i:02d}' for i in range(12)]
+        earlier = {t: _earlier(high=41759.737, low=41755.73,
+                               calls=('PMK_H', 41759.737, 41758.10, 41762.63),
+                               puts=('PMK_L', 41755.73, 41759.90, 41753.20)) for t in tickers12}
+        late = {t: _late_entry(high=41762.693, low=41754.11,
+                               calls=('PDH', 41762.693, 41757.20, 41763.04),
+                               puts=('PDL', 41754.11, 41762.693, 41751.00)) for t in tickers12}
+        payload, desc = _note(earlier=earlier, late=late)
+        assert len(desc) <= 4096 and len(json.dumps(payload)) <= 6000
+        shown = [t for t in tickers12 if f'{t}  premarket high' in desc]
+        assert shown == tickers12[:len(shown)] and 0 < len(shown) < 12
+        assert f'{12 - len(shown)} more ticker(s) not shown.' in desc
+        for t in shown:
+            block = _block_of(desc, t)
+            assert f'{t}  premarket high' in block and 'puts: trigger' in block     # never cut inside a block
+            assert 'calls: trigger PMK_H $41,759.74 to PDH $41,762.69' in block
+
+    def test_three_tickers_drop_nothing(self):
+        late = {t: _late_entry() for t in T}
+        _, text = _note(earlier={t: _earlier() for t in T}, late=late)
+        assert 'not shown' not in text and all(f'{t}  premarket high' in text for t in T)
+
+    def test_an_unrecorded_history_row_is_said(self):
+        _, text = _note(earlier={'SPY': _earlier()}, late={'SPY': _late_entry()},
+                        history_recorded=False)
+        assert text.rstrip().endswith('History row not recorded: the late build is in the job log.')
+
+    def test_a_recorded_history_row_is_not_mentioned(self):
+        _, text = _note(earlier={'SPY': _earlier()}, late={'SPY': _late_entry()})
+        assert 'History row' not in text
+
+
+class TestLateNotAppliedNote:
+    def test_lines(self):
+        payload = pb.format_late_not_applied_note(
+            D, 'snapshot_not_ready', 'no usable snapshot by 09:27:00 ET for QQQ (no row)',
+            {'SPY': _earlier(), 'IWM': _bare_row(analysis_ts='08:30:54')}, T)
+        lines = payload['embeds'][0]['description'].splitlines()
+        assert lines[0] == 'snapshot_not_ready: no usable snapshot by 09:27:00 ET for QQQ (no row)'
+        assert 'SPY: row in force built 08:30:50 ET on the snapshot fetched 08:20:33 ET' in lines
+        assert 'IWM: row in force built 08:30:54 ET, no premarket snapshot recorded' in lines
+        assert 'QQQ: no row for the session' in lines
+        assert lines[1:] == [next(line for line in lines if line.startswith(f'{t}:')) for t in T]
+        assert payload['embeds'][0]['title'] == 'Late levels not applied: Fri Nov 13'
+
+    def test_a_long_reason_stays_inside_discord(self):
+        import json
+        tickers = [f'T{i:03d}' for i in range(200)]
+        reason = 'no usable snapshot by 09:27:00 ET for ' + ', '.join(f'{t} (stamp 08:20:33)' for t in tickers)
+        payload = pb.format_late_not_applied_note(D, 'snapshot_not_ready', reason,
+                                                  {t: _earlier() for t in tickers}, tickers)
+        desc = payload['embeds'][0]['description']
+        assert len(desc) <= 4096 and len(json.dumps(payload)) <= 6000
+        assert desc.startswith('snapshot_not_ready: no usable snapshot by 09:27:00 ET for T000')
+        assert 'more ticker(s) not shown.' in desc
+
+    def test_run_failed(self):
+        payload = pb.format_late_run_failed_note(KeyError('x'))
+        assert payload['embeds'][0]['description'] == \
+            'Late brief run failed (KeyError). Check the brief row before the open.'
+        assert set(payload['embeds'][0]) == {'title', 'description', 'color'}

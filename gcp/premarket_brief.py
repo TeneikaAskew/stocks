@@ -3411,6 +3411,166 @@ def _row_identity(row: Optional[dict]) -> Optional[tuple]:
     return (row.get('run_kind'), row.get('analysis_ts'), row.get('built_at'))
 
 
+# The late slot's notes. Pure: they format what the run read and built.
+# Discord limits a description to 4096 characters and a message to
+# MAX_EMBED_CHARS.
+MAX_EMBED_DESCRIPTION = 4096
+_NOTE_INDENT = '     '
+_NOTE_SIDES = ('calls', 'puts')
+
+
+def _note_price(value) -> str:
+    """A price for a note: N/A when it is missing (None or NaN), never 0."""
+    return _fmt_price(_null_to_none(value))
+
+
+def _note_time(instant: Optional[datetime], fmt: str = '%H:%M') -> str:
+    """A stored instant on the exchange's clock, or N/A when it is missing."""
+    return f"{as_eastern_time(instant):{fmt}}" if instant is not None else 'N/A'
+
+
+def _price_changed(old, new) -> bool:
+    """A different price in cents (lib.strat_levels.price_cents), or a
+    price on exactly one side. Missing on both sides is not a change."""
+    from lib.strat_levels import price_cents  # noqa: PLC0415
+    old, new = _null_to_none(old), _null_to_none(new)
+    if old is None and new is None:
+        return False
+    if old is None or new is None:
+        return True
+    return price_cents(old) != price_cents(new)
+
+
+def _note_was_now(old, new) -> str:
+    if _price_changed(old, new):
+        return f"{_note_price(old)} to {_note_price(new)}"
+    return f"{_note_price(new)} unchanged"
+
+
+def _note_name(value) -> str:
+    value = _null_to_none(value)
+    return str(value) if value else 'none'
+
+
+def _late_values(data: dict) -> dict:
+    """A late brief ticker entry in the shape of a row in force."""
+    basis = data.get('level_basis') if isinstance(data.get('level_basis'), dict) else {}
+    premarket = basis.get('premarket') if isinstance(basis.get('premarket'), dict) else {}
+    out = {'fetched_at': _aware_or_none(premarket.get('fetched_at')),
+           'pre_high': premarket.get('pre_high'), 'pre_low': premarket.get('pre_low')}
+    for column in _ROWS_IN_FORCE_LEVELS:
+        out[column] = data.get(column)
+    return out
+
+
+def _levels_updated_block(ticker: str, was: Optional[dict], now: dict) -> str:
+    """One ticker's block of the levels-updated note."""
+    if was is None:
+        lines = [f"{ticker}  no earlier row for the session; premarket high "
+                 f"{_note_price(now['pre_high'])}, low {_note_price(now['pre_low'])} "
+                 f"(fetched {_note_time(now['fetched_at'])})"]
+        for side in _NOTE_SIDES:
+            lines.append(
+                f"{_NOTE_INDENT}{side}: trigger {_note_name(now[f'{side}_trigger_name'])} "
+                f"{_note_price(now[f'{side}_trigger_price'])}; "
+                f"stop {_note_price(now[f'{side}_stop_price'])}; "
+                f"first target {_note_price(now[f'{side}_t1_price'])}")
+        return '\n'.join(lines)
+
+    lines = [f"{ticker}  premarket high {_note_was_now(was.get('pre_high'), now['pre_high'])}, "
+             f"low {_note_was_now(was.get('pre_low'), now['pre_low'])} "
+             f"(fetched {_note_time(was.get('fetched_at'))}, {_note_time(now['fetched_at'])}; "
+             f"earlier row built {_note_time(was.get('built'), '%H:%M:%S')} ET)"]
+    any_change = False
+    for side in _NOTE_SIDES:
+        changes = []
+        old_name = _note_name(was.get(f'{side}_trigger_name'))
+        new_name = _note_name(now[f'{side}_trigger_name'])
+        old_price, new_price = was.get(f'{side}_trigger_price'), now[f'{side}_trigger_price']
+        if old_name != new_name or _price_changed(old_price, new_price):
+            changes.append(f"trigger {old_name} {_note_price(old_price)} to "
+                           f"{new_name} {_note_price(new_price)}")
+        for column, word in ((f'{side}_stop_price', 'stop'), (f'{side}_t1_price', 'first target')):
+            if _price_changed(was.get(column), now[column]):
+                changes.append(f"{word} {_note_price(was.get(column))} to {_note_price(now[column])}")
+        if changes:
+            any_change = True
+            lines.append(f"{_NOTE_INDENT}{side}: " + '; '.join(changes))
+    if not any_change:
+        lines.append(f"{_NOTE_INDENT}trigger, stop and first target unchanged")
+    return '\n'.join(lines)
+
+
+def _note_payload(title: str, head: list[str], blocks: list[str], tail: list[str],
+                  color: int) -> dict:
+    """One embed whose description is `head`, then as many whole `blocks`
+    as fit Discord's limits, then `tail`. Blocks are dropped from the end
+    and counted, never cut."""
+    shown = list(blocks)
+    while True:
+        dropped = len(blocks) - len(shown)
+        lines = head + shown
+        if dropped:
+            lines = lines + [f"{dropped} more ticker(s) not shown."]
+        payload = {'embeds': [{'title': title, 'description': '\n'.join(lines + tail),
+                               'color': color}]}
+        if not shown or (len(payload['embeds'][0]['description']) <= MAX_EMBED_DESCRIPTION
+                         and len(json.dumps(payload)) <= MAX_EMBED_CHARS):
+            return payload
+        shown.pop()
+
+
+def format_levels_updated_note(session_date: date, earlier: dict, brief: dict,
+                               result: LateSlotWrite) -> dict:
+    """The late slot's one message when it rewrote the rows: per ticker the
+    premarket high and low of the earlier row and of the late build with
+    when each snapshot was fetched, and per side only what changed among
+    the trigger (name and price), the stop and the first target. A change
+    is a different name or a different price in cents. A ticker with no
+    earlier row says so and is shown in full. The times are the rows' own.
+    `earlier` is what _read_rows_in_force returned before the build."""
+    blocks = [_levels_updated_block(ticker, earlier.get(ticker), _late_values(data or {}))
+              for ticker, data in (brief.get('tickers') or {}).items()]
+    tail = []
+    if result.history_recorded is False:
+        tail.append("History row not recorded: the late build is in the job log.")
+    title = (f"Levels updated: {session_date:%a %b %d}, "
+             f"{_note_time(result.written_at)} ET")
+    return _note_payload(title, [], blocks, tail, 0x2ecc71)
+
+
+def format_late_not_applied_note(session_date: date, outcome: str, reason: str,
+                                 rows: dict, tickers: list[str]) -> dict:
+    """The late slot's one line when it did not rewrite the rows: the
+    outcome and its reason, then per brief ticker when the row in force was
+    built and on which snapshot, or that no row exists for the session."""
+    blocks = []
+    for ticker in tickers:
+        row = rows.get(ticker)
+        if row is None:
+            blocks.append(f"{ticker}: no row for the session")
+        elif row.get('fetched_at') is None:
+            blocks.append(f"{ticker}: row in force built "
+                          f"{_note_time(row.get('built'), '%H:%M:%S')} ET, "
+                          f"no premarket snapshot recorded")
+        else:
+            blocks.append(f"{ticker}: row in force built "
+                          f"{_note_time(row.get('built'), '%H:%M:%S')} ET on the snapshot "
+                          f"fetched {_note_time(row['fetched_at'], '%H:%M:%S')} ET")
+    head = [_truncate(f"{outcome}: {reason}", MAX_EMBED_DESCRIPTION // 2)]
+    return _note_payload(f"Late levels not applied: {session_date:%a %b %d}",
+                         head, blocks, [], 0xe67e22)
+
+
+def format_late_run_failed_note(exc: BaseException) -> dict:
+    """The one line a late run that raised tries to post before it exits."""
+    return {'embeds': [{
+        'title': 'Late brief run failed',
+        'description': (f"Late brief run failed ({type(exc).__name__}). "
+                        f"Check the brief row before the open."),
+        'color': 0xe74c3c}]}
+
+
 # ── Cloud SQL Persistence ───────────────────────────────────────────────────
 
 def _resolve_run_kind_and_update(allow_update_arg: bool) -> tuple[bool, str]:
