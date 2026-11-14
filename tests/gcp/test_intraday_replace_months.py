@@ -1407,3 +1407,53 @@ def test_a_window_holding_only_the_previous_months_late_bars_is_left_alone():
     assert r["status"] == fai.REPLACE_NOTHING_HELD
     assert (r["carry_in"], r["held_sessions"], r["rows"]) == (3, 0, 3)
     swap.assert_not_called()
+
+
+# -- Design 4: the previous month's late bars are spared ---------------------
+
+
+def test_previous_months_late_bars_are_spared_and_not_asked_of_this_month():
+    """done_when[1]. On main: incomplete_refetch, missing ['2018-02-28 (0/2)'],
+    because March's vendor month cannot return February's bars."""
+    stored, march = _feb_late_and_march()
+
+    r, swap = _replace(stored, march, "SPY", 2018, 3, commit=False)
+    assert r["status"] == fai.REPLACE_DRY
+    assert (r["carry_in"], r["missing_sessions"], r["held_sessions"]) == (3, 0, 1)
+    swap.assert_not_called()
+
+    r, swap = _replace(stored, march, "SPY", 2018, 3, commit=True)
+    assert r["status"] == fai.REPLACE_OK
+    assert (r["carry_in"], r["missing_sessions"]) == (3, 0)
+    assert swap.call_count == 1
+    frame = swap.call_args.args[0]
+    assert list(swap.call_args.kwargs["spare_ts"]) == FEB_LATE
+    assert not frame["ts"].isin(FEB_LATE).any()
+    assert len(frame) == 961
+    # The window's 964 rows less the three spared: what the swap deletes.
+    assert (r["deleted"], r["inserted"]) == (961, 961)
+
+
+def test_a_winter_label_row_the_refetch_lacks_is_spared_not_deleted():
+    """Under EST the carry strip runs to 05:00Z, so the Eastern-label rows of
+    the 1st's 04:00-04:59 bars lie in it. Copies of refetched bars count as
+    today. One the refetch lacks cannot be told from a late bar of the previous
+    month by this month's evidence, so it is spared: never counted, and never
+    deleted."""
+    v = _bars("2018-03-01", range(240, 1201), "SPY")
+    stored = _label_rows(v)
+    strip = [pd.Timestamp("2018-03-01 04:00", tz="UTC") + pd.Timedelta(minutes=n) for n in range(60)]
+
+    r, swap = _replace(stored, v, "SPY", 2018, 3, commit=True)
+    assert r["status"] == fai.REPLACE_OK
+    assert (r["carry_in"], r["label_copies"], r["held_sessions"]) == (0, 0, 1)
+    assert list(swap.call_args.kwargs["spare_ts"]) == []
+    assert len(swap.call_args.args[0]) == 961
+
+    r, swap = _replace(stored, v[v["ts"].dt.hour >= 5], "SPY", 2018, 3, commit=True)
+    assert r["status"] == fai.REPLACE_OK
+    assert r["carry_in"] == 60
+    assert list(swap.call_args.kwargs["spare_ts"]) == strip
+    frame = swap.call_args.args[0]
+    assert len(frame) == 901 and not frame["ts"].isin(strip).any()
+    assert r["deleted"] == 901          # the 60 are not among the rows deleted

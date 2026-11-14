@@ -798,7 +798,11 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
             df, 'market_data_intraday', {'ticker': symbol, 'interval': '1min'},
             'ts', start, end, chunksize=5000,
             max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify,
-            clear_tables=DERIVED_TS_TABLES, cleared=cleared)
+            clear_tables=DERIVED_TS_TABLES, cleared=cleared,
+            # The previous month's late bars: this month's refetch cannot
+            # return them, so they are left as they are, inserted_at included.
+            # Their own month rewrites them (the tail swap below).
+            spare_ts=c.carry_in_keys)
     except (_HeldChanged, WindowChanged) as e:
         out.update(status=REPLACE_CHANGED, detail=str(e))
         return out
