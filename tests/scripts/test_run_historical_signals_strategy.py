@@ -305,7 +305,8 @@ def _av_session(day: str, stored: str) -> pd.DataFrame:
 def test_load_intraday_bars_returns_true_instants_in_both_conventions(monkeypatch, stored):
     import gcp.historical_signals as hs
     monkeypatch.setattr(hs, "get_engine", lambda: object())
-    monkeypatch.setattr(hs.pd, "read_sql", lambda *a, **k: _av_session("2026-01-15", stored))
+    monkeypatch.setattr(hs.pd, "read_sql", lambda *a, **k: _av_session(
+        "2026-01-15", stored).assign(inserted_at=pd.Timestamp("2026-02-23 03:00", tz="UTC")))
     bars = hs.load_intraday_bars("SPY", datetime(2026, 1, 15))
     open_bar = bars.loc[bars["Volume"] == 5000, "Time"].min()
     assert open_bar == pd.Timestamp("2026-01-15 14:30", tz="UTC")   # 09:30 EST
@@ -351,7 +352,8 @@ def test_load_intraday_bars_fetches_a_window_in_both_conventions(monkeypatch, st
     instants sit at raw 07:30-10:35Z, outside the instant window; the raw
     window must open at start's Eastern label and the result is cut back."""
     import gcp.historical_signals as hs
-    rows = _av_session("2026-01-15", stored)
+    rows = _av_session("2026-01-15", stored).assign(
+        inserted_at=pd.Timestamp("2026-02-23 03:00", tz="UTC"))
     seen = {}
 
     def fake_read_sql(sql, engine, params=None):
