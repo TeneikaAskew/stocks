@@ -187,11 +187,6 @@
   ]
  },
  "gcp/premarket_brief.py": {
-  "host-today": [
-   "_resolve_analysis_date::date.today()",
-   "_resolve_analysis_date::date.today()",
-   "persist_to_cloud_sql::date.today()"
-  ],
   "tz-localize-none": [
    "generate_premarket_brief::df.index.tz_localize(None)",
    "generate_premarket_brief::df.index.tz_localize(None)"
