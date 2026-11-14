@@ -1387,8 +1387,9 @@ def _query_watched_tickers_heartbeat(now_utc: datetime) -> list[FreshnessRow]:
     naming that condition and no finding, so a watchdog redeployed before
     the job and its schedule exist does not page for a job that cannot run
     yet. The latest-row select tells "no row at all" apart from "no success
-    row". Once activated: stale when the job has no success row, or its latest success started
-    before the session two sessions back from today's Eastern date (both
+    row". Once activated: stale when the job has no success row, or its
+    latest success started before the session two sessions back from
+    today's Eastern date (both
     session steps go through _calendar, so a calendar failure surfaces as
     the explicit nyse_calendar row). Warn rows carry the latest run's
     overflow note and non-zero failure count. Stale, not warn, for the

@@ -382,9 +382,10 @@ def run(cfg: Config, *, today: date, now: datetime,
     ``backfill``, ``session_bars``, ``indicators``, ``ticker_info``,
     ``verify``): that is logged at ERROR and recorded as ``'error'`` with the
     phase (and ``overflow=<n>`` when above zero) in the note and the rows the
-    backfill wrote before the failure in ``rows_written``. Examples of a phase failure: ``_run_backfill``'s
-    RuntimeError for a missing Alpha Vantage key or an unconfigured Cloud SQL,
-    ``LevelParamsUnavailable``, a failed strict read.
+    backfill wrote before the failure in ``rows_written``. Examples of a phase
+    failure: ``_run_backfill``'s RuntimeError for a missing Alpha Vantage key
+    or an unconfigured Cloud SQL, ``LevelParamsUnavailable``, a failed strict
+    read.
 
     A per-ticker Alpha Vantage failure is not a phase failure: ``_run_backfill``
     logs it and moves on, and the ticker, having no session bar, is counted by
