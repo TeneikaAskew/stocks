@@ -4,7 +4,7 @@ req_ids: [REQ-DATA-001, REQ-DATA-002, REQ-DATA-003, REQ-GOV-001]
 issues: [1259]
 canvases: []
 done_when:
-  - "Partial-chain collector tests prove calls-only and puts-only success responses fail before persistence and fail the job with a typed incomplete_chain error; caplog tests with a sentinel apikey in a raised requests exception URL and a sentinel vendor Information body prove neither the key nor the vendor text reaches any log record or exit message; actual PostgreSQL tests prove skip-existing and resume cursors require both sides."
+  - "Partial-chain collector tests prove calls-only and puts-only success responses fail before persistence and fail the job with a typed incomplete_chain error, with the side check applied to the final normalised write payload so a fixture in which normalisation removes the last contract of one side also fails typed with no persistence; caplog tests with a sentinel apikey in a raised requests exception URL and a sentinel vendor Information body prove neither the key nor the vendor text reaches any log record or exit message; actual PostgreSQL tests prove skip-existing and resume cursors require both sides."
   - "Actual PostgreSQL tests prove unavailable date markers block older snapshots; all writes of the exact write set (etf_options_snapshots, gamma_levels_eod, markers, daily_vex, options_daily_features, etf_options_daily_greeks, every strat_features_<tf> in strat_data_builder.TF_LIST, the options_partition_revisions row and the manifest rows) run in one transaction on one recovery-owned connection; a failure injected in the final strat_features_<tf> write leaves every table and the ledger byte-identical to the pre-run copy, verified from a second connection; recovery removes obsolete markers; repeated bounded backfills converge with published_at unchanged; and for every table in TF_LIST the next-session row count equals the session's bar count for that timeframe with non-null gamma context on every row (78 for 5m)."
   - "Publication-boundary tests prove the two-phase published_at: with an open recovery transaction a cutoff C read on a second connection is unavailable at every later wall time; after phase 1 commits, published_at IS NULL is unavailable; after phase 2 stores P, as_of = P is visible, P - 1 microsecond is unavailable and C < commit-return <= P is recorded; phase 2 is idempotent on retry; unreadable, missing or conflicting ledger metadata is unavailable; every refusal path makes zero recovery mutations and leaves pre-existing and competitor rows intact."
   - "Complete-result validation tests prove that an as-of reader validates, in the same database snapshot that selects the data, the complete live key set and (table, pk, content hash) tuples of every consumed partition against the recorded revision: a changed value under an unchanged key, a new key, a resurrected deleted key, a key/payload reassignment and a two-connection mutation between validation and selection each yield unavailable(unrecorded_mutation) with no partition data (the two-connection case returns exactly the validated snapshot, never the later values); current reads show the later values; ledger and manifest rows are byte-identical; an unchanged-content retry is a no-op with zero writes and a changed-content retry refuses with zero recovery mutations."
@@ -56,8 +56,12 @@ through all of them.
 ## Design
 
 1. **Both sides before persistence.** The EOD collector requires both call and put contracts
-   before a success response is normalised or persisted. A one-sided response raises a typed
-   `incomplete_chain` error; `main` records the failure and exits nonzero. Existing HTTP and
+   in the final normalised write payload, checked immediately before persistence (normalisation
+   coerces invalid strikes and drops rows missing a type, expiration or strike, so a response
+   with both raw types can still become one-sided). A one-sided payload raises a typed
+   `incomplete_chain` error; `main` records the failure and exits nonzero. A regression fixture
+   in which normalisation removes the last contract of one side must fail the same way with
+   no persistence. Existing HTTP and
    no-data handling is preserved, except that no diagnostic message may contain a
    credential-bearing exception URL or vendor-controlled text: the HTTP-exception path and the
    unexpected-response path log a fixed safe reason. No automatic retries or new API calls.
