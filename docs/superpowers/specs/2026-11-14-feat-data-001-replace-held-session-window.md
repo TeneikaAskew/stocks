@@ -12,7 +12,7 @@ done_when:
   - "tests/gcp/test_intraday_replace_months.py::test_the_swap_spares_the_listed_keys passes on the mocked engine the file already uses (the lock statement and the DELETE both exclude the keys of spare_ts, a frame that holds a spared key is refused before the transaction opens, and the delete-ratio check counts the rows deleted), and tests/integration/test_intraday_replace_spare.py passes in the integration-tests CI job on real Postgres: a window of ten rows swapped with two keys in spare_ts leaves those two rows equal in every column, inserted_at included, deletes the other eight and inserts the frame"
   - "make test passes on the PR head; lib/eastern_time.py, platform/api, gcp/deploy.sh and the files under gcp/queries/ are not in the PR's diff; month_replace_window, REPLACE_SHORT_TOLERANCE and REPLACE_MAX_DELETE_RATIO are unchanged; the existing cases of tests/gcp/test_intraday_replace_months.py keep every assertion they make and change only where they stub the stored-row read, with each changed line listed in the PR body"
   - "02-FEATURE-CATALOG FEAT-DATA-001 record shows Status and Last reviewed for this PR, 12-PR-ISSUE-TRACEABILITY lists it, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing that origin/main does not, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -28,7 +28,7 @@ supersedes: null
 ## Status of the decision
 
 - The owner delegated this decision to the delivery session on 2026-11-14: "I need you to make the executive decisions on what needs to be done. I'm giving you that authority." The owner's question was "Why would we keep bad data with good data?"
-- The delivery session then decided five points. The measurements below were made after that, and they do not support point 1 as it was put. This file is therefore `draft`. It becomes `approved`, by that delegation, when the delivery session confirms the table below.
+- The delivery session then decided five points. The measurements below were made after that, and they do not support point 1 as it was put. The delivery session read the measurements and Design 1 to 7 on 2026-11-14 and confirmed the table below, so this file is `approved` under that delegation. The owner was told on 2026-11-14 that the fix differs from the first description given (rows inside the session, told apart by content, and the previous month's late vendor bars spared).
 
 | Point as decided | In this spec |
 |---|---|
