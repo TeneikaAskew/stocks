@@ -1099,7 +1099,9 @@ def test_replay_with_bars_runs_each_probe_once_then_dispatches(date_arg):
     hi = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
     both = {"market_data_intraday": _FOUND, "market_data_daily": _FOUND}
 
+    started = datetime.now(timezone.utc)
     msg, events, dispatched = _run_replay(both, date_arg=date_arg)
+    finished = datetime.now(timezone.utc)
     assert [e[0] for e in events] == ["market_data_intraday", "market_data_daily", "brief_row"]
     assert events[0][2] == {"t": "AMD", "lo": hi - timedelta(days=7), "hi": hi}
     assert events[1][2] == {"t": "AMD", "d": d}
@@ -1107,8 +1109,21 @@ def test_replay_with_bars_runs_each_probe_once_then_dispatches(date_arg):
     assert dispatched[0][1] == {
         "BRIEF_AS_OF": d.isoformat(), "BRIEF_TICKERS": "AMD", "BRIEF_UPDATE": "true",
         "BRIEF_POST_TO_DISCORD": "true", "BRIEF_TRIGGERED_BY": "discord:replay"}
-    assert set(dispatched[1][1]) == {
-        "INSIGHT_AS_OF", "INSIGHT_TICKERS", "INSIGHT_UPDATE", "INSIGHT_TRIGGERED_BY"}
+    insight_env = dict(dispatched[1][1])
+    as_of = datetime.strptime(
+        insight_env.pop("INSIGHT_AS_OF"), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    assert insight_env == {
+        "INSIGHT_TICKERS": "AMD", "INSIGHT_UPDATE": "true",
+        "INSIGHT_TRIGGERED_BY": "discord:replay"}
+    # The canonical 09:15 ET slot (13:15 UTC) of the date, or, when that is
+    # still ahead (today before 13:15 UTC), one minute before now.
+    canonical = datetime(d.year, d.month, d.day, 13, 15, tzinfo=timezone.utc)
+    if canonical <= started:
+        assert as_of == canonical
+    else:
+        clamped = (started - timedelta(minutes=1, seconds=1) <= as_of
+                   <= finished - timedelta(minutes=1))
+        assert clamped or as_of == canonical, as_of
     assert "backfill" not in msg.lower()
 
     # both stored rows present and refresh False: the two render-existing jobs
@@ -1119,6 +1134,8 @@ def test_replay_with_bars_runs_each_probe_once_then_dispatches(date_arg):
     assert dispatched[0][1] == {
         "BRIEF_POST_EXISTING_TICKER": "AMD", "BRIEF_POST_EXISTING_DATE": d.isoformat(),
         "BRIEF_TRIGGERED_BY": "discord:replay"}
+    assert dispatched[1][1] == {
+        "INSIGHT_PUSH_ONE_TICKER": "AMD", "INSIGHT_PUSH_ONE_DATE": d.isoformat()}
     assert "backfill" not in msg.lower()
 
 
