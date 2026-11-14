@@ -25,7 +25,7 @@ done_when:
   - "Source identity (DASHBOARD-01): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-PLAYBOOK-001, DASHBOARD-01) note row carries that source_identity_sha256"
   - "The FEAT-PLAYBOOK-001 catalog record (Status, Last reviewed) and the PR traceability entry are updated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
   - "tests/api/test_movement_statement_late_slot.py::test_the_ladder_follows_the_late_write passes: with MOVEMENT_STATEMENT_ENABLED on, the exchange clock frozen, and one in-memory premarket_analysis table that takes the brief's canonical writes (gcp.database.upsert_dataframe and the late slot's rewrite) and answers the route's read of the live level_basis (lib.strat_levels.read_live_level_basis through the route's own query function), a scheduled early run at 08:30 America/New_York is followed by GET /api/movement-statement for SPY through TestClient, whose levels block carries the early row's trigger as rung one and the early row's side lists as its ladder; a late-slot run at 09:21:30 on a premarket snapshot stamped 09:20:40 whose high is above the early snapshot's then applies, and the same request returns the late row's trigger and side lists and no longer returns the early trigger; ::test_a_late_run_that_does_not_apply_leaves_the_ladder passes: the same sequence with the late run started at 09:35:00 leaves the response equal, field for field, to the one before it. The first test fails on origin/main, where BRIEF_RUN_SLOT is not read, the 09:21:30 run rewrites no canonical row and the route still answers with the early trigger"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -99,6 +99,8 @@ Decided on 2026-11-14 for #1929, and binding here:
 7. A `BRIEF_AS_OF` replay cuts premarket at the slot's clock, here if it fits, otherwise its own spec.
 
 New decisions this design needs. Each has a recommendation, written into the design below.
+
+**Decided 2026-11-14:** the owner took the recommended option on all seven, A to G ("take your recommendations"). The design below already states each as recommended, so no section changes.
 
 **A. Decision 7: in this spec or its own? Recommended: its own spec.** This spec's plan is about 14
 tasks. The replay cut adds about 7 (see "Implementation plan: size"), which passes the 15 task limit
