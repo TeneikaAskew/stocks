@@ -849,12 +849,13 @@ def test_run_two_groups_sum_rows_written(job, monkeypatch):
     job.db.seed('BOOT', 300, end=date(2026, 11, 10), source=WATCHED)  # compact
     calls = []
 
-    def fake_backfill(tickers, *, outputsize, data_source):
+    def fake_backfill(tickers, *, outputsize, data_source, on_rows):
         calls.append((list(tickers), outputsize, data_source))
         n = {'full': 12, 'compact': 3}[outputsize]
         for t in tickers:   # the pull lands the session's bars
             job.db.seed(t, n, source=data_source)
-        return n
+            on_rows(n)
+        return n * len(tickers)
 
     monkeypatch.setattr(fmd, '_run_backfill', fake_backfill)
     rc = _run(job, ['NEW', 'BOOT'])
@@ -1106,3 +1107,40 @@ def test_verify_placeholder_only_ticker_fails_bars():
     db.info['PH'] = _RUN_NOW
     v = fwt.verify_tickers(['PH'], _SESSION, _RUN_NOW, query=db)
     assert v.failed == {'PH': 'bars'}
+
+
+# ---------------------------------------------------------------------------
+# Codex round 1, finding 2: rows written before a failed write are recorded
+# ---------------------------------------------------------------------------
+
+def test_run_backfill_on_rows_reports_each_tickers_upsert(av_stub):
+    av_stub.bars_by_ticker = {'AAA': 5, 'NONE': 0, 'BBB': 7}
+    seen = []
+    assert fmd._run_backfill(['AAA', 'NONE', 'BBB'], on_rows=seen.append) == 12
+    assert seen == [5, 7]      # once per upsert, none for the empty pull
+
+
+def test_run_backfill_without_on_rows_is_unchanged(av_stub):
+    av_stub.bars_by_ticker = {'AAA': 5, 'BBB': 7}
+    assert fmd._run_backfill(['AAA', 'BBB']) == 12
+    assert fmd._run_backfill(['AAA', 'BBB'], on_rows=None) == 12
+    assert [len(f) for f in av_stub.frames] == [5, 7, 5, 7]
+
+
+def test_run_partial_group_write_records_the_committed_rows(job, monkeypatch):
+    """AAA's 30 rows commit, then BBB's write raises: the error row says 30."""
+    import gcp.database as gdb
+    inner = gdb.upsert_dataframe   # the job fixture's fake
+
+    def upsert(df, table, keys):
+        if set(df['ticker']) == {'BBB'}:
+            raise RuntimeError('write failed for BBB')
+        return inner(df, table, keys)
+
+    monkeypatch.setattr('gcp.database.upsert_dataframe', upsert)
+    rc = _run(job, ['AAA', 'BBB'])
+    assert rc == 2
+    r = _only_run(job)
+    assert r['status'] == 'error' and r['note'].startswith('backfill: ')
+    assert r['rows_written'] == 30
+    assert len(job.db.bars['AAA']) == 30 and 'BBB' not in job.db.bars

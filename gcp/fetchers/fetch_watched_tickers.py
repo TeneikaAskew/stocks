@@ -388,10 +388,11 @@ def run(cfg: Config, *, today: date, now: datetime,
     ``backfill``, ``session_bars``, ``indicators``, ``ticker_info``,
     ``verify``): that is logged at ERROR and recorded as ``'error'`` with the
     phase (and ``overflow=<n>`` when above zero) in the note and the rows the
-    backfill wrote before the failure in ``rows_written``. Examples of a phase
-    failure: ``_run_backfill``'s RuntimeError for a missing Alpha Vantage key
-    or an unconfigured Cloud SQL, ``LevelParamsUnavailable``, a failed strict
-    read.
+    backfill wrote before the failure in ``rows_written`` (counted per ticker,
+    so a write raising mid-group keeps the earlier tickers' rows). Examples of
+    a phase failure: ``_run_backfill``'s RuntimeError for a missing Alpha
+    Vantage key or an unconfigured Cloud SQL, ``LevelParamsUnavailable``, a
+    failed strict read.
 
     A per-ticker Alpha Vantage failure is not a phase failure: ``_run_backfill``
     logs it and moves on, and the ticker, having no session bar, is counted by
@@ -428,6 +429,12 @@ def run(cfg: Config, *, today: date, now: datetime,
 
     n = len(kept)
     rows_written = 0   # visible to the error branch: what was written before a failure
+
+    def _count_rows(k: int) -> None:
+        # advanced per ticker as each upsert completes, so a write failing
+        # later in the same group still leaves the committed rows counted
+        nonlocal rows_written
+        rows_written += k
     try:
         coverages = _phase('coverage', read_coverage, kept, query=query)
         plan = _phase('coverage', plan_pulls, coverages, fetch_date)
@@ -438,8 +445,8 @@ def run(cfg: Config, *, today: date, now: datetime,
                 done += 1
                 log.info("ticker=%s step=%s processed=%d/%d", t, 'bars_current', done, n)
         for (size, source), group in plan.items():
-            rows_written += _phase('backfill', fetch_market_data._run_backfill,
-                                   group, outputsize=size, data_source=source)
+            _phase('backfill', fetch_market_data._run_backfill,
+                   group, outputsize=size, data_source=source, on_rows=_count_rows)
             for t in group:
                 done += 1
                 log.info("ticker=%s step=%s processed=%d/%d", t, 'bars', done, n)

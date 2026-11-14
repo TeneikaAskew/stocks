@@ -16,6 +16,7 @@ import argparse
 import logging
 import os
 import sys
+from collections.abc import Callable
 from datetime import datetime, date, timedelta, timezone, time as dt_time
 from pathlib import Path
 
@@ -980,7 +981,8 @@ def _exclude_partial_today(df: pd.DataFrame, today_et: date,
 
 def _run_backfill(tickers: list | None = None, *,
                   outputsize: str | None = None,
-                  data_source: str = 'av_daily_backfill') -> int:
+                  data_source: str = 'av_daily_backfill',
+                  on_rows: Callable[[int], None] | None = None) -> int:
     """--backfill mode: pull historical daily bars for every ticker in
     earnings_history that the brief would render but lacks depth.
 
@@ -996,6 +998,10 @@ def _run_backfill(tickers: list | None = None, *,
     `data_source` is the label written on every upserted row. Either one
     without `tickers` (None or empty) raises ValueError: it would otherwise
     apply to the whole earnings universe.
+
+    `on_rows`, when given, is called with each ticker's row count right
+    after its `upsert_dataframe` returns, so a caller can count the rows
+    already written when a later ticker's write raises.
 
     Returns the number of rows passed to `upsert_dataframe` (conflict
     updates included); 0 when nothing was written."""
@@ -1076,6 +1082,8 @@ def _run_backfill(tickers: list | None = None, *,
                 df['data_source'] = data_source
                 upsert_dataframe(df, 'market_data_daily', ['ticker', 'date'])
                 upserted += len(df)
+                if on_rows is not None:
+                    on_rows(len(df))
                 log.info("    %d bars upserted: %s..%s",
                          len(df), df['date'].min(), df['date'].max())
         if i < len(pending) - 1 and sleep_secs > 0:
