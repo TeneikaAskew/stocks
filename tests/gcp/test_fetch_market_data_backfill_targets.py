@@ -68,7 +68,8 @@ def test_watchlists_arm_names_the_default_owner_and_excludes_removed_rows():
 # ── the SQL run over rows ──────────────────────────────────────────────────────
 
 _DDL = (
-    "CREATE TABLE earnings_calendar (ticker TEXT, options_volume INTEGER, stock_volume INTEGER)",
+    "CREATE TABLE earnings_calendar (ticker TEXT, options_volume INTEGER, stock_volume INTEGER,"
+    " data_source TEXT)",
     "CREATE TABLE watchlists (user_id TEXT NOT NULL, ticker TEXT NOT NULL, in_brief BOOLEAN NOT NULL,"
     " in_insight BOOLEAN NOT NULL, signals BOOLEAN NOT NULL, removed_at TEXT NULL, source TEXT NULL,"
     " PRIMARY KEY (user_id, ticker))",
@@ -101,7 +102,8 @@ def _targets_over(rows) -> list[tuple]:
         conn.executemany(
             "INSERT INTO watchlists (user_id, ticker, in_brief, in_insight, signals, removed_at, source)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
-        conn.executemany("INSERT INTO earnings_calendar VALUES (?, ?, ?)", CALENDAR_ROWS)
+        conn.executemany("INSERT INTO earnings_calendar (ticker, options_volume, stock_volume)"
+                         " VALUES (?, ?, ?)", CALENDAR_ROWS)
         conn.executemany("INSERT INTO earnings_history VALUES (?)", [(t,) for t in HISTORY_TICKERS])
         conn.commit()
 

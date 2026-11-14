@@ -25,6 +25,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from lib.eastern_time import ET, eastern_bounds_utc, eastern_index_to_utc
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 
 from lib.logging_config import setup_logging
@@ -687,9 +688,9 @@ def _earnings_tickers_in_window(
 
     Filtering:
       - ``require_options=True`` (default): only return tickers with at
-        least one source row marking ``has_options=true``. EW and UW
-        populate this flag; AV and Yahoo never do, so this is effectively
-        "EW or UW listed it as options-tradable" — the right cut for an
+        least one retained source row marking ``has_options=true``. UW
+        populates this flag; AV and Yahoo never do. Retired EW rows are
+        excluded before aggregation — preserving the options cut for an
         earnings-options pipeline. In a typical 7d window this collapses
         a ~3,500-ticker universe to ~500.
       - ``require_options=False``: legacy behaviour, returns all reporters
@@ -727,9 +728,9 @@ def _earnings_tickers_in_window(
     # only filled on UW rows, while many UW rows ALSO have stock_volume.
     # An optionable name with high options volume is the canonical
     # "tradeable earnings ticker" — exactly what we want the daily
-    # fetcher to backfill. NULLS LAST on every signal so AV-only /
-    # EW-only rows sink without disappearing entirely.
-    sql = """
+    # fetcher to backfill. NULLS LAST orders retained rows with missing
+    # liquidity signals last; retired EW rows are excluded before grouping.
+    sql = f"""
         SELECT ticker,
                BOOL_OR(COALESCE(has_options, false))   AS optionable,
                BOOL_OR(COALESCE(is_s_p_500, false))    AS sp500,
@@ -737,7 +738,7 @@ def _earnings_tickers_in_window(
                MAX(options_volume)                     AS options_volume,
                MAX(market_cap)                         AS market_cap
         FROM earnings_calendar
-        WHERE earnings_date BETWEEN
+        WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date BETWEEN
             CURRENT_DATE - (:back || ' days')::interval AND
             CURRENT_DATE + (:ahead || ' days')::interval
         GROUP BY ticker
@@ -843,10 +844,10 @@ def _backfill_targets() -> list:
              ORDER BY t.ticker
         """
     else:
-        sql = """
+        sql = f"""
             WITH eligible AS (
                 SELECT DISTINCT ticker FROM earnings_calendar
-                 WHERE COALESCE(options_volume, 0) > 0
+                 WHERE {EARNINGS_NOT_RETIRED_SQL} AND COALESCE(options_volume, 0) > 0
                    AND COALESCE(stock_volume,   0) >= 500000
               UNION
                 SELECT ticker FROM watchlists
@@ -1192,10 +1193,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--require-options', action='store_true',
                         default=os.environ.get('REQUIRE_OPTIONS', 'true').lower() != 'false',
                         help=('Filter the earnings union to tickers with '
-                              '`has_options=true` from EW or UW. Default: '
+                              '`has_options=true` from a retained source. Default: '
                               'true. AV/Yahoo never set this flag, so the '
-                              'filter effectively means "EW or UW confirmed '
-                              'this is options-tradable around earnings" — '
+                              'filter uses retained UW confirmation that '
+                              'this is options-tradable around earnings — '
                               'the right cut for an earnings-options pipeline. '
                               'Set REQUIRE_OPTIONS=false to disable.'))
     parser.add_argument('--backfill', action='store_true',
