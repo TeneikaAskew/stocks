@@ -917,6 +917,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) | Cloud Run Job: pre-warm the AI insight cache for the top-N ranker tickers. | `auto-refresh-top-n` |
 | [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) | Backfill historical data for a single ticker — Cloud Run Job. | `backfill-ticker` |
 | [`gcp/backtest_job.py`](../../../gcp/backtest_job.py) | Strategy backtest — Cloud Run Job wrapper. | `backtest` |
+| [`gcp/bar_recompute.py`](../../../gcp/bar_recompute.py) | What the two bar recompute tools share (FEAT-DATA-001). | — |
 | [`gcp/brief_explanations.py`](../../../gcp/brief_explanations.py) | LLM-generated explanations for the pre-market brief. | — |
 | [`gcp/build_intraday_flow.py`](../../../gcp/build_intraday_flow.py) | Build / refresh `intraday_flow_15m` — the MATERIALIZED per-15m-bucket | — |
 | [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) | Build / refresh `intraday_gex_15m` — MATERIALIZED reconstructed intraday | — |
