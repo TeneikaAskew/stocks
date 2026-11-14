@@ -4080,10 +4080,32 @@ def _run_late_slot(*, cfg, data_dir: str, run_kind: str, triggered_by: str,
     session's canonical rows in one guarded statement before the write
     cutoff, and post one short note. Returns the process exit code: 0 when
     the rows were rewritten and the owner was told (or posting is turned
-    off) and the history row recorded, and on a day that is not a session;
-    1 otherwise. The earnings webhook is never used."""
-    timeout = cfg.monitor.discord_timeout
+    off) and the history row recorded, on a day that is not a session, and
+    when the rows are already built on this snapshot; 1 otherwise. The
+    earnings webhook is never used.
 
+    Nothing is swallowed. Unreadable level parameters exit 1 as they do in
+    the early run; any other exception is re-raised. Either way the run
+    first tries, once, to post "Late brief run failed (<type>)", and a
+    failure of that post never masks the error."""
+    timeout = cfg.monitor.discord_timeout
+    try:
+        return _late_slot_flow(cfg=cfg, data_dir=data_dir, run_kind=run_kind,
+                               triggered_by=triggered_by, webhook_url=webhook_url,
+                               timeout=timeout)
+    except LevelParamsUnavailable as exc:
+        # INTERNAL failure (CLAUDE.md 3.7): no row is written for any ticker.
+        logger.error("late premarket brief aborted: %s (%s)", exc.reason, exc)
+        _post_late_note(format_late_run_failed_note(exc), webhook_url, timeout)
+        return 1
+    except Exception as exc:
+        _post_late_note(format_late_run_failed_note(exc), webhook_url, timeout)
+        raise
+
+
+def _late_slot_flow(*, cfg, data_dir: str, run_kind: str, triggered_by: str,
+                    webhook_url: str, timeout: int) -> int:
+    """The body of the late slot; _run_late_slot owns what a failure does."""
     # 1. Session. A holiday or a weekend: one record, nothing read or written.
     session_date = market_today()
     if not is_session(session_date):
@@ -4152,6 +4174,10 @@ def _run_late_slot(*, cfg, data_dir: str, run_kind: str, triggered_by: str,
                          refusal=_late_build_refusal(brief, tickers, clock))
     n = persist_to_cloud_sql(brief, allow_update=False, run_kind=run_kind,
                              triggered_by=triggered_by, late_slot=late)
+    if late.outcome is None:
+        # persist_to_cloud_sql returned before the late branch (no database
+        # module, Cloud SQL not configured): neither a refusal nor a success.
+        raise RuntimeError('late slot write returned no outcome')
     print(f"Late slot: {late.outcome}; {n} rows written to premarket_analysis")
 
     # 8 and 9. The note and the record.

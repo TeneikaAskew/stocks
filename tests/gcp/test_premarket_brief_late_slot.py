@@ -1535,3 +1535,158 @@ class TestLateSlotRefusals:
         lines = _note_lines(h)
         assert lines[0] == 'row_changed: changed since this run read them: SPY'
         assert _in_force_line(h, 'SPY') in lines and len(h.sent) == before.sent + 1
+
+
+# ── When the late run cannot write or cannot tell ──────────────────────────
+
+LLM_COLUMNS = ('llm_overview', 'llm_orb_explanation', 'llm_analysis', 'llm_playbook')
+
+
+def _model(monkeypatch, answer):
+    """Answer every model call of the brief: a string, None, or an
+    exception to raise."""
+    import gcp.brief_explanations as explanations
+
+    async def call(system, user):
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(explanations, '_call', call)
+
+
+def _late_rows(h) -> bool:
+    return all(r['level_basis']['premarket']['fetched_at'] == LATE_STAMP_ISO
+               for r in _canonical(h).values())
+
+
+@pytest.fixture
+def failing(harness, monkeypatch):
+    """The early run with model text, then the late snapshot in place.
+    Returns (harness, state after the early run)."""
+    _model(monkeypatch, 'early text')
+    real_run = harness.run
+
+    def run_with_model(at, *, late=False, env=None, argv=()):
+        return real_run(at, late=late, env={'BRIEF_LLM_DISABLE': None, **(env or {})}, argv=argv)
+
+    harness.run = run_with_model
+    before = _After(harness)
+    harness.snapshot(stamp=LATE_STAMP, up=0.9)
+    return harness, before
+
+
+class TestLateSlotFailures:
+    @pytest.mark.parametrize('answer', [RuntimeError('model down'), None],
+                             ids=['raises', 'gives-nothing'])
+    def test_failed_model_calls_leave_null_text(self, failing, monkeypatch, answer):
+        h, before = failing
+        for row in _canonical(h).values():                     # after the early run
+            assert [row[c] for c in LLM_COLUMNS] == ['early text'] * 4
+        _model(monkeypatch, answer)
+        assert h.run('2026-11-13 09:21:30', late=True) == 0
+        for row in _canonical(h).values():
+            assert [row[c] for c in LLM_COLUMNS] == [None] * 4     # never the early text
+            assert row['level_basis']['premarket']['fetched_at'] == LATE_STAMP_ISO
+        assert [u for u, _ in h.sent[before.sent:]] == [MAIN_HOOK]
+
+    def test_model_text_of_the_late_build_is_stored(self, failing, monkeypatch):
+        h, _ = failing
+        _model(monkeypatch, 'late text')
+        assert h.run('2026-11-13 09:21:30', late=True) == 0
+        for row in _canonical(h).values():
+            assert [row[c] for c in LLM_COLUMNS] == ['late text'] * 4
+
+    def test_a_failed_post_keeps_the_write_and_exits_1(self, failing):
+        h, before = failing
+        h.hooks['send'] = raise_(OSError('discord down'))
+        assert h.run('2026-11-13 09:21:30', late=True) == 1
+        assert _late_rows(h)
+        assert {r['notes'] for r in h.tables['premarket_analysis_history'][3:]} == {'LATE_SLOT_APPLIED'}
+        assert h.send_attempts == before.attempts + 1            # no second, "run failed" attempt
+        assert len(h.sent) == before.sent
+
+    def test_a_failed_history_insert_is_said_and_exits_1(self, failing):
+        h, before = failing
+        h.hooks['insert'] = raise_(OSError('history down'))
+        assert h.run('2026-11-13 09:21:30', late=True) == 1
+        assert _late_rows(h)
+        assert len(h.tables['premarket_analysis_history']) == 3
+        assert 'History row not recorded' in h.sent[-1][1]['embeds'][0]['description']
+        assert len(h.sent) == before.sent + 1
+
+    def test_a_build_that_raises_says_so_and_raises(self, failing):
+        h, before = failing
+        h.hooks['generate'] = raise_(KeyError('boom'))
+        with pytest.raises(KeyError):
+            h.run('2026-11-13 09:21:30', late=True)
+        assert before.unchanged(h)
+        assert h.sent[-1][1]['embeds'][0]['description'] == \
+            'Late brief run failed (KeyError). Check the brief row before the open.'
+        assert len(h.sent) == before.sent + 1 and h.sent[-1][0] == MAIN_HOOK
+
+    def test_a_failed_post_of_the_failed_line_does_not_mask_the_error(self, failing):
+        h, before = failing
+        h.hooks['generate'] = raise_(KeyError('boom'))
+        h.hooks['send'] = raise_(OSError('discord down'))
+        with pytest.raises(KeyError):
+            h.run('2026-11-13 09:21:30', late=True)
+        assert before.unchanged(h) and h.send_attempts == before.attempts + 1
+
+    def test_unreadable_level_parameters_exit_1(self, failing):
+        from lib.strat_levels import LevelParamsUnavailable
+        h, before = failing
+        h.hooks['generate'] = raise_(LevelParamsUnavailable('no table'))
+        assert h.run('2026-11-13 09:21:30', late=True) == 1
+        assert before.unchanged(h)
+        assert 'LevelParamsUnavailable' in h.sent[-1][1]['embeds'][0]['description']
+        assert len(h.sent) == before.sent + 1
+
+    def test_a_failed_read_of_the_rows_writes_nothing(self, failing):
+        h, before = failing
+        h.hooks['row_read'] = raise_(ConnectionError('db down'))
+        with pytest.raises(ConnectionError):
+            h.run('2026-11-13 09:21:30', late=True)
+        assert before.unchanged(h) and h.generated == 1
+        assert 'Late brief run failed (ConnectionError)' in h.sent[-1][1]['embeds'][0]['description']
+
+    def test_a_failed_read_of_the_rows_is_never_no_earlier_row(self, failing):
+        # A refusal path reads the rows for its note: the same read failing
+        # there raises too, it does not post "no row for the session".
+        h, before = failing
+        h.hooks['row_read'] = raise_(ConnectionError('db down'))
+        with pytest.raises(ConnectionError):
+            h.run('2026-11-13 09:35:00', late=True)
+        assert before.unchanged(h)
+        assert all('no row for the session' not in m['embeds'][0].get('description', '')
+                   for _, m in h.sent[before.sent:])
+
+    def test_an_unreadable_calendar_raises_before_any_read(self, failing, monkeypatch):
+        h, before = failing
+        monkeypatch.setattr(pb, 'is_session', raise_(RuntimeError('no calendar')))
+        with pytest.raises(RuntimeError, match='no calendar'):
+            h.run('2026-11-13 09:21:30', late=True)
+        assert before.unchanged(h) and h.stamp_reads == 0
+        assert 'Late brief run failed (RuntimeError)' in h.sent[-1][1]['embeds'][0]['description']
+
+    def test_a_write_with_no_outcome_is_an_error(self, failing, monkeypatch):
+        h, before = failing
+        monkeypatch.setattr(pb, 'persist_to_cloud_sql', lambda *a, **k: 0)
+        with pytest.raises(RuntimeError, match='no outcome'):
+            h.run('2026-11-13 09:21:30', late=True)
+        assert before.unchanged(h)
+        assert 'Late brief run failed (RuntimeError)' in h.sent[-1][1]['embeds'][0]['description']
+
+    def test_no_brief_tickers_says_so_and_raises(self, failing, monkeypatch):
+        h, before = failing
+        real_install = h._install
+
+        def install():
+            real_install()
+            monkeypatch.setattr(pb, '_resolve_brief_tickers', lambda default: [])
+
+        h._install = install
+        with pytest.raises(RuntimeError, match='no brief tickers'):
+            h.run('2026-11-13 09:21:30', late=True)
+        assert before.unchanged(h)
+        assert 'Late brief run failed (RuntimeError)' in h.sent[-1][1]['embeds'][0]['description']
