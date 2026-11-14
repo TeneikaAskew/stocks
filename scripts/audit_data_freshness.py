@@ -1382,7 +1382,12 @@ _WATCHED_HEARTBEAT_JOB = "fetch-watched-tickers"
 def _query_watched_tickers_heartbeat(now_utc: datetime) -> list[FreshnessRow]:
     """Heartbeat for the fetch-watched-tickers job (reads job_runs).
 
-    Stale when the job has no success row, or its latest success started
+    The check activates with the job's first job_runs row: while job_runs
+    holds no row at all for the job it returns exactly one skipped row
+    naming that condition and no finding, so a watchdog redeployed before
+    the job and its schedule exist does not page for a job that cannot run
+    yet. The latest-row select tells "no row at all" apart from "no success
+    row". Once activated: stale when the job has no success row, or its latest success started
     before the session two sessions back from today's Eastern date (both
     session steps go through _calendar, so a calendar failure surfaces as
     the explicit nyse_calendar row). Warn rows carry the latest run's
@@ -1423,6 +1428,15 @@ def _query_watched_tickers_heartbeat(now_utc: datetime) -> list[FreshnessRow]:
             success = r
 
     heartbeat_table = f"job_runs.{_WATCHED_HEARTBEAT_JOB} heartbeat"
+    if latest is None:
+        # Not activated: no job_runs row exists for the job at all.
+        return [FreshnessRow(
+            table=heartbeat_table, ticker=None, last_row_at=None,
+            expected_latest="", lag_hours=None, expected_max_hours=0,
+            status="skipped", writer_job=_WATCHED_HEARTBEAT_JOB,
+            detail=(f"not active: the check starts with the first job_runs row "
+                    f"of {_WATCHED_HEARTBEAT_JOB}"))]
+
     # audit_all passes naive UTC; an aware value is also accepted.
     now_aware = localize_assuming_utc(now_utc) if now_utc.tzinfo is None else now_utc
     today_et = now_aware.astimezone(ET).date()
@@ -1451,23 +1465,22 @@ def _query_watched_tickers_heartbeat(now_utc: datetime) -> list[FreshnessRow]:
                 writer_job=_WATCHED_HEARTBEAT_JOB,
                 detail=f"latest success started {started_et} ET, before {cutoff}"))
 
-    if latest is not None:
-        note = latest['note'] if isinstance(latest['note'], str) else None
-        if note and 'overflow=' in note:
-            rows.append(FreshnessRow(
-                table=f"job_runs.{_WATCHED_HEARTBEAT_JOB} overflow", ticker=None,
-                last_row_at=None, expected_latest="no overflow",
-                lag_hours=None, expected_max_hours=0, status="warn",
-                writer_job=_WATCHED_HEARTBEAT_JOB,
-                detail=note[:_DETAIL_MAX_CHARS]))
-        failed = latest['items_failed']
-        if failed is not None and not pd.isna(failed) and int(failed) > 0:
-            rows.append(FreshnessRow(
-                table=f"job_runs.{_WATCHED_HEARTBEAT_JOB} failures", ticker=None,
-                last_row_at=None, expected_latest="0 failed items",
-                lag_hours=None, expected_max_hours=0, status="warn",
-                writer_job=_WATCHED_HEARTBEAT_JOB,
-                detail=(note or f"items_failed={int(failed)}")[:_DETAIL_MAX_CHARS]))
+    note = latest['note'] if isinstance(latest['note'], str) else None
+    if note and 'overflow=' in note:
+        rows.append(FreshnessRow(
+            table=f"job_runs.{_WATCHED_HEARTBEAT_JOB} overflow", ticker=None,
+            last_row_at=None, expected_latest="no overflow",
+            lag_hours=None, expected_max_hours=0, status="warn",
+            writer_job=_WATCHED_HEARTBEAT_JOB,
+            detail=note[:_DETAIL_MAX_CHARS]))
+    failed = latest['items_failed']
+    if failed is not None and not pd.isna(failed) and int(failed) > 0:
+        rows.append(FreshnessRow(
+            table=f"job_runs.{_WATCHED_HEARTBEAT_JOB} failures", ticker=None,
+            last_row_at=None, expected_latest="0 failed items",
+            lag_hours=None, expected_max_hours=0, status="warn",
+            writer_job=_WATCHED_HEARTBEAT_JOB,
+            detail=(note or f"items_failed={int(failed)}")[:_DETAIL_MAX_CHARS]))
     return rows
 
 

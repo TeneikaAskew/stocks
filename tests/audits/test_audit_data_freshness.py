@@ -1021,10 +1021,13 @@ def test_calendar_failure_with_heartbeat_table_present_still_reports(monkeypatch
 
     _patch_non_calendar_checks(monkeypatch, mod)
     monkeypatch.setattr(database, "table_exists", lambda t: True)
+    # The duration-regression check (session-independent) has one offender,
+    # so its row must survive the calendar failure.
     monkeypatch.setattr(database, "query_to_dataframe_strict",
                         lambda sql, params=None, timeout_s=None: (
-                            pd.DataFrame(columns=["job_name", "variant", "latest_s",
-                                                  "median_prior_s", "n_runs"])
+                            pd.DataFrame([{"job_name": "slow-job", "variant": "",
+                                           "latest_s": 3600.0, "median_prior_s": 600.0,
+                                           "n_runs": 10}])
                             if "WITH recent" in sql else pd.DataFrame([
                                 {"kind": "success", "status": "success",
                                  "started_at": datetime(2026, 10, 16, 22, tzinfo=UTC),
@@ -1033,3 +1036,5 @@ def test_calendar_failure_with_heartbeat_table_present_still_reports(monkeypatch
     report = mod.audit_all(datetime(2026, 10, 19, 22, 0))
     assert len([r for r in report.rows if r.table == "nyse_calendar"]) == 1
     assert not any("fetch-watched-tickers" in r.table for r in report.rows)
+    duration = [r for r in report.rows if r.table == "job_runs.slow-job duration"]
+    assert len(duration) == 1 and duration[0].status == "stale"

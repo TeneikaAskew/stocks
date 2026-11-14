@@ -466,12 +466,34 @@ def _utc(y, m, d, h=22):
     return datetime(y, m, d, h, tzinfo=UTC)
 
 
-def test_heartbeat_no_rows_is_stale(monkeypatch):
+def test_heartbeat_before_activation_is_one_skipped_row(monkeypatch):
+    """No job_runs row at all for the job: the check has not activated (a
+    watchdog redeployed before the job and its schedule exist), so exactly
+    one skipped row names the activation condition and nothing pages."""
+    from scripts.audit_data_freshness import FreshnessReport, FreshnessRow
     out = _hb_run(monkeypatch, _hb_df())
     assert len(out) == 1
-    assert out[0].status == "stale"
+    assert out[0].status == "skipped"
     assert out[0].table == "job_runs.fetch-watched-tickers heartbeat"
     assert out[0].writer_job == "fetch-watched-tickers"
+    assert "first job_runs row" in out[0].detail
+    assert "fetch-watched-tickers" in out[0].detail
+
+    ok = FreshnessRow(table="t", ticker=None, last_row_at=None, expected_latest="",
+                      lag_hours=None, expected_max_hours=0, status="ok")
+    report = FreshnessReport(checked_at="x", expected_market_close="y",
+                             rows=[ok, *out])
+    assert report.overall_status == "ok"
+
+
+def test_heartbeat_after_activation_without_success_is_stale(monkeypatch):
+    """Rows exist, none a success: the absent heartbeat is a finding."""
+    run = {"started_at": _utc(2026, 11, 11), "status": "error",
+           "note": "set_read: db down"}
+    out = _hb_run(monkeypatch, _hb_df(latest=run))
+    assert [r.status for r in out] == ["stale"]
+    assert out[0].table == "job_runs.fetch-watched-tickers heartbeat"
+    assert out[0].detail == "no success row in job_runs"
 
 
 def test_heartbeat_success_three_sessions_ago_is_stale(monkeypatch):
@@ -507,12 +529,12 @@ def test_heartbeat_overflow_note_warns(monkeypatch):
 
 def test_heartbeat_failed_items_warn(monkeypatch):
     run = {"started_at": _utc(2026, 11, 12, 13), "items_failed": 2,
-           "note": "failed=AAA,BBB"}
+           "note": "failed=AAA:bars,BBB:ticker_info"}
     out = _hb_run(monkeypatch, _hb_df(latest=run, success=run))
     assert len(out) == 1
     assert out[0].status == "warn"
     assert out[0].table == "job_runs.fetch-watched-tickers failures"
-    assert "failed=AAA,BBB" in out[0].detail
+    assert "failed=AAA:bars,BBB:ticker_info" in out[0].detail
 
 
 def test_heartbeat_skips_without_table(monkeypatch):
