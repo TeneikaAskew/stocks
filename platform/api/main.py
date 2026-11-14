@@ -38,7 +38,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from lib.data_loader import DataLoader
 from lib.single_flight import SingleFlight
 from lib.eastern_time import ET, is_session, market_today, stored_intraday_to_eastern
-from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences, profile
+from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences, profile, me_watchlist
 from api.auth import (
     AUTH_MODE,
     auth_middleware,
@@ -199,6 +199,7 @@ app.include_router(playbook.router, prefix="")
 app.include_router(backtest.router, prefix="")
 app.include_router(signals.router, prefix="")
 app.include_router(insights.router, prefix="")
+app.include_router(me_watchlist.router, prefix="")
 app.include_router(journal.router, prefix="")
 app.include_router(dashboard.router, prefix="")
 app.include_router(catalysts.router, prefix="")

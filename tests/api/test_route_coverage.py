@@ -393,6 +393,8 @@ REQUESTS: list[Req] = [
         body_ran=False),
     Req("GET", "/api/me/profile", 503),
     Req("PUT", "/api/me/profile", 503, json={"display_name": "rc"}),
+    Req("GET", "/api/me/watchlist", 401,
+        note="open mode has no identity: 401 sign in required before any database call"),
 
     # ── market ──────────────────────────────────────────────────────────────
     # 503 for the same reason as the options twin above: #991 made a
