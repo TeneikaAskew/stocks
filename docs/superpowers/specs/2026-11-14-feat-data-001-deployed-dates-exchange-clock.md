@@ -14,7 +14,7 @@ done_when:
   - "Every test named above runs the code under test with its module's date and datetime names replaced by classes whose today(), utcnow() and zone-less now() raise, through one fixture in tests/fixtures/market_clock.py, and each family's test also asserts the pre-change value at 2026-11-12T15:00Z (Thursday 10:00 EST), a daytime instant where the host date and the Eastern date agree. git grep -c 'tz-ok:' over gcp, lib, scripts and platform/api gives the merge base's count per file (26 lines in 10 files on 20d9c47b): no opt-out is added."
   - "make test passes on the PR head; the PR body lists every existing test whose expectation or clock stub changed, with the reason, and pastes the EXPLAIN (ANALYZE, BUFFERS) of one changed query in both spellings, run read-only through scripts/db_query_cr.sh with its execution id, showing the same scan node and the same rows read."
   - "02-FEATURE-CATALOG FEAT-DATA-001 record shows Status and Last reviewed for this PR, 12-PR-ISSUE-TRACEABILITY lists it, the implementation-source notes of 03-SITE-TRACEABILITY.md hold a (FEAT-DATA-001, component) row for each of the six declared components that begins with the current source hash (a row an earlier change left is extended: the new hash and this change's prose first, then 'Earlier:' and the earlier prose unchanged), docs/review-evidence/site-source-snapshot.json is regenerated and scripts/maintenance/doc_source_snapshot.py verify accepts it, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing that origin/main does not, and python3 scripts/gate/spec_gate.py --pr origin/main passes."
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -27,6 +27,8 @@ supersedes: null
 - The inventory behind every number here is a scratch file, not in the repo: 339 rows (313 baseline sites, 26 `# tz-ok:` lines), produced by importing the ratchet's own scanner. Appendix A is its stage 1 slice; Appendix C is the staging.
 
 ## Decisions for the owner
+
+**Decided 2026-11-14:** the owner took the default on all seven ("Take your recommendations"). So this stage is one PR, and items 2 to 7 stand as written.
 
 Each has a default the plan follows if nothing is said.
 
