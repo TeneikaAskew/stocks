@@ -3,7 +3,7 @@ feat_id: FEAT-OPTION-001
 spec: docs/superpowers/specs/2026-11-05-feat-option-001-snapshot-labels-acceptance.md
 branch: feature/feat-option-001-snapshot-provenance
 pr: 1724
-status: ready
+status: done
 ---
 
 # Snapshot provenance on grid, levels and chain responses — implementation plan (S2)
