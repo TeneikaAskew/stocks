@@ -24,6 +24,12 @@ from tests.api.test_options_live import (  # noqa: E402,F401
     client, _FAKE_AV_OK, _FakeResponse, _patch_av,
 )
 
+from tests.api.test_grid_router import (  # noqa: E402,F401
+    client as grid_client, clock, _install_query_router, _chain_df, FIX_DATE,
+    BASELINE_ENVELOPE_KEYS,
+)
+from lib import gamma  # noqa: E402
+
 BASELINE = json.loads(
     (REPO / "tests" / "fixtures" / "options_routes_baseline_960a9090.json").read_text()
 )
@@ -161,3 +167,54 @@ class TestGreeksRoute:
     def test_non_positive_spot_reason(self, chain_client):
         data = chain_client.post("/api/options/greeks", json={"spot_price": 0.0, "options": _baseline_option_records()}).json()
         assert data["reason"] == "spot_unavailable" and data["metrics"]["total_gex"] is None and data["metrics"]["put_call_ratio"] is None
+
+
+class TestLevelsRoute:
+    def test_both_sided_byte_identical(self, chain_client, chain_clock, monkeypatch):
+        _install_chain_query(monkeypatch, _chain_frame())
+        assert _canon(chain_client.get("/api/options/SPY/2026-06-01/levels").json()) == _canon(BASELINE["levels"])
+
+    def test_puts_only_levels_unknown_regime_null_total_with_warning(self, chain_client, chain_clock, monkeypatch):
+        df = _chain_frame()
+        _install_chain_query(monkeypatch, df[df["option_type"] == "puts"])
+        data = chain_client.get("/api/options/SPY/2026-06-01/levels").json()
+        assert data["regime"] == "unknown" and data["total_gex"] is None and data["gamma_balance"] is None and data["gamma_flip"] is None
+        assert data["kings"] == [] and data["levels"] == [] and data["chain_size"] == 3
+        assert gamma.partial_chain_warning("puts_only") in data["warnings"]
+
+
+class TestGridRoutes:
+    def test_live_and_dated_both_sided_byte_identical(self, grid_client, clock, monkeypatch):
+        _install_query_router(monkeypatch, realtime_df=_chain_df(FIX_DATE, "REALTIME", tz="UTC"), eod_df=_chain_df(FIX_DATE, "REALTIME", tz="UTC"))
+        assert _canon(grid_client.get("/api/options/SPY/grid").json()) == _canon(BASELINE["grid_live"])
+        assert _canon(grid_client.get("/api/options/SPY/2026-06-01/grid").json()) == _canon(BASELINE["grid_dated"])
+
+    def test_calls_only_live_grid_is_unavailable_with_rows_selected(self, grid_client, clock, monkeypatch):
+        df = _chain_df(FIX_DATE, "REALTIME", tz="UTC")
+        _install_query_router(monkeypatch, realtime_df=df[df["option_type"] == "calls"])
+        data = grid_client.get("/api/options/SPY/grid").json()
+        assert data["data_source"] == "realtime" and data["regime"] == "unknown" and data["total_gex"] is None and data["total_vex"] is None and data["cells"] == []
+        assert gamma.partial_chain_warning("calls_only") in data["warnings"] and data["snapshot_provenance"] is not None
+
+    def test_unavailable_envelope_totals_are_null(self, grid_client, clock, monkeypatch):
+        _install_query_router(monkeypatch)
+        data = grid_client.get("/api/options/RANDOM/grid?allow_on_demand=false").json()
+        assert data["total_gex"] is None and data["total_vex"] is None and sorted(k for k in data if k != "snapshot_provenance") == BASELINE_ENVELOPE_KEYS
+
+
+class TestNodesRoutes:
+    def test_live_and_dated_both_sided_byte_identical(self, grid_client, clock, monkeypatch):
+        _install_query_router(monkeypatch, realtime_df=_chain_df(FIX_DATE, "REALTIME", tz="UTC"), eod_df=_chain_df(FIX_DATE, "REALTIME", tz="UTC"))
+        assert _canon(grid_client.get("/api/options/SPY/nodes").json()) == _canon(BASELINE["nodes_live"])
+        assert _canon(grid_client.get("/api/options/SPY/2026-06-01/nodes").json()) == _canon(BASELINE["nodes_dated"])
+
+    def test_puts_only_nodes_unknown_with_null_totals(self, grid_client, clock, monkeypatch):
+        df = _chain_df(FIX_DATE, "REALTIME", tz="UTC")
+        _install_query_router(monkeypatch, realtime_df=df[df["option_type"] == "puts"])
+        data = grid_client.get("/api/options/SPY/nodes").json()
+        assert data["regime"] == "unknown" and data["total_gex"] is None and data["total_vex"] is None and data["king"] is None and data["gates"] == [] and data["opex_nodes"] == []
+
+    def test_unavailable_nodes_totals_are_null(self, grid_client, monkeypatch):
+        _install_query_router(monkeypatch)
+        data = grid_client.get("/api/options/RANDOM/nodes").json()
+        assert data["total_gex"] is None and data["total_vex"] is None
