@@ -306,21 +306,21 @@ EW brief retirement Draft [#1837](https://github.com/TeneikaAskew/stocks/pull/18
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation; finite EPS normalization and EW retirement verified locally, external review and rollout pending |
+| Status | Production but needs remediation; finite EPS normalization and EW retirement verified locally, external review and rollout pending; recommended_structure implied_move_invalid keyword verified locally (no caller yet) |
 | Priority | P1 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-11 |
-| Evidence status | Finite EPS source/local tests verified; event-bound reaction repairs ([#1608](https://github.com/TeneikaAskew/stocks/pull/1608)) locally validated; current-head external review, hosted checks and rollout pending; other catalyst work remains open |
+| Last reviewed | 2026-11-14 |
+| Evidence status | Finite EPS source/local tests verified; event-bound reaction repairs ([#1608](https://github.com/TeneikaAskew/stocks/pull/1608)) locally validated; current-head external review, hosted checks and rollout pending; implied_move_invalid keyword ([#1670](https://github.com/TeneikaAskew/stocks/pull/1670)) red-to-green local tests verified, current-head review pending; other catalyst work remains open |
 | UI surface | `/catalysts` |
 | Backend | `/api/catalysts`, `/api/earnings` |
 | Data | `earnings_*`, `economic_events`, `news_sentiment`, `sec_filings` |
 | Models | MODEL-EARN-001 |
 | Code | `platform/api/routers/catalysts.py`, `earnings.py`, `lib/earnings_reactions.py` |
-| Tests | `catalysts.spec.ts`; `tests/gcp/test_compute_earnings_reactions.py`, `test_earnings_daily_path.py`, `test_earnings_local_admission.py`, `test_earnings_reactions_brief.py`; `tests/integration/test_earnings_daily_path_persistence.py`; `tests/api/test_earnings_router.py`; `tests/research/test_earnings_new7_reproduction.py`; `tests/api/test_catalyst_earnings_estimate_numbers.py`, `tests/scripts/test_earnings_calendar_finite_numbers.py`, `tests/integration/test_catalyst_earnings_estimate_numbers_pg.py` |
+| Tests | `catalysts.spec.ts`; `tests/gcp/test_compute_earnings_reactions.py`, `test_earnings_daily_path.py`, `test_earnings_local_admission.py`, `test_earnings_reactions_brief.py`; `tests/integration/test_earnings_daily_path_persistence.py`; `tests/api/test_earnings_router.py`; `tests/research/test_earnings_new7_reproduction.py`; `tests/api/test_catalyst_earnings_estimate_numbers.py`, `tests/scripts/test_earnings_calendar_finite_numbers.py`, `tests/integration/test_catalyst_earnings_estimate_numbers_pg.py`, `tests/lib/test_earnings_reactions_recommended_structure.py` |
 | Open issues | 19 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-catalyst-001--earnings--catalysts-19-open) |
 | Blocking issues | [#1223](https://github.com/TeneikaAskew/stocks/issues/1223) [#1268](https://github.com/TeneikaAskew/stocks/issues/1268) [#1269](https://github.com/TeneikaAskew/stocks/issues/1269) [#1270](https://github.com/TeneikaAskew/stocks/issues/1270) [#1299](https://github.com/TeneikaAskew/stocks/issues/1299) [#1300](https://github.com/TeneikaAskew/stocks/issues/1300) |
-| Next action | Complete narrow [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) reviews/checks and existing API/producer rollout. [#1608](https://github.com/TeneikaAskew/stocks/pull/1608): event-bound timing, mature prior-history admission and nullable descriptive daily evidence locally validated; normal source review/CI and schema-before-code rollout remain pending. Actual `/catalysts` outcome-panel binding is a separate Solyra change; no deployment or predictive-edge claim. Broader Phase 3 work remains open. |
+| Next action | Complete narrow [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) reviews/checks and existing API/producer rollout. [#1608](https://github.com/TeneikaAskew/stocks/pull/1608): event-bound timing, mature prior-history admission and nullable descriptive daily evidence locally validated; normal source review/CI and schema-before-code rollout remain pending. Complete [#1670](https://github.com/TeneikaAskew/stocks/pull/1670) review and merge before the dependent brief plan opens. Actual `/catalysts` outcome-panel binding is a separate Solyra change; no deployment or predictive-edge claim. Broader Phase 3 work remains open. |
 
 Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) is MAIN. Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) preserves actual producer/API normalization,185focused checks including independent-session local PostgreSQL commit/read and the real routed response, and31API preservation checks (overlapping suite). Final hermetic unit verification at2ad639e1:7719passed,51skipped,112warnings; integration was excluded from that full unit command and the real local PG proof is separately retained. No deployment/source-equivalence, current-source freshness or complete catalyst remediation is certified. Touches #1269 and only #1301's numeric-title behavior; cross-source dedup/selection remains unchanged and unresolved.
 

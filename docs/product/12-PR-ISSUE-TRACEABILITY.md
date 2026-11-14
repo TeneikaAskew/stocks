@@ -780,11 +780,13 @@ Current-session ORB specification lineage: Stocks #1638 and Solyra #305. Backend
 
 **Bounded event-reaction integration:** [approved spec #1593](https://github.com/TeneikaAskew/stocks/pull/1593), [implementation #1608](https://github.com/TeneikaAskew/stocks/pull/1608). Repairs the existing producer/brief and additive existing-table evidence only; no issue closure, deployed-screen or forecast claim.
 
-**PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified) · [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) (finite nullable EPS implementation) · [#1608](https://github.com/TeneikaAskew/stocks/pull/1608) (event-bound reaction integration; draft) · [#1769](https://github.com/TeneikaAskew/stocks/pull/1769) (unavailable-sidecar legacy advance; specs #1751 and #1759)
+**PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified) · [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) (finite nullable EPS implementation) · [#1608](https://github.com/TeneikaAskew/stocks/pull/1608) (event-bound reaction integration; draft) · [#1769](https://github.com/TeneikaAskew/stocks/pull/1769) (unavailable-sidecar legacy advance; specs #1751 and #1759) · [#1670](https://github.com/TeneikaAskew/stocks/pull/1670) (recommended_structure implied_move_invalid keyword)
 
 Finite nullable estimate contract: [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) (specification; merged). Implementation remains a separate normal delivery. #1301 is touched for invalid optional estimates only; its multi-source estimate-dedup behavior is not claimed fixed.
 
 Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) follows merged finite-nullable specification #1618. Numeric-title portion of #1301 only; no claim of fixing its source-dedup concern or broad #1269. Local full unit7719passed/51skipped/112warnings and separate realPG/API proof; current-head hosted review and actual existing API/producer rollout remain required.
+
+Implementation draft [#1670](https://github.com/TeneikaAskew/stocks/pull/1670) adds the keyword-only `implied_move_invalid` flag to `lib/earnings_reactions.py::recommended_structure` under specification #1650 and its approved successor #1675 (CATALYSTS-04 source note). It is default-off, and no caller passes it yet. Its new tests fail on main and pass on the branch, and the existing caller suites are unchanged. Current-head review and CI remain required, and nothing is deployed.
 
 ### FEAT-LIVE-001 — Intraday monitoring (20 open)
 
