@@ -3,6 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-12-feat-cicd-001-test-suite-audit-a-pin.md
 branch: feature/feat-cicd-001-gate-pin-xdist
 status: ready
+pr: 1903
 ---
 
 # Test suite audit, Part A stage two: the pinned gate workflows run the suite on four workers
