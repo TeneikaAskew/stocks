@@ -7,7 +7,6 @@ test machine's clock and prove nothing about the evening.
 """
 from __future__ import annotations
 
-import os
 import types
 from datetime import date, datetime
 from pathlib import Path

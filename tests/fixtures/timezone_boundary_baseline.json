@@ -60,14 +60,6 @@
    "parse_date_arg::date.today()"
   ]
  },
- "gcp/earnings_long_watchlist.py": {
-  "host-today": [
-   "main::date.today()"
-  ],
-  "sql-utc-date": [
-   "_query_watchlist::fstr#3c17358f2881"
-  ]
- },
  "gcp/fetchers/backfill_daily_indicators.py": {
   "host-today": [
    "_filter_recent_rows::_date.today()"
@@ -223,14 +215,6 @@
  "gcp/queries/verify_brief_bias_distribution.sql": {
   "sql-utc-date": [
    "<sql>::sql#ef4e1de8379d"
-  ]
- },
- "gcp/refresh_earnings_views.py": {
-  "host-today": [
-   "refresh_daily::date.today()"
-  ],
-  "sql-utc-date": [
-   "refresh_daily::fstr#e2ebe6247dcf"
   ]
  },
  "gcp/regime_combo_job.py": {
@@ -739,11 +723,6 @@
   ],
   "sql-utc-date": [
    "needs_sec_filings::str#e3e4d3464037"
-  ]
- },
- "scripts/backtest_playability.py": {
-  "host-today": [
-   "compute_options_insights::datetime.now()"
   ]
  },
  "scripts/calibrate_earnings.py": {
