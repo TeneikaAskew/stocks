@@ -454,7 +454,10 @@ class TestLateSlotPrecedence:
 # ── The stamp read and the wait ─────────────────────────────────────────────
 
 D = date(2026, 11, 13)
-CLOCK = pb._late_slot_clock(D)
+# Guarded so this module still imports against a gcp.premarket_brief without
+# the late slot (origin/main): TestEarlySlotUnchanged passes there, and the
+# API test that imports the harness fails there on its own assertion.
+CLOCK = pb._late_slot_clock(D) if hasattr(pb, '_late_slot_clock') else None
 T = list(TICKERS)
 
 
