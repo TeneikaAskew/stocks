@@ -341,6 +341,8 @@ def compute_indicators_for_full_range(ticker: str) -> int:
     from gcp.database import query_to_dataframe, upsert_dataframe
     from lib.indicators import add_all_indicators
 
+    # AUDIT-2026-05-13: silent fallback — query_to_dataframe returns an empty
+    # frame on an outage, which reads here as "insufficient daily history"
     df = query_to_dataframe(
         'SELECT date, open AS "Open", high AS "High", low AS "Low", '
         'close AS "Close", volume AS "Volume" '
@@ -409,6 +411,8 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
     clf = StratClassifier(rule_version="legacy-pattern-v1")
 
     for fd in sorted(target_dates):
+        # AUDIT-2026-05-13: silent fallback — query_to_dataframe returns an empty
+        # frame on an outage, which reads here as "insufficient daily history"
         df = query_to_dataframe(
             'SELECT date, open AS "Open", high AS "High", low AS "Low", '
             'close AS "Close", volume AS "Volume" '
@@ -465,17 +469,23 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
         except Exception as exc:
             log.warning("strat compute failed for %s @ %s: %s", ticker, fd, exc)
 
-        # Pre-market context from intraday bars
+        # Pre-market context from the 1-min bars the table already holds.
+        # The read is strict and sits outside the try below: an outage or a
+        # defect in it ends the run as raised (CLAUDE.md 3.7), and zero rows
+        # is then a fact about the table, which the log states.
+        pm_start, pm_end = eastern_bounds_utc(fd, dt_time(4, 0), dt_time(9, 30))
+        ibars = query_to_dataframe_strict(
+            "SELECT ts, open, high, low, close, volume "
+            "FROM market_data_intraday "
+            "WHERE ticker = :ticker AND interval = '1min' "
+            "  AND ts >= :start AND ts < :end "
+            "ORDER BY ts",
+            {"ticker": ticker.upper(), "start": pm_start, "end": pm_end},
+        )
+        if ibars.empty:
+            log.warning("no 1-min bars in market_data_intraday for %s premarket %s; "
+                        "pre_* not written", ticker.upper(), fd.isoformat())
         try:
-            pm_start, pm_end = eastern_bounds_utc(fd, dt_time(4, 0), dt_time(9, 30))
-            ibars = query_to_dataframe(
-                "SELECT ts, open, high, low, close, volume "
-                "FROM market_data_intraday "
-                "WHERE ticker = :ticker AND interval = '1min' "
-                "  AND ts >= :start AND ts < :end "
-                "ORDER BY ts",
-                {"ticker": ticker.upper(), "start": pm_start, "end": pm_end},
-            )
             if not ibars.empty:
                 # The prior session's close, open and ATR columns, as the
                 # nightly writer (fetch_market_data.compute_and_upsert_daily_indicators)
