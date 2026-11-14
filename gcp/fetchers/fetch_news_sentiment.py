@@ -44,6 +44,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from gcp.database import (
     upsert_dataframe, is_cloud_sql_configured, query_to_dataframe,
 )
@@ -158,10 +159,10 @@ def _earnings_calendar_tickers(window_days: int) -> list[str]:
     Returns ``[]`` on DB error so the caller can fall back to the
     watchlist + DEFAULT_TICKERS chain rather than crashing.
     """
-    sql = """
+    sql = f"""
         SELECT DISTINCT ticker
         FROM earnings_calendar
-        WHERE earnings_date BETWEEN
+        WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date BETWEEN
             CURRENT_DATE - (:w || ' days')::interval AND
             CURRENT_DATE + (:w || ' days')::interval
         ORDER BY ticker
