@@ -1,0 +1,32 @@
+[
+  {
+    "path": "gcp/fetchers/fetch_earnings_history.py",
+    "rule": "sql-utc-date",
+    "old": "_earnings_calendar_tickers::str#abf8af94b4ed",
+    "new": "_earnings_calendar_tickers::fstr#266f9c5482ea"
+  },
+  {
+    "path": "gcp/fetchers/fetch_insider_transactions.py",
+    "rule": "sql-utc-date",
+    "old": "_earnings_calendar_tickers::str#6c7f6bf52128",
+    "new": "_earnings_calendar_tickers::fstr#591204bc497c"
+  },
+  {
+    "path": "gcp/fetchers/fetch_market_data.py",
+    "rule": "sql-utc-date",
+    "old": "_earnings_tickers_in_window::str#2af0a28b3cb3",
+    "new": "_earnings_tickers_in_window::fstr#1fa2471ddfa5"
+  },
+  {
+    "path": "gcp/fetchers/fetch_news_sentiment.py",
+    "rule": "sql-utc-date",
+    "old": "_earnings_calendar_tickers::str#6c7f6bf52128",
+    "new": "_earnings_calendar_tickers::fstr#591204bc497c"
+  },
+  {
+    "path": "gcp/fetchers/fetch_sec_filings.py",
+    "rule": "sql-utc-date",
+    "old": "_earnings_calendar_tickers::str#6c7f6bf52128",
+    "new": "_earnings_calendar_tickers::fstr#591204bc497c"
+  }
+]

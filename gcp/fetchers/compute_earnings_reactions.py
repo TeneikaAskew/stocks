@@ -35,6 +35,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from gcp.database import upsert_dataframe, query_to_dataframe, is_cloud_sql_configured
 from lib.logging_config import setup_logging
 
@@ -579,6 +580,7 @@ def fetch_calendar_timing_map(tickers: list[str]) -> dict[tuple[str, date], Opti
         SELECT ticker, earnings_date, earnings_time, COUNT(*) AS c
         FROM earnings_calendar
         WHERE ticker IN ({placeholders})
+          AND {EARNINGS_NOT_RETIRED_SQL}
           AND earnings_time IN ('premarket', 'postmarket')
         GROUP BY ticker, earnings_date, earnings_time
     """
@@ -917,10 +919,10 @@ def _tickers_reporting_in_window(window_days: int) -> set:
         # 19:30 ET = 23:30 UTC, same calendar day, so the bug is dormant —
         # but anchoring in ET removes the seasonal failure mode.
         df = query_to_dataframe(
-            """
+            f"""
             SELECT DISTINCT ticker
             FROM earnings_calendar
-            WHERE earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date
+            WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date
                 AND (NOW() AT TIME ZONE 'America/New_York')::date + (:days || ' days')::interval
             """,
             {"days": int(window_days)},
