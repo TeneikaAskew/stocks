@@ -130,3 +130,34 @@ class TestLiveChainRoute:
         data = client.get("/api/options/live/SPY/2025-01-17").json()
         assert data["metadata"]["sides_present"] == "calls_only" and data["chain_state"] == "unavailable"
         assert data["reason"] == "puts_missing" and len(data["options"]) == 1
+
+
+def _baseline_option_records():
+    """The six `_chain_frame()` contracts as the plain records Task 0 posted."""
+    return [
+        {"type": "call" if r["option_type"] == "calls" else "put",
+         "strike": float(r["strike"]), "open_interest": int(r["open_interest"]),
+         "gamma": float(r["gamma"]), "vega": float(r["vega"]),
+         "delta": float(r["delta"]), "volume": int(r["volume"])}
+        for r in _chain_frame().to_dict("records")
+    ]
+
+
+class TestGreeksRoute:
+    def test_both_sided_byte_identical(self, chain_client):
+        r = chain_client.post("/api/options/greeks", json={"spot_price": 100.05, "options": _baseline_option_records()})
+        assert _canon(r.json()) == _canon(BASELINE["greeks"]) and "reason" not in r.json()
+
+    @pytest.mark.parametrize("side,reason", [("call", "puts_missing"), ("put", "calls_missing")])
+    def test_one_sided_chain_null_metrics_with_reason(self, chain_client, side, reason):
+        recs = [o for o in _baseline_option_records() if o["type"] == side]
+        data = chain_client.post("/api/options/greeks", json={"spot_price": 100.05, "options": recs}).json()
+        assert data["metrics"] == {"total_gex": None, "total_vex": None, "zero_gamma": None, "max_pain": None, "implied_move": None, "put_call_ratio": None}
+        assert data["reason"] == reason and data["aggregated"] == [] and data["gex_by_strike"] == [] and data["nodes"]["kingNode"] is None
+
+    def test_empty_chain_reason(self, chain_client):
+        assert chain_client.post("/api/options/greeks", json={"spot_price": 100.05, "options": []}).json()["reason"] == "empty_chain"
+
+    def test_non_positive_spot_reason(self, chain_client):
+        data = chain_client.post("/api/options/greeks", json={"spot_price": 0.0, "options": _baseline_option_records()}).json()
+        assert data["reason"] == "spot_unavailable" and data["metrics"]["total_gex"] is None and data["metrics"]["put_call_ratio"] is None

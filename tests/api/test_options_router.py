@@ -142,6 +142,7 @@ class TestGreeksMath:
                 _opt("call", 95,  oi=100,   gamma=0.05),
                 _opt("call", 100, oi=10000, gamma=0.05),  # huge
                 _opt("call", 105, oi=100,   gamma=0.05),
+                _opt("put",  90,  oi=1,     gamma=0.05),  # both sides present
             ],
             spot_price=100.0,
         )
@@ -169,23 +170,27 @@ class TestGreeksDegenerateInputs:
         resp = compute_options_greeks(req)
         assert resp["aggregated"] == []
         assert resp["gex_by_strike"] == []
-        assert resp["metrics"]["total_gex"] == 0.0
+        assert resp["metrics"]["total_gex"] is None
+        assert resp["reason"] == "empty_chain"
         assert resp["nodes"]["kingNode"] is None
 
     def test_zero_spot_returns_empty_payload(self):
         req = _GreeksRequest(
-            options=[_opt("call", 100)], spot_price=0.0,
+            options=[_opt("call", 100), _opt("put", 100)], spot_price=0.0,
         )
         resp = compute_options_greeks(req)
         assert resp["aggregated"] == []
+        assert resp["metrics"]["total_gex"] is None
+        assert resp["reason"] == "spot_unavailable"
         assert resp["nodes"]["kingNode"] is None
 
     def test_negative_spot_treated_as_zero(self):
         req = _GreeksRequest(
-            options=[_opt("call", 100)], spot_price=-1.0,
+            options=[_opt("call", 100), _opt("put", 100)], spot_price=-1.0,
         )
         resp = compute_options_greeks(req)
-        assert resp["metrics"]["total_gex"] == 0.0
+        assert resp["metrics"]["total_gex"] is None
+        assert resp["reason"] == "spot_unavailable"
 
 
 # ─── Snapshot provenance on the chain cache entry and the levels route ──────

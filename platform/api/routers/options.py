@@ -818,23 +818,27 @@ def compute_options_greeks(req: _GreeksRequest) -> dict:
         "node_min_gamma": NODE_MIN_GAMMA,
     }
 
-    if req.spot_price <= 0 or not req.options:
+    opts = _opts_to_dicts(req.options)
+    sides = gamma.chain_sides(opts)
+    if sides != gamma.SIDES_BOTH or req.spot_price <= 0:
+        # A one-sided, empty or spotless chain has no defensible aggregate:
+        # null metrics plus a reason, never a 0.0 the caller cannot tell from data.
         return {
             "aggregated": [],
             "gex_by_strike": [],
             "metrics": {
-                "total_gex": 0.0,
-                "total_vex": 0.0,
+                "total_gex": None,
+                "total_vex": None,
                 "zero_gamma": None,
                 "max_pain": None,
                 "implied_move": None,
-                "put_call_ratio": 0.0,
+                "put_call_ratio": None,
             },
             "nodes": {"kingNode": None, "gatekeepers": [], "midpoints": [], "allNodes": []},
             "config": config,
+            "reason": gamma.partial_chain_reason(sides) or "spot_unavailable",
         }
 
-    opts = _opts_to_dicts(req.options)
     aggregated = gamma.aggregate_by_strike(opts)
     gex_strikes = gamma.gex_by_strike(aggregated, req.spot_price)
 
