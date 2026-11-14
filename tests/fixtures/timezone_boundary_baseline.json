@@ -119,7 +119,7 @@
    "_resolve_scope::_dt.now()"
   ],
   "sql-utc-date": [
-   "_earnings_calendar_tickers::str#abf8af94b4ed"
+   "_earnings_calendar_tickers::fstr#266f9c5482ea"
   ]
  },
  "gcp/fetchers/fetch_economic_events.py": {
@@ -137,17 +137,17 @@
    "fetch_for_ticker::pd.Timestamp.utcnow()"
   ],
   "sql-utc-date": [
-   "_earnings_calendar_tickers::str#6c7f6bf52128"
+   "_earnings_calendar_tickers::fstr#591204bc497c"
   ]
  },
  "gcp/fetchers/fetch_market_data.py": {
   "sql-utc-date": [
-   "_earnings_tickers_in_window::str#2af0a28b3cb3"
+   "_earnings_tickers_in_window::fstr#1fa2471ddfa5"
   ]
  },
  "gcp/fetchers/fetch_news_sentiment.py": {
   "sql-utc-date": [
-   "_earnings_calendar_tickers::str#6c7f6bf52128"
+   "_earnings_calendar_tickers::fstr#591204bc497c"
   ],
   "utc-parse": [
    "_last_published_ts::pd.to_datetime(val, utc=True)"
@@ -163,7 +163,7 @@
    "main::date.today()"
   ],
   "sql-utc-date": [
-   "_earnings_calendar_tickers::str#6c7f6bf52128"
+   "_earnings_calendar_tickers::fstr#591204bc497c"
   ]
  },
  "gcp/fetchers/fetch_top_movers.py": {
