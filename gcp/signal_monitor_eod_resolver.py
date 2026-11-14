@@ -63,7 +63,14 @@ from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.eastern_time import ET, eastern_index_to_utc, market_today, session_close
+from lib.eastern_time import (
+    ET,
+    eastern_bounds_utc,
+    eastern_index_to_utc,
+    localize_assuming_utc,
+    market_today,
+    session_close,
+)
 
 import pandas as pd
 import requests
@@ -580,16 +587,243 @@ class EODResolver:
 
     # ── 4b. Bounded re-resolve (--re-resolve) ─────────────────────────
 
+    # One (ticker, Eastern day) of stored bars, with the insert time that
+    # proves each row. `interval` is named: the table also holds other bars.
+    DAY_BARS_SQL = """
+        SELECT ts, open, high, low, close, volume, inserted_at
+          FROM market_data_intraday
+         WHERE ticker = :t AND interval = '1min' AND ts >= :start AND ts < :end
+         ORDER BY ts
+    """
+
+    EXIT_CSV_COLUMNS = ("exit_ts", "exit_reason", "exit_price", "exit_return_pct")
+    _TRADE_EXIT_COLUMNS = ("exit_time", "exit_price", "exit_reason", "return_pct")
+    _RESOLVE_INPUTS = ("price_at_signal", "target_price", "direction", "time_stop_minutes")
+
+    def read_day_bars(self, ticker: str, day) -> pd.DataFrame:
+        """The stored 1-minute bars of *ticker* on the Eastern day *day*,
+        ``[D 00:00, D+1 00:00)`` as UTC instants: the window `_load_day`
+        loads. One strict read; a failed read raises."""
+        from gcp.database import query_to_dataframe_strict
+        start, _ = eastern_bounds_utc(day, dt_time(0), dt_time(0))
+        end, _ = eastern_bounds_utc(day + timedelta(days=1), dt_time(0), dt_time(0))
+        return query_to_dataframe_strict(
+            self.DAY_BARS_SQL, {"t": ticker, "start": start, "end": end})
+
+    def day_frame(self, raw: pd.DataFrame) -> pd.DataFrame:
+        """Shape a day of stored rows as `_load_day` shapes it: a naive UTC
+        index and the RSI computed once over all of the day's bars.
+
+        Each ``ts`` is taken as the instant it stores. The caller has checked
+        that every row is proven, so nothing is placed by inference here, and
+        a naive ``ts`` is not localized: it raises.
+        """
+        frame = pd.DataFrame({
+            'Open': raw['open'].to_numpy(),
+            'High': raw['high'].to_numpy(),
+            'Low': raw['low'].to_numpy(),
+            'Close': raw['close'].to_numpy(),
+            'Volume': raw['volume'].to_numpy(),
+        }, index=pd.DatetimeIndex(raw['ts']).tz_convert("UTC").tz_convert(None))
+        frame.index.name = 'Time'
+        frame = frame.sort_index()
+        frame[self.indicator_cfg.rsi_col] = calculate_rsi(
+            frame['Close'], self.indicator_cfg.rsi_period
+        )
+        return frame
+
+    def _exit_configuration(self) -> dict:
+        """The configuration that decides a re-resolved exit; each alert's own
+        target and time stop come from its row."""
+        return {
+            'call_exit_mode': getattr(self.exit_cfg, 'call_exit_mode', 'target_stop'),
+            'put_exit_mode': getattr(self.exit_cfg, 'put_exit_mode', 'target_stop'),
+            'rsi_period': self.indicator_cfg.rsi_period,
+            'call_rsi_exit': self.exit_cfg.call_rsi_exit,
+            'put_rsi_exit': self.exit_cfg.put_rsi_exit,
+        }
+
+    def _re_resolve_group(self, ticker: str, day, group: pd.DataFrame, basis_fixed: dict):
+        """Re-resolve the alerts of one (ticker, date) from that day's bars.
+
+        Returns the report rows, one an alert, and the units to write.
+        """
+        from gcp import bar_recompute
+
+        def stored_exit(record) -> dict:
+            return {column: record[column] for column in self.EXIT_CSV_COLUMNS}
+
+        def refused(status: str):
+            return [bar_recompute.ReportRow(
+                ticker=ticker, session_date=day,
+                row_key=bar_recompute.json_value(record['alert_ts']),
+                old=stored_exit(record), new=None, changed=None, status=status,
+                bars_rows=None, bars_sha256=None)
+                for record in group.to_dict('records')], []
+
+        raw = self.read_day_bars(ticker, day)
+        if raw.empty:
+            return refused('no_bars')
+        try:
+            bar_recompute.require_proven(raw['ts'], raw['inserted_at'])
+        except bar_recompute.UnprovenRows as unproven:
+            logger.warning("%s %s: %s; every alert of the day is left", ticker, day, unproven)
+            return refused('unproven_rows')
+
+        frame = self.day_frame(raw)
+        bars = bar_recompute.bars_basis(raw)
+        basis = {'bars': bars, **basis_fixed}
+        rows, units = [], []
+        for _, alert in group.iterrows():
+            row_key = bar_recompute.json_value(alert['alert_ts'])
+            for column in self._RESOLVE_INPUTS:
+                if pd.isna(alert[column]):
+                    raise ValueError(
+                        f"{ticker} alert {row_key} has no {column}; "
+                        "its exit cannot be re-resolved")
+            old = stored_exit(alert)
+            resolution = self.resolve_one(alert, bars=frame)
+            if resolution is None:
+                rows.append(bar_recompute.ReportRow(
+                    ticker=ticker, session_date=day, row_key=row_key, old=old, new=None,
+                    changed=None, status='bars_incomplete',
+                    bars_rows=bars['rows'], bars_sha256=bars['sha256']))
+                continue
+            new = {
+                'exit_ts': localize_assuming_utc(
+                    pd.Timestamp(resolution['exit_ts']).to_pydatetime()),
+                'exit_reason': resolution['exit_reason'],
+                'exit_price': resolution['exit_price'],
+                'exit_return_pct': resolution['exit_return_pct'],
+            }
+            marker = alert['exit_recompute_run']
+            changed, write = bar_recompute.decide(old, new, marker, self.EXIT_CSV_COLUMNS)
+
+            status = 'recomputed'
+            follower = None
+            trade_old = {
+                'exit_time': alert['trade_exit_time'],
+                'exit_price': alert['trade_exit_price'],
+                'exit_reason': alert['trade_exit_reason'],
+                'return_pct': alert['trade_return_pct'],
+            }
+            if not bool(alert['trade_found']):
+                status = 'trade_missing'
+            elif not (bar_recompute.same(trade_old['exit_time'], old['exit_ts'])
+                      and bar_recompute.same(trade_old['exit_price'], old['exit_price'])
+                      and bar_recompute.same(trade_old['exit_reason'], old['exit_reason'])):
+                # Someone changed the trade: it is no longer its alert's mirror.
+                status = 'trade_diverged'
+            else:
+                trade_new = {
+                    'exit_time': new['exit_ts'],
+                    'exit_price': new['exit_price'],
+                    'exit_reason': new['exit_reason'],
+                    'return_pct': new['exit_return_pct'],
+                }
+                trade_changed, _ = bar_recompute.decide(
+                    trade_old, trade_new, marker, self._TRADE_EXIT_COLUMNS)
+                changed = changed or trade_changed
+                write = write or trade_changed
+                follower = bar_recompute.TableWrite(
+                    spec=bar_recompute.TRADE_EXITS,
+                    key={'ticker': ticker, 'entry_time': alert['alert_ts']},
+                    old={**trade_old,
+                         'exit_recompute_run': alert['trade_exit_recompute_run']},
+                    new=trade_new)
+            if not write and status != 'trade_diverged':
+                status = 'already_current'
+            rows.append(bar_recompute.ReportRow(
+                ticker=ticker, session_date=day, row_key=row_key, old=old, new=new,
+                changed=changed, status=status,
+                bars_rows=bars['rows'], bars_sha256=bars['sha256']))
+            if write:
+                units.append(bar_recompute.WriteUnit(
+                    ticker=ticker, session_date=day, row_key=row_key,
+                    primary=bar_recompute.TableWrite(
+                        spec=bar_recompute.ALERT_EXITS,
+                        key={'ticker': ticker, 'alert_ts': alert['alert_ts']},
+                        old={**old, 'exit_recompute_run': marker},
+                        new=new),
+                    follower=follower, changed=changed, basis=basis))
+        return rows, units
+
+    @staticmethod
+    def _outcomes(rows) -> dict:
+        """Per ticker and over all: the wins (`exit_return_pct > 0`) and the
+        mean return before and after, over the selected rows. A row with no
+        new value counts its stored one both times."""
+        def measure(chosen) -> dict:
+            before = [r.old.get('exit_return_pct') for r in chosen]
+            after = [(r.new if r.new is not None else r.old).get('exit_return_pct')
+                     for r in chosen]
+            before = [float(v) for v in before if v is not None and not pd.isna(v)]
+            after = [float(v) for v in after if v is not None and not pd.isna(v)]
+            return {
+                'alerts': len(chosen),
+                'changed': sum(1 for r in chosen if r.changed),
+                'wins_before': sum(1 for v in before if v > 0),
+                'wins_after': sum(1 for v in after if v > 0),
+                'mean_return_before': sum(before) / len(before) if before else None,
+                'mean_return_after': sum(after) / len(after) if after else None,
+            }
+
+        outcomes = {}
+        for ticker in sorted({r.ticker for r in rows}):
+            outcomes[ticker] = measure([r for r in rows if r.ticker == ticker])
+        outcomes['all'] = measure(list(rows))
+        return {'outcomes': outcomes}
+
     def re_resolve(self, tickers: list[str], first, last, *, commit: bool,
                    run_id: str, report_dir: Optional[str]) -> int:
         """Re-resolve the resolver-written exits of *tickers* in
-        ``[first, last]`` and return the exit code."""
+        ``[first, last]`` and return the exit code.
+
+        One (ticker, date) at a time, with that day's bars in memory: one
+        strict read of the bars, refused unless every row is proven a true UTC
+        instant, then each alert through `resolve_one`, the function the
+        scheduled path runs. No exit logic lives here, the loader is not used,
+        and no digest is posted.
+        """
+        from gcp import bar_recompute
+
+        if commit:
+            raise NotImplementedError("the committed re-resolve is not written yet")
         alerts = self.find_resolved_alerts(tickers, first, last)
         logger.info("re-resolve %s..%s tickers=%s candidates=%d commit=%s run_id=%s",
                     first, last, " ".join(tickers), len(alerts), commit, run_id)
-        if alerts.empty:
-            return 0
-        raise NotImplementedError("the day read of the re-resolve is not written yet")
+        configuration = self._exit_configuration()
+        code = bar_recompute.code_version()
+        basis_fixed = {'code': code, 'configuration': configuration}
+
+        rows: list = []
+        groups: list = []
+        if not alerts.empty:
+            for (day, ticker), group in alerts.groupby(['alert_date', 'ticker'], sort=False):
+                group_rows, units = self._re_resolve_group(ticker, day, group, basis_fixed)
+                computed = [r for r in group_rows if r.new is not None]
+                logger.info(
+                    "RECOMPUTE-EXITS %s %s candidates=%d changed=%d unchanged=%d refused=%d",
+                    ticker, day, len(group_rows),
+                    sum(1 for r in computed if r.changed),
+                    sum(1 for r in computed if not r.changed),
+                    len(group_rows) - len(computed))
+                rows.extend(group_rows)
+                groups.append((f"{ticker} {day}", units))
+
+        summary = {
+            'target': bar_recompute.TARGET_EXITS,
+            'run_id': run_id,
+            'arguments': {'tickers': list(tickers), 'from': str(first), 'to': str(last),
+                          'commit': bool(commit)},
+            'code_version': code,
+            'configuration': configuration,
+        }
+        return bar_recompute.finish_run(
+            target=bar_recompute.TARGET_EXITS, run_id=run_id, commit=False,
+            action='recompute', rows=rows, groups=groups, summary=summary,
+            csv_columns=self.EXIT_CSV_COLUMNS, report_dir=report_dir,
+            summarize=self._outcomes)
 
     # ── 5. Orchestration ──────────────────────────────────────────────
 
