@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 import pandas as pd
@@ -159,6 +159,83 @@ def _month_table(kept: pd.DataFrame):
     ], schema=schema)
 
 
+def _month_last_day(year: int, month: int) -> date:
+    first_of_next = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    return first_of_next - timedelta(days=1)
+
+
+# A session that is not counted as traded, inferred or adjusted is listed
+# under not_measured with why. UNMEASURED carries its own reason.
+_NOT_MEASURED = {"INCOMPLETE": "incomplete", "ODD": "odd"}
+_COUNTED = {"AS-TRADED": "as_traded", "INFERRED": "inferred", "ADJUSTED": "adjusted"}
+
+
+def _sessions_and_basis(rows: pd.DataFrame, daily: pd.DataFrame, year: int,
+                        month: int, now_utc: datetime) -> tuple[dict, dict]:
+    """How whole the month is and on what basis, as the checks of the fetch
+    module read it: the session readings and the basis verdicts, counted.
+
+    The manifest never says more than the basis check does: the state is
+    ``as_traded`` only when every closed session is AS-TRADED from proven rows.
+    The state takes the first that applies of ``adjusted`` (an ADJUSTED
+    session), ``inferred`` (an as-traded verdict that rests on a row that is
+    not proven), ``unmeasured`` (no session counted at all; both factors
+    null), ``as_traded`` (nothing under ``not_measured``), ``partial``.
+
+    ``factor_min`` and ``factor_max`` range over the sessions counted as
+    traded, inferred or adjusted. An ODD session is under ``not_measured``
+    and outside the range.
+    """
+    from gcp.fetchers.fetch_alphavantage_intraday import (  # noqa: PLC0415
+        session_basis_verdicts,
+    )
+    from lib.eastern_time import session_schedule  # noqa: PLC0415
+
+    schedule = session_schedule(date(year, month, 1), _month_last_day(year, month))
+    # A session still trading, or not yet open, is not read at all.
+    schedule = schedule[schedule["market_close"] <= now_utc]
+    records = session_basis_verdicts(rows, daily, schedule)
+
+    sessions = {"expected": len(records), "ok": 0, "thin": 0, "missing": 0,
+                "undetermined": 0}
+    counts = {"as_traded": 0, "inferred": 0, "adjusted": 0, "odd": 0}
+    not_measured: dict = {}
+    factors: list = []
+    for record in records:
+        # An unknown status or verdict is a KeyError: never counted as fine.
+        sessions[record["status"].lower()] += 1
+        verdict = record["verdict"]
+        day = record["session"].isoformat()
+        if verdict in _COUNTED:
+            counts[_COUNTED[verdict]] += 1
+            factors.append(record["factor"])
+        elif verdict == "UNMEASURED":
+            not_measured[day] = record["reason"]
+        else:
+            not_measured[day] = _NOT_MEASURED[verdict]
+            if verdict == "ODD":
+                counts["odd"] += 1
+
+    if counts["adjusted"]:
+        state = "adjusted"
+    elif counts["inferred"]:
+        state = "inferred"
+    elif not factors:
+        state = "unmeasured"
+    elif not not_measured:
+        state = "as_traded"
+    else:
+        state = "partial"
+    basis = {
+        "state": state,
+        "factor_min": min(factors) if factors else None,
+        "factor_max": max(factors) if factors else None,
+        **counts,
+        "not_measured": not_measured,
+    }
+    return sessions, basis
+
+
 def build_month(rows: pd.DataFrame, daily: pd.DataFrame, ticker: str, year: int,
                 month: int, now_utc: datetime) -> tuple[Optional[bytes], dict]:
     """The month's Parquet bytes (None when *rows* is empty) and its manifest
@@ -174,12 +251,18 @@ def build_month(rows: pd.DataFrame, daily: pd.DataFrame, ticker: str, year: int,
     Limit, by construction (Design F): a whole session stored under both
     conventions with flat volume can be written on the wrong minutes. Nothing
     in the file marks those rows; ``inferred_rows`` above 0 is the only flag.
+
+    The entry's ``sessions`` and ``basis`` are over the calendar's sessions of
+    the month whose close has passed at *now_utc* (:func:`_sessions_and_basis`).
+    A month with no row gets its entry through the same code: no file, every
+    closed session missing, state ``unmeasured``.
     """
     import pyarrow as pa  # noqa: PLC0415
     import pyarrow.parquet as pq  # noqa: PLC0415
 
     from lib.eastern_time import place_stored_rows  # noqa: PLC0415
 
+    sessions, basis = _sessions_and_basis(rows, daily, year, month, now_utc)
     entry: dict = {
         "file": None,
         "rows": 0,
@@ -190,6 +273,8 @@ def build_month(rows: pd.DataFrame, daily: pd.DataFrame, ticker: str, year: int,
         "last_ts": None,
         "sha256": None,
         "exported_at": now_utc.isoformat(),
+        "sessions": sessions,
+        "basis": basis,
     }
     if rows.empty:
         return None, entry

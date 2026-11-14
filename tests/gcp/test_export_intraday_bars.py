@@ -59,10 +59,14 @@ def _with_prices(frame: pd.DataFrame, kw: dict) -> pd.DataFrame:
     return frame.assign(open=mid, close=mid, data_source="alphavantage")
 
 
-def month_rows(year, month, how="true", shared="true", inserted=OLD, **kw) -> pd.DataFrame:
+def month_rows(year, month, how="true", shared="true", inserted=OLD, days=None,
+               **kw) -> pd.DataFrame:
     """What B1 returns for a month whose every session is stored *how*: the
-    eight columns, one row per stored key, ascending ``ts``."""
-    parts = [stored(session_bars(d.isoformat(), **kw), how, shared=shared, inserted=inserted)
+    eight columns, one row per stored key, ascending ``ts``. *days* maps an
+    ISO session date to session_bars arguments for that session alone."""
+    days = days or {}
+    parts = [stored(session_bars(d.isoformat(), **{**kw, **days.get(d.isoformat(), {})}),
+                    how, shared=shared, inserted=inserted)
              for d in _sessions(year, month)]
     out = _with_prices(pd.concat(parts, ignore_index=True), kw)
     return out.sort_values("ts").reset_index(drop=True)[BARS_COLUMNS]
@@ -381,3 +385,185 @@ def test_gcs_bucket_absent_is_an_answer_and_any_other_failure_raises(gcs):
     gcs["upload_raises"] = Forbidden("denied")
     with pytest.raises(Forbidden):
         bucket.write("x/manifest.json", b"{}", if_generation_match=7)
+
+
+# -- Task 3: the manifest entry -------------------------------------------------
+
+ENTRY_KEYS = {"file", "rows", "stored_rows", "dropped_rows", "inferred_rows",
+              "first_ts", "last_ts", "sha256", "exported_at", "sessions", "basis"}
+
+
+def daily_rows(year, month, src="alphavantage_daily", skip=(), stamp=None) -> pd.DataFrame:
+    """One market_data_daily row of 600.0 and 590.0 per session of the month.
+    *skip* leaves dates out; *stamp* maps a date to another ``data_source``."""
+    stamp = stamp or {}
+    rows = [{"date": d, "high": 600.0, "low": 590.0,
+             "data_source": stamp.get(d.isoformat(), src)}
+            for d in _sessions(year, month) if d.isoformat() not in skip]
+    return pd.DataFrame(rows, columns=DAILY_COLUMNS).astype(
+        {"date": object, "data_source": object})
+
+
+def entry(rows, daily, y=2025, m=5, now=NOW) -> dict:
+    return xb.build_month(rows, daily, "SPY", y, m, now)[1]
+
+
+def test_entry_keys_and_counts():
+    rows = month_rows(2025, 5, inserted=NEW)
+    data, got = xb.build_month(rows, daily_rows(2025, 5), "SPY", 2025, 5, NOW)
+
+    assert set(got) == ENTRY_KEYS and len(got) == 11
+    assert got["rows"] + got["dropped_rows"] == got["stored_rows"] == 20181
+    assert got["file"] == "intraday-bars/v1/1min/SPY/2025-05.parquet"
+    assert got["sha256"] == hashlib.sha256(data).hexdigest()
+    assert got["first_ts"] == "2025-05-01T08:00:00+00:00"
+    assert got["last_ts"] == "2025-05-31T00:00:00+00:00"
+    assert got["exported_at"] == NOW.isoformat() == "2026-11-13T15:00:00+00:00"
+    assert got["sessions"] == {
+        "expected": 21, "ok": 21, "thin": 0, "missing": 0, "undetermined": 0}
+    assert got["basis"] == {
+        "state": "as_traded", "factor_min": 1.0, "factor_max": 1.0, "as_traded": 21,
+        "inferred": 0, "adjusted": 0, "odd": 0, "not_measured": {}}
+    # The entry is what the manifest stores: it must survive JSON unchanged.
+    import json
+    assert json.loads(json.dumps(got)) == got
+
+
+def test_one_unproven_row_makes_the_month_inferred():
+    rows = month_rows(2025, 5, inserted=NEW)
+    one = rows["ts"] == pd.Timestamp("2025-05-16 14:00", tz="UTC")     # 10:00 ET
+    assert one.sum() == 1
+    rows.loc[one, "inserted_at"] = OLD
+
+    got = entry(rows, daily_rows(2025, 5))
+    assert got["basis"]["state"] == "inferred"
+    assert got["basis"]["as_traded"] == 20
+    assert got["basis"]["inferred"] == 1
+    assert got["inferred_rows"] == 1
+    assert got["basis"]["not_measured"] == {}
+
+
+def test_not_measured_reasons_and_partial():
+    rows = month_rows(2025, 5, inserted=NEW, days={
+        "2025-05-12": {"start": "09:30", "end": "13:29"},
+        "2025-05-13": {"f_low": 0.99}})
+    daily = daily_rows(2025, 5, skip=("2025-05-14",), stamp={
+        "2025-05-15": "alphavantage_1min", "2025-05-19": "yahoo"})
+
+    got = entry(rows, daily)
+    assert got["basis"]["not_measured"] == {
+        "2025-05-12": "incomplete", "2025-05-13": "odd", "2025-05-14": "no_daily_row",
+        "2025-05-15": "daily_from_intraday", "2025-05-19": "daily_source_unknown"}
+    assert got["basis"]["state"] == "partial"
+    assert got["basis"]["as_traded"] == 16
+    assert got["basis"]["odd"] == 1
+    assert got["basis"]["inferred"] == 0 and got["basis"]["adjusted"] == 0
+    assert (got["basis"]["factor_min"], got["basis"]["factor_max"]) == (1.0, 1.0)
+    assert got["sessions"] == {
+        "expected": 21, "ok": 20, "thin": 1, "missing": 0, "undetermined": 0}
+
+
+def _one_reason(reason: str):
+    """A whole proven as-traded May 2025 with one session that is not measured
+    for *reason*: (rows, daily, the session)."""
+    day = "2025-05-14"
+    days, skip, stamp = {}, (), {}
+    if reason == "incomplete":
+        days = {day: {"start": "09:30", "end": "13:29"}}
+    elif reason == "odd":
+        days = {day: {"f_low": 0.99}}
+    elif reason == "no_daily_row":
+        skip = (day,)
+    elif reason == "daily_from_intraday":
+        stamp = {day: "alphavantage_1min"}
+    elif reason == "daily_source_unknown":
+        stamp = {day: "yahoo"}
+    rows = month_rows(2025, 5, inserted=NEW, days=days)
+    daily = daily_rows(2025, 5, skip=skip, stamp=stamp)
+    if reason == "daily_not_positive":
+        daily.loc[daily["date"] == date(2025, 5, 14), "low"] = 0.0
+    elif reason == "no_rth_high_low":
+        on_day = ((rows["ts"] >= pd.Timestamp("2025-05-14 04:00", tz="UTC"))
+                  & (rows["ts"] < pd.Timestamp("2025-05-15 04:00", tz="UTC")))
+        rows.loc[on_day, "high"] = np.nan
+    return rows, daily, day
+
+
+@pytest.mark.parametrize("reason", [
+    "incomplete", "odd", "no_daily_row", "daily_from_intraday",
+    "daily_source_unknown", "daily_not_positive", "no_rth_high_low"])
+def test_a_month_with_a_session_not_measured_is_never_as_traded(reason):
+    rows, daily, day = _one_reason(reason)
+    got = entry(rows, daily)
+    assert got["basis"]["not_measured"] == {day: reason}
+    assert got["basis"]["state"] == "partial"
+    assert got["basis"]["state"] != "as_traded"
+    assert got["basis"]["as_traded"] == 20
+    assert got["basis"]["odd"] == (1 if reason == "odd" else 0)
+
+
+def test_adjusted_wins_and_carries_the_range():
+    rows = month_rows(2025, 5, inserted=NEW, days={
+        "2025-05-07": {"f_high": 0.99430, "f_low": 0.99430}})
+    one = rows["ts"] == pd.Timestamp("2025-05-16 14:00", tz="UTC")
+    rows.loc[one, "inserted_at"] = OLD
+
+    got = entry(rows, daily_rows(2025, 5))
+    assert got["basis"]["state"] == "adjusted"
+    assert got["basis"]["adjusted"] == 1
+    assert got["basis"]["inferred"] == 1
+    assert got["basis"]["as_traded"] == 19
+    assert got["basis"]["factor_min"] == 0.9943
+    assert got["basis"]["factor_max"] == 1.0
+
+
+def test_an_odd_session_is_outside_the_factor_range():
+    # An ODD session's mean factor is 0.995; it is under not_measured and the
+    # range is of the counted sessions only.
+    rows = month_rows(2025, 5, inserted=NEW, days={"2025-05-13": {"f_low": 0.99}})
+    got = entry(rows, daily_rows(2025, 5))
+    assert (got["basis"]["factor_min"], got["basis"]["factor_max"]) == (1.0, 1.0)
+
+
+def test_unmeasured_has_null_factors():
+    got = entry(month_rows(2025, 5, inserted=NEW),
+                daily_rows(2025, 5, src="alphavantage_1min"))
+    assert got["basis"]["state"] == "unmeasured"
+    assert got["basis"]["factor_min"] is None
+    assert got["basis"]["factor_max"] is None
+    assert len(got["basis"]["not_measured"]) == 21
+    assert set(got["basis"]["not_measured"].values()) == {"daily_from_intraday"}
+    assert got["basis"]["as_traded"] == 0
+
+
+def test_a_month_with_no_row():
+    data, got = xb.build_month(pd.DataFrame(columns=BARS_COLUMNS), daily_rows(2025, 5),
+                               "SPY", 2025, 5, NOW)
+    assert data is None
+    assert got["rows"] == got["stored_rows"] == got["dropped_rows"] == 0
+    assert got["inferred_rows"] == 0
+    assert got["file"] is None and got["sha256"] is None
+    assert got["first_ts"] is None and got["last_ts"] is None
+    assert got["exported_at"] == NOW.isoformat()
+    assert got["sessions"] == {
+        "expected": 21, "ok": 0, "thin": 0, "missing": 21, "undetermined": 0}
+    assert got["basis"]["state"] == "unmeasured"
+    assert set(got) == ENTRY_KEYS
+
+
+def test_the_newest_session_has_no_daily_row_yet():
+    # 21:00 ET on 2026-11-12: the nightly export runs two hours before the
+    # daily fetch, so that evening's session has no daily row yet.
+    now = datetime(2026, 11, 13, 2, tzinfo=timezone.utc)
+    rows = month_rows(2026, 11, inserted=NEW)
+    rows = rows[rows["ts"] <= pd.Timestamp("2026-11-13 01:00", tz="UTC")]   # 20:00 ET
+    daily = daily_rows(2026, 11)
+    daily = daily[daily["date"] <= date(2026, 11, 11)]
+
+    got = entry(rows, daily, 2026, 11, now)
+    assert got["sessions"]["expected"] == 9
+    assert got["sessions"]["ok"] == 9
+    assert got["basis"]["not_measured"] == {"2026-11-12": "no_daily_row"}
+    assert got["basis"]["state"] == "partial"
+    assert got["basis"]["as_traded"] == 8
+    assert got["inferred_rows"] == 0
