@@ -434,7 +434,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [669](../../../gcp/migrate_to_gcp.py#L669)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2478](../../../gcp/signal_monitor.py#L2478)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [416](../../../gcp/signal_monitor_eod_resolver.py#L416)
-- [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [97](../../../gcp/trade_logger.py#L97), [100](../../../gcp/trade_logger.py#L100)
+- [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [98](../../../gcp/trade_logger.py#L98), [101](../../../gcp/trade_logger.py#L101)
 
 ### `user_preferences`
 - [`platform/api/routers/preferences.py`](../../../platform/api/routers/preferences.py) — line [175](../../../platform/api/routers/preferences.py#L175)
@@ -876,7 +876,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/main.py`](../../../platform/api/main.py) — line [1571](../../../platform/api/main.py#L1571), [1572](../../../platform/api/main.py#L1572)
 
 ### `trades`
-- [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [176](../../../gcp/trade_logger.py#L176), [212](../../../gcp/trade_logger.py#L212), [243](../../../gcp/trade_logger.py#L243)
+- [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [177](../../../gcp/trade_logger.py#L177), [213](../../../gcp/trade_logger.py#L213), [244](../../../gcp/trade_logger.py#L244)
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [865](../../../lib/data_loader.py#L865)
 - [`lib/strategies/insight_cache.py`](../../../lib/strategies/insight_cache.py) — line [285](../../../lib/strategies/insight_cache.py#L285)
 - [`platform/api/routers/analytics.py`](../../../platform/api/routers/analytics.py) — line [148](../../../platform/api/routers/analytics.py#L148)

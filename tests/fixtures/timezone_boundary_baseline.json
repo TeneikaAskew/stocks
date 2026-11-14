@@ -348,7 +348,6 @@
   "host-today": [
    "SignalMonitor._check_exits::datetime.now()",
    "SignalMonitor._evaluate_strategies_for_bar::datetime.now()",
-   "SignalMonitor.fetch_latest_bar::datetime.now()",
    "SignalMonitor.fire_alert::datetime.utcnow()"
   ],
   "tz-localize-none": [
@@ -368,20 +367,6 @@
   "tz-localize-none": [
    "EODResolver._eod_close_resolution::close_et.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)",
    "EODResolver.resolve_one::alert_ts.tz_localize(None)"
-  ]
- },
- "gcp/trade_logger.py": {
-  "host-today": [
-   "TradeLogger._daily_file::datetime.now()",
-   "TradeLogger.get_daily_trades::datetime.now()",
-   "TradeLogger.get_weekly_trades::datetime.now()",
-   "TradeLogger.get_weekly_trades::datetime.now()",
-   "TradeLogger.log_trade::datetime.now()"
-  ]
- },
- "gcp/weekend_review.py": {
-  "host-today": [
-   "generate_weekly_review::datetime.now()"
   ]
  },
  "lib/agents/ranker/candidates.py": {
