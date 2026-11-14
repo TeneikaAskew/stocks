@@ -1507,6 +1507,23 @@ class TestAtrLevelsCopy:
         assert calls == ['  CALLS: ' + orb_only_text('all_broken_by_premarket', 'long')]
         assert lines[-1].startswith('    ATR levels')
 
+    def test_no_rung_at_or_below_zero(self):
+        """An anchor closer to zero than its downward offset builds no rung
+        at or below zero, so the brief never prints an unreachable price
+        (Codex P2 on #1951: PDH 1.20, PDL 0.80, reference 1.00, ATR 0.70
+        printed -0.20 and -0.60)."""
+        from lib.strat_levels import SessionLevels
+        from tests.lib.session_levels_helpers import basis, d8_params
+        sl = SessionLevels.from_basis(basis(
+            {'PDH': 1.20, 'PDL': 0.80}, prior_close=1.00, atr=0.70,
+            premarket={'pre_high': 1.05, 'pre_low': 0.95, 'pre_vwap': 1.00},
+            params=d8_params()))
+        assert sl.atr_rung_status == 'ok'
+        built = sl.atr_rungs + sl.atr_rungs_dropped
+        assert built and all(r['cents'] > 0 for r in built)
+        line = format_levels_for_brief(sl.to_level_map(), 'neutral').split('\n')[-1]
+        assert line.startswith('    ATR levels') and ' -0.' not in line and '(-' not in line
+
     def test_a_basis_from_the_previous_loader_prints_no_line(self):
         """Once the policy rows exist, the previous loader records the rung
         keys among its parameters but writes no rung fields: that basis

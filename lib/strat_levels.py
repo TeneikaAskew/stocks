@@ -2477,7 +2477,8 @@ def _atr_rung_ladder(levels: List[StratLevel], params: LevelParams, atr: float,
     has, in the order of atr_rung_anchors, a rung at anchor +/- i x step x
     ATR for whole i while i x step <= max (multiples compared in cents),
     named {anchor}{sign}{k}ATR with k = i x step. A rung whose distance from
-    its anchor in cents is at least stretch x ATR in cents is stretch.
+    its anchor in cents is at least stretch x ATR in cents is stretch. A
+    rung at or below zero cents is not built.
 
     Returns (rungs, distinct, anchor records): `rungs` every rung as built;
     `distinct` one per cent, the anchor listed first keeping the name and
@@ -2503,6 +2504,10 @@ def _atr_rung_ladder(levels: List[StratLevel], params: LevelParams, atr: float,
             off = price_cents(i * step * atr)
             for sign, direction in (('+', 1), ('-', -1)):
                 cents = anchor_c + direction * off
+                if cents <= 0:
+                    # Not a price a stock can trade at: no rung (Codex P2
+                    # on #1951).
+                    continue
                 label = f"{name}{sign}{k}"
                 rungs.append({'name': label + ATR_RUNG_SUFFIX, 'label': label,
                               'price': cents / 100.0, 'cents': cents, 'anchor': name,
