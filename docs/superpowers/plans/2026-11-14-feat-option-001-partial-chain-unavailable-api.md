@@ -2,7 +2,7 @@
 feat_id: FEAT-OPTION-001
 spec: docs/superpowers/specs/2026-11-05-feat-option-001-partial-chain-unavailable-api.md
 branch: feature/feat-option-001-partial-chain-unavailable-api
-pr: null
+pr: 1916
 status: ready
 ---
 
