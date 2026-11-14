@@ -146,10 +146,9 @@ def run_brief(monkeypatch, ticker: str, frame: pd.DataFrame, as_of: str = "2026-
                        "BRIEF_LLM_DISABLE": "1", "BRIEF_TICKERS": ticker}.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(DataLoader, "load_daily", lambda *a, **k: frame.copy())
-    monkeypatch.setattr(pb, "check_call_conditions", lambda row: (4, []))
-    monkeypatch.setattr(pb, "check_put_conditions", lambda row: (3, []))
+    monkeypatch.setattr(pb, "check_call_conditions", lambda row, **k: (4, []))
+    monkeypatch.setattr(pb, "check_put_conditions", lambda row, **k: (3, []))
     monkeypatch.setattr(pb, "load_earnings_for_brief", lambda *a, **k: {"earnings": []})
-    monkeypatch.setattr(pb, "_ew_recap_or_unavailable", lambda *a, **k: {})
     monkeypatch.setattr(pb, "load_economic_events", lambda *a, **k: {"today": []})
     monkeypatch.setattr(pb, "_load_gamma_freshness", lambda *a, **k: dict(
         data_source="unavailable", snapshot_ts=None, snapshot_date=None, days_behind=None))

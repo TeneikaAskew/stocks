@@ -1,0 +1,79 @@
+{
+ "base": "tests/fixtures/retry_split/deploy.sh (gcp/deploy.sh blob 6eed94cae9db97edd33c57b9c6748069e62bdc69)",
+ "source": "commit f3206696",
+ "blob": "1ad7255a1317fbdbc3c6e40c2542e224cd0dc095",
+ "edits": [
+  {
+   "line": 3150,
+   "old": [
+    "        --memory 512Mi --cpu 1 --max-retries 1 \\\n"
+   ],
+   "new": [
+    "        --memory 512Mi --cpu 1 --max-retries 0 \\\n"
+   ]
+  },
+  {
+   "line": 3157,
+   "old": [
+    "        --image \"${IMAGE_REF:?build_image has not run in this invocation}\" --region \"${REGION}\" \\\n"
+   ],
+   "new": [
+    "        --image \"${IMAGE_REF:?build_image has not run in this invocation}\" --region \"${REGION}\" --max-retries 0 \\\n"
+   ]
+  },
+  {
+   "line": 3177,
+   "old": [
+    "        --memory 512Mi --cpu 1 --max-retries 1 \\\n"
+   ],
+   "new": [
+    "        --memory 512Mi --cpu 1 --max-retries 0 \\\n"
+   ]
+  },
+  {
+   "line": 3184,
+   "old": [
+    "        --image \"${IMAGE_REF:?build_image has not run in this invocation}\" --region \"${REGION}\" \\\n"
+   ],
+   "new": [
+    "        --image \"${IMAGE_REF:?build_image has not run in this invocation}\" --region \"${REGION}\" --max-retries 0 \\\n"
+   ]
+  },
+  {
+   "line": 3196,
+   "old": [
+    "        --region \"${REGION}\" \\\n"
+   ],
+   "new": [
+    "        --region \"${REGION}\" --max-retries 0 \\\n"
+   ]
+  },
+  {
+   "line": 3208,
+   "old": [
+    "        --memory 512Mi --cpu 1 --max-retries 1 \\\n"
+   ],
+   "new": [
+    "        --memory 512Mi --cpu 1 --max-retries 0 \\\n"
+   ]
+  },
+  {
+   "line": 3215,
+   "old": [
+    "        --image \"${IMAGE_REF:?build_image has not run in this invocation}\" --region \"${REGION}\" \\\n"
+   ],
+   "new": [
+    "        --image \"${IMAGE_REF:?build_image has not run in this invocation}\" --region \"${REGION}\" --max-retries 0 \\\n"
+   ]
+  },
+  {
+   "line": 3224,
+   "old": [
+    "        --region \"${REGION}\" \\\n"
+   ],
+   "new": [
+    "        --region \"${REGION}\" --max-retries 0 \\\n"
+   ]
+  }
+ ]
+}

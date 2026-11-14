@@ -75,7 +75,7 @@ def av_listed_symbol(ticker: str) -> str:
 
 
 def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
-                      adjusted: bool = True) -> tuple[pd.DataFrame, str]:
+                      adjusted: bool = False) -> tuple[pd.DataFrame, str]:
     """1-minute OHLCV bars from AlphaVantage TIME_SERIES_INTRADAY, with why
     there are none when there are none.
 
@@ -85,6 +85,8 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
     symbol from a rate limit from a transport error (#1181). A failure in this
     code rather than in the vendor's reply is raised, not named.
     """
+    if adjusted:
+        raise ValueError("1-min bars are fetched as traded only; adjusted=True is not supported")
     av_symbol = av_listed_symbol(ticker)
     if not api_key:
         log.warning("    No AV API key — cannot fetch intraday for %s", ticker)
@@ -98,7 +100,7 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
         'interval': '1min',
         'month': month,
         'outputsize': 'full',
-        'adjusted': 'true' if adjusted else 'false',  # False = as-traded, to compare with a strike (#1151)
+        'adjusted': 'false',  # as traded, always: the table and every reader are as traded (#1151)
         # Required to get current-day bars. Without it AV returns
         # historical-only — `month=2026-04` with default entitlement
         # gave 0 bars for 2026-04-30 even mid-session.
@@ -162,7 +164,7 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
     return df, FETCH_OK
 
 
-def fetch_minute_data(ticker: str, fetch_date: str, api_key: str, *, adjusted: bool = True) -> pd.DataFrame:
+def fetch_minute_data(ticker: str, fetch_date: str, api_key: str, *, adjusted: bool = False) -> pd.DataFrame:
     """fetch_minute_bars without the reason: the bars, or an empty frame when
     AlphaVantage returned none, which is what the daily fetcher and the
     premarket refresh read."""
