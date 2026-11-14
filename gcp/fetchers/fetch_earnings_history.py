@@ -35,6 +35,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from lib.eastern_time import ET_NAME
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from lib.config import AlphaVantageConfig
 from lib.logging_config import setup_logging
@@ -247,10 +248,10 @@ def _earnings_calendar_tickers(
     except ImportError:
         return []
 
-    sql = """
+    sql = f"""
         SELECT ticker
         FROM earnings_calendar
-        WHERE earnings_date BETWEEN CURRENT_DATE
+        WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date BETWEEN CURRENT_DATE
             AND CURRENT_DATE + (:days || ' days')::interval
         GROUP BY ticker
     """
@@ -291,10 +292,10 @@ def _tickers_reporting_in_window(window_days: int) -> set:
         # anchoring in ET is correct year-round and removes the seasonal
         # failure mode.
         df = query_to_dataframe(
-            """
+            f"""
             SELECT DISTINCT ticker
             FROM earnings_calendar
-            WHERE earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date
+            WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date
                 AND (NOW() AT TIME ZONE 'America/New_York')::date + (:days || ' days')::interval
             """,
             {"days": int(window_days)},
