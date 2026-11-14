@@ -22,7 +22,7 @@ survives:
 
 | Element | Value | Where |
 |---|---|---|
-| Look-ahead window | `CURRENT_DATE … CURRENT_DATE + :days_ahead`, default **7** days | `:150-151`, `--days` at `:322` |
+| Look-ahead window | today … today + `:days_ahead` on the exchange's date (the SQL text of `lib.eastern_time.market_today_sql()`, not `CURRENT_DATE`), default **7** days | `:153-154`, `--days` at `:326` |
 | Structures kept | `long_straddle`, `long_strangle`, `long_call`, `long_put` | `:131-133` |
 | Inclusion threshold | `COUNT(DISTINCT (structure, event_date)) >= :min_wins`, default **2** | `:169`, `--min-wins` at `:324` |
 | Rank | prior wins DESC, then `MAX(pnl_pct)` DESC | `:170-171` |
@@ -72,7 +72,7 @@ refresh).
 
 | Symbol | Role |
 |---|---|
-| `earnings_long_watchlist.main` (`:319`) | The scheduled entry point |
+| `earnings_long_watchlist.main` (`:323`) | The scheduled entry point |
 | `_query_watchlist` (`:115`) | The threshold and the ranking |
 | `_source_is_fresh` (`:107`) | The staleness gate |
 

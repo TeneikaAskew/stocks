@@ -33,7 +33,7 @@ from typing import Any, Optional, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from lib.eastern_time import ET_NAME
+from lib.eastern_time import ET_NAME, market_today
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from lib.strat_levels import PREMARKET_UNFILTERED_NOTE, LevelParamsUnavailable
 
@@ -149,7 +149,7 @@ def _check_chain_freshness(
     """
     if isinstance(chain_date, datetime):
         chain_date = chain_date.date()
-    target = target_date if target_date else date_type.today()
+    target = target_date if target_date else market_today()
     if isinstance(target, datetime):
         target = target.date()
     trading_days = int(np.busday_count(chain_date, target))
@@ -849,7 +849,7 @@ def summarize_gamma_levels(
         # Tier the EOD snapshot into eod_fallback / stale_fallback /
         # hard-stale based on trading-day gap.
         chain_date = _chain_snapshot_date(df)
-        target = as_of if as_of else date_type.today()
+        target = as_of if as_of else market_today()
         if isinstance(target, datetime):
             target = target.date()
         days_behind = int(np.busday_count(chain_date, target))
