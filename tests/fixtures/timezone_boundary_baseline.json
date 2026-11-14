@@ -609,8 +609,8 @@
    "get_reference_levels::datetime.now()"
   ],
   "tz-localize-none": [
-   "get_market_data::df.index.tz_localize(None)",
-   "get_reference_levels::df.index.tz_localize(None)"
+   "_reference_from_gcs_local_dev::df.index.tz_localize(None)",
+   "get_market_data::df.index.tz_localize(None)"
   ]
  },
  "platform/api/routers/backtest.py": {
