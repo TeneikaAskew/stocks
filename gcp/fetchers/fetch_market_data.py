@@ -24,7 +24,13 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import ET, eastern_bounds_utc, eastern_index_to_utc
+from lib.eastern_time import (
+    ET,
+    eastern_bounds_utc,
+    eastern_index_to_utc,
+    market_today,
+    utc_now,
+)
 
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
@@ -1279,15 +1285,286 @@ def build_parser() -> argparse.ArgumentParser:
                         help=('Bypass the fetch-date freshness guard for DELIBERATE '
                               'historical backfills of specific --tickers; never set '
                               'this in scheduled jobs.'))
+    parser.add_argument('--recompute-premarket', action='store_true',
+                        help=('Fetches nothing: recompute the premarket columns of '
+                              'market_data_daily for SPY, QQQ and IWM in [--from, --to] '
+                              'from stored 1-minute bars proven true UTC. Writes a '
+                              'report; writes the rows only with --commit.'))
+    parser.add_argument('--from', dest='first', default=None, metavar='YYYY-MM-DD',
+                        help='First session of --recompute-premarket')
+    parser.add_argument('--to', dest='last', default=None, metavar='YYYY-MM-DD',
+                        help="Last session of --recompute-premarket; before today's "
+                             "Eastern date")
+    parser.add_argument('--commit', action='store_true',
+                        help=('With --recompute-premarket or --revert-run: write. '
+                              'Without it nothing is written to the database.'))
+    parser.add_argument('--revert-run', default=None, metavar='RUN_ID',
+                        help=('Write back the premarket values a committed '
+                              '--recompute-premarket run replaced, from its ledger '
+                              'rows. Writes only with --commit.'))
+    parser.add_argument('--report-dir', default=None, metavar='PATH',
+                        help='Write rows.csv and summary.json under PATH instead of '
+                             'the bucket')
     return parser
+
+
+# -- Premarket columns from stored bars (FEAT-DATA-001) --------------------------
+#
+# --recompute-premarket rewrites the premarket columns of past sessions from
+# the 1-minute bars the table holds now. It fetches nothing and needs no API
+# key. Spec: docs/superpowers/specs/2026-11-14-feat-data-001-recompute-after-bar-rewrite.md
+# (Design 5); what it shares with the resolver's --re-resolve is
+# gcp/bar_recompute.py.
+
+# The rows that are recomputed: a session of the run's tickers that has a
+# close and already holds a premarket value. pre_filter_params is read as the
+# database's own text and bound back as that text: a stored number with more
+# digits than a float holds would not survive a parse.
+PREMARKET_ROWS_SQL = """
+    SELECT ticker, date, close, pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr,
+           pre_fetched_at, pre_excluded_stale_prints, pre_excluded_spikes, pre_filter_status,
+           pre_filter_params::text AS pre_filter_params, pre_recompute_run
+      FROM market_data_daily
+     WHERE ticker = ANY(:tickers) AND date >= :first AND date <= :last AND close IS NOT NULL
+       AND (pre_high IS NOT NULL OR pre_low IS NOT NULL OR pre_vwap IS NOT NULL
+            OR gap_pct IS NOT NULL)
+     ORDER BY ticker, date
+"""
+
+# One ticker's daily bars, from far enough back that every session of the
+# window has the 250 rows the nightly computes its indicators on.
+DAILY_BARS_SQL = """
+    SELECT date, open AS "Open", high AS "High", low AS "Low", close AS "Close",
+           volume AS "Volume"
+      FROM market_data_daily
+     WHERE ticker = :ticker AND date >= :lo AND date <= :hi
+     ORDER BY date
+"""
+DAILY_HISTORY_DAYS = 400
+DAILY_FRAME_ROWS = 250
+
+
+def premarket_bars_sql(sessions: int) -> str:
+    """One (ticker, month) of premarket bars: one window a selected session,
+    joined to the bars, so the index is read only where a window is."""
+    windows = ", ".join(f"(:s{i}, :e{i})" for i in range(sessions))
+    return (
+        "SELECT b.ts, b.open, b.high, b.low, b.close, b.volume, b.inserted_at\n"
+        f"  FROM (VALUES {windows}) AS w(start_ts, end_ts)\n"
+        "  JOIN market_data_intraday b\n"
+        "    ON b.ticker = :t AND b.interval = '1min'\n"
+        "   AND b.ts >= w.start_ts::timestamptz AND b.ts < w.end_ts::timestamptz\n"
+        " ORDER BY b.ts"
+    )
+
+
+def _recompute_month(ticker: str, sessions: pd.DataFrame, daily: pd.DataFrame,
+                     params_for, basis_code: dict):
+    """Recompute the selected sessions of one (ticker, month).
+
+    Returns the report rows, one a session, and the units to write.
+    """
+    from gcp import bar_recompute
+    from gcp.database import query_to_dataframe_strict
+    from lib.indicators import add_all_indicators
+
+    days = list(sessions['date'])
+    windows = [eastern_bounds_utc(day, dt_time(4, 0), dt_time(9, 30)) for day in days]
+    bind: dict = {'t': ticker}
+    for i, (start, end) in enumerate(windows):
+        bind[f's{i}'] = start
+        bind[f'e{i}'] = end
+    bars = query_to_dataframe_strict(premarket_bars_sql(len(days)), bind)
+    # The time the bars were read, which is what pre_fetched_at means.
+    read_at = utc_now()
+
+    rows, units = [], []
+    for record, (start, end) in zip(sessions.to_dict('records'), windows):
+        day = record['date']
+        old = {column: record[column] for column in PREMARKET_COLUMNS}
+        marker = record['pre_recompute_run']
+
+        def left(status: str, basis_bars: dict | None = None, *, day=day, old=old):
+            rows.append(bar_recompute.ReportRow(
+                ticker=ticker, session_date=day, row_key=day.isoformat(), old=old,
+                new=None, changed=None, status=status,
+                bars_rows=basis_bars['rows'] if basis_bars else None,
+                bars_sha256=basis_bars['sha256'] if basis_bars else None))
+
+        session_bars = bars[(bars['ts'] >= start) & (bars['ts'] < end)]
+        if session_bars.empty:
+            left('no_bars')
+            continue
+        try:
+            bar_recompute.require_proven(session_bars['ts'], session_bars['inserted_at'])
+        except bar_recompute.UnprovenRows as unproven:
+            log.warning("%s %s: %s; the session is left", ticker, day, unproven)
+            left('unproven_rows')
+            continue
+
+        # The nightly's daily frame for this session: the last 250 rows up to
+        # it, oldest first, with the indicators the nightly computes on it.
+        frame = daily[daily['date'] <= day].tail(DAILY_FRAME_ROWS).reset_index(drop=True)
+        if len(frame) < 2 or frame['date'].iloc[-1] != day:
+            left('daily_incomplete')
+            continue
+        enriched = add_all_indicators(frame, close_col='Close')
+        prior = prior_session_inputs(frame, enriched)
+
+        level_params = params_for(day)[ticker]
+        basis_bars = bar_recompute.bars_basis(session_bars)
+        new = premarket_snapshot(ticker, day, session_bars, prior, level_params, read_at)
+        if new is None:
+            left('no_bars', basis_bars)
+            continue
+
+        changed, write = bar_recompute.decide(
+            old, new, marker, bar_recompute.PREMARKET_COMPARED)
+        rows.append(bar_recompute.ReportRow(
+            ticker=ticker, session_date=day, row_key=day.isoformat(), old=old, new=new,
+            changed=changed, status='recomputed' if write else 'already_current',
+            bars_rows=basis_bars['rows'], bars_sha256=basis_bars['sha256']))
+        if write:
+            units.append(bar_recompute.WriteUnit(
+                ticker=ticker, session_date=day, row_key=day.isoformat(),
+                primary=bar_recompute.TableWrite(
+                    spec=bar_recompute.DAILY_PREMARKET,
+                    key={'ticker': ticker, 'date': day},
+                    old={**old, 'pre_recompute_run': marker},
+                    new=new),
+                follower=None, changed=changed,
+                basis={
+                    'bars': basis_bars,
+                    'code': basis_code,
+                    'filter': {'status': new['pre_filter_status'],
+                               'params': new['pre_filter_params']},
+                    'prior': prior,
+                }))
+    return rows, units
+
+
+def recompute_premarket(tickers: list, first: date, last: date, *, commit: bool,
+                        run_id: str, report_dir: str | None) -> int:
+    """Recompute the premarket columns of *tickers* in ``[first, last]`` from
+    stored bars and return the exit code.
+
+    One strict selection; one strict daily read a ticker; then one
+    (ticker, month) at a time, with that month's premarket bars in memory:
+    one strict read of the bars, each session refused unless every one of its
+    rows is proven a true UTC instant, and `premarket_snapshot`, the function
+    the nightly runs, for the values. The level parameters are the ones in
+    force on each session's own date, read once a distinct date; a failed
+    parameter read raises and is never written as an unfiltered snapshot.
+    """
+    from gcp import bar_recompute
+    from gcp.database import query_to_dataframe_strict
+
+    selected = query_to_dataframe_strict(
+        PREMARKET_ROWS_SQL, {'tickers': list(tickers), 'first': first, 'last': last})
+    log.info("recompute-premarket %s..%s tickers=%s candidates=%d commit=%s run_id=%s",
+             first, last, " ".join(tickers), len(selected), commit, run_id)
+    code = bar_recompute.code_version()
+
+    params_by_date: dict = {}
+
+    def params_for(day):
+        if day not in params_by_date:
+            params_by_date[day] = read_level_params_for_run(tickers, day)
+        return params_by_date[day]
+
+    rows: list = []
+    groups: list = []
+    if not selected.empty:
+        for ticker, of_ticker in selected.groupby('ticker', sort=False):
+            daily = query_to_dataframe_strict(DAILY_BARS_SQL, {
+                'ticker': ticker, 'lo': first - timedelta(days=DAILY_HISTORY_DAYS), 'hi': last})
+            months = of_ticker['date'].map(lambda d: (d.year, d.month))
+            for (year, month), sessions in of_ticker.groupby(months, sort=False):
+                group_rows, units = _recompute_month(ticker, sessions, daily, params_for, code)
+                computed = [r for r in group_rows if r.new is not None]
+                log.info(
+                    "RECOMPUTE-PREMARKET %s %04d-%02d candidates=%d changed=%d "
+                    "unchanged=%d refused=%d",
+                    ticker, year, month, len(group_rows),
+                    sum(1 for r in computed if r.changed),
+                    sum(1 for r in computed if not r.changed),
+                    len(group_rows) - len(computed))
+                rows.extend(group_rows)
+                groups.append((f"{ticker} {year:04d}-{month:02d}", units))
+
+    summary = {
+        'target': bar_recompute.TARGET_PREMARKET,
+        'run_id': run_id,
+        'arguments': {'tickers': list(tickers), 'from': str(first), 'to': str(last),
+                      'commit': bool(commit)},
+        'code_version': code,
+    }
+    if commit:
+        raise NotImplementedError("the committed premarket recompute is not written yet")
+    return bar_recompute.finish_run(
+        target=bar_recompute.TARGET_PREMARKET, run_id=run_id, commit=False,
+        action='recompute', rows=rows, groups=groups, summary=summary,
+        csv_columns=PREMARKET_COLUMNS, report_dir=report_dir)
+
+
+def _recompute_main(args) -> int:
+    """--recompute-premarket and --revert-run. Returns 2, with the reason on
+    one line, for anything refused before a query or a write."""
+    from gcp import bar_recompute
+
+    try:
+        if not (args.recompute_premarket or args.revert_run):
+            raise bar_recompute.Refusal(
+                "--from, --to, --commit and --report-dir belong to "
+                "--recompute-premarket or --revert-run")
+        if args.recompute_premarket and (args.date or args.backfill or args.revert_run):
+            raise bar_recompute.Refusal(
+                "--recompute-premarket does not combine with --date, --backfill "
+                "or --revert-run")
+        if args.revert_run and (args.first or args.last or args.date or args.backfill
+                                or args.tickers != 'ALL'):
+            raise bar_recompute.Refusal(
+                "--revert-run takes a run id and no --from, --to, --tickers, --date "
+                "or --backfill")
+        window = None
+        if args.recompute_premarket:
+            window = bar_recompute.parse_window(
+                args.tickers, args.first, args.last, market_today())
+        bar_recompute.require_report_destination(args.report_dir)
+    except bar_recompute.Refusal as refusal:
+        log.error("refused: %s", refusal)
+        return 2
+
+    # The first query. The selection reads the marker column, so a database
+    # without it is refused in a dry run too.
+    missing = bar_recompute.schema_missing()
+    if missing:
+        log.error("refused: the database does not hold %s; apply gcp/schema.sql first",
+                  ", ".join(missing))
+        return 2
+
+    run_id = bar_recompute.run_id()
+    if args.revert_run:
+        raise NotImplementedError("--revert-run is not written yet")
+    tickers, first, last = window
+    return recompute_premarket(tickers, first, last, commit=args.commit, run_id=run_id,
+                               report_dir=args.report_dir)
 
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    # The two modes that only read stored bars branch before anything else.
+    if (args.recompute_premarket or args.revert_run or args.first or args.last
+            or args.commit or args.report_dir):
+        return _recompute_main(args)
+
     if args.backfill:
-        return _run_backfill(None if args.tickers == 'ALL' else args.tickers.upper().split())
+        # _run_backfill returns the number of rows it wrote, and this module
+        # ends `sys.exit(main())`: the count is not an exit code.
+        _run_backfill(None if args.tickers == 'ALL' else args.tickers.upper().split())
+        return None
 
     # Use ET (market timezone), not the container's UTC. The 23:00 ET cron
     # fires at 03:00–04:00 UTC the NEXT calendar day, so a UTC-based
@@ -1391,4 +1668,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
