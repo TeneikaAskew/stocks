@@ -622,9 +622,17 @@ def classify_stored_rows(stored: pd.DataFrame, refetch: pd.DataFrame,
          duplicate is in neither count (the swap re-inserts a returned bar at
          that key).
       3. **discounted label copy**: read as a true instant, at a key no
-         refetched bar has, and a label copy. Its five fields are those of a
-         bar the refetch returns, which the swap inserts at its true key.
+         refetched bar has, a label copy, and the only stored row on its
+         Eastern minute. Its five fields are those of a bar the refetch
+         returns, which the swap inserts at its true key.
       4. **held**: counted toward its Eastern date.
+
+    The last condition of class 3 is narrower than the rule as the spec words
+    it. A copy that took its Eastern minute from another stored row took it
+    from the Eastern-label row of the bar that really belongs there, which the
+    vendor returned once and does not return now. That label row is then the
+    only stored copy of a real bar, and its minute stays counted, as it was
+    before label copies were told apart.
 
     A row read as an Eastern label that kept its minute is always held, so a
     month stored only under the label keeps the floor it has today.
@@ -661,7 +669,8 @@ def classify_stored_rows(stored: pd.DataFrame, refetch: pd.DataFrame,
     returned = np.asarray(inst.isin(pd.DatetimeIndex(refetch['ts'])))
     carry = np.asarray(inst < _eastern_midnight_utc(year, month)) & ~copy
     label_dropped = ~keep & ~carry & ~as_true
-    discounted = keep & ~carry & as_true & ~returned & copy
+    alone = ~pd.Index(idx).duplicated(keep=False)     # no other stored row on its Eastern minute
+    discounted = keep & ~carry & as_true & ~returned & copy & alone
     counted = keep & ~carry & ~discounted
 
     days = pd.Series(idx[counted].date).value_counts()

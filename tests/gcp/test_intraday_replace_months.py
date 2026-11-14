@@ -1867,3 +1867,50 @@ def test_a_month_whose_tail_was_not_written_is_listed_as_replaced(tmp_path, monk
     assert "REPLACED SPY,2018-02" in caplog.text
     assert "RETRY SPY,2018-02" in caplog.text
     assert "tail not written (3 late bars past the window end): db down" in caplog.text
+
+
+# -- a label copy that displaced a stored label row (plan, Review Focus 1) ---
+#
+# The spec's rule discounts a label copy read as a true instant at a key the
+# refetch does not return. Where the vendor returned a bar when the labels were
+# written and has not returned it since, that copy sits on the Eastern minute
+# of the dropped bar's own label row, and the resolver keeps the copy. The
+# label row is then the only stored copy of a real bar the refetch lacks. Its
+# minute stays counted, as it is on main.
+
+
+def test_a_copy_that_took_a_label_rows_minute_stays_counted():
+    v = _iwm_session()
+    now = v[v["ts"] != pd.Timestamp("2026-04-10 04:30")]      # the vendor no longer returns 04:30
+    true = _true_rows(now)
+    later = _label_rows(v, 8, 11)
+    stored = pd.concat([true, _label_rows(v, 4, 8), later[~later["ts"].isin(true["ts"])]])
+    assert len(stored) == 841 + 206 + 35
+    displaced = pd.Timestamp("2026-04-10 04:30", tz="UTC")    # the 04:30 bar, under its label
+    displacer = pd.Timestamp("2026-04-10 08:30", tz="UTC")    # the 08:30 bar's label row
+    assert displaced in set(stored["ts"]) and displacer in set(stored["ts"])
+    assert displacer not in set(true["ts"])
+
+    c = fai.classify_stored_rows(stored, _refetch(now), 2026, 4)
+    assert c.label_copies == 34            # not 35: the row at 08:30Z holds 04:30's minute
+    assert c.held == {IWM_DAY: 842}        # 841 returned bars and the one only its label holds
+    assert c.label_dropped == 206
+
+
+@pytest.mark.parametrize("commit", [False, True])
+def test_bars_held_only_as_displaced_labels_still_make_a_refetch_short(commit):
+    """The labels were written when the vendor returned 04:00 to 04:29; the
+    true-UTC rewrite and this refetch have no bar before 04:30. Thirty real
+    bars are stored only under the label, each displaced by the label row of
+    the bar four hours later. The month is refused, as on main (931/961)."""
+    v = _bars("2026-04-10", range(240, 1201))
+    now = v[v["ts"] >= pd.Timestamp("2026-04-10 04:30")]
+    stored = pd.concat([_true_rows(now), _label_rows(v[v["ts"] < pd.Timestamp("2026-04-10 04:30")]),
+                        _label_rows(v[(v["ts"] >= pd.Timestamp("2026-04-10 08:00"))
+                                      & (v["ts"] < pd.Timestamp("2026-04-10 08:30"))])])
+    assert len(stored) == 931 + 30 + 30 and not stored["ts"].duplicated().any()
+    r, swap = _replace(stored, now, "IWM", 2026, 4, commit)
+    assert r["status"] == fai.REPLACE_INCOMPLETE
+    assert r["missing"] == ["2026-04-10 (931/961)"]
+    assert (r["label_copies"], r["label_dropped"]) == (0, 30)
+    swap.assert_not_called()
