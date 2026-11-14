@@ -11,6 +11,8 @@ that uses this module can be run against ``main`` to show it is red there.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pandas as pd
 
 from lib.eastern_time import eastern_index_to_utc
@@ -93,3 +95,71 @@ def stored(frame: pd.DataFrame, how: str = "true", *, shared: str = "true",
     out = out.sort_values("ts").reset_index(drop=True)
     out["inserted_at"] = inserted
     return out
+
+
+# -- the freshness audit's readers ----------------------------------------------
+
+
+def rth_frame(counts: dict[str, int], inserted=None) -> pd.DataFrame:
+    """What the session scan reads (``ts``, ``inserted_at``): for each ISO
+    session date of *counts*, that many 1-min rows from 09:30 Eastern, stored
+    as true UTC. ``inserted_at`` is ``ts`` plus one day unless *inserted* is
+    given. An empty dict gives an empty frame that still has both columns.
+    """
+    parts = [eastern_index_to_utc(pd.date_range(f"{day} 09:30", periods=n, freq="min"))
+             for day, n in counts.items()]
+    ts = pd.DatetimeIndex([], tz="UTC")
+    for part in parts:
+        ts = ts.append(part)
+    inserted_at = ts + pd.Timedelta(days=1) if inserted is None else [inserted] * len(ts)
+    return pd.DataFrame({"ts": ts, "inserted_at": pd.DatetimeIndex(inserted_at, tz="UTC")})
+
+
+def install_audit_readers(monkeypatch, mod, scan) -> list[dict]:
+    """Stub every reader ``audit_all`` uses so only the session scan is under
+    test; returns the list the strict reader's calls are recorded in.
+
+    *mod* is the audit module object: it has two import names
+    (``scripts.audit_data_freshness`` in the suite, ``audit_data_freshness`` in
+    the API), and the swallowing reader is patched on the one handed in.
+
+    The swallowing reader gets a healthy answer for each shape it is asked.
+    The strict reader answers the session scan from *scan* (``scan(ticker)``,
+    or raises *scan* when it is an exception), answers the column-nullity
+    checks with a healthy count, and fails on any other SQL.
+    """
+    import gcp.database as database
+
+    def swallowing(sql, params=None, **_kwargs):
+        params = params or {}
+        if "GROUP BY" in sql:
+            first, last = params["start_bound"], params["end_bound"]
+            first = first.date() if isinstance(first, datetime) else first
+            last = last.date() if isinstance(last, datetime) else last
+            days = [first + timedelta(days=n) for n in range((last - first).days + 1)]
+            return pd.DataFrame(
+                [{"ticker": t, "d": d, "c": 1000} for t in params["tickers"] for d in days],
+                columns=["ticker", "d", "c"])
+        if "AS bad" in sql:
+            return pd.DataFrame([{"bad": 0}])
+        return pd.DataFrame([{"last_row_at": datetime(2026, 11, 13, 14, 0),
+                              "row_count_recent": 100000}])
+
+    calls: list[dict] = []
+
+    def strict(sql, params=None, timeout_s=None):
+        calls.append({"sql": sql, "params": params, "timeout_s": timeout_s})
+        if "inserted_at" in sql:
+            if isinstance(scan, BaseException):
+                raise scan
+            return scan(params["t"])
+        if "non_null" in sql:
+            return pd.DataFrame({"ticker": ["IWM", "SPY", "QQQ"],
+                                 "total": [10, 10, 10], "non_null": [10, 10, 10]})
+        raise AssertionError(f"unexpected strict read: {sql}")
+
+    monkeypatch.setattr(mod, "query_to_dataframe", swallowing)
+    monkeypatch.setattr(database, "query_to_dataframe_strict", strict)
+    monkeypatch.setattr(database, "table_exists", lambda *_a, **_k: False)
+    monkeypatch.setattr(mod, "_ENRICHMENT_WINDOW_ET", (0, 0))
+    return calls

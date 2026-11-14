@@ -33,12 +33,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from lib.eastern_time import (
     ET,
+    SessionReading,
     as_utc_instant,
     is_session,
     latest_session_on_or_before,
     localize_assuming_eastern,
     previous_session,
     session_close,
+    session_minute_readings,
     session_schedule,
 )
 
@@ -130,7 +132,13 @@ CHECKS: list[dict] = [
         "tickers": ("IWM", "SPY", "QQQ"),
         "where": "interval = '1min'",
         "min_rows_per_day": 350,    # ~full RTH session at 1-min
-        "gap_scan_days": 5,
+        # The session scan (_query_intraday_session_gaps) replaces the
+        # day-presence gap scan for this table. Every hole that scan could
+        # flag (no row on the UTC date) is MISSING here, so keeping both would
+        # report one hole twice; and it read this table by DATE(ts) through
+        # the swallowing reader, where 30 bars made a day present and a failed
+        # read made every day absent.
+        "session_gap_days": 5,
         # av-intraday-nightly cron `0 21 * * 2-6` ET — fires Tue-Sat at
         # 21 ET, picking up the PREVIOUS day's bars (Tue 21 ET writes
         # Mon's bars; Sat 21 ET writes Fri's). So intraday data lags by
@@ -852,6 +860,93 @@ def _query_gap_scan(check: dict, now_utc: datetime) -> list[FreshnessRow]:
     return rows
 
 
+# ── 1-min session scan (FEAT-DATA-001) ───────────────────────────────────────
+#
+# market_data_intraday lost 31 whole sessions and kept dozens of thin ones for
+# a year without a single stale row: the gap scan above asks only whether a
+# day holds any row. This scan counts each settled session's regular-hours
+# minutes against the session's own length from the calendar.
+#
+# It fails loud. Its read goes through query_to_dataframe_strict with no
+# `try`, so a database error ends the audit (a failed watchdog run; 503 or 500
+# on the routes that serve this report) instead of reading as five missing
+# sessions. It does NOT follow _query_column_nullity, which turns a failed
+# read into an `unknown` row: `--strict` exits 0 on unknown, so a scan that
+# could not read would pass.
+
+#: The Cloud Run job that writes the bars the session scan reads.
+_SESSION_GAP_WRITER_JOB = "fetch-alphavantage-intraday"
+
+_SESSION_GAP_SQL = """
+    SELECT ts, inserted_at
+      FROM market_data_intraday
+     WHERE ticker = :t AND interval = '1min' AND ts >= :start AND ts < :end
+"""
+
+
+def _session_gap_row(check: dict, ticker: str, reading: SessionReading) -> FreshnessRow:
+    """The stale row for one session that is MISSING, THIN or UNDETERMINED."""
+    lowest = min(reading.true_utc, reading.eastern_label, reading.both)
+    if reading.status == "MISSING":
+        detail = f"MISSING: 0 of {reading.expected} regular-hours minutes"
+    elif reading.status == "THIN":
+        detail = f"THIN: {lowest} of {reading.expected} regular-hours minutes"
+    elif reading.status == "UNDETERMINED":
+        detail = (f"UNDETERMINED: {reading.true_utc} as true UTC, "
+                  f"{reading.eastern_label} as Eastern labels, "
+                  f"{reading.both} as both, of {reading.expected}")
+    else:
+        raise ValueError(f"no session-gap row for status {reading.status!r}")
+    return FreshnessRow(
+        table=f"{check['name']} [sessions]",
+        ticker=ticker,
+        last_row_at=None,
+        expected_latest=reading.session.isoformat(),
+        lag_hours=None,
+        expected_max_hours=check["expected_lag_hours"],
+        status="stale",
+        row_count_recent=lowest,
+        writer_job=_SESSION_GAP_WRITER_JOB,
+        detail=detail,
+    )
+
+
+def _query_intraday_session_gaps(check: dict, now_utc: datetime) -> list[FreshnessRow]:
+    """One stale row per ticker and settled session whose regular-hours 1-min
+    bars are missing or thin. Returns failing sessions only.
+
+    One strict query per ticker over the last ``session_gap_days`` settled
+    sessions; the minutes are counted by lib.eastern_time.session_minute_readings.
+    Only the schedule read goes through _calendar: wrapping the readings too
+    would report a defect in them as a calendar failure.
+    """
+    from gcp.database import query_to_dataframe_strict
+
+    days = _recent_trading_days(
+        now_utc, check["session_gap_days"],
+        settle_hour_et=check.get("settle_hour_et", 16),
+        settle_lag_days=check.get("settle_lag_days", 0),
+    )
+    newest, oldest = days[0], days[-1]
+    schedule = _calendar(session_schedule, oldest, newest)
+    # 02:00 UTC is lib.eastern_time.intraday_month_window's boundary hour: a
+    # session's rows lie between 02:00 UTC on its date and 02:00 UTC on the
+    # next, whichever convention they were stored in.
+    after_newest = newest + timedelta(days=1)
+    start = datetime(oldest.year, oldest.month, oldest.day, 2, tzinfo=UTC)
+    end = datetime(after_newest.year, after_newest.month, after_newest.day, 2, tzinfo=UTC)
+
+    rows: list[FreshnessRow] = []
+    for ticker in check["tickers"]:
+        df = query_to_dataframe_strict(
+            _SESSION_GAP_SQL, {"t": ticker, "start": start, "end": end},
+            timeout_s=_CHECK_QUERY_TIMEOUT_S)
+        for reading in session_minute_readings(df["ts"], df["inserted_at"], schedule):
+            if reading.status != "OK":
+                rows.append(_session_gap_row(check, ticker, reading))
+    return rows
+
+
 # ── Column-nullity checks ──────────────────────────────────────────────────────
 #
 # Freshness alone can't see "rows ARE being written but the column we
@@ -1484,6 +1579,11 @@ def _session_dependent_checks(report: FreshnessReport, now: datetime) -> None:
 
         # Gap scan: only reports failing (ticker, day) combinations
         report.rows.extend(_query_gap_scan(check, now))
+
+        # Session scan: only reports failing (ticker, session) combinations
+        if check.get("session_gap_days"):
+            report.rows.extend(_timed(
+                "intraday_session_gaps", _query_intraday_session_gaps, check, now))
 
 
 def _session_dependent_late_checks(report: FreshnessReport, now: datetime) -> None:
