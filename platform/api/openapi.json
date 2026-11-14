@@ -13300,7 +13300,7 @@
     },
     "/api/insights/watchlist/default": {
       "get": {
-        "description": "Return the active default watchlist with its surface flags, read-only.\n\nIdentical for an open-mode caller and a signed-in caller: the web reads\nthe default list, it cannot change it (Discord and the CLI can). Reads\nthrough ``query_to_dataframe_strict`` so a Cloud SQL failure is a 503\nwith the exception text, never an empty list; zero rows is a 200 with\n``rows: []`` (an empty default list is a true state).",
+        "description": "Return the active default watchlist with its surface flags, read-only.\n\nIdentical for an open-mode caller and a signed-in caller: the web reads\nthe default list, it cannot change it (Discord and the CLI can). Reads\nthrough ``query_to_dataframe_strict`` so a Cloud SQL outage is a 503\nwith the exception text (a defect stays a 500), never an empty list; zero rows is a 200 with\n``rows: []`` (an empty default list is a true state).",
         "operationId": "get_default_watchlist_api_insights_watchlist_default_get",
         "responses": {
           "200": {
