@@ -8,7 +8,7 @@ done_when:
   - "gcp/deploy.sh gains deploy_fetch_watched_tickers(): a gcloud run jobs create ... || gcloud run jobs update ... pair for the Cloud Run Job fetch-watched-tickers with --memory 512Mi --cpu 1 --max-retries 0 --task-timeout 2400, the command python,-m,gcp.fetchers.fetch_watched_tickers, the fetchers' service account and DB secret flag, and --set-env-vars \"${ENV_STRING},WATCHED_TICKERS_MAX=50,AV_BACKFILL_SLEEP_SECS=1.0\"; the update branch repeats the image, the region, --max-retries 0, the task timeout, the command, the secret flag and the env vars; the function sets no new secret, no WATCHED_TICKERS_URL and no WATCHED_TICKERS_READ_SECRET"
   - "deploy_fetchers() lists deploy_fetch_watched_tickers so the all target creates the job; the dispatch case gains the arm watched-tickers) _run build_image deploy_fetch_watched_tickers deploy_fetch_market_data deploy_fetch_earnings_history deploy_freshness_watchdog ;; (one build of main, then the ingest job and the three jobs that run the same image's fetch_market_data._run_backfill or scripts/audit_data_freshness.py code paths), and the help text names the arm"
   - "deploy_schedulers() gains _schedule \"watched-tickers-nightly\" \"45 23 * * 1-5\" \"fetch-watched-tickers\" (America/New_York through _schedule), beside the other nightly fetcher schedules"
-  - "tests/gcp/test_deploy_reachability.py gains test_watched_tickers_target_deploys_the_ingest_job_and_the_jobs_sharing_its_code, asserting that the watched-tickers arm creates or updates exactly fetch-watched-tickers, fetch-market-data, fetch-earnings-history and freshness-watchdog, that both branches of deploy_fetch_watched_tickers carry --max-retries 0, that the function sets no WATCHED_TICKERS_URL and no WATCHED_TICKERS_READ_SECRET, and that the watched-tickers-nightly schedule targets fetch-watched-tickers; test_every_schedule_target_is_created_by_some_deploy_function and test_all_target_creates_every_scheduled_job_and_service stay green; bash -n gcp/deploy.sh passes"
+  - "tests/gcp/test_deploy_reachability.py gains test_watched_tickers_target_deploys_the_ingest_job_and_the_jobs_sharing_its_code, asserting that the watched-tickers arm creates or updates exactly fetch-watched-tickers, fetch-market-data, fetch-earnings-history and freshness-watchdog, that both branches of deploy_fetch_watched_tickers carry --max-retries 0, --task-timeout 2400 and --command python,-m,gcp.fetchers.fetch_watched_tickers, that the function sets no WATCHED_TICKERS_URL and no WATCHED_TICKERS_READ_SECRET, and that deploy_schedulers() holds exactly the line _schedule \"watched-tickers-nightly\" \"45 23 * * 1-5\" \"fetch-watched-tickers\" (the helper passes --time-zone America/New_York, which the test reads from the helper); test_every_schedule_target_is_created_by_some_deploy_function and test_all_target_creates_every_scheduled_job_and_service stay green; bash -n gcp/deploy.sh passes"
   - "docs/product/03-SITE-TRACEABILITY.md updates its existing FEAT-DEPLOY-001 SHARED-07 row in the Implementation-source notes table (keeping its sentence) to begin source_identity_sha256=<the PR head's source identity>; describing the fetch-watched-tickers deploy function, its dispatch arm and its scheduler as the element's backend source with tests/gcp/test_deploy_reachability.py as the test, with no other byte of the document changed, and docs/review-evidence/site-source-snapshot.json is produced from that head and verifies (scripts/maintenance/doc_source_snapshot.py verify exits 0 with status identity-matched)"
   - "The FEAT-DEPLOY-001 catalog record and the PR traceability entry are updated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
 status: approved
@@ -29,9 +29,14 @@ belong to FEAT-DEPLOY-001, not FEAT-DATA-001; the deploy surface is that capabil
 every change to that file since the gate landed came through a FEAT-DEPLOY-001 pull request
 (#1366, #1457, #1789, #1813, #1834). This spec therefore carries the deploy wiring of the ingest spec
 word for word as FEAT-DEPLOY-001 work, so the ingest job's code PR holds no deploy change and this
-PR holds nothing else. The ingest spec's done_when item for the deploy wiring is satisfied by this
-spec's merge; its post-merge close-out (running `./gcp/deploy.sh watched-tickers`, the manual run
-and `./gcp/deploy.sh schedulers`) stays where it is, under the owner's authorization of 2026-11-14.
+PR holds nothing else. The ingest spec is superseded by its v3
+(`docs/superpowers/specs/2026-11-14-feat-data-001-watched-ticker-ingest-v3.md`), whose deploy item
+points at this spec instead of requiring the wiring in the ingest PR. Order: the ingest code PR merges
+first; this spec's implementation merges after it, because `deploy_fetchers()` and `deploy_schedulers()`
+run unconditionally under the `all)` target that `RUNBOOK.md` names as the recovery command, so the
+wiring must not reach main before the module it names is in the image (Codex on #1918); only then
+does the ingest spec's post-merge close-out run `./gcp/deploy.sh watched-tickers`, the manual run and
+`./gcp/deploy.sh schedulers`, under the owner's authorization of 2026-11-14.
 
 Written 2026-11-14 from that gate finding on the ingest branch. Status `approved` under the owner's
 standing instruction of 2026-11-14 to work the open pull requests to completion; the content decides
@@ -65,10 +70,11 @@ is why the arm redeploys all four from one build.
 
 1. Keep the deploy wiring in the FEAT-DATA-001 PR. Refused by the gate; every prior deploy.sh change
    went through FEAT-DEPLOY-001.
-2. Supersede the ingest v2 spec with a v3 that drops its deploy item and point it here. Two more spec and
-   plan rounds for the same text; the ingest item is satisfied once this merges, so nothing is gained.
-3. This spec: the deploy section relocated under FEAT-DEPLOY-001 with its own plan and PR, merged before
-   the ingest PR is marked ready. Chosen.
+2. Keep the ingest v2 spec and let its deploy item cite this spec's merge. Refused: that forces this wiring
+   to merge first, and a `./gcp/deploy.sh all` between the two merges would schedule a job whose module is
+   not in the image. The ingest spec is superseded by a v3 whose deploy item points here instead.
+3. This spec: the deploy section relocated under FEAT-DEPLOY-001 with its own plan and PR, merged after
+   the ingest code PR so no shared target can schedule a job whose module is missing. Chosen.
 
 ## Design
 
@@ -117,5 +123,7 @@ reason.
 - A flag typo would fail the create and the update alike and stop the arm; `bash -n` and the
   reachability test catch the script shape, and the close-out's `gcloud run jobs describe` (ingest spec,
   close-out step 2) catches the deployed image.
-- The scheduler is created only by `./gcp/deploy.sh schedulers`, which the ingest close-out runs after the
-  manual execution succeeds, so merging this spec and its implementation starts no nightly run by itself.
+- The scheduler is created by `./gcp/deploy.sh schedulers` and by the `all` target, and `all` also runs
+  `deploy_fetchers()`; both are unconditional, so this implementation merges only after the ingest code is
+  on main and the job's module is in every image `all` would build. The ingest close-out then runs the
+  arm, the manual execution and `./gcp/deploy.sh schedulers` in that order.
