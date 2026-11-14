@@ -10,8 +10,12 @@ minutes and their values), never through the code under test.
 """
 from __future__ import annotations
 
+import gc
 import hashlib
 import io
+import json
+import logging
+import weakref
 from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
@@ -103,7 +107,8 @@ def assert_rows_equal(got: pd.DataFrame, want: pd.DataFrame) -> None:
 def fake_query(monkeypatch, bars: dict, daily: dict | None = None) -> list[dict]:
     """Stand in for the strict reader; returns the list its calls land in.
 
-    SQL that names market_data_daily answers ``daily[ticker]``; any other SQL
+    SQL that names market_data_daily answers ``daily[ticker]`` (no daily row
+    at all for a ticker that is not in it); any other SQL
     answers ``bars[(ticker, year, month)]`` from the window's start. An
     exception in place of a frame is raised.
     """
@@ -115,7 +120,7 @@ def fake_query(monkeypatch, bars: dict, daily: dict | None = None) -> list[dict]
     def strict(sql, params=None, timeout_s=None):
         calls.append({"sql": sql, "params": params, "timeout_s": timeout_s})
         if "market_data_daily" in sql:
-            answer = daily[params["t"]]
+            answer = daily.get(params["t"], EMPTY_DAILY)
         else:
             answer = bars[(params["t"], params["start"].year, params["start"].month)]
         if isinstance(answer, BaseException):
@@ -425,7 +430,6 @@ def test_entry_keys_and_counts():
         "state": "as_traded", "factor_min": 1.0, "factor_max": 1.0, "as_traded": 21,
         "inferred": 0, "adjusted": 0, "odd": 0, "not_measured": {}}
     # The entry is what the manifest stores: it must survive JSON unchanged.
-    import json
     assert json.loads(json.dumps(got)) == got
 
 
@@ -567,3 +571,333 @@ def test_the_newest_session_has_no_daily_row_yet():
     assert got["basis"]["state"] == "partial"
     assert got["basis"]["as_traded"] == 8
     assert got["inferred_rows"] == 0
+
+
+# -- Task 4: the manifest protocol and export_window ---------------------------
+
+SPY_MANIFEST = "intraday-bars/v1/1min/SPY/manifest.json"
+MAY = "intraday-bars/v1/1min/SPY/2025-05.parquet"
+JUNE = "intraday-bars/v1/1min/SPY/2025-06.parquet"
+
+
+def first_session_rows(year, month, inserted=NEW, **kw) -> pd.DataFrame:
+    """A small month: its first session only, stored as true UTC."""
+    day = _sessions(year, month)[0].isoformat()
+    return _with_prices(stored(session_bars(day, **kw), inserted=inserted), kw)[BARS_COLUMNS]
+
+
+def small_bars(tickers, months, **kw) -> dict:
+    return {(t, y, m): first_session_rows(y, m, **kw) for t in tickers for y, m in months}
+
+
+def run(monkeypatch, tickers, months, bars, bucket, daily=None, now=NOW):
+    """export_window against the stubbed reader: (its result, the reader's calls)."""
+    calls = fake_query(monkeypatch, bars, daily)
+    result = xb.export_window(tickers, months, bucket=bucket, now_utc=now)
+    return result, calls
+
+
+def manifest_doc(bucket, name=SPY_MANIFEST) -> dict:
+    return json.loads(bucket.objects[name])
+
+
+def manifest_with(*months: str) -> bytes:
+    """A manifest another run wrote: an entry (no file) for each month key."""
+    return json.dumps({"version": 1, "ticker": "SPY", "months": {
+        key: {"file": None, "rows": 0, "written_by": "another run"} for key in months}}).encode()
+
+
+def sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def test_first_export_creates_the_manifest(monkeypatch):
+    bucket = MemoryBucket()
+    rows = first_session_rows(2025, 5)
+    run(monkeypatch, ["SPY"], [(2025, 5)], {("SPY", 2025, 5): rows}, bucket)
+
+    assert bucket.preconditions == [(MAY, None), (SPY_MANIFEST, 0)]
+    _, want = xb.build_month(rows, EMPTY_DAILY, "SPY", 2025, 5, NOW)
+    assert manifest_doc(bucket) == {"version": 1, "ticker": "SPY", "months": {"2025-05": want}}
+    assert bucket.generations[SPY_MANIFEST] == 1
+    assert want["sha256"] == sha(bucket.objects[MAY])
+
+
+def test_a_manifest_another_run_created_in_between_is_kept(monkeypatch):
+    bucket = MemoryBucket()
+    seen = []
+
+    def another_run_creates_it(name):
+        if name == SPY_MANIFEST and not seen:
+            seen.append(name)
+            bucket.put(SPY_MANIFEST, manifest_with("2024-01"))
+
+    bucket.before_write = another_run_creates_it
+    run(monkeypatch, ["SPY"], [(2025, 5)], small_bars(["SPY"], [(2025, 5)]), bucket)
+
+    doc = manifest_doc(bucket)
+    assert set(doc["months"]) == {"2024-01", "2025-05"}
+    assert doc["months"]["2024-01"]["written_by"] == "another run"
+    assert bucket.writes.count(SPY_MANIFEST) == 2
+    # The first attempt said "only if absent"; the retry named what it read.
+    assert [g for n, g in bucket.preconditions if n == SPY_MANIFEST] == [0, 1]
+
+
+def test_an_entry_another_run_wrote_in_between_is_kept(monkeypatch):
+    bucket = MemoryBucket()
+    bucket.put(SPY_MANIFEST, manifest_with("2025-04"))
+    seen = []
+
+    def another_run_adds_march(name):
+        if name == SPY_MANIFEST and not seen:
+            seen.append(name)
+            bucket.put(SPY_MANIFEST, manifest_with("2025-03", "2025-04"))
+
+    bucket.before_write = another_run_adds_march
+    run(monkeypatch, ["SPY"], [(2025, 5)], small_bars(["SPY"], [(2025, 5)]), bucket)
+
+    doc = manifest_doc(bucket)
+    assert set(doc["months"]) == {"2025-03", "2025-04", "2025-05"}
+    assert doc["months"]["2025-03"]["written_by"] == "another run"
+    assert doc["months"]["2025-05"]["rows"] == 961
+
+
+def test_six_mismatches_raise(monkeypatch):
+    bucket = MemoryBucket()
+    bucket.put(SPY_MANIFEST, manifest_with("2025-04"))
+
+    def always_rewritten(name):
+        if name == SPY_MANIFEST:
+            bucket.put(SPY_MANIFEST, manifest_with("2025-04"))
+
+    bucket.before_write = always_rewritten
+    with pytest.raises(xb.GenerationMismatch):
+        run(monkeypatch, ["SPY"], [(2025, 5)], small_bars(["SPY"], [(2025, 5)]), bucket)
+
+    assert xb.MANIFEST_RETRIES == 5
+    assert bucket.writes.count(SPY_MANIFEST) == 6
+    assert set(manifest_doc(bucket)["months"]) == {"2025-04"}
+
+
+def test_a_failed_manifest_read_writes_nothing(monkeypatch):
+    bucket = MemoryBucket()
+    bucket.put(SPY_MANIFEST, manifest_with("2025-04"))
+    real_read = bucket.read
+
+    def read(name):
+        if name == SPY_MANIFEST:
+            raise PermissionError("403 on the manifest")
+        return real_read(name)
+
+    monkeypatch.setattr(bucket, "read", read)
+    with pytest.raises(PermissionError):
+        run(monkeypatch, ["SPY"], [(2025, 5)], small_bars(["SPY"], [(2025, 5)]), bucket)
+    assert bucket.writes == []
+    assert set(manifest_doc(bucket)["months"]) == {"2025-04"}
+
+
+@pytest.mark.parametrize("stored_bytes", [
+    b"{",
+    b'{"version": 2, "ticker": "SPY", "months": {}}',
+    b'{"version": 1, "ticker": "QQQ", "months": {}}',
+    b'[1]',
+])
+def test_a_bad_manifest_is_never_replaced(monkeypatch, stored_bytes):
+    bucket = MemoryBucket()
+    bucket.put(SPY_MANIFEST, stored_bytes)
+    with pytest.raises(ValueError):
+        run(monkeypatch, ["SPY"], [(2025, 5)], small_bars(["SPY"], [(2025, 5)]), bucket)
+    assert bucket.objects[SPY_MANIFEST] == stored_bytes
+    assert bucket.writes == []
+
+
+def _exported_may_and_june(monkeypatch) -> MemoryBucket:
+    bucket = MemoryBucket()
+    months = [(2025, 5), (2025, 6)]
+    run(monkeypatch, ["SPY"], months, small_bars(["SPY"], months), bucket,
+        now=NOW - timedelta(days=1))
+    bucket.reads.clear(), bucket.writes.clear(), bucket.preconditions.clear()
+    return bucket
+
+
+def test_second_month_upload_failure_leaves_the_first_month_whole(monkeypatch):
+    bucket = _exported_may_and_june(monkeypatch)
+    may_before, june_before = bucket.objects[MAY], bucket.objects[JUNE]
+    june_entry_before = manifest_doc(bucket)["months"]["2025-06"]
+    bucket.fail_write = lambda name: ConnectionError("reset") if name == JUNE else None
+
+    months = [(2025, 5), (2025, 6)]
+    with pytest.raises(ConnectionError):
+        run(monkeypatch, ["SPY"], months,
+            small_bars(["SPY"], months, day_high=700.0, day_low=690.0), bucket)
+
+    doc = manifest_doc(bucket)
+    assert bucket.objects[MAY] != may_before                       # the new file
+    assert doc["months"]["2025-05"]["sha256"] == sha(bucket.objects[MAY])
+    assert doc["months"]["2025-05"]["exported_at"] == NOW.isoformat()
+    assert bucket.objects[JUNE] == june_before
+    assert doc["months"]["2025-06"] == june_entry_before
+    assert june_entry_before["sha256"] == sha(june_before)
+
+
+@pytest.mark.parametrize("where,failure", [
+    ("bars", ConnectionError("connection refused")),
+    ("daily", KeyError("high")),
+    ("upload", ConnectionError("reset")),
+    ("upload", PermissionError("403")),
+])
+def test_failures_leave_the_manifest_as_it_was(monkeypatch, where, failure):
+    bucket = _exported_may_and_june(monkeypatch)
+    manifest_before = bucket.objects[SPY_MANIFEST]
+    bars = small_bars(["SPY"], [(2025, 5)], day_high=700.0, day_low=690.0)
+    daily = None
+    if where == "bars":
+        bars[("SPY", 2025, 5)] = failure
+    elif where == "daily":
+        daily = {"SPY": failure}
+    else:
+        bucket.fail_write = lambda name: failure if name == MAY else None
+
+    with pytest.raises(type(failure)) as raised:
+        run(monkeypatch, ["SPY"], [(2025, 5)], bars, bucket, daily=daily)
+    assert raised.value is failure
+    assert bucket.objects[SPY_MANIFEST] == manifest_before
+    assert SPY_MANIFEST not in bucket.writes
+
+
+def test_manifest_write_failure_after_an_upload(monkeypatch):
+    bucket = _exported_may_and_june(monkeypatch)
+    may_before = bucket.objects[MAY]
+    bucket.fail_write = (
+        lambda name: ConnectionError("reset") if name == SPY_MANIFEST else None)
+
+    with pytest.raises(ConnectionError):
+        run(monkeypatch, ["SPY"], [(2025, 5)],
+            small_bars(["SPY"], [(2025, 5)], day_high=700.0, day_low=690.0), bucket)
+
+    assert bucket.objects[MAY] != may_before
+    recorded = manifest_doc(bucket)["months"]["2025-05"]["sha256"]
+    assert recorded == sha(may_before)
+    assert recorded != sha(bucket.objects[MAY])
+
+
+def test_io_shape(monkeypatch):
+    # Rule 0: the round-trips of a run, pinned. Nightly: 6 bars reads, 3 daily
+    # reads, 3 manifest reads, 6 uploads, 6 manifest writes.
+    months = [(2026, 9), (2026, 10)]
+    bucket = MemoryBucket()
+    result, calls = run(monkeypatch, xb.EXPORT_TICKERS, months,
+                        small_bars(xb.EXPORT_TICKERS, months), bucket)
+
+    b1 = [c for c in calls if "market_data_intraday" in c["sql"]]
+    b2 = [c for c in calls if "market_data_daily" in c["sql"]]
+    assert (len(b1), len(b2), len(calls)) == (6, 3, 9)
+    assert all(c["timeout_s"] == 120 for c in calls)
+    assert all(squash(c["sql"]) == B1 for c in b1)
+    assert all(squash(c["sql"]) == B2 for c in b2)
+    manifests = [xb.manifest_name(t) for t in xb.EXPORT_TICKERS]
+    assert sorted(bucket.reads) == sorted(manifests)
+    assert bucket.writes == [
+        name for t in xb.EXPORT_TICKERS for y, m in months
+        for name in (xb.object_name(t, y, m), xb.manifest_name(t))]
+    assert result["months"] == 6
+    assert result["rows"] == 6 * 961 == sum(
+        e["rows"] for n in manifests for e in manifest_doc(bucket, n)["months"].values())
+    assert isinstance(result["seconds"], float) and result["seconds"] >= 0
+    # Per ticker: the daily read, then the manifest read, then the months.
+    assert [c["params"]["t"] for c in calls] == [
+        "SPY", "SPY", "SPY", "QQQ", "QQQ", "QQQ", "IWM", "IWM", "IWM"]
+    assert "market_data_daily" in calls[0]["sql"]
+    assert calls[0]["params"] == {
+        "t": "SPY", "first": date(2026, 9, 1), "last": date(2026, 10, 31)}
+
+    # The history: 12 bars reads, 1 daily read, 1 manifest read, 12 and 12 writes.
+    year = xb.months_between((2025, 1), (2025, 12))
+    bucket = MemoryBucket()
+    result, calls = run(monkeypatch, ["SPY"], year, small_bars(["SPY"], year), bucket)
+    b1 = [c for c in calls if "market_data_intraday" in c["sql"]]
+    b2 = [c for c in calls if "market_data_daily" in c["sql"]]
+    assert (len(b1), len(b2)) == (12, 1)
+    assert b2[0]["params"] == {
+        "t": "SPY", "first": date(2025, 1, 1), "last": date(2025, 12, 31)}
+    assert bucket.reads == [SPY_MANIFEST]
+    assert len(bucket.writes) == 24
+    assert bucket.writes[0::2] == [xb.object_name("SPY", y, m) for y, m in year]
+    assert bucket.writes[1::2] == [SPY_MANIFEST] * 12
+    # Each write carries the generation the one before it returned: no re-read.
+    assert [g for n, g in bucket.preconditions if n == SPY_MANIFEST] == list(range(12))
+    assert result["months"] == 12
+    assert result["rows"] == 12 * 961
+
+
+def test_one_month_in_memory_at_a_time(monkeypatch):
+    # Rule 0: memory is bounded to one ticker-month. Every frame the reader
+    # handed out is dead by the time the next one is asked for.
+    import gcp.database as database
+
+    months = xb.months_between((2025, 1), (2025, 4))
+    source = small_bars(["SPY"], months)
+    handed_out: list = []
+    live_at_each_read: list = []
+
+    def strict(sql, params=None, timeout_s=None):
+        if "market_data_daily" in sql:
+            return EMPTY_DAILY
+        gc.collect()
+        live_at_each_read.append(sum(1 for ref in handed_out if ref() is not None))
+        frame = source[(params["t"], params["start"].year, params["start"].month)].copy()
+        handed_out.append(weakref.ref(frame))
+        return frame
+
+    monkeypatch.setattr(database, "query_to_dataframe_strict", strict)
+    xb.export_window(["SPY"], months, bucket=MemoryBucket(), now_utc=NOW)
+
+    assert len(handed_out) == 4
+    assert live_at_each_read == [0, 0, 0, 0]
+
+
+def test_a_rerun_converges(monkeypatch):
+    months = [(2025, 5), (2025, 6)]
+    bars = small_bars(["SPY"], months)
+    bucket = MemoryBucket()
+    run(monkeypatch, ["SPY"], months, bars, bucket, now=NOW)
+    objects_first = {n: bucket.objects[n] for n in (MAY, JUNE)}
+    doc_first = manifest_doc(bucket)
+
+    later = NOW + timedelta(hours=24)
+    run(monkeypatch, ["SPY"], months, bars, bucket, now=later)
+    doc_second = manifest_doc(bucket)
+
+    assert {n: bucket.objects[n] for n in (MAY, JUNE)} == objects_first
+    assert sorted(doc_second["months"]) == ["2025-05", "2025-06"] == sorted(doc_first["months"])
+    for key in ("2025-05", "2025-06"):
+        first, second = dict(doc_first["months"][key]), dict(doc_second["months"][key])
+        assert first.pop("exported_at") == NOW.isoformat()
+        assert second.pop("exported_at") == later.isoformat()
+        assert first == second
+    assert sorted(bucket.objects) == sorted([MAY, JUNE, SPY_MANIFEST])
+
+
+def test_each_month_logs_its_progress(monkeypatch, caplog):
+    months = [(2026, 9), (2026, 10)]
+    with caplog.at_level(logging.INFO):
+        run(monkeypatch, xb.EXPORT_TICKERS, months,
+            small_bars(xb.EXPORT_TICKERS, months), MemoryBucket())
+
+    lines = [r.getMessage() for r in caplog.records
+             if r.getMessage().startswith("bars month: ")]
+    assert len(lines) == 6
+    assert lines[0] == ("bars month: SPY 2026-09 rows=961 stored=961 dropped=0 "
+                        "inferred=0 state=unmeasured (1/6)")
+    assert "IWM 2026-10" in lines[-1] and lines[-1].endswith("(6/6)")
+    assert not [r for r in caplog.records if r.getMessage().startswith("bars export:")]
+
+
+def test_months_between_and_nightly_months():
+    assert xb.months_between((2025, 11), (2026, 2)) == [
+        (2025, 11), (2025, 12), (2026, 1), (2026, 2)]
+    assert xb.months_between((2026, 2), (2026, 2)) == [(2026, 2)]
+    assert xb.months_between((2026, 2), (2026, 1)) == []
+    assert xb.nightly_months(date(2026, 10, 31)) == [(2026, 9), (2026, 10)]
+    assert xb.nightly_months(date(2026, 1, 5)) == [(2025, 12), (2026, 1)]
+    assert len(xb.months_between((2015, 1), (2026, 11))) == 143

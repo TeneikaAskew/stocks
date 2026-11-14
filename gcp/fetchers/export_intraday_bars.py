@@ -20,10 +20,12 @@ else is imported inside the function that needs it.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Optional, Sequence
 
 import pandas as pd
 
@@ -48,6 +50,10 @@ DAILY_SQL = """
      WHERE ticker = :t AND date >= :first AND date <= :last
 """
 _QUERY_TIMEOUT_S = 120
+
+MANIFEST_VERSION = 1
+# Writes of one manifest after the first attempt, each on a fresh read.
+MANIFEST_RETRIES = 5
 
 
 def object_name(ticker: str, year: int, month: int) -> str:
@@ -321,3 +327,148 @@ def export_month(bucket, ticker: str, year: int, month: int, daily: pd.DataFrame
     if data is not None:
         bucket.write(object_name(ticker, year, month), data)
     return entry
+
+
+# -- the manifest ---------------------------------------------------------------
+
+
+def _parse_manifest(data: bytes, ticker: str, name: str) -> dict:
+    """The manifest document, or ValueError: it is never guessed at.
+
+    A manifest that does not parse, has another version or names another
+    ticker is refused, and the caller never replaces it with a fresh one.
+    """
+    try:
+        doc = json.loads(data)
+    except ValueError as exc:
+        raise ValueError(f"{name}: the manifest does not parse: {exc}") from exc
+    if not isinstance(doc, dict) or not isinstance(doc.get("months"), dict):
+        raise ValueError(f"{name}: the manifest is not an object with months")
+    # True == 1 in Python: compare the type too.
+    version = doc.get("version")
+    if type(version) is not int or version != MANIFEST_VERSION:
+        raise ValueError(
+            f"{name}: manifest version is {version!r}, this code reads {MANIFEST_VERSION}")
+    if doc.get("ticker") != ticker:
+        raise ValueError(f"{name}: the manifest is for {doc.get('ticker')!r}, not {ticker}")
+    return doc
+
+
+def _manifest_bytes(doc: dict) -> bytes:
+    return (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8")
+
+
+def read_manifest(bucket, ticker: str) -> tuple[dict, int]:
+    """The ticker's manifest and its generation.
+
+    An absent object is the empty manifest at generation 0, which a write
+    then creates only if it is still absent. Any failed read propagates, and
+    a manifest that is not a version 1 manifest of this ticker raises
+    ValueError: neither is ever read as "absent".
+    """
+    name = manifest_name(ticker)
+    found = bucket.read(name)
+    if found is None:
+        return {"version": MANIFEST_VERSION, "ticker": ticker, "months": {}}, 0
+    data, generation = found
+    return _parse_manifest(data, ticker, name), generation
+
+
+def write_month_entry(bucket, ticker: str, month_key: str, entry: dict, doc: dict,
+                      generation: int) -> tuple[dict, int]:
+    """Put one month's entry into the manifest and store it; return the
+    document and generation now stored.
+
+    The write names the generation *doc* was read at (0: the object must not
+    exist yet). When another run wrote in between, the manifest is read
+    again, this month's entry is put into that fresh document and the write is
+    retried, at most MANIFEST_RETRIES times; then GenerationMismatch is let
+    out. An entry another run wrote for another month is never lost.
+    """
+    name = manifest_name(ticker)
+    for attempt in range(MANIFEST_RETRIES + 1):
+        doc["months"][month_key] = entry
+        try:
+            return doc, bucket.write(name, _manifest_bytes(doc),
+                                     if_generation_match=generation)
+        except GenerationMismatch:
+            if attempt == MANIFEST_RETRIES:
+                raise
+        doc, generation = read_manifest(bucket, ticker)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+# -- a run ----------------------------------------------------------------------
+
+
+def months_between(first: tuple[int, int], last: tuple[int, int]) -> list[tuple[int, int]]:
+    """Every (year, month) from *first* to *last*, both included; empty when
+    *first* is after *last*."""
+    out = []
+    year, month = first
+    while (year, month) <= tuple(last):
+        out.append((year, month))
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return out
+
+
+def nightly_months(today: date) -> list[tuple[int, int]]:
+    """The month before *today*'s and *today*'s. *today* is the exchange's
+    date (lib.eastern_time.market_today), not the container's."""
+    previous = date(today.year, today.month, 1) - timedelta(days=1)
+    return [(previous.year, previous.month), (today.year, today.month)]
+
+
+def export_window(tickers: Sequence[str], months: Sequence[tuple[int, int]], *,
+                  bucket=None, now_utc: Optional[datetime] = None) -> dict:
+    """Write *months* of each of *tickers* to the bucket; return
+    ``{"months", "rows", "seconds"}``.
+
+    Per ticker: one daily read over the span of *months*, one manifest read,
+    then per month, in order: the bars read, the file's upload, the manifest
+    write with that month's entry, one progress line. The manifest is written
+    after each month's file, each write naming the generation the one before
+    it returned, so a failed upload leaves every earlier month's file and
+    entry matching, and a rerun converges.
+
+    Nothing is caught: a failed read, upload or manifest write ends the run
+    with its own exception, and the manifest is untouched for the month it
+    failed on. One ticker-month's rows are in memory at a time.
+    """
+    from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
+    from lib.eastern_time import utc_now  # noqa: PLC0415
+
+    started = time.monotonic()
+    tickers, months = list(tickers), [tuple(m) for m in months]
+    if bucket is None:
+        bucket = bucket_from_env()
+    if now_utc is None:
+        now_utc = utc_now()
+
+    total = len(tickers) * len(months)
+    done = rows_written = 0
+    if months:
+        (first_year, first_month), (last_year, last_month) = min(months), max(months)
+    for ticker in tickers:
+        if not months:
+            break
+        daily = query_to_dataframe_strict(
+            DAILY_SQL,
+            {"t": ticker, "first": date(first_year, first_month, 1),
+             "last": _month_last_day(last_year, last_month)},
+            timeout_s=_QUERY_TIMEOUT_S)
+        doc, generation = read_manifest(bucket, ticker)
+        for year, month in months:
+            entry = export_month(bucket, ticker, year, month, daily, now_utc)
+            month_key = f"{year:04d}-{month:02d}"
+            doc, generation = write_month_entry(
+                bucket, ticker, month_key, entry, doc, generation)
+            done += 1
+            rows_written += entry["rows"]
+            log.info(
+                "bars month: %s %s rows=%d stored=%d dropped=%d inferred=%d state=%s (%d/%d)",
+                ticker, month_key, entry["rows"], entry["stored_rows"],
+                entry["dropped_rows"], entry["inferred_rows"],
+                entry["basis"]["state"], done, total)
+    return {"months": done, "rows": rows_written,
+            "seconds": time.monotonic() - started}
