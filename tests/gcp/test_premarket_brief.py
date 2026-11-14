@@ -1227,9 +1227,13 @@ class TestResolveAnalysisDate:
     """`_resolve_analysis_date` reads BRIEF_AS_OF for historical replay."""
 
     def test_default_returns_today(self, monkeypatch):
+        # Sunday 21:00 Eastern is Monday 02:00 UTC: "today" is the
+        # exchange's Sunday, not the host's Monday.
         monkeypatch.delenv("BRIEF_AS_OF", raising=False)
+        _freeze_exchange_clock(
+            monkeypatch, TestLiveDateIsTheExchangeDate._eastern('2026-11-15 21:00'))
         from gcp.premarket_brief import _resolve_analysis_date
-        assert _resolve_analysis_date() == date.today()
+        assert _resolve_analysis_date() == date(2026, 11, 15)
 
     def test_explicit_past_date_honoured(self, monkeypatch):
         monkeypatch.setenv("BRIEF_AS_OF", "2026-04-23")
@@ -1238,8 +1242,10 @@ class TestResolveAnalysisDate:
 
     def test_blank_falls_back_to_today(self, monkeypatch):
         monkeypatch.setenv("BRIEF_AS_OF", "   ")
+        _freeze_exchange_clock(
+            monkeypatch, TestLiveDateIsTheExchangeDate._eastern('2026-11-15 21:00'))
         from gcp.premarket_brief import _resolve_analysis_date
-        assert _resolve_analysis_date() == date.today()
+        assert _resolve_analysis_date() == date(2026, 11, 15)
 
     def test_future_date_rejected(self, monkeypatch):
         from datetime import timedelta
@@ -3628,12 +3634,11 @@ def _assert_pipeline_without_ew(monkeypatch, real_brief_sql, as_of, *, live=Fals
     monkeypatch.setenv('BRIEF_LLM_DISABLE', '1')
     monkeypatch.setenv('BRIEF_AMC_REACTIONS', '1')
     if live:
+        # A live run reads the exchange's clock: 08:30 Eastern on the
+        # parameter's date, with the host date the UTC date of that instant.
         monkeypatch.delenv('BRIEF_AS_OF', raising=False)
-        class Clock(date):
-            @classmethod
-            def today(cls):
-                return today
-        monkeypatch.setattr(pb, 'date', Clock)
+        _freeze_exchange_clock(
+            monkeypatch, TestLiveDateIsTheExchangeDate._eastern(f'{as_of} 08:30'))
     else:
         monkeypatch.setenv('BRIEF_AS_OF', as_of)
     def forbidden(*args, **kwargs):
@@ -3776,3 +3781,299 @@ def test_long_non_ew_output_keeps_complete_financial_rows():
             assert 'EM $5.67' in line
         assert line.count('**') % 2 == 0
     assert 'Whispers' not in desc and 'EW picks' not in desc
+
+
+# ── FEAT-PLAYBOOK-001 (2026-11-14 spec): the live date is the exchange's ────
+
+
+def _freeze_exchange_clock(monkeypatch, eastern):
+    """Fix the exchange clock at `eastern` (an aware America/New_York
+    datetime) and the host date at the UTC date of the same instant, which is
+    what the job's container reads: from 20:00 Eastern (19:00 in winter) the
+    two dates differ."""
+    from datetime import timezone
+
+    import lib.eastern_time as eastern_time
+    import lib.strat as strat
+    from gcp import premarket_brief as pb
+
+    host_today = eastern.astimezone(timezone.utc).date()
+
+    class HostDate(date):
+        @classmethod
+        def today(cls):
+            return host_today
+
+    monkeypatch.setattr(eastern_time, 'eastern_now', lambda: eastern)
+    monkeypatch.setattr(strat, 'eastern_now', lambda: eastern)
+    monkeypatch.setattr(pb, 'date', HostDate)
+
+
+class TestLiveDateIsTheExchangeDate:
+    """With BRIEF_AS_OF unset the brief is dated by the exchange's clock.
+
+    The job's container runs on UTC, and `premarket-brief-sunday` fires Sunday
+    21:00 America/New_York, which is Monday 01:00 or 02:00 UTC. Dated by the
+    host, that run wrote Monday's canonical row with no premarket snapshot,
+    Monday's 08:30 run then skipped the canonical write, and the Sunday run
+    never selected the week-ahead view. Each test runs `main([])` against
+    in-memory tables with the exchange clock and the host date both fixed.
+    """
+
+    TICKERS = ('IWM', 'SPY')
+
+    @staticmethod
+    def _eastern(text):
+        from datetime import datetime
+
+        from lib.eastern_time import ET
+        return datetime.fromisoformat(text).replace(tzinfo=ET)
+
+    @staticmethod
+    def _tables():
+        return {'premarket_analysis': {}, 'premarket_analysis_history': []}
+
+    @staticmethod
+    def _bars(last_bar, premarket_day=None):
+        """320 daily bars ending `last_bar` in the DataLoader's shape, plus,
+        when `premarket_day` is given, that session's own row as
+        fetch-premarket-refresh leaves it at 08:20 ET: premarket columns and
+        no prices."""
+        import numpy as np
+
+        from lib.indicators import calculate_atr
+        idx = pd.bdate_range(end=pd.Timestamp(last_bar), periods=320)
+        step = np.arange(len(idx), dtype=float)
+        close = 100.0 + 6.0 * np.sin(step / 9.0) + 0.01 * step
+        df = pd.DataFrame({'Open': close - 0.3, 'High': close + 1.0, 'Low': close - 1.0,
+                           'Close': close, 'Volume': 1_000_000.0}, index=idx)
+        df['ATR14'] = calculate_atr(df['High'], df['Low'], df['Close'], 14)
+        df['ATR5'] = calculate_atr(df['High'], df['Low'], df['Close'], 5)
+        for col in ('pre_high', 'pre_low', 'pre_vwap', 'gap_pct'):
+            df[col] = float('nan')
+        df['pre_filter_status'] = None
+        if premarket_day is not None:
+            last = float(close[-1])
+            nan = float('nan')
+            row = pd.DataFrame(
+                {'Open': [nan], 'High': [nan], 'Low': [nan], 'Close': [nan], 'Volume': [nan],
+                 'ATR14': [nan], 'ATR5': [nan], 'pre_high': [last + 0.6], 'pre_low': [last - 0.6],
+                 'pre_vwap': [last + 0.1], 'gap_pct': [0.1], 'pre_filter_status': ['ok']},
+                index=pd.DatetimeIndex([pd.Timestamp(premarket_day)]))
+            df = pd.concat([df, row])
+        df.index.name = 'Time'
+        df['Time'] = df.index
+        return df
+
+    def _run(self, monkeypatch, tables, eastern, entry, last_bar, premarket_day=None):
+        """One scheduled run of `main([])` at exchange clock `eastern`,
+        triggered by scheduler entry `entry`. Returns the brief and what the
+        loaders were asked for."""
+        import socket
+
+        import gcp.database as database
+        import lib.strat_levels as sl
+        import lib.strategies.calibration as calibration
+        from gcp import premarket_brief as pb
+        from lib.data_loader import DataLoader
+        from tests.lib.level_params_fixtures import legacy_db
+
+        _freeze_exchange_clock(monkeypatch, eastern)
+        for key in ('BRIEF_AS_OF', 'BRIEF_UPDATE', 'BRIEF_POST_TO_DISCORD', 'BRIEF_AMC_REACTIONS',
+                    'DISCORD_WEBHOOK_URL', 'DISCORD_WEBHOOK_EARNINGS_URL',
+                    'BRIEF_POST_EXISTING_TICKER', 'BRIEF_POST_EXISTING_DATE'):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv('BRIEF_TICKERS', ','.join(self.TICKERS))
+        monkeypatch.setenv('BRIEF_LLM_DISABLE', '1')
+        monkeypatch.setenv('BRIEF_TRIGGERED_BY', f'cloud-scheduler:{entry}')
+
+        def refuse(*_a, **_k):
+            raise AssertionError('external I/O attempted in a hermetic brief run')
+
+        monkeypatch.setattr(socket.socket, 'connect', refuse)
+        monkeypatch.setattr(socket, 'create_connection', refuse)
+        monkeypatch.setattr(pb, 'send_to_discord', refuse)
+
+        frame = self._bars(last_bar, premarket_day)
+        monkeypatch.setattr(DataLoader, 'load_daily', lambda *a, **k: frame.copy())
+        monkeypatch.setattr(pb, '_load_gamma_freshness', lambda *a, **k: dict(
+            data_source='unavailable', snapshot_ts=None, snapshot_date=None, days_behind=None))
+        monkeypatch.setattr(pb, '_delete_null_close_rows', lambda *a: None)
+        monkeypatch.setattr(pb, '_level_params_query', legacy_db(list(self.TICKERS)).query)
+        monkeypatch.setattr(calibration, '_latest_calibration', lambda *a, **k: None)
+
+        seen = {'earnings': [], 'windows': [], 'amc': [], 'events': []}
+
+        # The real earnings loader runs, so its Monday-to-Friday arithmetic is
+        # what the window assertion reads; the calendar itself is empty.
+        real_earnings = getattr(pb.load_earnings_for_brief, '__wrapped__', pb.load_earnings_for_brief)
+
+        def earnings(today, weekly=False, top_n=25):
+            seen['earnings'].append((today, weekly))
+            return real_earnings(today, weekly=weekly, top_n=top_n)
+
+        earnings.__wrapped__ = real_earnings
+
+        def amc(today, top_n=5):
+            seen['amc'].append(today)
+            return []
+
+        def events(today, days_ahead=5):
+            seen['events'].append((today, days_ahead))
+            return {'today': [], 'week': []}
+
+        monkeypatch.setattr(pb, 'load_earnings_for_brief', earnings)
+        monkeypatch.setattr(pb, 'load_yesterday_amc_reactions', amc)
+        monkeypatch.setattr(pb, 'load_economic_events', events)
+
+        def query(sql, params=None):
+            params = dict(params or {})
+            if 'FROM earnings_calendar ec' in sql and 'start' in params:
+                seen['windows'].append((params['start'], params['end']))
+            return pd.DataFrame()
+
+        def row_exists(table, where):
+            return any(all(str(row.get(k)) == str(v) for k, v in where.items())
+                       for row in tables[table].values())
+
+        def upsert(df, table, keys):
+            for row in df.to_dict('records'):
+                tables[table][tuple(str(row[k]) for k in keys)] = {**row, 'analysis_ts': eastern}
+            return len(df)
+
+        def bulk_insert(df, table):
+            tables[table].extend({**row, 'written_at': eastern} for row in df.to_dict('records'))
+            return len(df)
+
+        class _Conn:
+            class connection:  # noqa: N801
+                @staticmethod
+                def commit():
+                    return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Engine:
+            def connect(self):
+                return _Conn()
+
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(database, 'query_to_dataframe', query)
+        monkeypatch.setattr(database, 'query_to_dataframe_strict', refuse)
+        monkeypatch.setattr(database, 'get_engine', lambda: _Engine())
+        monkeypatch.setattr(database, 'row_exists', row_exists)
+        monkeypatch.setattr(database, 'upsert_dataframe', upsert)
+        monkeypatch.setattr(database, 'bulk_insert_dataframe', bulk_insert)
+        monkeypatch.setattr(sl, 'persist_level_map',
+                            lambda level_map, conn, **k: len(level_map.levels))
+
+        real_generate = getattr(pb.generate_premarket_brief, '__wrapped__',
+                                pb.generate_premarket_brief)
+        out = {}
+
+        def generate(*a, **k):
+            out['brief'] = real_generate(*a, **k)
+            return out['brief']
+
+        generate.__wrapped__ = real_generate
+        monkeypatch.setattr(pb, 'generate_premarket_brief', generate)
+        pb.main([])
+        return out['brief'], seen
+
+    @pytest.mark.parametrize('sunday_evening,last_bar,monday,friday', [
+        # 21:00 EST is 02:00 UTC on Monday; 21:00 EDT is 01:00 UTC on Monday.
+        ('2026-11-15 21:00', '2026-11-13', date(2026, 11, 16), date(2026, 11, 20)),
+        ('2026-07-12 21:00', '2026-07-10', date(2026, 7, 13), date(2026, 7, 17)),
+    ], ids=['winter-est', 'summer-edt'])
+    def test_sunday_evening_run_is_dated_sunday(self, monkeypatch, sunday_evening, last_bar,
+                                                monday, friday):
+        eastern = self._eastern(sunday_evening)
+        sunday = eastern.date()
+        tables = self._tables()
+        brief, seen = self._run(monkeypatch, tables, eastern, 'premarket-brief-sunday', last_bar)
+
+        assert brief['analysis_date'] == sunday
+        # The week-ahead view: the weekly loader for Monday to Friday, no
+        # prior-day reaction query, a seven-day event window.
+        assert seen['earnings'] == [(sunday, True)]
+        assert seen['windows'] == [(monday, friday)]
+        assert seen['amc'] == []
+        assert seen['events'] == [(sunday, 7)]
+
+        history = tables['premarket_analysis_history']
+        assert sorted(row['ticker'] for row in history) == list(self.TICKERS)
+        assert {row['analysis_date'] for row in history} == {sunday}
+        assert {row['triggered_by'] for row in history} == {'cloud-scheduler:premarket-brief-sunday'}
+        # Owner's decision (a): the Sunday run writes a canonical row like
+        # any other run, dated Sunday. Nothing in either table is Monday's.
+        canonical = tables['premarket_analysis']
+        assert sorted(canonical) == [(str(sunday), ticker) for ticker in self.TICKERS]
+        assert {row['run_kind'] for row in canonical.values()} == {'live'}
+
+    def test_monday_run_after_sunday_writes_the_monday_row(self, monkeypatch, caplog):
+        import logging
+
+        tables = self._tables()
+        self._run(monkeypatch, tables, self._eastern('2026-11-15 21:00'),
+                  'premarket-brief-sunday', '2026-11-13')
+        monday = self._eastern('2026-11-16 08:30')
+        with caplog.at_level(logging.WARNING, logger='gcp.premarket_brief'):
+            brief, _ = self._run(monkeypatch, tables, monday, 'premarket-brief-daily',
+                                 '2026-11-13', premarket_day='2026-11-16')
+
+        assert brief['analysis_date'] == date(2026, 11, 16)
+        canonical = tables['premarket_analysis']
+        written_monday = sorted(key for key, row in canonical.items()
+                                if row['analysis_ts'] == monday)
+        assert written_monday == [('2026-11-16', ticker) for ticker in self.TICKERS]
+        for ticker in self.TICKERS:
+            row = canonical[('2026-11-16', ticker)]
+            assert row['run_kind'] == 'live'
+            assert row['level_basis']['premarket_status'] == 'ok'
+        assert 'row already exists' not in caplog.text
+
+    def test_future_check_and_fallback_use_the_exchange_date(self, monkeypatch):
+        from gcp import database
+        from gcp import premarket_brief as pb
+
+        _freeze_exchange_clock(monkeypatch, self._eastern('2026-11-15 21:00'))
+        monkeypatch.setenv('BRIEF_AS_OF', '2026-11-16')
+        try:
+            pb._resolve_analysis_date()
+            monday_replay = 'accepted'
+        except ValueError as exc:
+            monday_replay = 'refused' if 'future' in str(exc) else repr(exc)
+        monkeypatch.setenv('BRIEF_AS_OF', '2026-11-15')
+        sunday_replay = pb._resolve_analysis_date()
+
+        monkeypatch.delenv('BRIEF_AS_OF')
+        history = []
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(database, 'bulk_insert_dataframe',
+                            lambda df, table: history.extend(df.to_dict('records')) or len(df))
+        monkeypatch.setattr(database, 'upsert_dataframe', lambda df, table, keys: len(df))
+        monkeypatch.setattr(database, 'row_exists', lambda table, where: False)
+        pb.persist_to_cloud_sql({'tickers': {'IWM': {'price': 100.0}}},
+                                run_kind='scheduled', triggered_by='test')
+        fallback_dates = {row['analysis_date'] for row in history}
+
+        # One comparison, so a failure shows all three results.
+        assert (monday_replay, sunday_replay, fallback_dates) == (
+            'refused', date(2026, 11, 15), {date(2026, 11, 15)})
+
+    def test_weekday_morning_run_is_unchanged(self, monkeypatch):
+        tuesday = self._eastern('2026-11-10 08:30')
+        tables = self._tables()
+        brief, seen = self._run(monkeypatch, tables, tuesday, 'premarket-brief-daily',
+                                '2026-11-09', premarket_day='2026-11-10')
+
+        assert brief['analysis_date'] == date(2026, 11, 10)
+        assert seen['earnings'] == [(date(2026, 11, 10), False)]
+        assert seen['amc'] == [date(2026, 11, 10)]
+        assert seen['events'] == [(date(2026, 11, 10), 5)]
+        assert sorted(tables['premarket_analysis']) == [
+            ('2026-11-10', ticker) for ticker in self.TICKERS]
