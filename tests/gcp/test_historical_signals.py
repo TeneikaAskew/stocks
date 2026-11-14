@@ -86,6 +86,8 @@ def _make_row(entry_time, **overrides):
         "conditions_met": 3,
         "duration_minutes": 20,
         "return_pct": 1.25,
+        "realized_return_pct": -0.05,          # FEAT-SIGNAL-001
+        "realized_rule": "next-open-20m-1c-v1",
         "best_return": 1.25,
         "best_window_min": 20,
         "return_5min": 0.4,
@@ -440,3 +442,62 @@ def test_delete_for_ticker_returns_rowcount(monkeypatch):
     # Ticker is upper-cased in the bind params
     call_args = conn.execute.call_args
     assert call_args[0][1] == {"t": "IWM"}
+
+
+def test_native_score_explanation_survives_existing_bulk_insert(fake_engine_factory, monkeypatch):
+    import json
+    from pathlib import Path
+    from lib.trading_analysis import MarketAnalyzer
+    from scripts.run_historical_signals import map_signals_to_table
+    from lib.strategies import catalyst_proximity
+    from gcp.historical_signals import bulk_insert
+
+    fixture=json.loads((Path(__file__).parents[1]/'fixtures/historical_score_native_controls.json').read_text())
+    frame=pd.DataFrame(fixture['cases'][0]['enriched_rows'])
+    frame['Time']=pd.to_datetime(frame.Time)
+    native=MarketAnalyzer().generate_technical_signals(frame).iloc[:1].copy()
+    native['extra']=[{'preserved':{'nested':[1,None,'x']}}]
+    native.attrs['run_kind']='backfill'
+    monkeypatch.setattr(catalyst_proximity,'get_catalyst_context',lambda *a:{})
+    mapped=map_signals_to_table(native,'IWM')
+    conn=fake_engine_factory(rowcount=1)
+    assert bulk_insert(mapped,run_kind='backfill')==(1,1)
+    assert len(conn.calls)==1
+    sql,params=conn.calls[0]
+    extra=json.loads(params['p0_extra'])
+    assert extra['preserved']=={'nested':[1,None,'x']}
+    assert extra['score_explanation']['base_max']==7
+    assert extra['score_explanation']['composite_strength']==6
+    assert extra['score_explanation']['provenance']['run_kind']=='backfill'
+    assert 'ON CONFLICT (ticker, entry_time, strategy) DO NOTHING' in sql
+
+
+def test_bulk_insert_carries_the_realized_outcome_columns(fake_engine_factory):
+    """FEAT-SIGNAL-001: realized_return_pct and realized_rule reach the INSERT
+    column list and are bound per row; a not-scoreable signal binds NULL."""
+    from gcp.historical_signals import bulk_insert
+
+    conn = fake_engine_factory()
+    df = pd.DataFrame([
+        _make_row(datetime(2026, 5, 6, 14, 0)),
+        _make_row(datetime(2026, 5, 6, 9, 0), realized_return_pct=float("nan")),
+    ])
+    bulk_insert(df)
+    [(sql, params)] = conn.calls
+    columns = [c.strip() for c in sql.split("(", 1)[1].split(")", 1)[0].split(",")]
+    assert "realized_return_pct" in columns
+    assert "realized_rule" in columns
+    assert params["p0_realized_return_pct"] == pytest.approx(-0.05)
+    assert params["p0_realized_rule"] == "next-open-20m-1c-v1"
+    assert params["p1_realized_return_pct"] is None
+    assert params["p1_realized_rule"] == "next-open-20m-1c-v1"
+
+
+def test_schema_adds_the_realized_columns_nullable_without_default():
+    import re
+    from pathlib import Path
+
+    sql = (Path(__file__).resolve().parents[2] / "gcp" / "schema.sql").read_text()
+    for col, typ in (("realized_return_pct", "DOUBLE PRECISION"), ("realized_rule", r"VARCHAR\(32\)")):
+        m = re.search(rf"ADD COLUMN IF NOT EXISTS {col}\s+{typ}\s*([,;])", sql)
+        assert m, col

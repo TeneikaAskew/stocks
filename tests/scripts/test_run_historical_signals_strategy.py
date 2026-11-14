@@ -368,3 +368,109 @@ def test_load_intraday_bars_fetches_a_window_in_both_conventions(monkeypatch, st
     assert bars["Time"].max() == pd.Timestamp("2026-01-15 15:34", tz="UTC")
     assert len(bars) == 185
     assert seen["start"] == pd.Timestamp("2026-01-15 07:30", tz="UTC")
+
+
+def test_score_contract_mapping_preserves_nested_extras_and_native_components(monkeypatch):
+    from lib.trading_analysis import MarketAnalyzer
+    from lib.strategies import catalyst_proximity
+    fixture = json.loads((_REPO / 'tests/fixtures/historical_score_native_controls.json').read_text())
+    frame = pd.DataFrame(fixture['cases'][0]['enriched_rows'])
+    frame['Time'] = pd.to_datetime(frame.Time)
+    signals = MarketAnalyzer().generate_technical_signals(frame).iloc[:1].copy()
+    signals['extra'] = [{'preserved': {'list': [1, None, 'x']}}]
+    monkeypatch.setattr(catalyst_proximity, 'get_catalyst_context', lambda *a: {})
+    out = map_signals_to_table(signals, 'IWM')
+    e = out.extra.iloc[0]
+    assert e['preserved'] == {'list': [1, None, 'x']}
+    assert e['score_explanation']['composite_strength'] == out.signal_strength.iloc[0]
+    assert e['score_explanation']['base_max'] == 7
+    assert out.conditions_met.iloc[0].endswith('/7')
+
+
+def test_score_contract_reserved_collision_refuses_before_catalyst_io(monkeypatch):
+    from lib.strategies import catalyst_proximity
+    def forbidden(*a):
+        raise AssertionError('must refuse before persistence lookup')
+    monkeypatch.setattr(catalyst_proximity, 'get_catalyst_context', forbidden)
+    src = pd.DataFrame([{'entry_time':'2024-01-02T15:00Z','signal_strength':6,
+        'score_explanation': {'new': True}, 'extra': {'score_explanation': {'old': True}}}])
+    with pytest.raises(ValueError, match='score|reserved'):
+        map_signals_to_table(src, 'IWM')
+
+
+def test_historical_mr_records_actual_base_and_zero_bonus():
+    n = 35
+    closes = pd.Series([100-i*.05 for i in range(n)])
+    frame = pd.DataFrame({'Time': pd.date_range('2024-01-02 09:30',periods=n,freq='min'),
+        'Last':closes,'VWAP':closes+.5,'EMA9':closes+.3,'EMA20':closes+.4,
+        'RSI14_W':35.,'StochRSI_K':20., 'Broke_Prev_Day_High':1})
+    out = _generate_mean_reversion_signals(frame)
+    assert len(out) > 0
+    row = out.iloc[0]
+    assert row.signal_strength == 5
+    assert len(json.loads(row.conditions_met)) == 5
+    e = row.score_explanation
+    assert e['base_count'] == 5 and e['bonus_total'] == 0
+    assert e['composite_strength'] == 5
+    assert e['provenance']['producer_definition'] == 'historical-mr-v1'
+
+
+# ── FEAT-SIGNAL-001: the realized outcome through the production caller ──
+# docs/superpowers/specs/2026-11-11-feat-signal-001-honest-outcome-scoring.md
+# load_intraday_bars returns UTC instants; _process_ticker converts them to
+# naive Eastern wall time and runs the real momentum path. A falling session
+# with a three-bar, high-volume bounce ending at 05:00 and at 10:00 ET makes
+# the unchanged voter fire a call on exactly those two bars.
+
+
+def _bounce_session(day: str = "2026-01-15") -> pd.DataFrame:
+    wall = pd.date_range(f"{day} 04:00", f"{day} 12:00", freq="1min")
+    step = np.full(len(wall), -0.02)
+    volume = np.full(len(wall), 1000.0)
+    for hhmm in ("05:00", "10:00"):
+        k = wall.get_loc(pd.Timestamp(f"{day} {hhmm}"))
+        step[k - 2:k + 1] = 0.03
+        volume[k - 2:k + 1] = 8000.0
+    last = 100 + np.cumsum(step)
+    opens = np.r_[100.0, last[:-1]]
+    return pd.DataFrame({
+        "Time": wall.tz_localize("America/New_York").tz_convert("UTC"),
+        "Open": opens, "High": np.maximum(opens, last) + 0.01,
+        "Low": np.minimum(opens, last) - 0.01, "Last": last, "Volume": volume,
+    })
+
+
+def test_production_caller_scores_the_realized_outcome_in_eastern_time(monkeypatch):
+    from lib.strategies import catalyst_proximity
+
+    bars = _bounce_session()
+    captured = {}
+    monkeypatch.setattr(rhs, "load_intraday_bars", lambda *a, **k: bars.copy())
+    monkeypatch.setattr(rhs, "resolve_window", lambda a: (
+        datetime(2026, 1, 15, tzinfo=timezone.utc), datetime(2026, 1, 16, tzinfo=timezone.utc), "backfill"))
+    monkeypatch.setattr(rhs, "map_signals_to_table",
+                        lambda df, t, strategy=None: captured.setdefault("df", df.copy()))
+    args = SimpleNamespace(strategy="momentum", lookback_days=0, dry_run=True, force=False)
+    assert rhs._process_ticker("SPY", args) == 0
+
+    sig = captured["df"].set_index("entry_time")
+    ten = pd.Timestamp("2026-01-15 15:00", tz="UTC")       # 10:00 EST
+    five = pd.Timestamp("2026-01-15 10:00", tz="UTC")      # 05:00 EST, premarket
+    assert {ten, five} <= set(sig.index)
+    assert sig.loc[ten, "trade_type"] == "call"
+    by_time = bars.set_index("Time")["Open"]
+    entry_open = by_time[pd.Timestamp("2026-01-15 15:01", tz="UTC")]   # 10:01 ET
+    exit_open = by_time[pd.Timestamp("2026-01-15 15:21", tz="UTC")]    # 10:21 ET
+    assert sig.loc[ten, "realized_return_pct"] == pytest.approx(
+        (exit_open - entry_open - 0.01) / entry_open * 100)
+    assert sig.loc[ten, "realized_rule"] == "next-open-20m-1c-v1"
+    assert pd.isna(sig.loc[five, "realized_return_pct"])
+    assert sig.loc[five, "realized_rule"] == "next-open-20m-1c-v1"
+
+    # Both columns reach the historical_signals row shape.
+    monkeypatch.setattr(catalyst_proximity, "get_catalyst_context", lambda *a: {})
+    table = map_signals_to_table(captured["df"].reset_index(drop=True), "SPY")
+    row = table.set_index("entry_time")
+    assert row.loc[ten, "realized_return_pct"] == pytest.approx(sig.loc[ten, "realized_return_pct"])
+    assert row.loc[ten, "realized_rule"] == "next-open-20m-1c-v1"
+    assert pd.isna(row.loc[five, "realized_return_pct"])

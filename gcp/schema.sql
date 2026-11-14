@@ -787,6 +787,7 @@ CREATE TABLE IF NOT EXISTS earnings_reactions (
     reported_date               DATE         NOT NULL,
 
     -- Timing (canonical source: earnings_history.report_time)
+    daily_path_v1              JSONB,           -- versioned daily closing-path evidence; NULL is unqualified
     reaction_basis              VARCHAR(3),     -- 'AMC' or 'BMO'
 
     -- EPS context (denormalized from earnings_history for query speed)
@@ -866,6 +867,8 @@ CREATE TABLE IF NOT EXISTS earnings_reactions (
     CONSTRAINT ck_earnings_reactions_basis
         CHECK (reaction_basis IS NULL OR reaction_basis IN ('AMC', 'BMO'))
 );
+
+ALTER TABLE earnings_reactions ADD COLUMN IF NOT EXISTS daily_path_v1 JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_earnings_reactions_ticker_reported
     ON earnings_reactions (ticker, reported_date DESC);
@@ -1752,6 +1755,41 @@ ALTER TABLE market_data_daily
     ADD COLUMN IF NOT EXISTS gap_pct        DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS pre_range_atr  DOUBLE PRECISION;
 
+-- FEAT-STRAT-001: premarket snapshot provenance. level_basis records when the
+-- premarket bars were fetched and how many prints the snapshot filter dropped
+-- (stale prior-close prints, and isolated spikes beyond the neighbouring bar
+-- bodies by more than the ticker's calibrated threshold), so a level can be traced to its data. Written by
+-- gcp/fetchers/fetch_premarket_refresh.py and gcp/fetchers/fetch_market_data.py
+-- from lib.indicators.calculate_premarket_context. All NULLABLE; NULL means
+-- not recorded (rows written before this block). Writers and readers detect
+-- the columns and work without them. Idempotent.
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS pre_fetched_at             TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS pre_excluded_stale_prints  INTEGER,
+    ADD COLUMN IF NOT EXISTS pre_excluded_spikes        INTEGER;
+
+-- FEAT-STRAT-001 (per-ticker level parameters, Design 8): whether the
+-- snapshot's prints were filtered with the ticker's calibrated thresholds
+-- (pm_stale_print_atr, pm_spike_atr). pre_filter_status is 'ok' when both
+-- were in force and the ATR was usable, else the parameter status that
+-- stopped it (insufficient_history, params_unavailable, ...) or
+-- atr_unavailable; the excluded counts are NULL then. pre_filter_params
+-- records each threshold's value, status and effective_from, the
+-- atr_basis and the ATR used. The level builder refuses a snapshot whose
+-- status is not 'ok' (premarket_unfiltered). Nullable; idempotent.
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS pre_filter_status  VARCHAR(40),
+    ADD COLUMN IF NOT EXISTS pre_filter_params  JSONB;
+
+-- FEAT-STRAT-001 (per-ticker level parameters, Design 4): ATR(5) stored
+-- beside atr_14 by the same nightly fetch-market-data path
+-- (lib.config IndicatorConfig.atr_extra_periods, gcp.database
+-- DAILY_INDICATOR_TO_SQL_COLUMN). backfill-daily-indicators heals it in its
+-- short warmup class; its Sunday full sweep fills history. Nullable;
+-- idempotent.
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS atr_5 DOUBLE PRECISION;
+
 
 -- ============================================================================
 -- Catalyst-aware ORB recommendation + Strat playbook persisted by
@@ -1788,10 +1826,11 @@ ALTER TABLE premarket_analysis
 --
 --   data_freshness_status (varchar(20))
 --     Stamp written by the W6 staleness detector. Values:
---       'fresh'             — last bar was 1 trading day before
---                             analysis_date (or Friday→Monday).
---       'STALE_DAILY_DATA'  — gap > 1 trading day with no Monday
---                             exemption. The W6 writer sets per-ticker
+--       'fresh'            : last bar is on or after the previous
+--                             NYSE session before analysis_date
+--                             (weekends and NYSE holidays skipped).
+--       'STALE_DAILY_DATA' : last bar older than that session (a
+--                             session is missing). The W6 writer sets per-ticker
 --                             status='STALE_DAILY_DATA' on data['status']
 --                             so persist_to_cloud_sql skips the canonical
 --                             premarket_analysis row and only writes the
@@ -1879,7 +1918,7 @@ ALTER TABLE premarket_analysis
 
     -- ── RESOLVED outcomes — CALLS leg ────────────────────────────────
     ADD COLUMN IF NOT EXISTS calls_trigger_hit_ts  TIMESTAMPTZ,   -- first bar where high >= trigger
-    ADD COLUMN IF NOT EXISTS calls_t1_hit_ts       TIMESTAMPTZ,   -- after trigger, first bar where high >= t1
+    ADD COLUMN IF NOT EXISTS calls_t1_hit_ts       TIMESTAMPTZ,   -- first bar from the trigger bar on where high >= t1: a touch, not an exit (calls_exit_reason is the exit)
     ADD COLUMN IF NOT EXISTS calls_t2_hit_ts       TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS calls_t3_hit_ts       TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS calls_stop_hit_ts     TIMESTAMPTZ,   -- after trigger, first bar where low <= stop
@@ -1887,7 +1926,7 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS calls_time_to_t1_min  INTEGER,       -- minutes from trigger to T1
     ADD COLUMN IF NOT EXISTS calls_mae_pct         DOUBLE PRECISION, -- (trigger - min_low_after_trigger)/trigger * 100
     ADD COLUMN IF NOT EXISTS calls_mfe_pct         DOUBLE PRECISION, -- (max_high_after_trigger - trigger)/trigger * 100
-    ADD COLUMN IF NOT EXISTS calls_eod_pnl_pct     DOUBLE PRECISION, -- final realized pct (at first stop/target/EOD close)
+    ADD COLUMN IF NOT EXISTS calls_eod_pnl_pct     DOUBLE PRECISION, -- rule cross-fill-t1-v1 (outcome_resolver_version 2026-11-11.v2): (exit - calls_fill_price)/calls_fill_price * 100, all out at the first of stop or T1 (T1 from the bar after the fill), else last RTH close; NULL unless calls_entry_status = 'filled'
     ADD COLUMN IF NOT EXISTS calls_eod_pnl_dollar  DOUBLE PRECISION, -- pct/100 * notional ($10,000 default)
 
     -- ── RESOLVED outcomes — PUTS leg (mirror of CALLS) ───────────────
@@ -1902,6 +1941,24 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS puts_mfe_pct          DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_eod_pnl_pct      DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_eod_pnl_dollar   DOUBLE PRECISION,
+
+    -- ── Traded outcome, rule cross-fill-t1-v1 (FEAT-SIGNAL-001) ──────
+    -- entry_status: 'gap_through' (the first RTH bar opened at or beyond the
+    -- trigger: no entry), 'not_triggered', 'invalid_stop' (stop missing or
+    -- not beyond the fill on the losing side) or 'filled'. fill_price is the
+    -- trigger, or the open of a later bar that opened beyond it. exit_reason
+    -- is 'stop' (at the stop, or at a later bar's open beyond it; wins a tie),
+    -- 't1' (at the T1 price, only from the bar after the fill; targets at or
+    -- behind the fill are skipped) or 'close' (last RTH close). Fill, exit
+    -- and P&L are NULL unless entry_status = 'filled'. Rows resolved by
+    -- 2026-05-11.v1 booked the last target reached from the trigger price
+    -- and leave these NULL.
+    ADD COLUMN IF NOT EXISTS calls_entry_status    VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS calls_fill_price      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_exit_reason     VARCHAR(8),
+    ADD COLUMN IF NOT EXISTS puts_entry_status     VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS puts_fill_price       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_exit_reason      VARCHAR(8),
 
     -- ── Resolver metadata ────────────────────────────────────────────
     ADD COLUMN IF NOT EXISTS outcome_resolved_at   TIMESTAMPTZ,
@@ -2065,6 +2122,151 @@ ALTER TABLE premarket_analysis_history
     ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION;
 
 
+-- ============================================================================
+-- FEAT-STRAT-001: the level_basis snapshot written with each brief row.
+-- lib.strat_levels.SessionLevels.to_basis(): rule_version, session_date,
+-- built_at, last daily bar date, ATR(14), the level list, the premarket
+-- snapshot with its own date, the reference, the two cleared marks and the
+-- per-side candidates, picks, stops, targets, ladder and orb_only reason.
+-- Nullable: rows written before this column, and every writer and reader
+-- while it is absent, keep working (upsert_dataframe and
+-- bulk_insert_dataframe drop unknown columns; readers fall back to
+-- build_session_levels). Live readers filter run_kind = 'live'.
+-- ============================================================================
+ALTER TABLE premarket_analysis
+    ADD COLUMN IF NOT EXISTS level_basis JSONB;
+ALTER TABLE premarket_analysis_history
+    ADD COLUMN IF NOT EXISTS level_basis JSONB;
+
+
+-- ============================================================================
+-- FEAT-STRAT-001 (per-ticker level parameters, 2026-11-08): every distance
+-- the level and plan code used to hold as a literal is a per-ticker value
+-- calibrated from the ticker's own bars (lib.level_calibration, written by
+-- gcp/calibrate_level_params.py) and read once per run by
+-- lib.strat_levels.load_level_params.
+--
+-- level_param_policy: one row per (param_key, effective_from). The statistic
+-- (statistic_q), lookback and minimum sample of each parameter, versioned
+-- like the values, so the owner changes intent with a row. Two keys are not
+-- parameters: atr_basis (extra.column names the ATR column every parameter is
+-- measured in and every consumer multiplies by) and calibration_universe
+-- (extra.sources lists where the calibrated tickers come from).
+--
+-- ticker_level_params: one row per (ticker, param_key, atr_basis,
+-- effective_from). value is NULL exactly when status is not ok. atr_basis is
+-- part of the key, so calibrating in a new basis adds versions beside the
+-- old ones and replaces none. No ticker values are seeded: the first rows
+-- come from the history-mode calibration run.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS level_param_policy (
+    param_key          VARCHAR(48)      NOT NULL,
+    method_id          VARCHAR(48)      NOT NULL,
+    statistic_q        DOUBLE PRECISION,
+    lookback_sessions  INTEGER,
+    min_sample         INTEGER,
+    extra              JSONB,
+    effective_from     DATE             NOT NULL,
+    note               TEXT,
+    created_at         TIMESTAMPTZ      DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (param_key, effective_from)
+);
+
+CREATE TABLE IF NOT EXISTS ticker_level_params (
+    ticker                 VARCHAR(10)      NOT NULL,
+    param_key              VARCHAR(48)      NOT NULL,
+    value                  DOUBLE PRECISION,
+    status                 VARCHAR(32)      NOT NULL
+        CHECK (status IN ('ok', 'insufficient_history', 'input_unavailable', 'no_positive_target')),
+    atr_basis              VARCHAR(16)      NOT NULL,
+    method_id              VARCHAR(48),
+    policy_effective_from  DATE,
+    sample_n               INTEGER,
+    input_from             DATE,
+    input_to               DATE,
+    effective_from         DATE             NOT NULL,
+    run_id                 UUID,
+    source                 VARCHAR(16)
+        CHECK (source IN ('nightly', 'history', 'on_demand')),
+    calibrated_at          TIMESTAMPTZ,
+    CHECK ((status = 'ok') = (value IS NOT NULL)),
+    PRIMARY KEY (ticker, param_key, atr_basis, effective_from)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticker_level_params_in_force
+    ON ticker_level_params (ticker, atr_basis, effective_from DESC);
+
+-- The Design 2 policy rows, effective 2015-01-02 (the first session the
+-- history-mode run calibrates). Idempotent: re-applying schema.sql leaves a
+-- later policy version, or an edited row, untouched (PRIMARY KEY conflict ->
+-- DO NOTHING). statistic_q is the quantile of the stated distribution, or
+-- for a target the share of filled breaks that reached it; NULL where the
+-- method names a fixed statistic (an entry edge at the trigger).
+INSERT INTO level_param_policy (
+    param_key, method_id, statistic_q, lookback_sessions, min_sample, extra, effective_from, note
+) VALUES
+    ('atr_basis', 'policy', NULL, NULL, NULL, '{"column": "atr_14"}', '2015-01-02',
+     'ATR column every parameter is measured in and every consumer multiplies by'),
+    ('calibration_universe', 'policy', NULL, NULL, NULL,
+     '{"sources": ["market_config_tickers", "insight_default_tickers", "watchlist", "on_demand"]}', '2015-01-02',
+     'lib.level_calibration.load_calibration_universe'),
+    ('trigger_window_long_atr', 'daily_excursion_quantile', 0.99, 750, 250, '{"side": "long"}', '2015-01-02',
+     '(high - prior close) / ATR'),
+    ('trigger_window_short_atr', 'daily_excursion_quantile', 0.99, 750, 250, '{"side": "short"}', '2015-01-02',
+     '(prior close - low) / ATR'),
+    ('pm_spike_atr', 'premarket_wick_excess_quantile', 0.999, 60, 40, '{"min_bars_per_session": 60}', '2015-01-02',
+     'premarket wick beyond its own and its two neighbours'' bodies each side / ATR'),
+    ('pm_stale_print_atr', 'premarket_bar_spread_quantile', 0.95, 60, 40, '{"min_bars_per_session": 60}', '2015-01-02',
+     'clean premarket max(high - midpoint, midpoint - low) / ATR'),
+    ('level_cluster_atr', 'rth_interval_change_quantile', 0.50, 60, 40, '{"interval_minutes": 15}', '2015-01-02',
+     'absolute 15-minute RTH close-to-close change / ATR'),
+    ('entry_buffer_aggressive_lo_atr', 'at_trigger', NULL, 750, 150, '{"persona": "aggressive", "edge": "lo", "follow_through_minutes": 15}', '2015-01-02', NULL),
+    ('entry_buffer_aggressive_hi_atr', 'follow_through_quantile', 0.75, 750, 150, '{"persona": "aggressive", "edge": "hi", "follow_through_minutes": 15}', '2015-01-02', NULL),
+    ('entry_buffer_neutral_lo_atr', 'at_trigger', NULL, 750, 150, '{"persona": "neutral", "edge": "lo", "follow_through_minutes": 15}', '2015-01-02', NULL),
+    ('entry_buffer_neutral_hi_atr', 'follow_through_quantile', 0.50, 750, 150, '{"persona": "neutral", "edge": "hi", "follow_through_minutes": 15}', '2015-01-02', NULL),
+    ('entry_buffer_conservative_lo_atr', 'follow_through_quantile', 0.20, 750, 150, '{"persona": "conservative", "edge": "lo", "follow_through_minutes": 15}', '2015-01-02', NULL),
+    ('entry_buffer_conservative_hi_atr', 'follow_through_quantile', 0.65, 750, 150, '{"persona": "conservative", "edge": "hi", "follow_through_minutes": 15}', '2015-01-02', NULL),
+    ('stop_aggressive_atr', 'filled_held_mae_quantile', 0.90, 750, 150, '{"persona": "aggressive"}', '2015-01-02', NULL),
+    ('stop_neutral_atr', 'filled_held_mae_quantile', 0.75, 750, 150, '{"persona": "neutral"}', '2015-01-02', NULL),
+    ('stop_conservative_atr', 'filled_held_mae_quantile', 0.60, 750, 150, '{"persona": "conservative"}', '2015-01-02', NULL),
+    ('min_stop_atr', 'filled_held_mae_quantile', 0.50, 750, 150, '{"persona": "neutral"}', '2015-01-02', NULL),
+    ('target_aggressive_1_r', 'filled_reach_share', 0.40, 750, 150, '{"persona": "aggressive", "k": 1}', '2015-01-02', NULL),
+    ('target_aggressive_2_r', 'filled_reach_share', 0.25, 750, 150, '{"persona": "aggressive", "k": 2}', '2015-01-02', NULL),
+    ('target_aggressive_3_r', 'filled_reach_share', 0.15, 750, 150, '{"persona": "aggressive", "k": 3}', '2015-01-02', NULL),
+    ('target_neutral_1_r', 'filled_reach_share', 0.60, 750, 150, '{"persona": "neutral", "k": 1}', '2015-01-02', NULL),
+    ('target_neutral_2_r', 'filled_reach_share', 0.45, 750, 150, '{"persona": "neutral", "k": 2}', '2015-01-02', NULL),
+    ('target_neutral_3_r', 'filled_reach_share', 0.30, 750, 150, '{"persona": "neutral", "k": 3}', '2015-01-02', NULL),
+    ('target_conservative_1_r', 'filled_reach_share', 0.65, 750, 150, '{"persona": "conservative", "k": 1}', '2015-01-02', NULL),
+    ('target_conservative_2_r', 'filled_reach_share', 0.50, 750, 150, '{"persona": "conservative", "k": 2}', '2015-01-02', NULL)
+ON CONFLICT (param_key, effective_from) DO NOTHING;
+
+
+-- FEAT-STRAT-001 (2026-11-05): FTFC in Rob Smith's sense, price above
+-- (green) or below (red) the current period's open on every timeframe,
+-- rule lib.strat price-open-v1. The brief's existing ftfc_score /
+-- ftfc_direction keep the weighted candle vote (displayed as "TF bias"),
+-- which is what the gates read; these columns are display and storage
+-- only and no gate reads them.
+--
+--   tf_continuity         'bullish' | 'bearish' | 'mixed' | 'unavailable';
+--                         NULL on rows written before this column.
+--   tf_continuity_frames  per timeframe ('1q', '1mo', '1w' premarket):
+--                         {relation: green|red|at_open|unavailable, open,
+--                          observed_price, price_provenance, price_session,
+--                          rule_version, reasons}.
+--
+-- Both tables, because the history rows are the canonical rows plus audit
+-- metadata. Additive and nullable; until this is applied, upsert_dataframe
+-- and bulk_insert_dataframe drop the two keys from the brief's rows.
+ALTER TABLE premarket_analysis
+    ADD COLUMN IF NOT EXISTS tf_continuity        VARCHAR(12),
+    ADD COLUMN IF NOT EXISTS tf_continuity_frames JSONB;
+
+ALTER TABLE premarket_analysis_history
+    ADD COLUMN IF NOT EXISTS tf_continuity        VARCHAR(12),
+    ADD COLUMN IF NOT EXISTS tf_continuity_frames JSONB;
+
+
 CREATE TABLE IF NOT EXISTS insight_reports_history (
     id                BIGSERIAL    PRIMARY KEY,
     -- Optional FK to existing insight_runs row. SET NULL on delete so
@@ -2142,7 +2344,7 @@ CREATE TABLE IF NOT EXISTS historical_signals (
     signal_strength   SMALLINT,                     -- 3..5 (count of conditions met)
     conditions_met    VARCHAR(8),                   -- e.g. '4/5'
     duration_minutes  SMALLINT,                     -- bars from entry to MFE peak
-    return_pct        DOUBLE PRECISION,             -- 20-min MFE. PERCENTAGE POINTS (0.5 = +0.5%), as is every return below; signal_metrics stores fractions (#1154)
+    return_pct        DOUBLE PRECISION,             -- 20-min MFE: the best close of the next 20 rows, not a realized return (realized_return_pct is). PERCENTAGE POINTS (0.5 = +0.5%), as is every return below; signal_metrics stores fractions (#1154)
     best_return       DOUBLE PRECISION,
     best_window_min   SMALLINT,
     return_5min       DOUBLE PRECISION,
@@ -2178,6 +2380,18 @@ CREATE INDEX IF NOT EXISTS idx_historical_signals_strength
 
 CREATE INDEX IF NOT EXISTS idx_historical_signals_direction
     ON historical_signals (ticker, trade_type, entry_time DESC);
+
+-- FEAT-SIGNAL-001: the realized outcome of each signal under a fixed,
+-- pre-declared exit, beside the best-case return_pct. realized_rule names the
+-- rule: 'next-open-20m-1c-v1' = enter at the open of the bar after the signal
+-- bar, exit at the open 20 bars later, minus 1 cent, in percentage points of
+-- the entry open; only for a signal bar inside 09:30 to 15:34 ET whose entry
+-- and exit bars open before the same session's close. NULL when not
+-- scoreable and on rows written before these columns (no backfill).
+-- Nullable with no default: a metadata-only ALTER in PostgreSQL.
+ALTER TABLE historical_signals
+    ADD COLUMN IF NOT EXISTS realized_return_pct DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS realized_rule       VARCHAR(32);
 
 
 -- ─────────────────────────────────────────────────────────
@@ -4438,9 +4652,9 @@ reactions_deduped AS (
              fiscal_date_ending DESC NULLS LAST
 ),
 history_deduped AS (
-    SELECT DISTINCT ON (ticker, reported_date) *
+    SELECT DISTINCT ON (ticker, reported_date, fiscal_date_ending) *
     FROM earnings_history
-    ORDER BY ticker, reported_date,
+    ORDER BY ticker, reported_date, fiscal_date_ending,
              (surprise_pct IS NULL),
              fiscal_date_ending DESC NULLS LAST
 ),
@@ -4558,6 +4772,9 @@ SELECT
     er.sustain_10d_pct,
     er.direction_consistent_5d,
     er.is_reversal_5d,
+    er.daily_path_v1,
+    er.reaction_anchor_price,
+    er.d_open, er.d_close, er.d_plus_1_open,
     er.reaction_max_run_pct,
     er.reaction_max_drawdown_pct,
     er.d_minus_1_close,
@@ -4588,6 +4805,7 @@ FROM reactions_deduped er
 LEFT JOIN history_deduped eh
     ON eh.ticker = er.ticker
    AND eh.reported_date = er.reported_date
+   AND eh.fiscal_date_ending = er.fiscal_date_ending
 LEFT JOIN atm_per_event a
     ON a.ticker = er.ticker
    AND a.reported_date = er.reported_date
@@ -4612,8 +4830,140 @@ CREATE INDEX idx_eeo_reported_date
 DROP MATERIALIZED VIEW IF EXISTS earnings_ticker_lean CASCADE;
 
 CREATE MATERIALIZED VIEW earnings_ticker_lean AS
+WITH daily_candidates AS (
+    SELECT *,
+        CASE
+          WHEN daily_path_v1 IS NULL THEN 'missing_daily_descriptor'
+          WHEN daily_path_v1->>'version' IS DISTINCT FROM 'earnings-daily-path-v1'
+            OR daily_path_v1->>'event_id' IS DISTINCT FROM ticker || ':' || fiscal_date_ending::text || ':' || reported_date::text
+            OR daily_path_v1->>'reaction_basis' IS DISTINCT FROM reaction_basis
+            OR COALESCE(daily_path_v1->>'basis_id','') = ''
+            OR COALESCE(daily_path_v1->>'source_identity','') = ''
+            OR COALESCE(daily_path_v1->>'input_identity','') !~ '^[0-9a-f]{64}$'
+            THEN 'invalid_daily_identity'
+          WHEN COALESCE(daily_path_v1->>'status','') NOT IN ('complete','not_applicable')
+            THEN 'descriptor_not_mature'
+          WHEN daily_path_v1->>'mature_at' IS NULL
+            OR (daily_path_v1->>'mature_at')::timestamptz > NOW()
+            THEN 'feature_not_mature'
+          ELSE NULL
+        END AS daily_admission_reason
+    FROM earnings_event_outcomes
+), path_candidates AS (
+    SELECT *, CASE
+          WHEN daily_admission_reason IS NOT NULL THEN daily_admission_reason
+          WHEN daily_path_v1 #>> '{per_metric,native_classifier_inputs,version}' IS DISTINCT FROM 'earnings-native-inputs-v1'
+            OR daily_path_v1 #> '{per_metric,native_classifier_inputs,available}' IS DISTINCT FROM 'true'::jsonb
+            OR daily_path_v1 #>> '{per_metric,native_classifier_inputs,event_id}' IS DISTINCT FROM daily_path_v1->>'event_id'
+            OR daily_path_v1 #>> '{per_metric,native_classifier_inputs,reaction_basis}' IS DISTINCT FROM reaction_basis
+            OR COALESCE(daily_path_v1 #>> '{per_metric,native_classifier_inputs,source_identity}','') = ''
+            OR COALESCE(daily_path_v1 #>> '{per_metric,native_classifier_inputs,input_identity}','') !~ '^[0-9a-f]{64}$'
+            OR daily_path_v1 #>> '{per_metric,native_classifier_inputs,basis_id}' IS DISTINCT FROM daily_path_v1->>'basis_id'
+            OR daily_path_v1 #>> '{per_metric,native_classifier_inputs,mature_at}' IS NULL
+            OR (daily_path_v1 #>> '{per_metric,native_classifier_inputs,mature_at}')::timestamptz IS DISTINCT FROM (daily_path_v1->>'mature_at')::timestamptz
+            OR daily_path_v1 #>> '{per_metric,native_classifier_inputs,source_observed_at}' IS NULL
+            OR (daily_path_v1 #>> '{per_metric,native_classifier_inputs,source_observed_at}')::timestamptz < (daily_path_v1->>'mature_at')::timestamptz
+            THEN 'unqualified_native_classifier_inputs'
+          WHEN reaction_gap_pct IS NULL OR pre_earnings_drift_10d_pct IS NULL
+            OR sustain_5d_pct IS NULL OR direction_consistent_5d IS NULL OR is_reversal_5d IS NULL
+            THEN 'missing_native_fields'
+          ELSE NULL
+        END AS admission_reason
+    FROM daily_candidates
+), ranked_native_paths AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY reported_date DESC, fiscal_date_ending DESC) AS native_rank
+    FROM path_candidates WHERE admission_reason IS NULL
+), native_rows AS (
+    SELECT * FROM ranked_native_paths WHERE native_rank <= 12
+), native_reason_counts AS (
+    SELECT ticker,jsonb_object_agg(admission_reason,n) AS reasons
+    FROM (SELECT ticker,admission_reason,COUNT(*) AS n FROM path_candidates
+          WHERE admission_reason IS NOT NULL GROUP BY ticker,admission_reason) counts GROUP BY ticker
+), native_audits AS (
+    SELECT c.ticker,COUNT(*) FILTER (WHERE admission_reason IS NULL) AS admitted_n,
+        jsonb_build_object('candidate_n',COUNT(*),
+          'admitted_n',COUNT(*) FILTER (WHERE admission_reason IS NULL),
+          'excluded_n',COUNT(*) FILTER (WHERE admission_reason IS NOT NULL),
+          'excluded_reason_counts',COALESCE(reasons,'{}'::jsonb)) AS audit
+    FROM path_candidates c LEFT JOIN native_reason_counts r ON r.ticker=c.ticker
+    GROUP BY c.ticker,reasons
+), native_summaries AS (
+    SELECT a.ticker,COUNT(n.reported_date) AS qualified_native_n,
+        100.0*COUNT(n.reported_date) FILTER (WHERE direction_consistent_5d) / NULLIF(COUNT(n.reported_date),0) AS consistency_pct,
+        100.0*COUNT(n.reported_date) FILTER (WHERE reaction_gap_pct>0) / NULLIF(COUNT(n.reported_date),0) AS upward_gap_pct,
+        a.audit || jsonb_build_object('selected_n',COUNT(n.reported_date),
+            'not_selected_older_n',GREATEST(a.admitted_n-COUNT(n.reported_date),0)) AS audit,
+        COALESCE(jsonb_agg(jsonb_build_object(
+            'event_id',daily_path_v1->>'event_id','reported_date',reported_date,'fiscal_date_ending',fiscal_date_ending,
+            'status',daily_path_v1->>'status','reason',daily_path_v1->>'reason')
+            ORDER BY reported_date DESC) FILTER (WHERE n.reported_date IS NOT NULL),'[]'::jsonb) AS events
+    FROM native_audits a LEFT JOIN native_rows n ON n.ticker=a.ticker
+    GROUP BY a.ticker,a.audit,a.admitted_n
+), ranked_daily_paths AS (
+    SELECT *, true AS path_ready,
+        ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY reported_date DESC, fiscal_date_ending DESC) AS path_rank
+    FROM path_candidates WHERE daily_admission_reason IS NULL
+), path_rows AS (
+    SELECT * FROM ranked_daily_paths WHERE path_rank <= 12
+), candidate_reason_counts AS (
+    SELECT ticker, jsonb_object_agg(daily_admission_reason,n) AS reasons
+    FROM (SELECT ticker, daily_admission_reason,COUNT(*) AS n FROM path_candidates
+          WHERE daily_admission_reason IS NOT NULL GROUP BY ticker,daily_admission_reason) counts
+    GROUP BY ticker
+), candidate_audits AS (
+    SELECT c.ticker, COUNT(*) FILTER (WHERE daily_admission_reason IS NULL) AS admitted_n,
+        jsonb_build_object('candidate_n',COUNT(*),
+          'admitted_n',COUNT(*) FILTER (WHERE daily_admission_reason IS NULL),
+          'excluded_n',COUNT(*) FILTER (WHERE daily_admission_reason IS NOT NULL),
+          'excluded_reason_counts',COALESCE(reasons,'{}'::jsonb)) AS audit
+    FROM path_candidates c LEFT JOIN candidate_reason_counts r ON r.ticker=c.ticker
+    GROUP BY c.ticker,reasons
+), path_summaries AS (
+    SELECT audit.ticker, jsonb_build_object(
+        'version', 'earnings-daily-path-summary-v1',
+        'mode', 'retrospective_current_vintage',
+        'scope', 'latest_12_prior_distinct_mature_admitted_events_daily_closing_steps_only',
+        'candidate_audit',audit.audit || jsonb_build_object('selected_n',COUNT(p.reported_date),
+            'not_selected_older_n',GREATEST(audit.admitted_n-COUNT(p.reported_date),0)),
+        'point_in_time_verified', false,
+        'step_unit', 'trading_session_close_index_zero_is_reaction_session_close',
+        'event_n', COUNT(p.reported_date),
+        'qualified_native_n',ns.qualified_native_n,
+        'native_events',ns.events,
+        'native_candidate_audit',ns.audit,
+        'historical_direction_consistency_pct',ns.consistency_pct,
+        'historical_upward_opening_gap_pct',ns.upward_gap_pct,
+        'first_opposite_close', jsonb_build_object(
+            'eligible_n', COUNT(*) FILTER (WHERE path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)),
+            'observed_n', COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND daily_path_v1->>'first_opposite_close_step' IS NOT NULL),
+            'right_censored_n', COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,censored}')::boolean, false)),
+            'not_applicable_n', COUNT(*) FILTER (WHERE daily_path_v1 #>> '{per_metric,first_opposite_close,status}' = 'not_applicable'),
+            'unavailable_n', COUNT(*) FILTER (WHERE p.reported_date IS NOT NULL AND NOT (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND NOT COALESCE(daily_path_v1 #>> '{per_metric,first_opposite_close,status}' = 'not_applicable', false)),
+            'observed_rate_pct', 100.0 * COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND daily_path_v1->>'first_opposite_close_step' IS NOT NULL) / NULLIF(COUNT(*) FILTER (WHERE path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)), 0),
+            'median_first_observed_step', percentile_cont(0.5) WITHIN GROUP (ORDER BY (daily_path_v1->>'first_opposite_close_step')::double precision) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND daily_path_v1->>'first_opposite_close_step' IS NOT NULL)
+        ),
+        'closing_gap_fill', jsonb_build_object(
+            'eligible_n', COUNT(*) FILTER (WHERE path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)),
+            'observed_n', COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND daily_path_v1->>'closing_gap_fill_step' IS NOT NULL),
+            'right_censored_n', COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,censored}')::boolean, false)),
+            'not_applicable_n', COUNT(*) FILTER (WHERE daily_path_v1 #>> '{per_metric,closing_gap_fill,status}' = 'not_applicable'),
+            'unavailable_n', COUNT(*) FILTER (WHERE p.reported_date IS NOT NULL AND NOT (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND NOT COALESCE(daily_path_v1 #>> '{per_metric,closing_gap_fill,status}' = 'not_applicable', false)),
+            'observed_rate_pct', 100.0 * COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND daily_path_v1->>'closing_gap_fill_step' IS NOT NULL) / NULLIF(COUNT(*) FILTER (WHERE path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)), 0),
+            'median_first_observed_step', percentile_cont(0.5) WITHIN GROUP (ORDER BY (daily_path_v1->>'closing_gap_fill_step')::double precision) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND daily_path_v1->>'closing_gap_fill_step' IS NOT NULL)
+        ),
+        'events', COALESCE(jsonb_agg(jsonb_build_object(
+            'event_id', COALESCE(daily_path_v1->>'event_id', p.ticker || ':' || fiscal_date_ending::text || ':' || reported_date::text),
+            'reported_date', reported_date, 'fiscal_date_ending', fiscal_date_ending,
+            'status', COALESCE(daily_path_v1->>'status', 'unavailable'),
+            'reason', COALESCE(daily_path_v1->>'reason', CASE WHEN daily_path_v1 IS NULL THEN 'missing_admitted_daily_path' ELSE NULL END))
+            ORDER BY reported_date DESC) FILTER (WHERE p.reported_date IS NOT NULL),'[]'::jsonb)
+    ) AS summary
+    FROM candidate_audits audit LEFT JOIN path_rows p ON p.ticker=audit.ticker
+    JOIN native_summaries ns ON ns.ticker=audit.ticker
+    GROUP BY audit.ticker,audit.audit,audit.admitted_n,ns.qualified_native_n,ns.events,ns.audit,ns.consistency_pct,ns.upward_gap_pct
+)
 SELECT
-    ticker,
+    e.ticker,
     COUNT(*)                                                AS total_quarters,
     COUNT(*) FILTER (WHERE beat_meet_miss = 'beat')         AS n_beats,
     COUNT(*) FILTER (WHERE beat_meet_miss = 'meet')         AS n_meets,
@@ -4651,9 +5001,11 @@ SELECT
     ROUND(MAX(best_long_pnl_pct)::numeric, 0)               AS max_long_pnl_pct,
     ROUND(MAX(best_short_pnl_pct)::numeric, 0)              AS max_short_pnl_pct,
     -- Freshness.
-    MAX(reported_date)                                      AS last_event_date
-FROM earnings_event_outcomes
-GROUP BY ticker
+    MAX(reported_date)                                      AS last_event_date,
+    ps.summary                                             AS daily_path_summary_v1
+FROM earnings_event_outcomes e
+LEFT JOIN path_summaries ps ON ps.ticker = e.ticker
+GROUP BY e.ticker, ps.summary
 WITH NO DATA;
 
 CREATE UNIQUE INDEX idx_etl_ticker
@@ -4688,12 +5040,12 @@ CREATE TABLE IF NOT EXISTS earnings_upcoming_with_history (
     implied_move_pct           DOUBLE PRECISION,        -- expected_move / prev_close * 100
     options_volume             BIGINT,
     open_interest              BIGINT,
-    -- Playability + archetype (computed at refresh time)
+    -- Playability (NULL since the EW retirement) + archetype (refresh time)
     playability_score          DOUBLE PRECISION,
     quintile                   TEXT,                    -- Q1..Q5
     archetype                  TEXT,
     confidence_label           TEXT,
-    -- BOTH recommendation modes (user asked for both until they decide)
+    -- Both recommendation modes: NULL since the EW retirement (no input)
     recommended_structure_long_only  TEXT,
     recommended_structure_ic_mode    TEXT,
     -- Historical context from earnings_ticker_lean

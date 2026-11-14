@@ -19,6 +19,81 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+# FEAT-SIGNAL-001 (docs/superpowers/specs/2026-11-11-feat-signal-001-honest-outcome-scoring.md):
+# the realized outcome of a signal under a fixed, pre-declared exit, scored
+# beside the best-case excursions (return_pct, best_return, return_Nmin).
+REALIZED_RULE = 'next-open-20m-1c-v1'
+_FIRST_SIGNAL_MINUTE = 9 * 60 + 30     # 09:30 ET
+_LAST_SIGNAL_MINUTE = 15 * 60 + 34     # 15:34 ET
+
+
+def realized_outcome(bars: pd.DataFrame, signal_idx, direction, hold: int = 20,
+                     cost: float = 0.01) -> np.ndarray:
+    """Realized return in percent of each signal under rule ``next-open-20m-1c-v1``.
+
+    ``bars`` is the analyzer's one-minute frame. Its ``Time`` is read as naive
+    Eastern wall time, which is what scripts/run_historical_signals.py passes
+    after ``utc_to_eastern_naive``; a tz-aware ``Time`` is converted to Eastern
+    first (never localized as UTC). The frame is not changed.
+
+    ``signal_idx`` are row positions of the signal bars and ``direction`` is
+    +1 for a call and -1 for a put. A signal is scoreable only when its bar
+    starts inside 09:30 to 15:34 Eastern of an NYSE session, and its entry bar
+    (the next row) and exit bar (``hold`` rows after the entry) are on the
+    same session day and start before that day's ``session_close`` (13:00 on
+    a half day). The trade enters at the entry bar's open and exits at the
+    exit bar's open:
+
+        realized = (direction * (exit_open - entry_open) - cost) / entry_open * 100
+
+    A signal that is not scoreable is NaN (stored as NULL), never 0; a frame
+    without an ``Open`` column has no price to fill at, so none of its
+    signals is scoreable.
+    """
+    from lib.eastern_time import session_schedule, utc_to_eastern_naive
+
+    sig = np.asarray(signal_idx, dtype=np.int64).reshape(-1)
+    sign = np.asarray(direction, dtype=float).reshape(-1)
+    out = np.full(len(sig), np.nan)
+    n = len(bars)
+    if len(sig) == 0 or n == 0 or 'Open' not in bars.columns:
+        return out
+
+    times = pd.DatetimeIndex(pd.to_datetime(bars['Time']))
+    if times.tz is not None:
+        times = utc_to_eastern_naive(times)
+    opens = pd.to_numeric(bars['Open'], errors='coerce').to_numpy(dtype=float)
+
+    entry = sig + 1
+    exit_ = entry + hold
+    ok = (sig >= 0) & (exit_ < n)
+    s, e, x = np.where(ok, sig, 0), np.where(ok, entry, 0), np.where(ok, exit_, 0)
+
+    t_sig, t_ent, t_ext = times[s], times[e], times[x]
+    day = t_sig.normalize()
+    minute = t_sig.hour * 60 + t_sig.minute
+    ok &= np.asarray((minute >= _FIRST_SIGNAL_MINUTE) & (minute <= _LAST_SIGNAL_MINUTE))
+    ok &= np.asarray((t_ent.normalize() == day) & (t_ext.normalize() == day))
+
+    # The session close of each signal day, in Eastern wall time; a day that
+    # is not an NYSE session has none and is not scoreable.
+    days = day[ok]
+    if len(days):
+        schedule = session_schedule(days.min().date(), days.max().date())
+        close_by_day = pd.Series(
+            utc_to_eastern_naive(pd.DatetimeIndex(schedule['market_close'])),
+            index=pd.DatetimeIndex(schedule.index).normalize())
+        close = close_by_day.reindex(day).to_numpy()
+        ok &= ~pd.isna(close)
+        ok &= np.asarray(t_ent.to_numpy() < close) & np.asarray(t_ext.to_numpy() < close)
+    entry_open, exit_open = opens[e], opens[x]
+    ok &= np.isfinite(entry_open) & np.isfinite(exit_open) & (entry_open > 0)
+
+    ret = (sign * (exit_open - entry_open) - cost) / np.where(entry_open > 0, entry_open, np.nan) * 100
+    out[ok] = ret[ok]
+    return out
+
+
 class MarketAnalyzer:
     def __init__(self):
         self.df = None
@@ -802,7 +877,15 @@ class MarketAnalyzer:
         df['Consecutive_Up_5'] = df['Up_Move'].rolling(5).sum()
         df['Consecutive_Down_5'] = df['Down_Move'].rolling(5).sum()
         
+        from lib.signals import build_score_explanation, score_execution_context
+        score_context = score_execution_context(
+            producer_definition='historical-momentum-v1', strategy='momentum',
+            source_path=__file__, config={'consecutive_periods': consecutive_periods,
+                'min_conditions': 5, 'min_core_conditions': 2,
+                'rvol': 1.2, 'atr_expansion': 1.15, 'rsi_thrust': 5.0}, frame=df)
         signals = []
+        # Row position and direction of each signal, for its realized outcome.
+        signal_rows = []
         total_rows = len(df)
         processed = 0
         
@@ -847,48 +930,64 @@ class MarketAnalyzer:
             # before CONFIRMING conditions can pile on. CORE = defines
             # the setup (consec, RSI band, above/below VWAP, above/below
             # EMA9). CONFIRMING = rvol, atr_expansion, rsi_thrust.
+            call_matched = []
             call_conditions = 0
             call_core = 0
             if current.get('Consecutive_Up', 0) >= 3:  # 3-of-3 strict up bars
                 call_conditions += 1
+                call_matched.append('consecutive_up')
                 call_core += 1
             if current['RSI14_W'] < 50 and current['RSI14_W'] > 25:  # RSI in bullish range
                 call_conditions += 1
+                call_matched.append('rsi_bullish_zone')
                 call_core += 1
             if current['Last'] > current.get('VWAP', current['Last']):  # Price above VWAP
                 call_conditions += 1
+                call_matched.append('above_vwap')
                 call_core += 1
             if current['Last'] > current.get('EMA9', current['Last']):  # Price above EMA9
                 call_conditions += 1
+                call_matched.append('above_ema9')
                 call_core += 1
             if rvol_recent_fires:  # current vol > 1.2x rolling-20 median
                 call_conditions += 1
+                call_matched.append('rvol_above_recent')
             if atr_expansion_fires:  # ATR(5) > 1.15x ATR(20) — vol expanding
                 call_conditions += 1
+                call_matched.append('atr_expansion')
             if rsi_thrust_valid and rsi_thrust > 5.0:  # RSI accelerating up
                 call_conditions += 1
+                call_matched.append('rsi_thrust_up')
 
             # PUT Signal Conditions — Phase 0.7.x mirror.
+            put_matched = []
             put_conditions = 0
             put_core = 0
             if current.get('Consecutive_Down', 0) >= 3:  # 3-of-3 strict down bars
                 put_conditions += 1
+                put_matched.append('consecutive_down')
                 put_core += 1
             if current['RSI14_W'] > 50 and current['RSI14_W'] < 75:  # RSI in bearish range
                 put_conditions += 1
+                put_matched.append('rsi_bearish_zone')
                 put_core += 1
             if current['Last'] < current.get('VWAP', current['Last']):  # Price below VWAP
                 put_conditions += 1
+                put_matched.append('below_vwap')
                 put_core += 1
             if current['Last'] < current.get('EMA9', current['Last']):  # Price below EMA9
                 put_conditions += 1
+                put_matched.append('below_ema9')
                 put_core += 1
             if rvol_recent_fires:  # direction-agnostic volume confirmation
                 put_conditions += 1
+                put_matched.append('rvol_above_recent')
             if atr_expansion_fires:  # direction-agnostic vol regime gate
                 put_conditions += 1
+                put_matched.append('atr_expansion')
             if rsi_thrust_valid and rsi_thrust < -5.0:  # RSI accelerating down
                 put_conditions += 1
+                put_matched.append('rsi_thrust_down')
 
             # Generate signal if enough conditions are met. A gate-blocked
             # direction can't suppress the eligible direction — see
@@ -967,7 +1066,11 @@ class MarketAnalyzer:
                             'best_return': best_return,
                             'best_window_minutes': best_window,
                             'signal_strength': signal_strength,
-                            'conditions_met': f"{signal_strength}/5",
+                            'conditions_met': f"{signal_strength}/7",
+                            'score_explanation': build_score_explanation(
+                                base_count=signal_strength,
+                                matched_conditions=call_matched if signal == 'call' else put_matched,
+                                provenance={**score_context, 'direction': signal}),
                             'entry_rsi': current['RSI14_W'],
                             'entry_vwap': current.get('VWAP', np.nan),
                             'entry_ema9': current.get('EMA9', np.nan),
@@ -1055,6 +1158,7 @@ class MarketAnalyzer:
                         signal_data.update(returns_by_window)
                         
                         signals.append(signal_data)
+                        signal_rows.append((idx, 1 if signal == 'call' else -1))
         
         print(f"  Progress: 100% - Signal generation complete!")
         
@@ -1063,6 +1167,12 @@ class MarketAnalyzer:
             # Return empty dataframe with expected columns
             return pd.DataFrame(columns=['entry_time', 'trade_type', 'entry_price', 'return_pct'])
 
+        # return_pct, best_return, duration_minutes and return_Nmin above are
+        # best-case excursions (the best close of the window). The realized
+        # outcome is the fixed exit next-open-20m-1c-v1 (FEAT-SIGNAL-001).
+        positions, directions = zip(*signal_rows)
+        signals_df['realized_return_pct'] = realized_outcome(df, positions, directions)
+        signals_df['realized_rule'] = REALIZED_RULE
         return signals_df
 
     def analyze_feature_importance(self, signals_df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
@@ -1092,19 +1202,20 @@ class MarketAnalyzer:
             print(f"  ERROR: Target column '{target_col}' not found!")
             return pd.DataFrame()
 
-        # Identify feature columns (exclude metadata and target)
+        # Identify feature columns (exclude metadata and target). Nothing read
+        # after the signal bar is a feature (FEAT-SIGNAL-001): the exit_*
+        # values are read at the best future bar, realized_* and return_* /
+        # best_* are outcomes, and duration_minutes is the bars to the peak.
         exclude_cols = [
-            'entry_time', 'exit_time', 'trade_type', 'entry_price', 'exit_price',
-            'return_pct', 'best_return', 'best_window_minutes', 'duration_minutes',
+            'entry_time', 'trade_type', 'entry_price', 'duration_minutes',
             'signal_strength', 'conditions_met'
         ]
-
-        # Also exclude individual window returns (they're derivatives of the target)
-        exclude_cols.extend([col for col in signals_df.columns if col.startswith('return_') and 'min' in col])
+        outcome_prefixes = ('exit_', 'realized_', 'return_', 'best_')
 
         # Get all numeric feature columns
         feature_cols = [col for col in signals_df.columns
                        if col not in exclude_cols
+                       and not col.startswith(outcome_prefixes)
                        and signals_df[col].dtype in ['int64', 'float64', 'int32', 'float32']]
 
         print(f"  Analyzing {len(feature_cols)} features from {len(signals_df)} signals...")
@@ -1124,14 +1235,11 @@ class MarketAnalyzer:
 
         print(f"  Using {len(valid_features)} valid features...")
 
-        # Prepare data - fill remaining NaN with median
-        X = signals_df[valid_features].copy()
-        y = signals_df[target_col].copy()
-
-        # Fill NaN values with median for each column
-        for col in X.columns:
-            if X[col].isna().any():
-                X[col] = X[col].fillna(X[col].median())
+        # Chronological split: fit on the first 80% of signals by entry_time,
+        # score on the last 20% (out of sample).
+        ordered = signals_df.sort_values('entry_time', kind='mergesort')
+        X = ordered[valid_features].copy()
+        y = ordered[target_col].copy()
 
         # Remove any rows where target is NaN
         valid_rows = ~y.isna()
@@ -1142,13 +1250,27 @@ class MarketAnalyzer:
             print("  ERROR: No valid rows after cleaning!")
             return pd.DataFrame()
 
-        print(f"  Final dataset: {len(X)} samples x {len(valid_features)} features")
+        n_train = int(len(X) * 0.8)
+        X_train, y_train = X.iloc[:n_train].copy(), y.iloc[:n_train]
+        X_test, y_test = X.iloc[n_train:].copy(), y.iloc[n_train:]
+        if n_train == 0 or len(X_test) == 0:
+            print(f"  ERROR: {len(X)} signals are too few for an 80/20 chronological split!")
+            return pd.DataFrame()
+
+        # Fill NaN values with the training rows' median for each column
+        for col in X.columns:
+            median = X_train[col].median()
+            X_train[col] = X_train[col].fillna(median)
+            X_test[col] = X_test[col].fillna(median)
+
+        print(f"  Final dataset: {len(X)} samples x {len(valid_features)} features "
+              f"({len(X_train)} fitted, {len(X_test)} held out)")
 
         # 1. Calculate Correlation with Target
         print("\n  Step 1/3: Calculating correlations...")
         correlations = {}
         for col in valid_features:
-            corr = X[col].corr(y)
+            corr = X_train[col].corr(y_train)
             correlations[col] = abs(corr)  # Use absolute correlation
 
         # 2. Calculate RandomForest Feature Importance
@@ -1156,7 +1278,7 @@ class MarketAnalyzer:
 
         # Scale features for better RF performance
         scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+        X_scaled = scaler.fit_transform(X_train)
 
         # Train RandomForest (use fewer trees for speed)
         rf = RandomForestRegressor(
@@ -1168,7 +1290,7 @@ class MarketAnalyzer:
             n_jobs=-1  # Use all CPU cores
         )
 
-        rf.fit(X_scaled, y)
+        rf.fit(X_scaled, y_train)
 
         # Get feature importances
         rf_importances = dict(zip(valid_features, rf.feature_importances_))
@@ -1201,8 +1323,8 @@ class MarketAnalyzer:
         results['rank'] = range(1, len(results) + 1)
 
         # Add feature stats (mean, std)
-        results['feature_mean'] = [X[f].mean() for f in results['feature']]
-        results['feature_std'] = [X[f].std() for f in results['feature']]
+        results['feature_mean'] = [X_train[f].mean() for f in results['feature']]
+        results['feature_std'] = [X_train[f].std() for f in results['feature']]
 
         # Reorder columns
         results = results[['rank', 'feature', 'combined_score', 'correlation',
@@ -1221,11 +1343,43 @@ class MarketAnalyzer:
 
         print("-"*80)
         print(f"\nModel Performance:")
-        print(f"  R² Score: {rf.score(X_scaled, y):.4f}")
+        oos_r2 = rf.score(scaler.transform(X_test), y_test)
+        print(f"  Out-of-sample R² (last 20% of signals by entry_time, "
+              f"fitted on the first 80%): {oos_r2:.4f}")
         print(f"  Total Features Analyzed: {len(valid_features)}")
         print(f"  Total Signals: {len(signals_df)}")
 
         return results
+
+    @staticmethod
+    def print_signal_summary(signals_df: pd.DataFrame) -> None:
+        """Print the run summary. The best-of-window shares are how often price
+        moved in favour, not wins; the realized win share is the fixed exit
+        next-open-20m-1c-v1 over the signals it can score (FEAT-SIGNAL-001)."""
+        print(f"Total signals generated: {len(signals_df)}")
+        if len(signals_df) == 0:
+            return
+        n = len(signals_df)
+        print(f"  - Call signals: {len(signals_df[signals_df['trade_type'] == 'call'])}")
+        print(f"  - Put signals: {len(signals_df[signals_df['trade_type'] == 'put'])}")
+        print(f"  - Average best close within 20 bars: {signals_df['return_pct'].mean():.2f}%")
+        print(f"  - Best average return: {signals_df['best_return'].mean():.2f}% (avg window: {signals_df['best_window_minutes'].mean():.0f} min)")
+        moved = int((signals_df['return_pct'] > 0).sum())
+        realized = signals_df.get('realized_return_pct', pd.Series(dtype=float)).dropna()
+        realized_share = (f"{(realized > 0).mean() * 100:.1f}% of {len(realized)} scoreable"
+                          if len(realized) else f"unavailable (0 of {n} scoreable)")
+        print(f"  - Signals that moved in favour within 20 bars: {moved} ({moved / n * 100:.1f}%); "
+              f"realized win share ({REALIZED_RULE}): {realized_share}")
+
+        # Show best closes by time window
+        print("\n  Best close by time window:")
+        time_windows = [5, 10, 15, 20, 30, 45, 60]
+        for window in time_windows:
+            col = f'return_{window}min'
+            if col in signals_df.columns:
+                avg_return = signals_df[col].mean()
+                moved_pct = (signals_df[col] > 0).sum() / n * 100
+                print(f"    {window:2d} min: {avg_return:6.2f}% avg ({moved_pct:4.1f}% moved in favour)")
 
     # Deprecated - keeping for reference but not used
     def identify_runs(self, df: pd.DataFrame) -> List[Dict]:
@@ -1570,23 +1724,7 @@ class MarketAnalyzer:
         print("\n" + "="*60)
         print("ANALYSIS SUMMARY")
         print("="*60)
-        print(f"Total signals generated: {len(signals_df)}")
-        if len(signals_df) > 0:
-            print(f"  - Call signals: {len(signals_df[signals_df['trade_type'] == 'call'])}")
-            print(f"  - Put signals: {len(signals_df[signals_df['trade_type'] == 'put'])}")
-            print(f"  - Average return (20min): {signals_df['return_pct'].mean():.2f}%")
-            print(f"  - Best average return: {signals_df['best_return'].mean():.2f}% (avg window: {signals_df['best_window_minutes'].mean():.0f} min)")
-            print(f"  - Profitable signals: {len(signals_df[signals_df['return_pct'] > 0])} ({len(signals_df[signals_df['return_pct'] > 0])/len(signals_df)*100:.1f}%)")
-
-            # Show returns by time window
-            print("\n  Returns by time window:")
-            time_windows = [5, 10, 15, 20, 30, 45, 60]
-            for window in time_windows:
-                col = f'return_{window}min'
-                if col in signals_df.columns:
-                    avg_return = signals_df[col].mean()
-                    profitable_pct = (signals_df[col] > 0).sum() / len(signals_df) * 100
-                    print(f"    {window:2d} min: {avg_return:6.2f}% avg ({profitable_pct:4.1f}% profitable)")
+        self.print_signal_summary(signals_df)
 
         self.df = df
         self.signals_df = signals_df

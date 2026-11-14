@@ -1471,6 +1471,7 @@
             "title": "Ema 9"
           },
           "ftfc_direction": {
+            "description": "TF bias direction: bullish, bearish or mixed from the weighted candle vote.",
             "title": "Ftfc Direction"
           },
           "ftfc_score": {
@@ -1482,6 +1483,7 @@
                 "type": "null"
               }
             ],
+            "description": "TF bias: weighted vote of candle types across timeframes (2U up, 2D down, 1 and 3 zero), -1 to +1. Not price-versus-open FTFC.",
             "title": "Ftfc Score"
           },
           "macd": {
@@ -1641,6 +1643,7 @@
             ]
           },
           "ftfc_direction": {
+            "description": "TF bias direction: bullish, bearish or mixed from the weighted candle vote.",
             "title": "Ftfc Direction"
           },
           "ftfc_score": {
@@ -1652,6 +1655,7 @@
                 "type": "null"
               }
             ],
+            "description": "TF bias: weighted vote of candle types across timeframes (2U up, 2D down, 1 and 3 zero), -1 to +1. Not price-versus-open FTFC.",
             "title": "Ftfc Score"
           },
           "has_premarket": {
@@ -1898,6 +1902,26 @@
           "status"
         ],
         "title": "Degeneracy",
+        "type": "object"
+      },
+      "EarlyClose": {
+        "additionalProperties": true,
+        "description": "A half-day session: its date and its Eastern close, ``HH:MM``.",
+        "properties": {
+          "close": {
+            "title": "Close",
+            "type": "string"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "close"
+        ],
+        "title": "EarlyClose",
         "type": "object"
       },
       "EmaConfig": {
@@ -2291,6 +2315,17 @@
       "FreshnessRow": {
         "additionalProperties": true,
         "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
           "expected_latest": {
             "title": "Expected Latest",
             "type": "string"
@@ -2545,6 +2580,16 @@
             ],
             "title": "Snapshot Date"
           },
+          "snapshot_provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "snapshot_ts": {
             "anyOf": [
               {
@@ -2733,6 +2778,16 @@
           "snapshot_date": {
             "title": "Snapshot Date",
             "type": "string"
+          },
+          "snapshot_provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "snapshot_timestamp": {
             "anyOf": [
@@ -3193,6 +3248,144 @@
           "lib_dir_exists"
         ],
         "title": "HealthResponse",
+        "type": "object"
+      },
+      "HistoricalScoreExplanation": {
+        "additionalProperties": false,
+        "description": "Additive explanation; null components mean unsupported, not zero.",
+        "properties": {
+          "base_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Count"
+          },
+          "base_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Max"
+          },
+          "bonus_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bonus Total"
+          },
+          "bonuses": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ScoreBonus"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bonuses"
+          },
+          "composite_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Composite Max"
+          },
+          "composite_strength": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Composite Strength"
+          },
+          "kind": {
+            "enum": [
+              "condition_count",
+              "base_plus_bonus",
+              "unknown"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "matched_conditions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Conditions"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/ScoreProvenance"
+          },
+          "status": {
+            "enum": [
+              "recorded",
+              "legacy_unavailable",
+              "invalid_record"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unavailable_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unavailable Reasons",
+            "type": "array"
+          },
+          "version": {
+            "const": "historical-score-v1",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "status",
+          "kind",
+          "base_count",
+          "base_max",
+          "matched_conditions",
+          "bonuses",
+          "bonus_total",
+          "composite_strength",
+          "composite_max",
+          "unavailable_reasons",
+          "provenance"
+        ],
+        "title": "HistoricalScoreExplanation",
         "type": "object"
       },
       "ImportCommitRequest": {
@@ -4383,6 +4576,16 @@
             "title": "Market Session",
             "type": "string"
           },
+          "opening": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpeningProjection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "ticker": {
             "title": "Ticker",
             "type": "string"
@@ -4722,9 +4925,24 @@
       },
       "MarketHoursResponse": {
         "additionalProperties": true,
+        "description": "``holidays`` and ``early_closes`` cover the current and next Eastern\nyear. ``holidays_2026`` is kept for solyra's replay picker until Spec C\nmoves it to ``holidays`` and removes it.",
         "properties": {
           "after_hours": {
             "$ref": "#/components/schemas/MarketHoursWindow"
+          },
+          "early_closes": {
+            "items": {
+              "$ref": "#/components/schemas/EarlyClose"
+            },
+            "title": "Early Closes",
+            "type": "array"
+          },
+          "holidays": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Holidays",
+            "type": "array"
           },
           "holidays_2026": {
             "items": {
@@ -4749,7 +4967,9 @@
           "regular",
           "pre_market",
           "after_hours",
-          "holidays_2026"
+          "holidays_2026",
+          "holidays",
+          "early_closes"
         ],
         "title": "MarketHoursResponse",
         "type": "object"
@@ -5522,6 +5742,195 @@
           "allNodes"
         ],
         "title": "NodeResult",
+        "type": "object"
+      },
+      "OpeningProjection": {
+        "additionalProperties": true,
+        "properties": {
+          "body_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body Sha256"
+          },
+          "calendar_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calendar Version"
+          },
+          "comparison_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comparison Age Seconds"
+          },
+          "comparison_as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comparison As Of"
+          },
+          "comparison_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comparison Price"
+          },
+          "fetched_at": {
+            "title": "Fetched At",
+            "type": "string"
+          },
+          "high": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "High"
+          },
+          "low": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Low"
+          },
+          "price_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Basis"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "source_last_refreshed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Last Refreshed"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          },
+          "window_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window End"
+          },
+          "window_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Minutes"
+          },
+          "window_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Start"
+          }
+        },
+        "required": [
+          "status",
+          "ticker",
+          "fetched_at"
+        ],
+        "title": "OpeningProjection",
         "type": "object"
       },
       "OpexNode": {
@@ -7700,6 +8109,181 @@
         "title": "RvolConfig",
         "type": "object"
       },
+      "ScoreBonus": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "title": "ScoreBonus",
+        "type": "object"
+      },
+      "ScoreProvenance": {
+        "additionalProperties": false,
+        "description": "Recorded computation identity, never a claim of historical availability.",
+        "properties": {
+          "code_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code Sha256"
+          },
+          "config_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Sha256"
+          },
+          "corpus": {
+            "const": "historical_signals",
+            "title": "Corpus",
+            "type": "string"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "call",
+                  "put"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "input_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Sha256"
+          },
+          "inserted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inserted At"
+          },
+          "producer_definition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer Definition"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile"
+          },
+          "run_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Kind"
+          },
+          "storage_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "cloud_sql",
+                  "gcs_parquet"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Source"
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy"
+          }
+        },
+        "required": [
+          "corpus",
+          "strategy",
+          "run_kind",
+          "storage_source",
+          "producer_definition",
+          "profile",
+          "direction",
+          "code_sha256",
+          "config_sha256",
+          "input_sha256",
+          "generated_at",
+          "inserted_at"
+        ],
+        "title": "ScoreProvenance",
+        "type": "object"
+      },
       "SectorRow": {
         "additionalProperties": true,
         "properties": {
@@ -8069,6 +8653,17 @@
             ],
             "title": "Ema9"
           },
+          "inserted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inserted At"
+          },
           "return_pct": {
             "anyOf": [
               {
@@ -8112,6 +8707,27 @@
               }
             ],
             "title": "Score"
+          },
+          "score_explanation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HistoricalScoreExplanation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy"
           },
           "ticker": {
             "title": "Ticker",
@@ -8435,6 +9051,7 @@
                 "type": "null"
               }
             ],
+            "description": "Average best close within 20 bars (a favourable excursion), percent",
             "title": "Avg Return 20Min"
           },
           "avg_return_5min": {
@@ -8446,6 +9063,7 @@
                 "type": "null"
               }
             ],
+            "description": "Average best close within 5 bars (a favourable excursion), percent",
             "title": "Avg Return 5Min"
           },
           "count": {
@@ -8507,6 +9125,18 @@
             ],
             "title": "P75 Mfe Pct"
           },
+          "pct_moved_in_favor": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fraction 0..1 of matched rows whose best close within 20 bars was better than the signal close (return_pct > 0); not a win rate",
+            "title": "Pct Moved In Favor"
+          },
           "pct_profitable": {
             "anyOf": [
               {
@@ -8516,14 +9146,107 @@
                 "type": "null"
               }
             ],
-            "description": "Fraction 0..1, not a percent",
+            "description": "Realized win share, fraction 0..1, not a percent: realized_return_pct > 0 (rule next-open-20m-1c-v1) among matched rows with a realized value; null when none has one",
             "title": "Pct Profitable"
+          },
+          "realized_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Matched rows with a realized value, the pct_profitable denominator",
+            "title": "Realized Count"
           }
         },
         "required": [
           "count"
         ],
         "title": "SimilarStats",
+        "type": "object"
+      },
+      "SnapshotProvenance": {
+        "additionalProperties": true,
+        "description": "Provenance of the stored options snapshot a response was built from.\n\nStored clock retained: ``snapshot_ts`` is the selected rows' own instant.\n``observed_at`` is when this response was assembled (re-stamped per response).\n``snapshot_age_seconds`` is a display age (observed_at minus snapshot_ts), not a\nprovider lag. ``freshness_status`` and ``completeness_status`` are always\n``unknown``; ``reason`` names the clock validation outcome, not a qualification.",
+        "properties": {
+          "completeness_status": {
+            "const": "unknown",
+            "title": "Completeness Status",
+            "type": "string"
+          },
+          "freshness_status": {
+            "const": "unknown",
+            "title": "Freshness Status",
+            "type": "string"
+          },
+          "market_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Session"
+          },
+          "observed_at": {
+            "title": "Observed At",
+            "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "reason": {
+            "enum": [
+              "legacy_snapshot_unqualified",
+              "timestamp_invalid",
+              "timestamp_future"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "snapshot_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Age Seconds"
+          },
+          "snapshot_ts": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Ts"
+          }
+        },
+        "required": [
+          "observed_at",
+          "freshness_status",
+          "completeness_status",
+          "reason"
+        ],
+        "title": "SnapshotProvenance",
         "type": "object"
       },
       "SpotEstimate": {
@@ -10166,6 +10889,16 @@
             ],
             "title": "Orblow"
           },
+          "orbOpening": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpeningProjection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "prevClose": {
             "anyOf": [
               {
@@ -10220,6 +10953,17 @@
               }
             ],
             "title": "Stochkprev"
+          },
+          "ticker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticker"
           },
           "volumeToday": {
             "anyOf": [
@@ -11378,7 +12122,7 @@
     },
     "/api/config/market-hours": {
       "get": {
-        "description": "Return US equity market session windows + 2026 holidays.",
+        "description": "Return US equity market session windows, holidays and early closes.\n\n``holidays`` and ``early_closes`` cover the current and next year by the\nEastern date, so the window rolls at 00:00 ET on 1 January. Half days\nare sessions, so they are in ``early_closes`` and never in ``holidays``.\n``holidays_2026`` is kept, filled from the same calendar, for solyra's\nreplay picker until Spec C moves it to ``holidays`` and removes it.\nA calendar failure raises (CLAUDE.md 3.7); nothing is filled in.",
         "operationId": "get_market_hours_api_config_market_hours_get",
         "responses": {
           "200": {
@@ -11519,7 +12263,7 @@
     },
     "/api/earnings/health/ping": {
       "get": {
-        "description": "Lightweight warm-up probe. NOT called by a scheduler.\n\nThe keep-warm Cloud Scheduler was dropped (gcp/deploy.sh, \"Platform\nkeep-warm — DROPPED\"): solyra-api-prod sits behind IAP, so an\nunauthenticated GET is rejected at IAP and never reaches the app. The\nendpoint is kept for manual and in-cluster warm-up.\n\nReturns 200 + a 1-statement Cloud SQL query so the Cloud SQL\nconnector (and the FastAPI worker) stay hot during business hours.\nCache-Control set to 0 so intermediaries never serve a stale 200.",
+        "description": "Lightweight warm-up probe. NOT called by a scheduler.\n\nThe keep-warm Cloud Scheduler was dropped (gcp/deploy.sh, \"Platform\nkeep-warm — DROPPED\") while the API sat behind IAP, where an\nunauthenticated GET was rejected at the edge and never reached the app.\nThe endpoint is kept for manual and in-cluster warm-up.\n\nReturns 200 + a 1-statement Cloud SQL query so the Cloud SQL\nconnector (and the FastAPI worker) stay hot during business hours.\nCache-Control set to 0 so intermediaries never serve a stale 200.",
         "operationId": "health_ping_api_earnings_health_ping_get",
         "responses": {
           "200": {
@@ -11820,7 +12564,7 @@
     },
     "/api/earnings/upcoming": {
       "get": {
-        "description": "Next N days of earnings reporters, decorated with full history.\n\nReads earnings_upcoming_with_history (refreshed daily 7:30am ET).\nEach row carries: archetype, confidence_label, BOTH recommendation\nmodes (long-only + IC), lean stats, and last_3_events JSONB.",
+        "description": "Next N days of earnings reporters, decorated with full history.\n\nReads earnings_upcoming_with_history (refreshed daily 7:30am ET).\nEach row carries archetype, lean stats and last_3_events JSONB; score,\nquintile, confidence and both recommendation modes are null (EW retired).",
         "operationId": "upcoming_api_earnings_upcoming_get",
         "parameters": [
           {
@@ -12973,6 +13717,16 @@
             "schema": {
               "title": "Ticker",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_opening",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Opening",
+              "type": "boolean"
             }
           }
         ],
@@ -14662,7 +15416,6 @@
             "required": true,
             "schema": {
               "description": "Signal strength of the bar we're matching",
-              "maximum": 5,
               "minimum": 3,
               "title": "Score",
               "type": "integer"

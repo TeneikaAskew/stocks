@@ -7,7 +7,7 @@ Three existing tools already check documentation, and none of them checks the
 thing that rots fastest:
 
 * ``scripts/verify_docs_against_live.py`` compares docs to **live GCP**.
-* ``scripts/maintenance/check_generated_docs.py`` gates the monthly refresh on
+* ``scripts/maintenance/check_generated_docs.py`` gates generated documents on
   **structure** — churn, headings, links, marker-block byte-equality.
 * ``scripts/maintenance/doc_inventory.py`` **counts** things deterministically.
 
@@ -36,7 +36,7 @@ Checks
                    resolves to nothing (the backtick case is where the rot
                    actually lives and no link checker sees it)
 ``changed-since``  the doc's declared code paths moved after its reviewed SHA
-``class-a``        a machine-owned doc whose owning job has not delivered
+``class-a``        a machine-owned artifact that its manual refresh command has left stale
 ``unowned``        a span inside a Class A doc that **no** job writes, so the
                    "machine-owned" label keeps it out of review while nothing
                    regenerates it. 1,325 such lines when this check landed.
@@ -92,6 +92,7 @@ import datetime
 import fnmatch
 import functools
 import html
+import importlib.util
 import json
 import os
 import pathlib
@@ -1714,6 +1715,25 @@ class AuditError(RuntimeError):
     """The run itself could not be completed. Never degrades to empty results."""
 
 
+def source_protocol():
+    """Load only this trusted checkout's fixed protected module, never a HEAD blob."""
+    path = pathlib.Path(__file__).resolve().parent / "doc_source_snapshot.py"
+    if path.is_symlink() or path.resolve() != path or not path.is_file():
+        raise AuditError("protected committed-source verifier is unavailable")
+    spec = importlib.util.spec_from_file_location("_audit_source_protocol", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    if pathlib.Path(module.__file__).resolve() != path:
+        raise AuditError("protected committed-source verifier identity differs")
+    return module
+
+
 def run(cmd: list[str], *, cwd: pathlib.Path | None = None,
         ok_exit_codes: tuple[int, ...] = ()) -> str:
     """Run a command, treating only the listed non-zero exits as answers.
@@ -1731,8 +1751,8 @@ def run(cmd: list[str], *, cwd: pathlib.Path | None = None,
     # a test that points the module at a throwaway tree still shelled out
     # against this checkout. Resolved per call instead.
     # A command that cannot be LAUNCHED raises before a result exists --
-    # `gh` missing from PATH is the reachable case, since the issue and
-    # owning-job reads need it on the default invocation. That exception went
+    # `gh` missing from PATH is the reachable case, since the issue
+    # reads need it on the default invocation. That exception went
     # past the AuditError handler, printed a traceback and exited 1: the
     # status documented for FINDINGS, so automation could not tell "the audit
     # did not run" from "the documentation is wrong".
@@ -2596,6 +2616,11 @@ def region_of(line: int, owned: set[int], prompt: str | None) -> str:
     return "model-prose" if prompt else "unowned"
 
 
+GENERATED_OWNER = ("its renderer: scripts/maintenance/doc_inventory.py, scripts/refresh_calibration_table.py, "
+                   "scripts/maintenance/refresh_architecture_drawio.py or scripts/gate/export_model_registry.py "
+                   "(docs/DOC_REGISTRY.md names which)")
+
+
 def region_owner(region: str, prompt: str | None) -> str:
     """Who must make the fix -- the renderer, the prompt, or a human here.
 
@@ -2605,7 +2630,7 @@ def region_owner(region: str, prompt: str | None) -> str:
     the region rule forbids.
     """
     if region == "generated":
-        return OWNING_JOB["workflow"]
+        return GENERATED_OWNER
     if region == "model-prose":
         return prompt or "an undeclared prompt"
     return "this document (hand-written, audit as Class D)"
@@ -3114,6 +3139,8 @@ def indented_code_lines(lines: list[str]) -> set[int]:
                 # item needs six to open one -- so rendered continuation
                 # content was skipped by the dead-link and blocker checks.
                 pass
+
+
             else:
                 list_indent = 0
                 floor = 4
@@ -6413,7 +6440,9 @@ def check_marker_sha(doc: str, sha: str | None, base_ref: str, *,
 # range is widened as well because the parser is public and is handed output
 # the caller produced. No status line can collide: `--name-status` emits a
 # letter or `R###`, and `R` is not a hex digit.
-_DRIFT_HEADER_RE = re.compile(r"^[0-9a-f]{4,40}\t")
+# Native full OIDs are 40 hex (SHA-1) or 64 hex (SHA-256); prefixes remain
+# admitted for this existing public parser. No drift predicate changes.
+_DRIFT_HEADER_RE = re.compile(r"^[0-9a-f]{4,64}\t")
 _DRIFT_STATUS_RE = re.compile(r"^([AMDRCT])(\d{3})?\t")
 
 
@@ -6436,7 +6465,7 @@ def _git_unquote(cell: str) -> str:
         return cell
 
 
-def _touches(status_line: str, paths: list[str]) -> bool:
+def _touches(status_line: str, paths: list[str], import_shadow=None) -> bool:
     """Does this `--name-status` line name one of the declared paths?
 
     Both sides of a rename count: `R100 old.py new.py` is about the declared
@@ -6444,7 +6473,7 @@ def _touches(status_line: str, paths: list[str]) -> bool:
     """
     for cell in status_line.split("\t")[1:]:
         cell = _git_unquote(cell.strip())
-        if any(cell == p or cell.startswith(f"{p}/") for p in paths):
+        if any(cell == p or cell.startswith(f"{p}/") for p in paths) or (import_shadow is not None and import_shadow(cell)):
             return True
     return False
 
@@ -6460,7 +6489,7 @@ def _all_documents(status_line: str, documents: frozenset[str]) -> bool:
 
 
 def drift_commits(out: str, paths: list[str] | None = None,
-                  documents: frozenset[str] | None = None) -> list[str]:
+                  documents: frozenset[str] | None = None, *, import_shadow=None) -> list[str]:
     """Commits in a `--name-status` listing that actually changed content.
 
     A pure rename (`R100`) is not drift; a moved file with an edit (`R096`) is
@@ -6499,16 +6528,18 @@ def drift_commits(out: str, paths: list[str] | None = None,
         # The query may have been widened to a containing directory so rename
         # pairs survive (see check_doc_changed_since); the answer is narrowed
         # back here, so a commit that touched only a sibling file is not drift.
-        if paths is not None and not _touches(line, paths):
+        if paths is not None and not _touches(line, paths, import_shadow):
             continue
         kind, score = status.group(1), status.group(2)
-        if kind in "AMDT" or (kind == "R" and int(score or 100) < 100):
+        import_transition = import_shadow is not None and any(
+            import_shadow(_git_unquote(cell.strip())) for cell in line.split("\t")[1:])
+        if kind in "AMDT" or (kind == "R" and (int(score or 100) < 100 or import_transition)):
             commits[-1] = (commits[-1][0], True)
     return [line for line, drift in commits if drift]
 
 
 def _add_is_a_pure_rename(commit: str, paths: list[str],
-                          cwd: pathlib.Path | None = None) -> bool:
+                          cwd: pathlib.Path | None = None, *, import_shadow=None) -> bool:
     """Was every declared path this commit touched arrived at by a pure move?
 
     Only asked about a commit the scoped log already called drift, so the
@@ -6523,8 +6554,11 @@ def _add_is_a_pure_rename(commit: str, paths: list[str],
     out = run(["git", "-c", "core.quotePath=false",
                "show", "--format=", "--name-status", "-M", commit],
               cwd=cwd or REPO, ok_exit_codes=(128,))
-    touched = [l for l in out.split("\n") if _touches(l, paths)]
+    touched = [l for l in out.split("\n") if _touches(l, paths, import_shadow)]
     if not touched:
+        return False
+    if import_shadow is not None and any(import_shadow(_git_unquote(cell.strip()))
+                                         for line in touched for cell in line.split("\t")[1:]):
         return False
     for line in touched:
         status = _DRIFT_STATUS_RE.match(line)
@@ -6641,7 +6675,7 @@ def _without_marker(text: str) -> str:
 
 def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_ref: str,
                         *, documents: frozenset[str] | None = None,
-                        cwd: pathlib.Path | None = None) -> list[dict]:
+                        cwd: pathlib.Path | None = None, import_shadow=None) -> list[dict]:
     if not sha or not code_paths:
         return []
     # `git log` exits 0 with empty output when the range holds no commits, so
@@ -6668,6 +6702,8 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
     # afterwards, so the widened query never widens the answer.
     scopes = sorted({p if not posixpath.splitext(p)[1] else (posixpath.dirname(p) or ".")
                      for p in code_paths})
+    if import_shadow is not None:
+        scopes = ["."]
     # `-c core.quotePath=false`: git C-quotes any path with a non-ASCII byte,
     # so modifying `src/caf\u00e9.py` emits `M\t"src/caf\\303\\251.py"` and
     # `_touches` compared that escaped spelling against the decoded registry
@@ -6683,7 +6719,8 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
                # with a symlink changed the surface and queued no review.
                "--diff-filter=AMDRT", f"{sha}..{base_ref}", "--"] + scopes,
               cwd=cwd or REPO)
-    commits = drift_commits(out, code_paths, documents)
+    commits = (drift_commits(out, code_paths, documents, import_shadow=import_shadow)
+               if import_shadow is not None else drift_commits(out, code_paths, documents))
     # The directory scope keeps a rename pair intact only while both sides
     # share a parent. A file moved BETWEEN directories, with the registry
     # updated to the new path, leaves the old side outside every scope, so git
@@ -6692,7 +6729,7 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
     # path limit: cost scales with the suspicious answer rather than the tree.
     if commits:
         commits = [c for c in commits
-                   if not _add_is_a_pure_rename(c.split("\t", 1)[0], code_paths, cwd)]
+                   if not _add_is_a_pure_rename(c.split("\t", 1)[0], code_paths, cwd, import_shadow=import_shadow)]
     if not commits:
         return []
     return [{"check": "changed-since", "doc": doc,
@@ -6702,138 +6739,12 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
 
 TOP_LEVEL_DIRS: set[str] = set()
 
-# The job that owns the Class A docs, and the PR title it opens.
-OWNING_JOB = {
-    "workflow": "refresh-architecture-docs.yml",
-    # Broad, for ATTEMPTS: "Fix: Monthly architecture doc refresh failed" is a
-    # failed attempt and belongs on the report.
-    "pr_title_re": re.compile(r"architecture doc refresh", re.I),
-    # Strict, for DELIVERIES. The workflow's own output PR is titled
-    # `Monthly architecture doc refresh: YYYY-MM`; the broad pattern also
-    # matches maintenance like "fix architecture doc refresh authentication",
-    # and `delivered` was computed from every merged match -- so merging a
-    # workflow REPAIR could supersede and hide a refresh that never delivered
-    # a document.
-    # ANCHORED, like _REFRESH_GEN_RE. Unanchored, a merged maintenance PR
-    # titled `Fix Monthly architecture doc refresh: 2026-09 authentication`
-    # entered `deliveries` while _refresh_generation() read no generation from
-    # it, so `superseded()` fell back to merge time and could hide a genuinely
-    # unmerged refresh. Only the generation regex had been anchored; this is
-    # the filter actually passed to fetch_owned_prs.
-    "delivery_title_re": re.compile(r"^\s*Monthly architecture doc refresh:\s*\d{4}-\d{2}\s*$",
-                                    re.I),
-    "docs": [
-        "docs/product/infrastructure/05-a-ARCHITECTURE.md",
-        "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md",
-        "docs/product/infrastructure/05-d-COST_ANALYSIS.md",
-        "README.md",
-    ],
-}
-GENERATED_RE = re.compile(r"Generated (\d{4}-\d{2}-\d{2})")
-
-# `gh api --paginate` is not the mechanism here: GitHub's Link header names
-# `repositories/{id}/pulls`, which this sandbox's API proxy rejects with 403,
-# so the page number is walked explicitly -- the same loop fetch_issue_states
-# already uses.
-PR_PAGE_SIZE = 100
-PR_PAGE_LIMIT = 40
-
-
-def fetch_owned_prs(title_re: re.Pattern, *, page_size: int = PR_PAGE_SIZE,
-                    delivery_re: re.Pattern | None = None,
-                    newest_gen: str | None = None) -> list[dict]:
-    """Every refresh PR the delivery check can act on, newest first.
-
-    One `per_page=100` page covers the 100 newest PRs of ANY kind, not the 100
-    newest refresh PRs. Measured on this repo on 2026-09-18: page 1 reaches
-    #1130 down to #959, a 15-day window, and the refresh PR that actually
-    delivered -- #953, merged 2026-09-02 -- is on page 2. The single-page
-    lookup therefore saw no delivery at all, so the supersede rule could not
-    fire and three long-superseded failed attempts stayed on the report.
-
-    The walk used to stop at the FIRST merged refresh PR, on the reasoning that
-    everything older is created before `delivered` and skipped by the supersede
-    rule anyway. That confuses two orderings. The pages are sorted by CREATION
-    time; `delivered` is a MERGE time. A refresh PR created in August can merge
-    after one created in September, so the newest delivery can sit on a page
-    the walk never reached -- and the attempts it superseded are then reported
-    as live failures.
-
-    It stops once a MERGED delivery for `newest_gen` -- the current month, the
-    newest generation any refresh can name -- is on hand and every unmerged
-    candidate collected so far is superseded by a merge it has seen. The
-    generation is what makes the stop sound: without it, a later page can hold
-    a NEWER-generation attempt that no delivery seen so far supersedes, because
-    pages are ordered by creation time and `superseded` is not. With no
-    `newest_gen` the walk does not stop early at all. It is bounded by
-    PR_PAGE_LIMIT either way (CLAUDE.md §3.8).
-    """
-    delivery_re = delivery_re or title_re
-    owned: list[dict] = []
-    for page in range(1, PR_PAGE_LIMIT + 1):
-        out = run([
-            "gh", "api",
-            f"repos/{OWNER}/{THIS_REPO}/pulls?state=all&per_page={page_size}"
-            f"&sort=created&direction=desc&page={page}",
-            "--jq", '.[] | [.number, .state, (.merged_at // ""), .created_at, .title] | @tsv',
-        ])
-        rows = [r for r in out.strip().split("\n") if r.strip()]
-        for row in rows:
-            parts = row.split("\t")
-            if len(parts) >= 5 and title_re.search(parts[4]):
-                owned.append({"num": parts[0], "state": parts[1], "merged": parts[2],
-                              "created": parts[3], "title": parts[4]})
-        if len(rows) < page_size:
-            break
-        # Stopping early needs a bound on what a LATER page could hold, and
-        # the old condition did not have one. It stopped as soon as every
-        # unmerged candidate on hand was superseded, reasoning that a later
-        # page only adds older-CREATED PRs which the same delivery supersedes
-        # too. That reasoning is about time; `superseded` is about GENERATION.
-        # A next-generation attempt created BEFORE a later-created
-        # older-generation delivery sits on a later page, and nothing seen so
-        # far supersedes it -- so the walk stopped and a genuinely open
-        # refresh PR was left off the report.
-        #
-        # `newest_gen` is the bound. No refresh can name a generation after
-        # the current month, so once a MERGED delivery for that generation is
-        # on hand, every refresh anywhere -- read or unread -- is for it or
-        # older, and `superseded` settles all of them. In the healthy case
-        # (this month's refresh merged) that is still one request.
-        deliveries = [pr for pr in owned
-                      if pr["merged"] and delivery_re.search(pr["title"])]
-        pending = [pr for pr in owned if not pr["merged"]]
-        if (newest_gen
-                and any(_refresh_generation(pr["title"]) == newest_gen
-                        for pr in deliveries)
-                and all(superseded(pr, deliveries) for pr in pending)):
-            break
-    else:
-        # Reaching the cap is NOT the same as reading a short final page, and
-        # falling out of the loop treated them alike: every older page was
-        # dropped in silence. An omitted merged delivery leaves superseded
-        # failures looking actionable; an omitted unsuperseded refresh attempt
-        # makes the Class A delivery audit report CLEAN. The second is the
-        # direction that matters, and it is the one this whole check exists to
-        # prevent. Loud, not short -- the same rule ISSUE_PAGE_GUARD already
-        # follows one function over (CLAUDE.md §3.7). Codex filed it three
-        # times.
-        raise AuditError(
-            f"{THIS_REPO}: still reading pull requests after {PR_PAGE_LIMIT} "
-            f"pages of {page_size} without a short page or a bounded early "
-            "stop; the history is truncated, and a refresh attempt on an "
-            "unread page would make the Class A delivery audit report clean")
-    return owned
-
-
-# Artifacts the owning workflow refreshes BEST-EFFORT. The calibration step is
-# written `python -m scripts.refresh_calibration_table || echo "::warning::
-# ... continuing"` (refresh-architecture-docs.yml:895-896), so a Cloud SQL
-# outage leaves the table stale while the step exits 0, the run concludes
-# success, and the refresh PR still merges -- which also suppresses the
-# PR-state checks above. Workflow success is evidence that the job ran, never
-# that THIS artifact was refreshed. The only evidence is the date the artifact
-# itself carries.
+# Artifacts refreshed by a MANUAL command, with no scheduled job behind them.
+# The calibration table is re-rendered by `python -m
+# scripts.refresh_calibration_table`, which needs Cloud SQL, so nothing
+# regenerates it unless someone runs it. Nothing records that a run happened,
+# so the only evidence that THIS artifact was refreshed is the date the
+# artifact itself carries.
 #
 # The bound is the renderer's own: past `STALE_DAYS` scripts/
 # refresh_calibration_table.py writes `B (stale)` for the row, so a block
@@ -6844,7 +6755,7 @@ BEST_EFFORT_ARTIFACTS = [
         "region": "ticker_calibration_resolved_values",
         "date_re": re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
         "max_age_days": 180,
-        "refresher": "scripts/refresh_calibration_table.py",
+        "refresher": "python -m scripts.refresh_calibration_table",
     },
 ]
 
@@ -6869,7 +6780,7 @@ def region_text(body: str, name: str) -> str | None:
 
 
 def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None) -> list[dict]:
-    """Freshness for the documents whose refresh step cannot fail the run.
+    """Freshness for the generated documents that nothing re-renders on a schedule.
 
     Needs no network, so it runs even under `--issues-snapshot`: the question
     is what the artifact says about itself, not what GitHub says about the job.
@@ -6907,8 +6818,8 @@ def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None)
         if not dates:
             findings.append({"check": "class-a", "doc": art["doc"], "severity": "P2",
                              "detail": f"`{art['region']}` carries no date, so nothing shows "
-                                       f"whether {art['refresher']} ever refreshed it; its "
-                                       "workflow step is best-effort and cannot fail the run"})
+                                       f"whether {art['refresher']} ever refreshed it; it is "
+                                       "refreshed by hand and no job reports a missed run"})
             continue
         bad = [d for d in dates if not is_calendar_date(d)]
         if bad:
@@ -6927,255 +6838,9 @@ def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None)
             findings.append({"check": "class-a", "doc": art["doc"], "severity": "P2",
                              "detail": f"`{art['region']}` is dated {newest}, {age}d old and past "
                                        f"the {art['max_age_days']}d the renderer itself calls "
-                                       f"stale, so {art['refresher']} has not re-rendered it -- "
-                                       "its workflow step is best-effort, so a green run and a "
-                                       "merged refresh PR prove nothing about this block"})
+                                       f"stale; re-run `{art['refresher']}`, and if the date "
+                                       "does not move, `ticker_calibration` has no newer row"})
     return findings
-
-
-# What the owning workflow's `run-name:` appends when it was dispatched with
-# `dry_run: true`, and the ONLY record of that input this audit can read.
-#
-# The previous version read `(.inputs // {}).dry_run` out of the runs list.
-# The List-workflow-runs response has no `inputs` key at all -- measured
-# against all 36 runs of this workflow, every one of them a
-# `workflow_dispatch`:
-#
-#     keys on a run: 'inputs' in run -> False
-#     success 2026-09-09T13:46:36Z workflow_dispatch  inputs=<ABSENT>
-#     failure 2026-09-09T12:41:22Z workflow_dispatch  inputs=<ABSENT>
-#     ...
-#
-# `GET /actions/runs/{id}` does not carry it either, and a dispatch payload
-# has no REST record anywhere, so the whole filter was dead: `_is_dry_run`
-# returned False for every run, the walk in `fetch_owning_runs` stopped on
-# page one at the first dry run, and a failed scheduled refresh behind it was
-# never examined -- `check_owning_job` could call the Class A documents
-# healthy off a run that deliberately opened no PR. Codex filed it
-# (stocks#1121).
-#
-# `display_title` IS on the response already being read, so this costs no
-# extra request. Its weaker guarantee is worth stating: a dispatch from a
-# branch runs THAT branch's YAML, so a run could carry the marker without
-# having set the input. The risk direction is a real run masquerading as a
-# dry one and being walked past; the reverse -- a dry run read as delivering
-# -- is what the old code did unconditionally.
-DRY_RUN_MARKER = "[dry-run]"
-# And its opposite, which is why the marker is written on BOTH branches.
-#
-# A one-sided marker cannot be read: after `run-name:` lands, a dispatch with
-# `dry_run: false` produces the same bare title as every run from before it
-# existed, so "no marker" would mean "delivered" and "predates the marker" at
-# once, for ever. Absence has to mean exactly one thing, so the delivering
-# branch says so out loud and absence means only "this run predates the
-# marker".
-#
-# I called the one-sided version "the safe direction" last round and that was
-# wrong. It is safe for a run being JUDGED -- an unmarked run can only keep a
-# failure on the report -- but not for a run being WALKED PAST: an unmarked
-# dry run newer than a failed scheduled refresh stops the walk, and the
-# failure below it is never examined. Measured on this workflow's 36 runs, 30
-# are `workflow_dispatch` and the newest is a 2026-09-09 success sitting
-# directly above eight failures. Codex filed it (stocks#1121).
-DELIVERING_MARKER = "[delivering]"
-
-
-def _run_delivered(row: list[str]) -> bool | None:
-    """Did this run deliver? True, False, or None for "cannot tell".
-
-    Read from the run's display title, because the dispatch `inputs` are not
-    exposed by any REST endpoint; `refresh-architecture-docs.yml` writes the
-    marker there via `run-name:`, and a test pins the two to each other.
-
-    None is a real answer and callers must not collapse it into either of the
-    others: a run from before the marker existed may have been a dry run or a
-    delivery, and picking one silently resolves the question in whichever
-    direction happens to hide a failure. `check_owning_job` reports the
-    ambiguity instead.
-
-    A row with no title COLUMN is not the same thing as a title carrying no
-    MARKER. The first means the reader never asked -- `fetch_owning_runs`
-    always asks, so it is a stale cache or a hand-built row -- and treating it
-    as delivering keeps any failure it carries on the report. The second is a
-    real run whose provenance the API cannot supply, and that is the
-    ambiguity.
-    """
-    if len(row) < 4:
-        return True
-    if DRY_RUN_MARKER in row[3]:
-        return False
-    if DELIVERING_MARKER in row[3]:
-        return True
-    # Only a DISPATCH can be a dry run: `dry_run` is a `workflow_dispatch`
-    # input, and a `schedule` or `push` run has no inputs at all. So an
-    # unmarked scheduled run is not ambiguous -- it delivered -- and the
-    # ambiguity is confined to the 30 unmarked dispatches in this workflow's
-    # 36-run history rather than smeared over the 4 scheduled and 2 push runs
-    # that are answerable from the event alone.
-    if row[2].strip().lower() != "workflow_dispatch":
-        return True
-    return None
-
-
-def _is_dry_run(row: list[str]) -> bool:
-    """A run known NOT to have delivered. Ambiguous is not dry."""
-    return _run_delivered(row) is False
-
-
-def _is_ambiguous(row: list[str]) -> bool:
-    """A run from before the marker existed, which is evidence of nothing."""
-    return _run_delivered(row) is None
-
-
-RUNS_PAGE_SIZE = 10
-# Enough pages to get past a run of manual dry runs without reading history
-# nobody will act on. Reaching it is reported, never silently truncated.
-RUNS_PAGE_LIMIT = 10
-
-
-def fetch_owning_runs(*, page_size: int = RUNS_PAGE_SIZE) -> list[list[str]]:
-    """Recent runs of the owning workflow, read until one of them delivered.
-
-    A fixed ten-run window plus the dry-run filter is a hole the two together
-    open and neither has alone: the workflow permits repeated manual dry runs,
-    and ten of them push the last DELIVERING execution out of view, so a failed
-    scheduled refresh behind them reports nothing at all. The walk stops as
-    soon as a non-dry run is in hand, so the common case is still one request.
-    """
-    rows: list[list[str]] = []
-    for page in range(1, RUNS_PAGE_LIMIT + 1):
-        out = run([
-            "gh", "api",
-            f"repos/{OWNER}/{THIS_REPO}/actions/workflows/{OWNING_JOB['workflow']}"
-            f"/runs?per_page={page_size}&page={page}",
-            # `display_title`, not `(.inputs // {}).dry_run`: the response has
-            # no `inputs` key, so that projection was always "" -- see
-            # DRY_RUN_MARKER. @tsv escapes a tab inside a title as the two
-            # characters `\t`, so a run named with one cannot shift a column.
-            "--jq", '.workflow_runs[] | [.conclusion, .created_at, '
-                    '(.event // ""), (.display_title // "")] | @tsv',
-        ])
-        # strip("\n"), not strip(). A queued or in-progress run has a null
-        # conclusion, so its TSV row BEGINS with a tab -- and stripping the
-        # whole response removes that tab from the first row, shifting every
-        # column left. The timestamp then reads as the conclusion.
-        page_rows = [r.split("\t") for r in out.strip("\n").split("\n") if r.strip()]
-        rows += page_rows
-        # A QUEUED or in-progress run has an empty conclusion. Stopping on it
-        # treated "the rerun has not finished" as sufficient history, and
-        # check_owning_job accepts that empty conclusion too -- so a completed
-        # delivering run that FAILED, pushed onto an earlier page by dry runs,
-        # was never examined and the delivery audit could report clean.
-        # `_run_delivered(r) is True`, not "not a dry run": an ambiguous run
-        # is not evidence of delivery, so it must not stop the walk. That is
-        # exactly the case Codex named -- an unmarked dispatch newer than a
-        # failed scheduled refresh ended the search at itself.
-        if any(_run_delivered(r) is True and r[0].strip() for r in page_rows):
-            return rows
-        if len(page_rows) < page_size:
-            break
-    if not rows:
-        # The workflow exists but has never run. Returning [] made
-        # check_owning_job emit no run-status finding, so the delivery audit
-        # passed without any evidence the owning job has ever executed --
-        # the same clean-bill-of-health-on-no-data shape fetch_issue_states
-        # already refuses.
-        raise AuditError(
-            f"{OWNING_JOB['workflow']} has no runs at all; refusing to report a clean "
-            "delivery audit on no evidence that the owning job has ever executed")
-    if all(_is_dry_run(r) for r in rows):
-        # Exhausting the page limit with nothing but dry runs is a TRUNCATED
-        # read, not a complete one. Returning it silently let 100 consecutive
-        # manual dry runs hide a failed scheduled run behind them -- exactly
-        # the hole the pagination was added to close, one level out.
-        raise AuditError(
-            f"{OWNING_JOB['workflow']}: {len(rows)} runs read across "
-            f"{RUNS_PAGE_LIMIT} pages and every one is a dry run; refusing to report "
-            "on a history with no delivering execution in it")
-    # A history made entirely of QUEUED or in-progress non-dry runs is not a
-    # dry-run history, so the guard ABOVE is false -- but it is equally no
-    # evidence: last_delivering_conclusion() yields None, no run-status finding
-    # is produced, and recent stamps let the delivery audit pass without any
-    # completed execution behind them. The walk above returns early on a
-    # delivering run with a REAL conclusion, so reaching here with none means
-    # the history holds none.
-    if rows and not any(not _is_dry_run(r) and r[0].strip() for r in rows):
-        raise AuditError(
-            f"{OWNING_JOB['workflow']}: {len(rows)} runs read and not one is a "
-            "completed delivering execution; refusing to report on a history with "
-            "no finished run in it")
-    return rows
-
-
-# The WHOLE title, because a delivery is what the workflow emitted verbatim.
-# Unanchored, `Fix Monthly architecture doc refresh: 2026-09 authentication`
-# read as a delivery, so a repair PR could supersede an unmerged refresh with
-# no generated document having landed.
-_REFRESH_GEN_RE = re.compile(
-    r"^\s*Monthly architecture doc refresh:\s*(\d{4})-(\d{2})\s*$", re.I)
-
-
-def _refresh_generation(title: str) -> str:
-    """The `YYYY-MM` a refresh PR title names, or "" when it names none.
-
-    Supersession is a statement about which month's documents landed, and only
-    a title carrying a generation can make it.
-    """
-    m = _REFRESH_GEN_RE.search(title or "")
-    return f"{m.group(1)}-{m.group(2)}" if m else ""
-
-
-def superseded(pr: dict, deliveries: list[dict]) -> bool:
-    """Has a later refresh made this attempt history?
-
-    Per delivery, because the two facts that matter live on the same record.
-    A delivery supersedes when it is a NEWER generation, or the same
-    generation merged after this attempt was opened.
-
-    Both halves are load-bearing and each was learned from a case:
-
-    * Generation alone is wrong. #1060 (`refresh: 2026-09`, opened 09-08) is
-      not superseded by #953 (`refresh: 2026-09`, merged 09-02): a September
-      refresh opened AFTER a September refresh merged is a re-attempt, and its
-      being unmerged is the thing worth reporting.
-    * Time alone is wrong. #900 (`refresh: 2026-08`, merged 09-20) does not
-      supersede #1060 either: August's output cannot establish that
-      September's documents landed.
-
-    A repair attempt (`Fix: Monthly architecture doc refresh failed`) names no
-    generation, so there is nothing to compare but time -- the case the
-    supersede rule was added for (#963/#1012/#1021).
-
-    Shared with the PR walk on purpose: a walk that stops on a different rule
-    from the one that reports can stop before the PR it would report.
-    """
-    gen = _refresh_generation(pr["title"])
-    for d in deliveries:
-        d_gen = _refresh_generation(d["title"])
-        if gen and d_gen:
-            if d_gen > gen or (d_gen == gen and d["merged"] > pr["created"]):
-                return True
-        elif d["merged"] and d["merged"] > pr["created"]:
-            return True
-    return False
-
-
-def last_delivering_conclusion(rows: list) -> tuple[str, str] | None:
-    """The most recent delivering run that has actually FINISHED.
-
-    A queued or in-progress run has an empty conclusion, and accepting that as
-    "nothing wrong" meant the completed run beneath it -- the one that failed --
-    was never examined, so the delivery audit reported clean while the rerun
-    had delivered nothing. An in-flight run is not evidence in either
-    direction; the last completed one is what decides.
-    """
-    for row in rows:
-        # Known-delivering only. An ambiguous run cannot be the verdict: it
-        # may have been a dry run, and reading its success as a delivery is
-        # what let one hide a failed scheduled refresh underneath it.
-        if _run_delivered(row) is True and row[0]:
-            return row[0], row[1]
-    return None
 
 
 def symlinked_component(doc: str) -> str | None:
@@ -7223,220 +6888,6 @@ def refuse_symlink(doc: str) -> None:
             "not reproduce in another clone")
 
 
-def visible_generated_stamps(body_lines: list[str]) -> list[str]:
-    """The `Generated <date>` stamps a READER can see, in order.
-
-    A stamp is production evidence, so every syntax that displays its text
-    literally has to be excluded or a document that lost its real stamp reads
-    as current while showing readers no Generated line at all. Five hiding
-    mechanisms, each of which was a finding in its turn: a fence, an indented
-    block, a RAW-TEXT HTML block (a rendered `<div>` shows its text, so a
-    stamp inside one IS a stamp), an HTML comment, and inline code -- and now
-    an HTML ATTRIBUTE value, which renders as nothing at all.
-
-    Named rather than inline so the rule can be exercised on its own: it lives
-    inside a function that reaches the GitHub API, and the mask that was added
-    last could be removed without a single test noticing.
-    """
-    skip = (fenced_lines(body_lines) | indented_code_lines(body_lines)
-            | raw_html_block_lines(body_lines, raw_text_only=True))
-    # Per MATCH against the comment SPANS, not per line: a comment can occupy
-    # part of a visible line, so a whole-line rule let a hidden date stand in
-    # for a missing stamp.
-    hidden = comment_spans(body_lines)
-    # Wrapped code spans included, since a span may cross a line break.
-    wrapped = code_span_lines(body_lines)
-    attrs = tag_attribute_spans(body_lines)
-    return [mm.group(1) for i, line in enumerate(body_lines) if i not in skip
-            for mm in GENERATED_RE.finditer(line)
-            if not any(lo <= mm.start() < hi
-                       for lo, hi in (hidden.get(i, []) + code_spans(line)
-                                      + wrapped.get(i, []) + attrs.get(i, [])))]
-
-
-def check_owning_job(today: str) -> list[dict]:
-    """Did the job that owns the Class A docs actually deliver?
-
-    A `Generated <date>` stamp records that a job RAN, not that its output ever
-    reached main. On 2026-09-16 the September refresh PR (#1060) had been open
-    and unmerged for 8 days and three earlier "refresh failed" PRs were closed
-    without merging, while the docs still advertised `Generated 2026-09-07`.
-    Nothing was watching that gap; this is the check that watches it.
-    """
-    findings: list[dict] = []
-    try:
-        recent = fetch_owning_runs()
-        owned_prs = fetch_owned_prs(OWNING_JOB["pr_title_re"],
-                                    delivery_re=OWNING_JOB["delivery_title_re"],
-                                    newest_gen=today[:7])
-    except AuditError:
-        # Do NOT convert this into a finding. A finding means "the docs are
-        # stale"; this means "the audit never learned whether they are", and
-        # collapsing the two let a default run exit 0 and a --check run exit 1
-        # -- neither of which is the documented exit 2 for an incomplete audit.
-        raise
-
-
-    # A dry run does not deliver: refresh-architecture-docs.yml declares a
-    # `dry_run` input and skips its "Open refresh PR" step when it is set, so
-    # reading `recent[0]` unconditionally let a successful manual dry run stand
-    # as evidence that a failed scheduled refresh had recovered. The failure
-    # then vanished from the report until the 40-day stamp threshold fired.
-    # Delivery is judged from the latest NON-dry execution.
-    delivering = [r for r in recent if _run_delivered(r) is True]
-    # Runs the audit cannot classify, newer than the one it judged by. Neither
-    # direction is safe for these -- calling them deliveries lets a dry run
-    # hide a failure below it, and skipping them lets the same failure pass
-    # unexamined -- so the ambiguity itself is the finding rather than a guess
-    # dressed as an answer. Resolved by one marked run: dispatch the workflow
-    # once, or wait for the next scheduled refresh.
-    _decided_at = (last_delivering_conclusion(recent) or ("", ""))[1]
-    _unclear = [r for r in recent if _is_ambiguous(r) and r[1] > _decided_at]
-    if _unclear:
-        failed = sum(1 for r in _unclear if r[0] == "failure")
-        findings.append({
-            "check": "class-a", "doc": OWNING_JOB["workflow"], "severity": "P2",
-            "detail": f"{len(_unclear)} run(s) since {_decided_at or 'the start of history'} "
-                      f"predate the dry-run marker ({failed} of them failed), so whether "
-                      "they delivered cannot be read from any API; re-run the workflow "
-                      "once so a marked run exists"})
-    # The most recent COMPLETED delivering run that succeeded. It is what says
-    # a no-op month regenerated identical content, which no document can show
-    # about itself because the workflow reverts timestamp-only files.
-    last_success = max((r[1][:10] for r in delivering if r[0] == "success"), default="")
-    last = last_delivering_conclusion(recent)
-    if last and last[0] != "success":
-        findings.append({"check": "class-a", "doc": OWNING_JOB["workflow"], "severity": "P1",
-                         "detail": f"last delivering run concluded {last[0]} at {last[1]}"})
-
-    # A closed-unmerged attempt that a LATER refresh superseded is history, not
-    # a live defect. Reporting #963/#1012/#1021 forever kept --check red with
-    # findings whose only remedy would be reviving obsolete PRs.
-    delivery_re = OWNING_JOB["delivery_title_re"]
-    # By GENERATION, not by mixing one PR's creation time with another's merge
-    # time. An August refresh that merges after September's PR was opened made
-    # `created < delivered` true for September, so the still-unmerged September
-    # refresh was skipped -- though August's output says nothing about whether
-    # September's documents ever landed. The strict delivery title carries the
-    # generation (`Monthly architecture doc refresh: YYYY-MM`); a PR whose
-    # title has no generation cannot supersede anything.
-    deliveries = [pr for pr in owned_prs
-                  if pr["merged"] and delivery_re.search(pr["title"])]
-    # Filter first, THEN limit. Slicing the raw list meant six newer merged
-    # maintenance PRs -- which the attempt pattern is deliberately broad enough
-    # to match, and which never contribute to the strict delivery set -- could
-    # push an older unsuperseded open refresh PR out of view, so the audit
-    # reported no delivery problem while that refresh sat unmerged.
-    actionable = [pr for pr in owned_prs
-                  if not pr["merged"] and not superseded(pr, deliveries)]
-    for pr in actionable[:6]:
-        age = (datetime.date.fromisoformat(today)
-               - datetime.date.fromisoformat(pr["created"][:10])).days
-        if pr["state"] == "open":
-            findings.append({"check": "class-a", "doc": "|".join(OWNING_JOB["docs"][:2]),
-                             "severity": "P1",
-                             "detail": f"refresh PR #{pr['num']} open and unmerged for {age}d "
-                                       f"-- the Generated stamp on the Class A docs is not current"})
-        else:
-            findings.append({"check": "class-a", "doc": OWNING_JOB["workflow"], "severity": "P2",
-                             "detail": f"refresh PR #{pr['num']} was closed without merging "
-                                       f"({pr['title'][:60]})"})
-
-    for doc in OWNING_JOB["docs"]:
-        path = REPO / doc
-        if not path.exists():
-            continue
-        refuse_symlink(doc)
-        doc_name = doc
-        try:
-            body = path.read_text(encoding="utf-8", errors="replace")
-        except (OSError, UnicodeDecodeError) as exc:
-            # Unreadable, or replaced in the working tree by a directory.
-            # Left unguarded this walks past the AuditError handler, so the
-            # CLI printed a traceback and exited 1 -- the status it documents
-            # for FINDINGS, which makes a run that could not happen look like
-            # a run that found something. The registry and per-document reads
-            # have carried this guard for rounds. Codex filed it (stocks#1121).
-            raise AuditError(f"{doc_name} could not be read ({exc}); its freshness "
-                             "was never checked") from exc
-        # Not from a fenced example or an HTML comment. A scan of the whole
-        # document let any `Generated YYYY-MM-DD` in sample output stand in for
-        # a missing footer, so removing the real stamp while keeping a recent
-        # example passed the freshness check with no production date at all.
-        # Narrower than "the declared provenance location", which this module
-        # does not model; it removes the non-rendered sources, which is the
-        # case reported.
-        body_lines = body.split("\n")
-        # Indented code as well as fenced. `indented_code_lines` was missing
-        # from this filter, so a four-space example carrying a recent
-        # `Generated` date stood in for a missing real stamp and the freshness
-        # check reported a document current although readers see no production
-        # date in it at all -- the same defect as the fenced case, one syntax
-        # over. The Node twin masks both wherever it masks either.
-        stamps = visible_generated_stamps(body_lines)
-        if not stamps:
-            # Silently skipping this is the same clean-run-on-no-evidence the
-            # best-effort artifact check already refuses. For 05-a, 05-c and
-            # 05-d the stamp is not a separately declared generated region, so
-            # a refresh that dropped it leaves a green workflow, a merged PR,
-            # and a document carrying no evidence at all of when it was made.
-            # All four docs carry one today, so this changes no current finding.
-            findings.append({"check": "class-a", "doc": doc, "severity": "P2",
-                             "detail": "no `Generated <date>` stamp, so nothing in the document "
-                                       "shows when the owning job produced it"})
-            continue
-        bad = [s for s in stamps if not is_calendar_date(s)]
-        if bad:
-            # fromisoformat raised here, so an impossible footer produced a
-            # traceback and exit 1 -- the status that means "the docs have
-            # findings" -- rather than the finding it is.
-            findings.append({"check": "class-a", "doc": doc, "severity": "P2",
-                             "detail": f"Generated {bad[0]} is not a real calendar day"})
-            continue
-        if len(set(stamps)) > 1:
-            # 05-c carries a stamp in its header AND its footer. max() reads the
-            # document as current when a partial refresh moved only one, while
-            # the other visible provenance claim stays stale -- and the
-            # workflow's own gate only requires ONE occurrence of today's date.
-            findings.append({"check": "class-a", "doc": doc, "severity": "P2",
-                             "detail": "generated stamps disagree ("
-                                       + ", ".join(sorted(set(stamps)))
-                                       + "); a partial refresh moved one and left the other"})
-            continue
-        newest = max(stamps)
-        if is_future_date(newest, today):
-            # A future stamp yields a negative age, which passes the threshold
-            # below forever: the one value that can never go stale.
-            findings.append({"check": "class-a", "doc": doc, "severity": "P2",
-                             "detail": f"Generated {newest} is in the future, so its age can "
-                                       "never reach the staleness threshold"})
-            continue
-        age = (datetime.date.fromisoformat(today) - datetime.date.fromisoformat(newest)).days
-        if age > 40:
-            # A SUCCESSFUL no-op refresh is freshness evidence the document
-            # cannot carry. refresh-architecture-docs.yml reverts every
-            # timestamp-only file and opens its PR only when
-            # `meaningful == '1'`, so a month that regenerated identical
-            # content leaves the old Generated date in place by design. Two of
-            # those in a row put every owned document past 40 days and the
-            # audit called them all stale -- a finding whose only remedy would
-            # be forcing a cosmetic change.
-            if last_success and last_success >= newest:
-                since = (datetime.date.fromisoformat(today)
-                         - datetime.date.fromisoformat(last_success)).days
-                if since <= 40:
-                    findings.append({"check": "class-a", "doc": doc, "severity": "P3",
-                                     "detail": f"Generated {newest} is {age}d old, but the "
-                                               f"owning job last succeeded {since}d ago "
-                                               f"({last_success}) without opening a PR -- a "
-                                               "no-op refresh, which reverts timestamp-only "
-                                               "files by design"})
-                    continue
-            findings.append({"check": "class-a", "doc": doc, "severity": "P2",
-                             "detail": f"Generated {newest} is {age}d old; the refresh is monthly"})
-    return findings
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--json", action="store_true", help="machine-readable findings on stdout")
@@ -7446,7 +6897,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="mark these docs Depth: verified (default is scanned); requires --stamp")
     ap.add_argument("--since", metavar="SHA", help="override the reviewed-against SHA")
     ap.add_argument("--no-owning-job-check", action="store_true",
-                    help="skip the Class A delivery audit, which needs the GitHub API")
+                    help="accepted and ignored since the Class A delivery audit's retirement on 2026-11-10")
     ap.add_argument("--issues-snapshot", metavar="FILE", help="read issue state from FILE (offline)")
     ap.add_argument("--write-issues-snapshot", metavar="FILE", help="save the issue state read")
     ap.add_argument("--date", metavar="YYYY-MM-DD", help="override today's date (tests)")
@@ -7464,7 +6915,7 @@ def main(argv: list[str] | None = None) -> int:
     # stamped. One value, so the marker can never name a commit whose contents
     # the run did not read.
     # Argument validation comes FIRST, before any git read, issue-state read,
-    # snapshot write or owning-job API call. Running it late meant
+    # snapshot write or GitHub API call. Running it late meant
     # `--verify docs/x.md` (invalid without --stamp) failed with an unrelated
     # GitHub authentication error, and combining it with
     # --write-issues-snapshot wrote that file before the command was rejected.
@@ -7479,6 +6930,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.verify is not None and not args.verify:
         raise AuditError("--verify needs at least one path")
 
+    protocol = source_protocol()
+    try:
+        # Repository admission precedes resolve_base_ref and every object read.
+        repository_guard = protocol.Git(REPO, protocol.Budget())
+    except (protocol.Unavailable, OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise AuditError("committed-source repository admission failed: " + str(exc)) from exc
+    os.environ["GIT_NO_LAZY_FETCH"] = "1"
+    os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
+    os.environ["GIT_ALLOW_PROTOCOL"] = "/"
+    source_identities = {}
     base_ref = resolve_base_ref()
     # --short alone honours core.abbrev, which can be set below 7:
     # `git -c core.abbrev=4 rev-parse --short HEAD` emits four characters, and
@@ -7492,6 +6953,22 @@ def main(argv: list[str] | None = None) -> int:
     # resolved through git rather than trusted, and a value git cannot place
     # is exit 2 before anything is written.
     head = resolve_marker_sha(args.since, base_ref)
+    trusted_site_classification = None
+    site_import_shadow = None
+    try:
+        source_commit = repository_guard.commit(base_ref)
+        if protocol.SITE in repository_guard.tree(source_commit):
+            policy_commit = repository_guard.commit("origin/main")
+            policy_registry = load_registry(protocol.text(repository_guard.blob(policy_commit, REGISTRY)))
+            trusted_site_classification = classify(protocol.SITE, policy_registry)
+            if trusted_site_classification[0] != "D" or classification_is_ambiguous(protocol.SITE, policy_registry):
+                raise protocol.Unavailable("trusted SITE watcher policy is unavailable")
+            protocol.validate_site_policy(trusted_site_classification)
+            gate = protocol.trusted_module("_audit_import_scope_gate", "scripts/gate/spec_gate.py", repository_guard.budget)
+            source_tree = repository_guard.tree(source_commit)
+            site_import_shadow = lambda path: gate.source_import_shadow(path, present=source_tree)
+    except (protocol.Unavailable, OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise AuditError("trusted SITE watcher policy could not be read: " + str(exc)) from exc
 
     reg_path = REPO / REGISTRY
     if not reg_path.exists():
@@ -7506,6 +6983,8 @@ def main(argv: list[str] | None = None) -> int:
     # reason.
     refuse_symlink(REGISTRY)
     try:
+        if reg_path.stat().st_size > protocol.MAX_FILE_BYTES:
+            raise AuditError("registry exceeds the fixed eight-MiB policy-input allowance")
         registry_text = reg_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         # Unreadable, a directory, or not UTF-8. Left unguarded these walk past
@@ -7622,15 +7101,8 @@ def main(argv: list[str] | None = None) -> int:
     findings: list[dict] = check_registry_paths(tracked, registry)
     region_maps: dict[str, dict] = {}
     # Needs no network: it asks the artifact what it says about itself, which
-    # is the only evidence a best-effort refresh step leaves behind.
+    # is the only evidence a manual refresh leaves behind.
     findings += check_best_effort_artifacts(today)
-    # Its own flag, not a side effect of --issues-snapshot. Keying the Class A
-    # delivery audit off the issue-state flag meant an offline or deterministic
-    # issue run reported Class A clean however badly the architecture refresh
-    # was failing -- an unrelated check silently disabled by an unrelated
-    # option, until a Generated stamp aged past 40 days.
-    if not args.no_owning_job_check:
-        findings += check_owning_job(today)
     stamped: list[dict] = []
     verify = {strip_dot_segments(v) for v in (args.verify or [])}
     # Every --verify path must be consumed by a document this run actually
@@ -7652,6 +7124,9 @@ def main(argv: list[str] | None = None) -> int:
 
     for doc in docs:
         cls, code_paths, regions = classify(doc, registry)
+        if doc == protocol.SITE and trusted_site_classification is not None:
+            # Authored/staged registry changes cannot hide SITE or its broad watchers.
+            cls, code_paths, regions = trusted_site_classification
         if cls is None:
             counts["unclassified"] += 1
             findings.append({"check": "unclassified", "doc": doc, "severity": "P2",
@@ -7804,12 +7279,36 @@ def main(argv: list[str] | None = None) -> int:
                 findings.append({"check": "marker", "doc": doc, "severity": "P3",
                                  "detail": "incomplete provenance: " + "; ".join(missing)})
             if measurable:
-                findings += check_changed_since(doc, info["sha"], code_paths,
-                                                base_ref, documents=_documents)
+                drift = check_changed_since(doc, info["sha"], code_paths,
+                                            base_ref, documents=_documents,
+                                            import_shadow=site_import_shadow if doc == protocol.SITE else None)
                 # And the document itself, which the code-path query cannot
                 # see -- and which is the ONLY drift signal a registry row
                 # with no declared code paths has.
-                findings += check_doc_changed_since(doc, info["sha"], base_ref)
+                drift += check_doc_changed_since(doc, info["sha"], base_ref)
+                if doc == protocol.SITE:
+                    try:
+                        snapshot = protocol.Snapshot(REPO)
+                        source_commit = snapshot.git.commit(base_ref)
+                        committed_registry = snapshot.git.blob(source_commit, REGISTRY)
+                        snapshot.budget.admit_size(reg_path.stat().st_size)
+                        with reg_path.open("rb") as registry_stream:
+                            working_registry = registry_stream.read(snapshot.budget.max_bytes - snapshot.budget.bytes + 1)
+                        snapshot.budget.read(len(working_registry))
+                        if working_registry != committed_registry:
+                            raise protocol.Unavailable("registry worktree differs from committed SOURCE policy")
+                        identity = snapshot.verify("origin/main", base_ref)
+                    except (protocol.Unavailable, OSError, ValueError, subprocess.SubprocessError, UnicodeError, RecursionError) as exc:
+                        findings += drift
+                        findings.append({"check": "source-provenance", "doc": doc, "severity": "P2",
+                                         "detail": "implementation-source identity unavailable: " + str(exc)})
+                    else:
+                        if identity["eligible_route"] == "terminal-ordinary":
+                            findings += drift
+                        else:
+                            source_identities[doc] = identity
+                else:
+                    findings += drift
 
         if args.stamp:
             # Never write a marker into a generated region. The marker goes
@@ -7944,7 +7443,8 @@ def main(argv: list[str] | None = None) -> int:
             # work. Runs the same diff check_changed_since runs, so the guard
             # and the check it protects cannot disagree about what drift is.
             if reviewed and head != base_ref and check_changed_since(
-                    doc, head, list(code_paths), base_ref, documents=_documents):
+                    doc, head, list(code_paths), base_ref, documents=_documents,
+                    import_shadow=site_import_shadow if doc == protocol.SITE else None):
                 stamp_refusals[doc] = "code-drift-since-baseline"
                 continue
             # And the baseline has to SURVIVE the merge. This repository
@@ -8071,6 +7571,7 @@ def main(argv: list[str] | None = None) -> int:
         "date": today, "base_ref": base_ref, "head": head, "docs": len(docs),
         "classes": counts, "regions": region_maps,
         "findings": findings, "stamped": stamped,
+        "source_identities": source_identities,
         "summary": {k: sum(1 for f in findings if f["check"] == k)
                     for k in sorted({f["check"] for f in findings})},
     }
@@ -8079,6 +7580,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=2))
     else:
         print(f"docs {len(docs)}  classes {counts}  head {head} ({base_ref})")
+        for doc, identity in sorted(source_identities.items()):
+            print(f"  source identity: {doc} — {identity['context']}")
         for d, rm in sorted(region_maps.items()):
             if rm["unowned_lines"]:
                 print(f"  region: {d} — {rm['unowned_lines']} of {rm['lines']} lines "

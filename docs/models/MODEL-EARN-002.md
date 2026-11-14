@@ -1,6 +1,6 @@
 # MODEL-EARN-002 — Earnings-reaction setup classifier
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 **Code:** `gcp/earnings_reactions_brief.py` (`classify_context`, `:474-565`) ·
 **Output:** a Discord embed — **no table, no API surface** ·
@@ -66,7 +66,7 @@ Worth stating plainly, because the count is the finding:
 | Implementation | Where | Governed by |
 |---|---|---|
 | `classify_archetype` | `lib/earnings_reactions.py:460` | MODEL-EARN-001 — the canonical one |
-| `_derive_archetype` | `gcp/refresh_earnings_views.py:312-336` | MODEL-EARN-001, as a **divergence** — [#1135](https://github.com/TeneikaAskew/stocks/issues/1135) |
+| `_derive_archetype` | `gcp/refresh_earnings_views.py:293-317` | MODEL-EARN-001, as a **divergence** — [#1135](https://github.com/TeneikaAskew/stocks/issues/1135) |
 | `recommended_structure` | `lib/earnings_reactions.py` | MODEL-EARN-001 |
 | **`classify_context`** | `gcp/earnings_reactions_brief.py:474` | **this model** |
 
@@ -84,7 +84,7 @@ should have.
 
 ## The sufficiency gate counts rows, not clean quarters
 
-`aggregate_history` (`:416`) sets `n_quarters = len(rows)` — the number of rows in the
+`aggregate_history` (named function in `gcp/earnings_reactions_brief.py`) sets `n_quarters = len(rows)` — the number of rows in the
 12-quarter window, full stop — and `has_sufficient_history` (`:143`) compares that to
 `MIN_QUARTERS_FOR_CLASSIFICATION = 4`. No row is checked for completeness.
 
