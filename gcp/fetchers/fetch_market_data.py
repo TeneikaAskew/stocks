@@ -333,6 +333,112 @@ def read_level_params_for_run(tickers, session_date):
     return load_level_params(query_to_dataframe_strict, list(tickers), session_date)
 
 
+# The premarket columns of market_data_daily, in the order a report lists them.
+PREMARKET_COLUMNS = (
+    'pre_high', 'pre_low', 'pre_vwap', 'pre_volume', 'gap_pct', 'pre_range_atr',
+    'pre_fetched_at', 'pre_excluded_stale_prints', 'pre_excluded_spikes',
+    'pre_filter_status', 'pre_filter_params',
+)
+# The six computed from prices. The nightly sets one only when its new value
+# is not None; the other five, the provenance of the snapshot, always.
+_PREMARKET_PRICE_COLUMNS = PREMARKET_COLUMNS[:6]
+_PREMARKET_PROVENANCE_COLUMNS = PREMARKET_COLUMNS[6:]
+
+
+def prior_session_inputs(df: pd.DataFrame, enriched: pd.DataFrame) -> dict:
+    """The last completed session's close, open and ATR columns: the inputs
+    of the premarket snapshot that do not come from the premarket bars.
+
+    `df` is the daily frame up to and including the session, oldest first;
+    `enriched` is `add_all_indicators` of it. The values are the row before
+    the last: the session's own ATR includes the session being filtered. A
+    NULL or NaN is None, never a number, and fewer than two rows give four
+    None. add_all_indicators names the ATR columns ATR14 and ATR5 (atr_14 and
+    atr_5 are their SQL names); a frame it gave no such column has no ATR.
+    """
+    if len(df) < 2:
+        return {'close': None, 'open': None, 'atr_14': None, 'atr_5': None}
+
+    def number(value):
+        return float(value) if value is not None and pd.notna(value) else None
+
+    prior_row = enriched.iloc[-2]
+    return {
+        'close': number(df['Close'].iloc[-2]),
+        'open': number(df['Open'].iloc[-2]),
+        'atr_14': number(prior_row.get('ATR14')),
+        'atr_5': number(prior_row.get('ATR5')),
+    }
+
+
+def premarket_snapshot(ticker: str, session_date, bars: pd.DataFrame, prior: dict,
+                       level_params, read_at: datetime) -> dict | None:
+    """The eleven premarket columns of one session, from its premarket bars.
+
+    The one place that turns a session's 04:00 to 09:30 Eastern bars, the
+    prior session's close, open and ATR (`prior`, from prior_session_inputs)
+    and the ticker's level parameters into `PREMARKET_COLUMNS`. The nightly
+    and the bars-only recompute both call it, so they run the same print
+    filter, VWAP rule and provenance rule.
+
+    `bars` holds ts (aware UTC), open, high, low, close and volume.
+    `level_params` is the ticker's LevelParams in force on the session; None
+    means the run could not read the tables, and the snapshot is labelled
+    level_params_unavailable. `read_at` is when the bars were read.
+
+    Returns the eleven values, None where the computation gives none, or
+    None when `bars` is empty or holds no bar in the premarket window. It
+    makes no query, reads no clock and catches nothing.
+    """
+    from lib.indicators import calculate_premarket_context
+
+    if bars.empty:
+        return None
+    if level_params is None:
+        pm_filter = {'status': 'level_params_unavailable', 'atr': None,
+                     'stale_print_atr': None, 'spike_atr': None, 'params': None}
+    else:
+        from lib.strat_levels import premarket_filter_inputs
+        pm_filter = premarket_filter_inputs(
+            level_params, {'atr_14': prior['atr_14'], 'atr_5': prior['atr_5']})
+    pm = calculate_premarket_context(
+        times=bars['ts'],
+        open_=bars['open'],
+        high=bars['high'],
+        low=bars['low'],
+        close=bars['close'],
+        volume=bars['volume'],
+        prev_close=prior['close'],
+        atr=pm_filter['atr'],
+        prev_open=prior['open'],
+        stale_print_atr=pm_filter['stale_print_atr'],
+        spike_atr=pm_filter['spike_atr'],
+    )
+    if not pm['bar_count'] > 0:
+        return None
+    # Provenance (FEAT-STRAT-001): when the bars were read and how many
+    # prints the filter dropped. Whether the prints were filtered with the
+    # ticker's own thresholds, and which (Design 8). Not ok: NULL counts and
+    # the builder refuses the snapshot (premarket_unfiltered).
+    filtered = bool(pm.get('filtered'))
+    return {
+        'pre_high': pm['pre_high'],
+        'pre_low': pm['pre_low'],
+        'pre_vwap': pm['pre_vwap'],
+        'pre_volume': pm['pre_volume'],
+        'gap_pct': pm['gap_pct'],
+        'pre_range_atr': pm['pre_range_atr'],
+        'pre_fetched_at': read_at,
+        'pre_excluded_stale_prints': (
+            int(pm['excluded_prior_close_prints']) if filtered else None),
+        'pre_excluded_spikes': (
+            int(pm['excluded_spike_prints']) if filtered else None),
+        'pre_filter_status': 'ok' if filtered else (
+            pm_filter['status'] if pm_filter['status'] != 'ok' else 'atr_unavailable'),
+        'pre_filter_params': pm_filter['params'],
+    }
+
+
 def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
                                         level_params=None):
     """
@@ -365,6 +471,9 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
         ORDER BY date DESC
         LIMIT 250
     """
+    # AUDIT-2026-05-13: silent fallback — query_to_dataframe answers an empty
+    # frame for a failed read, so a database outage here reads as "not enough
+    # daily history" and the row's indicators are skipped with a warning.
     df = query_to_dataframe(sql, {'ticker': ticker.upper(), 'fetch_date': fetch_date})
     if df.empty or len(df) < 2:
         log.warning("    Not enough daily history for %s to compute indicators", ticker)
@@ -450,7 +559,6 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
     # (and strat_levels engine) can calibrate triggers to today's
     # actual pre-market range, not just yesterday's session H/L.
     try:
-        from lib.indicators import calculate_premarket_context
         # Pull today's intraday bars (extended hours included)
         # The Eastern premarket window as UTC instants. The old bounds were
         # UTC midnights (20:00 ET the day before under EDT), which read a
@@ -466,6 +574,9 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
                AND ts <  :end
              ORDER BY ts
         """
+        # AUDIT-2026-05-13: silent fallback — query_to_dataframe answers an
+        # empty frame for a failed read, so an outage here reads as "no
+        # premarket bars" and the row keeps whatever premarket values it had.
         intraday = query_to_dataframe(
             intraday_sql,
             {'ticker': ticker.upper(), 'start': pm_start, 'end': pm_end},
@@ -475,70 +586,19 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
             # Every input describes the last completed session (the row
             # before fetch_date): its close, its open and its ATR columns.
             # The fetch date's own ATR includes the session being filtered.
-            prev_close = None
-            prev_open = None
-            atrs = {'atr_14': None, 'atr_5': None}
-            if len(df) >= 2:
-                prior_row = enriched.iloc[-2]
-                try:
-                    prev_close = float(df['Close'].iloc[-2])
-                except Exception:
-                    pass
-                try:
-                    prev_open = float(df['Open'].iloc[-2])
-                except Exception:
-                    pass
-                # add_all_indicators names the columns ATR14 / ATR5 (atr_14
-                # and atr_5 are their SQL names, which this frame never carries).
-                for col, frame_col in (('atr_14', 'ATR14'), ('atr_5', 'ATR5')):
-                    try:
-                        v = prior_row.get(frame_col)
-                        atrs[col] = float(v) if v is not None and pd.notna(v) else None
-                    except Exception:
-                        pass
-
-            if level_params is None:
-                pm_filter = {'status': 'level_params_unavailable', 'atr': None,
-                             'stale_print_atr': None, 'spike_atr': None, 'params': None}
-            else:
-                from lib.strat_levels import premarket_filter_inputs
-                pm_filter = premarket_filter_inputs(level_params, atrs)
-            pm = calculate_premarket_context(
-                times=intraday['ts'],
-                open_=intraday['open'],
-                high=intraday['high'],
-                low=intraday['low'],
-                close=intraday['close'],
-                volume=intraday['volume'],
-                prev_close=prev_close,
-                atr=pm_filter['atr'],
-                prev_open=prev_open,
-                stale_print_atr=pm_filter['stale_print_atr'],
-                spike_atr=pm_filter['spike_atr'],
-            )
-            if pm['bar_count'] > 0:
-                if pm['pre_high'] is not None: row['pre_high'] = pm['pre_high']
-                if pm['pre_low'] is not None: row['pre_low'] = pm['pre_low']
-                if pm['pre_vwap'] is not None: row['pre_vwap'] = pm['pre_vwap']
-                if pm['pre_volume'] is not None: row['pre_volume'] = pm['pre_volume']
-                if pm['gap_pct'] is not None: row['gap_pct'] = pm['gap_pct']
-                if pm['pre_range_atr'] is not None: row['pre_range_atr'] = pm['pre_range_atr']
-                # Provenance (FEAT-STRAT-001): when these bars were read and
-                # how many prints the filter dropped. upsert_dataframe drops
-                # the keys while market_data_daily lacks the columns.
-                row['pre_fetched_at'] = intraday_read_at
-                filtered = bool(pm.get('filtered'))
-                row['pre_excluded_stale_prints'] = (
-                    int(pm['excluded_prior_close_prints']) if filtered else None)
-                row['pre_excluded_spikes'] = (
-                    int(pm['excluded_spike_prints']) if filtered else None)
-                # Whether the prints were filtered with the ticker's own
-                # thresholds, and which (Design 8). Not ok: NULL counts and
-                # the builder refuses the snapshot (premarket_unfiltered).
-                row['pre_filter_status'] = 'ok' if filtered else (
-                    pm_filter['status'] if pm_filter['status'] != 'ok' else 'atr_unavailable')
-                row['pre_filter_params'] = pm_filter['params']
-                log.info("    ✓ pre-market context computed (%d bars)", pm['bar_count'])
+            snapshot = premarket_snapshot(
+                ticker, fetch_date, intraday, prior_session_inputs(df, enriched),
+                level_params, intraday_read_at)
+            if snapshot is not None:
+                # A price column is set only when its new value is not None;
+                # upsert_dataframe drops the provenance keys while
+                # market_data_daily lacks the columns.
+                for col in _PREMARKET_PRICE_COLUMNS:
+                    if snapshot[col] is not None:
+                        row[col] = snapshot[col]
+                for col in _PREMARKET_PROVENANCE_COLUMNS:
+                    row[col] = snapshot[col]
+                log.info("    ✓ pre-market context computed (%d bars)", len(intraday))
             else:
                 log.info("    no pre-market bars for %s on %s (likely weekend / holiday)",
                          ticker, fetch_date)
