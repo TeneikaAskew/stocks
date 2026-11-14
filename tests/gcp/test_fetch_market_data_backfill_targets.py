@@ -205,3 +205,55 @@ def test_all_history_union_skips_watched_only_and_indicator_only_tickers(monkeyp
         conn.close()
 
     assert [t for t, _, _ in targets] == ["EARN", "MIXED", "NULLSRC"], targets
+
+
+# ── FEAT-DATA-001 ingest v2: a pull this job makes for an existing orphan keeps it a target ───────────
+
+def test_watched_job_pull_for_existing_orphan_keeps_it_a_backfill_target(monkeypatch):
+    """ORPH has 300 av_daily_backfill bars and no earnings_history row. The plan stamps its pull
+    av_daily_backfill, so the rows the job writes keep the union arm true for it."""
+    from datetime import date
+
+    from gcp.fetchers import fetch_market_data
+    from gcp.fetchers import fetch_watched_tickers as fwt
+
+    today = date(2026, 11, 13)
+    cov = fwt.Coverage("ORPH", 300, date(2026, 11, 12), False)
+    plan = fwt.plan_pulls({"ORPH": cov}, today)
+    assert plan == {("full", "av_daily_backfill"): ["ORPH"]}
+    (outputsize, data_source), tickers = next(iter(plan.items()))
+
+    written: list[pd.DataFrame] = []
+    bars = pd.DataFrame({
+        "ticker": "ORPH", "date": list(pd.bdate_range(end="2026-01-30", periods=300).date),
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 100, "adjusted_close": 1.0})
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "fake-key")
+    monkeypatch.setenv("AV_BACKFILL_SLEEP_SECS", "0")
+    monkeypatch.setattr(fetch_market_data, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(fetch_market_data, "_av_get_full_daily_series", lambda t, k, o: bars.copy())
+    monkeypatch.setattr("gcp.database.upsert_dataframe", lambda df, table, keys: written.append(df.copy()))
+    assert fetch_market_data._run_backfill(tickers, outputsize=outputsize, data_source=data_source) == 300
+    stored = pd.concat(written)
+    assert set(stored["data_source"]) == {"av_daily_backfill"}
+
+    # Evaluate the all-history union arm over exactly the rows the job wrote (SQLite translation as above).
+    sql = _normalised(_all_history_sql(monkeypatch))
+    translated = sql.replace(
+        "bool_or(close IS NOT NULL AND data_source IS DISTINCT FROM 'av_watched_backfill')",
+        "MAX(CASE WHEN close IS NOT NULL AND data_source IS NOT 'av_watched_backfill' "
+        "THEN 1 ELSE 0 END) = 1")
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE TABLE earnings_history (ticker TEXT)")
+        conn.execute("CREATE TABLE market_data_daily (ticker TEXT, date TEXT, close REAL, data_source TEXT)")
+        conn.executemany("INSERT INTO market_data_daily VALUES (?, ?, ?, ?)",
+                         [(r.ticker, str(r.date), r.close, r.data_source) for r in stored.itertuples()])
+        conn.commit()
+        monkeypatch.setenv("BACKFILL_ALL_HISTORY", "true")
+        with patch.object(fetch_market_data, "is_cloud_sql_configured", return_value=True), \
+             patch("gcp.database.query_to_dataframe",
+                   side_effect=lambda _sql: pd.read_sql_query(translated, conn)):
+            targets = fetch_market_data._backfill_targets()
+    finally:
+        conn.close()
+    assert [t for t, _, _ in targets] == ["ORPH"], targets

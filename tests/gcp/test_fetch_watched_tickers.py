@@ -191,3 +191,101 @@ def test_resolve_session_weekend_is_none():
 
 def test_resolve_session_trading_day_returns_date():
     assert fwt.resolve_session(date(2026, 11, 13)) == date(2026, 11, 13)  # Friday
+
+
+# ---------------------------------------------------------------------------
+# Task 5: coverage, the job's own outputsize decision, the plan of pulls
+# ---------------------------------------------------------------------------
+TODAY = date(2026, 11, 13)   # a Friday session
+WATCHED = 'av_watched_backfill'
+
+
+def _cov(t, bars, max_date, boot=False):
+    return fwt.Coverage(t, bars, max_date, boot)
+
+
+def test_plan_no_rows_is_full_with_watched_stamp():
+    plan = fwt.plan_pulls({'NEW': _cov('NEW', 0, None)}, TODAY)
+    assert plan == {('full', WATCHED): ['NEW']}
+
+
+def test_plan_current_ticker_is_not_planned():
+    assert fwt.plan_pulls({'CUR': _cov('CUR', 2000, TODAY)}, TODAY) == {}
+
+
+def test_plan_bootstrapped_300_bars_current_is_not_planned():
+    assert fwt.plan_pulls({'B': _cov('B', 300, TODAY, True)}, TODAY) == {}
+
+
+def test_plan_bootstrapped_300_bars_two_sessions_behind_is_compact():
+    plan = fwt.plan_pulls({'B': _cov('B', 300, date(2026, 11, 11), True)}, TODAY)
+    assert plan == {('compact', WATCHED): ['B']}
+
+
+def test_plan_bootstrapped_1800_bars_100_days_behind_is_full():
+    plan = fwt.plan_pulls({'B': _cov('B', 1800, TODAY - pd.Timedelta(days=100), True)}, TODAY)
+    assert plan == {('full', WATCHED): ['B']}
+
+
+def test_plan_existing_orphan_keeps_its_stamp_and_pulls_full():
+    plan = fwt.plan_pulls({'ORPH': _cov('ORPH', 300, date(2026, 11, 12))}, TODAY)
+    assert plan == {('full', 'av_daily_backfill'): ['ORPH']}
+
+
+def test_plan_future_dated_max_date_is_current_not_negative_staleness():
+    future = date(2026, 11, 20)
+    assert fwt._pick_watched_outputsize(300, future, True, TODAY) is None
+    assert fwt._pick_watched_outputsize(1800, future, False, TODAY) is None
+    assert fwt.plan_pulls({'F': _cov('F', 300, future, True)}, TODAY) == {}
+
+
+def test_plan_null_max_date_with_rows_is_full():
+    assert fwt._pick_watched_outputsize(1800, None, False, TODAY) == 'full'
+
+
+def test_plan_groups_tickers_in_input_order_and_has_no_none_groups():
+    covs = {'A': _cov('A', 0, None), 'B': _cov('B', 2000, TODAY),
+            'C': _cov('C', 0, None)}
+    plan = fwt.plan_pulls(covs, TODAY)
+    assert plan == {('full', WATCHED): ['A', 'C']}
+
+
+def test_stamp_for():
+    assert fwt.stamp_for(_cov('A', 0, None)) == WATCHED
+    assert fwt.stamp_for(_cov('A', 5, TODAY, True)) == WATCHED
+    assert fwt.stamp_for(_cov('A', 5, TODAY, False)) == 'av_daily_backfill'
+
+
+def test_pick_accepts_timestamp_and_nat_max_dates():
+    assert fwt._pick_watched_outputsize(2000, pd.Timestamp('2026-11-13'), False, TODAY) is None
+    assert fwt._pick_watched_outputsize(2000, pd.NaT, False, TODAY) == 'full'
+
+
+def test_read_coverage_builds_strict_query_and_fills_absent_tickers():
+    frame = pd.DataFrame({'ticker': ['AAA'], 'bar_count': [300],
+                          'max_date': [date(2026, 11, 12)], 'bootstrapped': [True]})
+    q = _Query(frame)
+    out = fwt.read_coverage(['AAA', 'ZZZ'], query=q)
+    assert q.calls == [(fwt.COVERAGE_SQL, {'kept': ['AAA', 'ZZZ']},
+                        fwt._SET_QUERY_TIMEOUT_S)]
+    assert out['AAA'] == fwt.Coverage('AAA', 300, date(2026, 11, 12), True)
+    assert out['ZZZ'] == fwt.Coverage('ZZZ', 0, None, False)
+    assert list(out) == ['AAA', 'ZZZ']
+
+
+def test_read_coverage_default_reader_is_the_strict_one(monkeypatch):
+    seen = []
+
+    def strict(sql, params=None, timeout_s=None):
+        seen.append(sql)
+        return pd.DataFrame({'ticker': [], 'bar_count': [], 'max_date': [],
+                             'bootstrapped': []})
+
+    monkeypatch.setattr('gcp.database.query_to_dataframe_strict', strict)
+    assert fwt.read_coverage(['A']) == {'A': fwt.Coverage('A', 0, None, False)}
+    assert seen == [fwt.COVERAGE_SQL]
+
+
+def test_read_coverage_failure_propagates():
+    with pytest.raises(RuntimeError):
+        fwt.read_coverage(['A'], query=_Query(exc=RuntimeError('db down')))

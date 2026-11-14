@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import numbers
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
 
+from gcp.fetchers.fetch_market_data import (
+    BACKFILL_DEPTH_THRESHOLD_BARS,
+    _pick_backfill_outputsize,
+)
 from lib.eastern_time import is_session
 
 JOB_NAME = 'fetch-watched-tickers'
@@ -117,3 +121,90 @@ def dedup(tickers: list[str], exclude: Iterable[str]) -> list[str]:
 def resolve_session(today: date) -> date | None:
     """``today`` when NYSE trades that day, else ``None`` (weekend or holiday)."""
     return today if is_session(today) else None
+
+
+# ── coverage and the plan of pulls ──────────────────────────────────────
+
+# Stamp for rows this job writes for a ticker another writer already owns: it
+# keeps the all-history backfill union (which skips av_watched_backfill) true
+# for an existing orphan.
+_OTHER_WRITER_SOURCE = 'av_daily_backfill'
+
+COVERAGE_SQL = (
+    "SELECT ticker, COUNT(*) AS bar_count, MAX(date) AS max_date, "
+    "bool_or(data_source = 'av_watched_backfill') AS bootstrapped "
+    "FROM market_data_daily WHERE ticker = ANY(:kept) GROUP BY ticker"
+)
+
+
+@dataclass(frozen=True)
+class Coverage:
+    ticker: str
+    bar_count: int
+    max_date: date | None
+    bootstrapped: bool
+
+
+def _as_date(v) -> date | None:
+    """A frame's max_date (date, Timestamp or NaT) as a date, or None."""
+    if v is None or pd.isna(v):
+        return None
+    if isinstance(v, datetime):  # Timestamp is a datetime
+        return v.date()
+    return v
+
+
+def read_coverage(kept: list[str], query: Query | None = None) -> dict[str, Coverage]:
+    """Stored coverage per kept ticker, in ``kept`` order.
+
+    Strict read: a failure raises (Rule 3.7). A ticker with no rows is the
+    explicit ``Coverage(t, 0, None, False)``, a true "no rows" state.
+    """
+    if query is None:
+        from gcp.database import query_to_dataframe_strict as query
+    df = query(COVERAGE_SQL, {'kept': list(kept)}, timeout_s=_SET_QUERY_TIMEOUT_S)
+    found: dict[str, Coverage] = {}
+    for _, r in df.iterrows():
+        t = r['ticker']
+        found[t] = Coverage(t, int(r['bar_count']), _as_date(r['max_date']),
+                            bool(r['bootstrapped']))
+    return {t: found.get(t, Coverage(t, 0, None, False)) for t in kept}
+
+
+def _pick_watched_outputsize(bar_count: int, max_date: date | None,
+                             bootstrapped: bool, today: date) -> str | None:
+    """'full', 'compact' or None (nothing to pull).
+
+    A bar dated today or later (a stray future-dated bar included) is current,
+    never a negative staleness. A bootstrapped ticker is judged as if it had
+    the depth threshold, since this job only ever bootstraps it to compact depth.
+    """
+    if bar_count == 0:
+        return 'full'
+    max_date = _as_date(max_date)
+    if max_date is not None and max_date >= today:
+        return None
+    if bootstrapped:
+        return _pick_backfill_outputsize(
+            max(bar_count, BACKFILL_DEPTH_THRESHOLD_BARS), max_date, today)
+    return _pick_backfill_outputsize(bar_count, max_date, today)
+
+
+def stamp_for(cov: Coverage) -> str:
+    """The data_source this job writes for ``cov``'s ticker."""
+    if cov.bar_count == 0 or cov.bootstrapped:
+        return WATCHED_DATA_SOURCE
+    return _OTHER_WRITER_SOURCE
+
+
+def plan_pulls(coverages: dict[str, Coverage],
+               today: date) -> dict[tuple[str, str], list[str]]:
+    """{(outputsize, data_source): tickers}; tickers needing nothing are omitted."""
+    plan: dict[tuple[str, str], list[str]] = {}
+    for t, cov in coverages.items():
+        size = _pick_watched_outputsize(cov.bar_count, cov.max_date,
+                                        cov.bootstrapped, today)
+        if size is None:
+            continue
+        plan.setdefault((size, stamp_for(cov)), []).append(t)
+    return plan
