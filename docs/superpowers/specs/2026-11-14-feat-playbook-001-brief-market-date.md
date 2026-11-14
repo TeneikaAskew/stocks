@@ -14,7 +14,7 @@ done_when:
   - "tests/fixtures/timezone_boundary_baseline.json, regenerated with python -m tests.meta.test_timezone_boundaries --write-baseline, no longer holds the three host-today entries of gcp/premarket_brief.py (_resolve_analysis_date::date.today() twice, persist_to_cloud_sql::date.today()); its diff removes those three entries and nothing else, so the two tz-localize-none entries of the file remain; gcp/premarket_brief.py gains no tz-ok comment; python3 -m pytest tests/meta/test_timezone_boundaries.py passes"
   - "Source identity (DASHBOARD-01): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-PLAYBOOK-001, DASHBOARD-01) note row carries that source_identity_sha256"
   - "The FEAT-PLAYBOOK-001 catalog record (Status, Last reviewed) and the PR traceability entry are updated, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -22,9 +22,9 @@ supersedes: null
 
 ## Authority and status
 
-Draft, written 2026-11-14 for the owner. Nothing is approved and no code is written under it. Merging
-this spec-only PR with `status: approved` is the approval. The section-by-section conversation of the
-product-delivery skill is replaced here by "Decisions for the owner" (one decision).
+The owner approved this spec on 2026-11-14 at about 09:30Z with decision (a) ("Approve: store a Sunday
+row (Recommended)", relayed by the coordinating session); the owner's merge of this spec-only PR is
+what puts the approval on main.
 
 Deadline: the fix has to be merged and deployed before Sunday 2026-11-15 21:00 America/New_York
 (2026-11-16 02:00 UTC), when `premarket-brief-sunday` next runs.
@@ -374,9 +374,10 @@ a paid run (the brief's model calls), so it is the owner's step.
 
 ## Decisions for the owner
 
-**One decision: what the Sunday run stores once it is dated Sunday.**
+**One decision: what the Sunday run stores once it is dated Sunday. Decided by the owner on
+2026-11-14: (a).**
 
-- **(a) A Sunday-dated canonical row, like any other run. Recommended.** It is the four lines and
+- **(a) A Sunday-dated canonical row, like any other run. Decided, 2026-11-14.** It is the four lines and
   nothing else. Verified safe: the same scheduler entry wrote Sunday-dated live rows on 2026-05-03 and
   2026-05-10, weekday-holiday rows exist (2026-07-03, 2026-09-07), the resolver already excludes
   weekend dates by name, every other reader was read (table above), and the Sunday and Monday runs
@@ -385,7 +386,7 @@ a paid run (the brief's model calls), so it is the owner's step.
   08:30, and a Monday whose 08:30 run fails reads ok in that evening's freshness audit, as on any
   weekday.
 - **(b) On a date that is not an NYSE session the run writes history and posts to Discord, and writes
-  no canonical row.** The strip keeps Friday's brief over the weekend and a failed Monday run reads
+  no canonical row. The alternative, not taken.** The strip keeps Friday's brief over the weekend and a failed Monday run reads
   stale in the audit. It needs more code (a session check in `persist_to_cloud_sql`, tests for it) and
   it also ends the canonical row on weekday holidays, which exists today. Not verified beyond reading;
   it would not fit before Sunday with the same confidence. Choosing it changes done_when items 1, 2
