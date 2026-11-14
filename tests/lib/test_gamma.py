@@ -1111,9 +1111,11 @@ def test_build_summary_partial_missing_warns_degraded():
 
 def test_build_summary_full_coverage_no_greeks_warning():
     from lib.gamma import build_summary
-    rows = [_chain_row(s) for s in range(90, 110)]
+    rows = [_chain_row(s) for s in range(90, 109)] + [_chain_row(109, typ="put")]
     s = build_summary("SPY", "2026-08-25", rows)
     assert not any("gamma missing" in w for w in s.warnings), s.warnings
+    # Reached the coverage gate and aggregation (not an early partial return).
+    assert s.regime in ("positive_gamma", "negative_gamma")
 
 
 def test_greeks_coverage_counts_nan_as_missing():
@@ -1139,7 +1141,8 @@ def test_build_summary_outage_preserves_spot():
     independently available spot (override or parity/delta from the
     chain) — only the gamma-derived fields go unavailable."""
     from lib.gamma import build_summary
-    rows = [_chain_row(s, gamma=None) for s in (98, 99, 100, 101, 102)]
+    rows = [_chain_row(s, typ=("call" if i % 2 == 0 else "put"), gamma=None) for i, s in enumerate((98, 99, 100, 101, 102))]
+    assert {r["type"] for r in rows} == {"call", "put"}
     s = build_summary("SPY", "2026-08-25", rows, spot_override=101.5)
     assert s.regime == "unknown"
     assert s.spot.price == 101.5 and s.spot.method == "override"
