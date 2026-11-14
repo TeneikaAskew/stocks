@@ -707,3 +707,47 @@ def dry_run_revert(monkeypatch, tmp_path) -> int:
     monkeypatch.setattr(database, "get_engine", lambda: NoTransactionEngine())
     monkeypatch.setenv("CLOUD_RUN_EXECUTION", "revert-dry")
     return run_main(monkeypatch, "--revert-run", "exits-run-A", "--report-dir", str(tmp_path))
+
+
+# ── the replace's RECOMPUTE lines ─────────────────────────────────────
+
+
+def test_a_committed_replace_names_both_commands(tmp_path, caplog):
+    from unittest.mock import patch
+
+    from gcp.fetchers import fetch_alphavantage_intraday as fai
+
+    listed = tmp_path / "l.csv"
+    listed.write_text("SPY,2026-09\n")
+    ok = {"symbol": "SPY", "month": "2026-09", "status": fai.REPLACE_OK,
+          "held_sessions": 1, "missing_sessions": 0, "deleted": 1, "inserted": 1}
+    with caplog.at_level(logging.WARNING), \
+         patch.object(fai, "get_api_keys", return_value=["k"]), \
+         patch.object(fai, "replace_month", return_value=ok), \
+         patch.object(fai.time, "sleep"):
+        assert fai.run_replace_months(str(listed), commit=True, limit=None) == 0
+
+    lines = caplog.text.splitlines()
+    exits = [line for line in lines if "RECOMPUTE signal_alerts exits:" in line]
+    premarket = [line for line in lines if "RECOMPUTE market_data_daily" in line]
+    assert len(exits) == 1 and len(premarket) == 1
+    assert "python -m gcp.signal_monitor_eod_resolver --re-resolve --from" in exits[0]
+    assert "--to" in exits[0] and "--commit" in exits[0]
+    assert "python -m gcp.fetchers.fetch_market_data --recompute-premarket --from" in premarket[0]
+    assert "--to" in premarket[0] and "--commit" in premarket[0]
+    assert "NO PATH YET" not in caplog.text
+    assert "until #1190 lands" not in caplog.text
+
+
+def test_the_named_commands_are_flags_the_entry_points_take():
+    """The advice names two commands; each flag in them must parse."""
+    from gcp.fetchers import fetch_alphavantage_intraday as fai
+    from gcp.fetchers import fetch_market_data as fmd
+
+    premarket = next(v for k, v in fai.BAR_DERIVED_RESULTS.items()
+                     if k.startswith("market_data_daily"))
+    assert "--recompute-premarket" in premarket
+    args = fmd.build_parser().parse_args(
+        ["--recompute-premarket", "--from", "2026-05-01", "--to", "2026-05-29", "--commit"])
+    assert args.recompute_premarket and args.first == "2026-05-01" and args.commit
+    assert "--re-resolve" in fai.BAR_DERIVED_RESULTS["signal_alerts exits"]
