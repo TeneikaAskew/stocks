@@ -1227,9 +1227,13 @@ class TestResolveAnalysisDate:
     """`_resolve_analysis_date` reads BRIEF_AS_OF for historical replay."""
 
     def test_default_returns_today(self, monkeypatch):
+        # Sunday 21:00 Eastern is Monday 02:00 UTC: "today" is the
+        # exchange's Sunday, not the host's Monday.
         monkeypatch.delenv("BRIEF_AS_OF", raising=False)
+        _freeze_exchange_clock(
+            monkeypatch, TestLiveDateIsTheExchangeDate._eastern('2026-11-15 21:00'))
         from gcp.premarket_brief import _resolve_analysis_date
-        assert _resolve_analysis_date() == date.today()
+        assert _resolve_analysis_date() == date(2026, 11, 15)
 
     def test_explicit_past_date_honoured(self, monkeypatch):
         monkeypatch.setenv("BRIEF_AS_OF", "2026-04-23")
@@ -1238,8 +1242,10 @@ class TestResolveAnalysisDate:
 
     def test_blank_falls_back_to_today(self, monkeypatch):
         monkeypatch.setenv("BRIEF_AS_OF", "   ")
+        _freeze_exchange_clock(
+            monkeypatch, TestLiveDateIsTheExchangeDate._eastern('2026-11-15 21:00'))
         from gcp.premarket_brief import _resolve_analysis_date
-        assert _resolve_analysis_date() == date.today()
+        assert _resolve_analysis_date() == date(2026, 11, 15)
 
     def test_future_date_rejected(self, monkeypatch):
         from datetime import timedelta
@@ -3628,12 +3634,11 @@ def _assert_pipeline_without_ew(monkeypatch, real_brief_sql, as_of, *, live=Fals
     monkeypatch.setenv('BRIEF_LLM_DISABLE', '1')
     monkeypatch.setenv('BRIEF_AMC_REACTIONS', '1')
     if live:
+        # A live run reads the exchange's clock: 08:30 Eastern on the
+        # parameter's date, with the host date the UTC date of that instant.
         monkeypatch.delenv('BRIEF_AS_OF', raising=False)
-        class Clock(date):
-            @classmethod
-            def today(cls):
-                return today
-        monkeypatch.setattr(pb, 'date', Clock)
+        _freeze_exchange_clock(
+            monkeypatch, TestLiveDateIsTheExchangeDate._eastern(f'{as_of} 08:30'))
     else:
         monkeypatch.setenv('BRIEF_AS_OF', as_of)
     def forbidden(*args, **kwargs):
