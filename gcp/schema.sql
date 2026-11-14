@@ -2561,6 +2561,30 @@ BEGIN
     END IF;
 END $$;
 
+-- One row per ticker anyone has ever watched, shared by every watcher and read owner-free by
+-- the FEAT-DATA-001 ingest job. Ten users on one ticker point at this one row; the ticker's bars,
+-- indicators and ticker_info row are written once, by the jobs, never per user.
+CREATE TABLE IF NOT EXISTS watched_tickers (
+    ticker      VARCHAR(10)  PRIMARY KEY CHECK (ticker = UPPER(ticker) AND ticker ~ '^[A-Z0-9.]{1,10}$'),
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- One row per (user, ticker): membership only, no ticker data. owner_uid is the Firebase account
+-- id (the token's uid), the immutable key REQ-TENANCY-001 asks for; owner_email is the verified
+-- email, stored for display and audit and refreshed on every write. Removal is a soft delete so a
+-- re-add keeps added_at.
+CREATE TABLE IF NOT EXISTS user_watchlists (
+    owner_uid    VARCHAR(128) NOT NULL,
+    owner_email  VARCHAR(320) NOT NULL,
+    ticker       VARCHAR(10)  NOT NULL REFERENCES watched_tickers(ticker),
+    source       VARCHAR(20)  NULL,          -- 'ui', 'combobox-auto-add'
+    added_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    removed_at   TIMESTAMPTZ  NULL,
+    PRIMARY KEY (owner_uid, ticker)
+);
+CREATE INDEX IF NOT EXISTS user_watchlists_active_idx        ON user_watchlists (owner_uid) WHERE removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS user_watchlists_ticker_active_idx ON user_watchlists (ticker)    WHERE removed_at IS NULL;
+
 
 -- ── watchlist_history: immutable membership log ──────────────────────
 -- `watchlists` is PRIMARY KEY (user_id, ticker), so it holds CURRENT
