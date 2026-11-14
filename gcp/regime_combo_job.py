@@ -44,6 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger("regime_combo_job")
 
 from lib.config import IndicatorConfig  # noqa: E402
+from lib.eastern_time import market_today  # noqa: E402
 from lib import combo_mining as cm  # noqa: E402
 from gcp.indicator_correlation_job import enrich, _RETURN_PREFIX  # noqa: E402
 from scripts.analysis.regime_combo_miner import label_regimes  # noqa: E402
@@ -196,7 +197,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     horizons = sorted({int(h) for h in args.horizons.split(",") if h.strip()})
     as_of = (datetime.strptime(args.as_of, "%Y-%m-%d").date()
-             if args.as_of else date.today())
+             if args.as_of else market_today())
     if not tickers or not horizons:
         logger.error("No tickers/horizons resolved; nothing to do.")
         return 1

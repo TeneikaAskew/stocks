@@ -1,7 +1,6 @@
 {
  "gcp/audit_job_runner.py": {
   "host-today": [
-   "main::date.today()",
    "main::datetime.now()"
   ]
  },
@@ -13,11 +12,6 @@
  "gcp/backfill_ticker.py": {
   "host-today": [
    "_parse_dates::date.today()"
-  ]
- },
- "gcp/backtest_job.py": {
-  "host-today": [
-   "_resolve_window::date.today()"
   ]
  },
  "gcp/build_intraday_flow.py": {
@@ -87,11 +81,6 @@
    "_last_published_ts::pd.to_datetime(val, utc=True)"
   ]
  },
- "gcp/indicator_correlation_job.py": {
-  "host-today": [
-   "main::date.today()"
-  ]
- },
  "gcp/migrate_to_gcp.py": {
   "host-today": [
    "main::datetime.now()",
@@ -152,11 +141,6 @@
  "gcp/queries/verify_brief_bias_distribution.sql": {
   "sql-utc-date": [
    "<sql>::sql#ef4e1de8379d"
-  ]
- },
- "gcp/regime_combo_job.py": {
-  "host-today": [
-   "main::date.today()"
   ]
  },
  "gcp/research/direction_program/phase2_ablation.py": {
@@ -652,13 +636,6 @@
    "apply_winner::str#c9a485322b9a"
   ]
  },
- "scripts/calibrate_thresholds.py": {
-  "host-today": [
-   "_parse_as_of::date.today()",
-   "calibrate_ticker::date.today()",
-   "fetch_bars::date.today()"
-  ]
- },
  "scripts/check_event_window_concentration.py": {
   "fixed-offset": [
    "load_high_impact_events::pd.Timedelta(hours=4)"
@@ -781,14 +758,6 @@
   "utc-parse": [
    "_process_ticker::pd.to_datetime(signals_df['entry_time'], utc=True)",
    "map_signals_to_table::pd.to_datetime(out['entry_time'], utc=True)"
-  ]
- },
- "scripts/run_param_sweep.py": {
-  "host-today": [
-   "main::date.today()"
-  ],
-  "sql-utc-date": [
-   "apply_winner::str#f9f26d5f0493"
   ]
  },
  "scripts/run_timeframe_sweep.py": {

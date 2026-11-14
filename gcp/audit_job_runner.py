@@ -43,8 +43,10 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from lib.eastern_time import market_today
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
@@ -122,7 +124,7 @@ def main() -> int:
     # Build argv
     argv = [sys.executable, "-m", module]
     if window_days > 0:
-        end = date.today()
+        end = market_today()
         start = end - timedelta(days=window_days)
         # Use --since for verify-brief-bias-style scripts, --start/--end for
         # walk-forward-style. Caller's AUDIT_SCRIPT_ARGS can override either.

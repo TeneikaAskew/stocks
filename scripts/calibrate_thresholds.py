@@ -49,7 +49,7 @@ from sqlalchemy import text
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from gcp.database import get_engine, is_cloud_sql_configured, upsert_dataframe  # noqa: E402
-from lib.eastern_time import stored_intraday_to_eastern  # noqa: E402
+from lib.eastern_time import market_today, stored_intraday_to_eastern  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("calibrate_thresholds")
@@ -149,7 +149,7 @@ def calibrate_ticker(
 
     out = {
         "ticker": ticker,
-        "calibration_date": as_of or date.today(),
+        "calibration_date": as_of or market_today(),
         "lookback_days": lookback_days,
         "n_bars_used": len(bars_1min),
         "earliest_bar_date": bars_1min["ts"].min().date(),
@@ -226,7 +226,7 @@ def fetch_bars(
     Uses the partitioned-table primary key (ticker, interval, ts) so the
     query hits the per-ticker partition directly.
     """
-    end = as_of or date.today()
+    end = as_of or market_today()
     cutoff = end - timedelta(days=lookback_days)
     sql = text("""
         SELECT ts, open, high, low, close, volume
@@ -387,7 +387,7 @@ def _parse_as_of(raw: Optional[str]) -> Optional[date]:
         d = date.fromisoformat(raw)
     except ValueError:
         raise SystemExit(f"--as-of {raw!r} is not a valid YYYY-MM-DD date")
-    if d > date.today():
+    if d > market_today():
         raise SystemExit(f"--as-of {raw!r} is in the future")
     return d
 

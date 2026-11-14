@@ -286,7 +286,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/maintenance/compute_spx_greeks.py`](../../../scripts/maintenance/compute_spx_greeks.py) — line [149](../../../scripts/maintenance/compute_spx_greeks.py#L149)
 
 ### `exit_config_overrides`
-- [`scripts/run_param_sweep.py`](../../../scripts/run_param_sweep.py) — line [134](../../../scripts/run_param_sweep.py#L134)
+- [`scripts/run_param_sweep.py`](../../../scripts/run_param_sweep.py) — line [135](../../../scripts/run_param_sweep.py#L135)
 
 ### `historical_signals`
 - [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) — line [127](../../../gcp/historical_signals.py#L127), [130](../../../gcp/historical_signals.py#L130), [241](../../../gcp/historical_signals.py#L241)
@@ -392,7 +392,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/build_realtime_gex.py`](../../../gcp/build_realtime_gex.py) — line [137](../../../gcp/build_realtime_gex.py#L137)
 
 ### `regime_combo_results`
-- [`gcp/regime_combo_job.py`](../../../gcp/regime_combo_job.py) — line [189](../../../gcp/regime_combo_job.py#L189)
+- [`gcp/regime_combo_job.py`](../../../gcp/regime_combo_job.py) — line [190](../../../gcp/regime_combo_job.py#L190)
 
 ### `schema_apply_history`
 - [`gcp/apply_schema.py`](../../../gcp/apply_schema.py) — line [267](../../../gcp/apply_schema.py#L267), [485](../../../gcp/apply_schema.py#L485)
@@ -458,7 +458,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/waitlist.py`](../../../platform/api/routers/waitlist.py) — line [111](../../../platform/api/routers/waitlist.py#L111)
 
 ### `walk_forward_results`
-- [`scripts/run_param_sweep.py`](../../../scripts/run_param_sweep.py) — line [108](../../../scripts/run_param_sweep.py#L108)
+- [`scripts/run_param_sweep.py`](../../../scripts/run_param_sweep.py) — line [109](../../../scripts/run_param_sweep.py#L109)
 
 ### `watched_tickers`
 - [`platform/api/routers/me_watchlist.py`](../../../platform/api/routers/me_watchlist.py) — line [44](../../../platform/api/routers/me_watchlist.py#L44)
@@ -620,7 +620,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `exit_config_overrides`
 - [`lib/strategies/exit_config_overrides.py`](../../../lib/strategies/exit_config_overrides.py) — line [124](../../../lib/strategies/exit_config_overrides.py#L124)
-- [`scripts/run_param_sweep.py`](../../../scripts/run_param_sweep.py) — line [143](../../../scripts/run_param_sweep.py#L143)
+- [`scripts/run_param_sweep.py`](../../../scripts/run_param_sweep.py) — line [144](../../../scripts/run_param_sweep.py#L144)
 
 ### `historical_signals`
 - [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) — line [108](../../../gcp/historical_signals.py#L108), [111](../../../gcp/historical_signals.py#L111)

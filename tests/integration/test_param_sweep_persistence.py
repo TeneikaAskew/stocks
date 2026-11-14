@@ -28,6 +28,7 @@ pytestmark = pytest.mark.skipif(
     reason="integration tests need a Postgres (DB_HOST) — see the "
     "integration-tests CI job in backtest-pipeline.yml",
 )
+from lib.eastern_time import market_today_sql
 from lib.walk_forward import select_calibration_winner
 
 
@@ -118,6 +119,6 @@ def test_apply_winner_idempotent_rerun(clean_sweep):
     with clean_sweep.begin() as c:
         n = c.execute(sqlalchemy.text(
             "SELECT count(*) FROM exit_config_overrides "
-            "WHERE ticker = 'TST' AND calibration_date = CURRENT_DATE"
+            f"WHERE ticker = 'TST' AND calibration_date = {market_today_sql()}"
         )).scalar()
     assert n == 1  # converged, did not duplicate
