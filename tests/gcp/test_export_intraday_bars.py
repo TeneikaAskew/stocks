@@ -1807,3 +1807,100 @@ def test_exported_at_is_when_the_months_rows_were_read(monkeypatch):
     assert april == read_at["2025-04"][0] - timedelta(minutes=1)
     assert may == read_at["2025-05"][1] - timedelta(minutes=1)
     assert may > read_at["2025-05"][0] > april
+
+
+# -- the month window and a month's first raw date ------------------------------
+
+
+def _first_date_reads(prev_day, first_day, year, month, how, inserted=OLD, **first_kw):
+    """A table holding the session before the month (whole, true UTC) and the
+    month's first session stored *how*: (the month-window rows, the rows of
+    the first raw UTC date entire)."""
+    prev = _with_prices(stored(session_bars(prev_day), inserted=inserted), {})
+    first = _with_prices(stored(session_bars(first_day, **first_kw), how, inserted=inserted), {})
+    table = (pd.concat([prev, first], ignore_index=True)
+             .sort_values("ts").reset_index(drop=True)[BARS_COLUMNS])
+    start, end = intraday_month_window(year, month)
+    window = table[(table["ts"] >= start) & (table["ts"] < end)].reset_index(drop=True)
+    day = pd.Timestamp(first_day, tz="UTC")
+    whole = table[(table["ts"] >= day) & (table["ts"] < day + pd.Timedelta(days=1))]
+    return window, whole.reset_index(drop=True)
+
+
+@pytest.mark.parametrize("prev_day,first_day,year,month,spill,shift_hours", [
+    ("2025-04-30", "2025-05-01", 2025, 5, 1, 4),      # EDT: the 20:00 ET bar at 00:00Z
+    ("2024-01-31", "2024-02-01", 2024, 2, 61, 5),     # EST: 19:00 to 20:00 ET at 00:00-01:00Z
+])
+def test_a_months_first_date_is_placed_without_the_spill_of_the_evening_before(
+        prev_day, first_day, year, month, spill, shift_hours):
+    """A LIMIT of the month window, pinned so it is not rediscovered. It is
+    not a behaviour to rely on.
+
+    The window opens at 02:00Z on the 1st, so the month's read holds the first
+    raw UTC date without its 00:00-01:00Z rows: the true-UTC spill of the
+    evening before, which belongs to the earlier month's file. The resolver
+    decides a date's convention from the date's rows. With that spill, a thin
+    flat true-UTC session on the 1st is read as true UTC (the date has rows
+    only true UTC can hold); without it, the same rows read as Eastern labels.
+    So for rows that are NOT PROVEN the month-window read and a whole-date
+    read place the first session differently. Proven rows are not affected.
+
+    What flags it in the manifest: every such row is in ``inferred_rows`` and
+    the session reads ``undetermined``, so the month is never ``as_traded``.
+    Nothing in the file marks the rows.
+    """
+    kw = dict(start="04:00", end="13:29", spike=False)
+    window, whole = _first_date_reads(prev_day, first_day, year, month, "true", **kw)
+    assert len(window) == 570 and len(whole) == 570 + spill
+
+    # A whole-date read: every row of the session at its stored instant.
+    instants, keep, proven = place_stored_rows(
+        whole["ts"], whole["volume"], whole["inserted_at"])
+    assert keep.all() and not proven.any()
+    assert (instants == pd.DatetimeIndex(whole["ts"])).all()
+
+    # The month-window read, which is what the export writes: the same 570
+    # rows as Eastern labels, each bar `shift_hours` after its own minute.
+    daily = pd.DataFrame([{"date": date.fromisoformat(first_day), "high": 600.0,
+                           "low": 590.0, "data_source": "alphavantage_daily"}])
+    data, got = xb.build_month(window, daily, "SPY", year, month, NOW)
+    written = read_file(data)
+    assert (pd.DatetimeIndex(written["ts"]).as_unit("ns")
+            == pd.DatetimeIndex(window["ts"]) + pd.Timedelta(hours=shift_hours)).all()
+
+    assert got["rows"] == got["inferred_rows"] == 570
+    assert got["sessions"]["undetermined"] == 1 and got["sessions"]["ok"] == 0
+    assert got["basis"]["not_measured"][first_day] == "incomplete"
+    assert got["basis"]["state"] == "unmeasured"
+
+    # The same rows proven: read where they are stored, and nothing inferred.
+    proven_window, _ = _first_date_reads(
+        prev_day, first_day, year, month, "true", inserted=NEW, **kw)
+    data, got = xb.build_month(proven_window, daily, "SPY", year, month, NOW)
+    assert (pd.DatetimeIndex(read_file(data)["ts"]).as_unit("ns")
+            == pd.DatetimeIndex(proven_window["ts"])).all()
+    assert got["inferred_rows"] == 0
+    assert got["sessions"]["thin"] == 1 and got["sessions"]["undetermined"] == 0
+
+
+def test_the_missing_spill_cuts_the_other_way_for_a_label_session():
+    """The mirror of the limit above. A first session stored as Eastern labels
+    in regular hours only, flat volume, not proven: the month-window read
+    places it as labels, which is right; a whole-date read, which also holds
+    the true-UTC spill of the evening before, reads the date as true UTC and
+    puts every bar four hours early. Neither read is the better one for every
+    shape: both rest on inference, which ``inferred_rows`` counts."""
+    kw = dict(start="09:30", end="15:59", spike=False)
+    window, whole = _first_date_reads("2025-04-30", "2025-05-01", 2025, 5, "label", **kw)
+    assert len(window) == 390 and len(whole) == 391
+    as_stored = pd.DatetimeIndex(window["ts"])
+
+    instants, keep, _ = place_stored_rows(window["ts"], window["volume"], window["inserted_at"])
+    assert keep.all() and (instants == as_stored + pd.Timedelta(hours=4)).all()   # labels
+
+    instants, keep, _ = place_stored_rows(whole["ts"], whole["volume"], whole["inserted_at"])
+    session = pd.DatetimeIndex(whole["ts"]) >= pd.Timestamp("2025-05-01 02:00", tz="UTC")
+    assert (instants[session] == as_stored).all()                                 # true UTC
+
+    _, got = xb.build_month(window, EMPTY_DAILY, "SPY", 2025, 5, NOW)
+    assert got["inferred_rows"] == 390
