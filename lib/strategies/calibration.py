@@ -29,6 +29,8 @@ from datetime import date
 from functools import lru_cache
 from typing import Optional, Tuple
 
+from lib.eastern_time import market_today
+
 from .config import CALL_RSI_RANGE, PUT_RSI_RANGE
 
 log = logging.getLogger(__name__)
@@ -62,7 +64,8 @@ def _latest_calibration(ticker: str, as_of: Optional[date] = None) -> Optional[d
     With `as_of` (the premarket brief, live or replayed), only rows dated on
     or before `as_of` are read and staleness is measured from `as_of`, so a
     replay uses the row that was in force on its session (REQ-DATA-002).
-    Without it (the signal monitor), the latest row and `date.today()`.
+    Without it (the signal monitor), the latest row and the exchange's date
+    (`lib.eastern_time.market_today()`).
 
     Returns None when:
       * Cloud SQL is not configured (CI / unit tests)
@@ -129,7 +132,7 @@ def _latest_calibration(ticker: str, as_of: Optional[date] = None) -> Optional[d
         return None
 
     row = df.iloc[0].to_dict()
-    age_days = ((as_of or date.today()) - row["calibration_date"]).days
+    age_days = ((as_of or market_today()) - row["calibration_date"]).days
     if age_days > _STALE_DAYS:
         log.warning(
             "ticker_calibration: stale for %s (%dd old) — Tier-B fallback",

@@ -33,7 +33,7 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import ET_NAME
+from lib.eastern_time import ET_NAME, market_today, market_today_sql
 
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
@@ -251,8 +251,8 @@ def _earnings_calendar_tickers(
     sql = f"""
         SELECT ticker
         FROM earnings_calendar
-        WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date BETWEEN CURRENT_DATE
-            AND CURRENT_DATE + (:days || ' days')::interval
+        WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date BETWEEN {market_today_sql()}
+            AND {market_today_sql()} + (:days || ' days')::interval
         GROUP BY ticker
     """
     if require_options:
@@ -350,8 +350,7 @@ def _resolve_scope(cli_scope: str = None) -> str:
     env = os.environ.get('PIPELINE_SCOPE', '').strip().lower()
     if env in ('daily', 'weekly'):
         return env
-    from datetime import datetime as _dt
-    return 'weekly' if _dt.now().weekday() == 6 else 'daily'
+    return 'weekly' if market_today().weekday() == 6 else 'daily'
 
 
 def _earnings_history_tickers() -> list[str]:

@@ -75,6 +75,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib import gamma  # noqa: E402
+from lib.eastern_time import market_today  # noqa: E402
 from lib.agents.summarizers import (  # noqa: E402
     classify_gamma_freshness,
     MAX_OPTIONS_HARD_STALE_TRADING_DAYS,
@@ -251,7 +252,7 @@ def _load_chain_for_live(
     """
     from gcp.database import query_to_dataframe
 
-    today = today or date_type.today()
+    today = today or market_today()
     floor = today - pd.Timedelta(days=20)  # 15 trading days × 1.5 margin
 
     # Phase 1: realtime probe — most recent intraday snapshot strictly
@@ -1241,7 +1242,7 @@ def get_grid_timeseries(
         df["expiration_iso"] = df["expiration"].map(_exp_iso)
 
         if not expiration:
-            today = date_type.today()
+            today = market_today()
             all_exps = sorted({e for e in df["expiration_iso"].unique()})
             upcoming = [e for e in all_exps
                         if date_type.fromisoformat(e) >= today]

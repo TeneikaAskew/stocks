@@ -10,19 +10,20 @@ is unchanged and PostgreSQL-only, so it is not executed here.
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import timedelta
 
 import pandas as pd
 import pytest
 
 from gcp import earnings_long_watchlist as gwl
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+from lib.eastern_time import market_today
 from tests.fixtures.earnings_calendar_sources import (
     av, ew_only, ew_raw_alias, make_db, null_source, run_earnings_sql,
     unknown_source, uw, yahoo, yahoo_bulk,
 )
 
-TODAY = date.today()
+TODAY = market_today()  # the readers' own "today" (lib.eastern_time), not the host's
 D = TODAY
 
 
