@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -23,7 +23,12 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import eastern_index_to_utc, stored_intraday_to_eastern, utc_to_eastern_naive
+from lib.eastern_time import (
+    eastern_index_to_utc,
+    intraday_month_window,
+    stored_intraday_to_eastern,
+    utc_to_eastern_naive,
+)
 
 from gcp.database import (
     bulk_insert_dataframe,
@@ -427,24 +432,12 @@ def _file_data_quality_issue(dead_tickers: list) -> None:
 # that: a row at the wrong key stays there. --replace-months refetches each
 # listed (ticker, month) from AV and swaps the whole month in one transaction.
 
-# Every row month M can hold, in either convention, lies in
-#   [M-01 02:00Z, (M+1)-01 02:00Z)
-#   * Eastern-labelled rows: raw labels 04:00-20:00 on each day of M.
-#   * True-UTC rows: 04:00 ET on the 1st (08:00Z EDT / 09:00Z EST) through
-#     the 20:00 ET bar on the last day (00:00Z EDT / 01:00Z EST on the next 1st).
-#     AV stores a bar AT 20:00 ET; the window must include it (code review C1).
-# and no neighbouring month's rows do: M-1's true-UTC rows end at 01:00Z on
-# the 1st of M; M+1's labelled rows start at 04:00Z on its 1st. Any boundary
-# in (01:00Z, 04:00Z] works; 02:00Z leaves an hour either side.
-# tests/gcp/test_intraday_replace_months.py checks this across DST changes.
-_WINDOW_HOUR_UTC = 2
+# The month window and why its boundary is 02:00Z: lib.eastern_time.intraday_month_window.
 
 
 def month_replace_window(year: int, month: int) -> tuple[datetime, datetime]:
     """UTC ``[start, end)`` holding every row of (year, month) in either convention."""
-    start = datetime(year, month, 1, _WINDOW_HOUR_UTC, tzinfo=timezone.utc)
-    ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
-    return start, datetime(ny, nm, 1, _WINDOW_HOUR_UTC, tzinfo=timezone.utc)
+    return intraday_month_window(year, month)
 
 
 REPLACE_OK = 'replaced'
