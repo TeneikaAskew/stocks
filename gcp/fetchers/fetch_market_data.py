@@ -16,6 +16,7 @@ import argparse
 import logging
 import os
 import sys
+from collections.abc import Callable
 from datetime import datetime, date, timedelta, timezone, time as dt_time
 from pathlib import Path
 
@@ -819,12 +820,18 @@ def _backfill_targets() -> list:
     if backfill_all:
         # Skip the eligible filter — every earnings_history ticker counts,
         # PLUS every ticker already in market_data_daily (catches
-        # universe-expansion orphans not yet in earnings_history).
+        # universe-expansion orphans not yet in earnings_history). Only real
+        # bars from other writers count: a ticker whose daily rows all came
+        # from the watched-ticker job, or are indicator-only (null close),
+        # is not a target, so leaving the watched set stops its pulls.
         sql = """
             WITH targets AS (
                 SELECT DISTINCT ticker FROM earnings_history
               UNION
-                SELECT DISTINCT ticker FROM market_data_daily
+                SELECT ticker FROM market_data_daily
+                 GROUP BY ticker
+                HAVING bool_or(close IS NOT NULL
+                               AND data_source IS DISTINCT FROM 'av_watched_backfill')
             )
             SELECT t.ticker,
                    COALESCE(mdd.n, 0)        AS bar_count,
@@ -972,7 +979,10 @@ def _exclude_partial_today(df: pd.DataFrame, today_et: date,
     return df[df['date'] < today_et]
 
 
-def _run_backfill(tickers: list | None = None) -> None:
+def _run_backfill(tickers: list | None = None, *,
+                  outputsize: str | None = None,
+                  data_source: str = 'av_daily_backfill',
+                  on_rows: Callable[[int], None] | None = None) -> int:
     """--backfill mode: pull historical daily bars for every ticker in
     earnings_history that the brief would render but lacks depth.
 
@@ -981,7 +991,25 @@ def _run_backfill(tickers: list | None = None) -> None:
 
     `tickers` (from --tickers) pulls exactly those, each in full, for a
     ticker the default targets cannot reach: BF.B and MOG.A have no
-    earnings_history row (#1188)."""
+    earnings_history row (#1188).
+
+    `outputsize` ('compact' | 'full'), with explicit `tickers`, plans every
+    ticker at that size instead of consulting `_pick_backfill_outputsize`.
+    `data_source` is the label written on every upserted row. Either one
+    without `tickers` (None or empty) raises ValueError: it would otherwise
+    apply to the whole earnings universe.
+
+    `on_rows`, when given, is called with each ticker's row count right
+    after its `upsert_dataframe` returns, so a caller can count the rows
+    already written when a later ticker's write raises.
+
+    Returns the number of rows passed to `upsert_dataframe` (conflict
+    updates included); 0 when nothing was written."""
+    if not tickers and (outputsize is not None or data_source != 'av_daily_backfill'):
+        raise ValueError(
+            f"_run_backfill: outputsize={outputsize!r} and data_source={data_source!r} "
+            "need explicit tickers; without them they would apply to every backfill target")
+
     now_et = datetime.now(ET)
     today_et = now_et.date()
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
@@ -992,8 +1020,11 @@ def _run_backfill(tickers: list | None = None) -> None:
         raise RuntimeError("ALPHA_VANTAGE_API_KEY not set — backfill cannot proceed")
 
     targets = [(t, 0, None) for t in tickers] if tickers else _backfill_targets()
-    plan = [(t, n, mx, _pick_backfill_outputsize(n, mx, today_et))
-            for (t, n, mx) in targets]
+    if outputsize is not None and tickers:
+        plan = [(t, n, mx, outputsize) for (t, n, mx) in targets]
+    else:
+        plan = [(t, n, mx, _pick_backfill_outputsize(n, mx, today_et))
+                for (t, n, mx) in targets]
     pending = [(t, n, mx, sz) for (t, n, mx, sz) in plan if sz is not None]
 
     n_full = sum(1 for _, _, _, sz in pending if sz == 'full')
@@ -1019,7 +1050,7 @@ def _run_backfill(tickers: list | None = None) -> None:
 
     if not pending:
         log.info("Nothing to do — all eligible tickers are already current.")
-        return
+        return 0
 
     cutoff = today_et - timedelta(days=BACKFILL_LOOKBACK_DAYS)
     upserted = 0
@@ -1048,9 +1079,11 @@ def _run_backfill(tickers: list | None = None) -> None:
                 # fetch-market-data pass re-stamps its enriched tickers
                 # afterwards, preserving that distinction.
                 df = df.copy()
-                df['data_source'] = 'av_daily_backfill'
+                df['data_source'] = data_source
                 upsert_dataframe(df, 'market_data_daily', ['ticker', 'date'])
                 upserted += len(df)
+                if on_rows is not None:
+                    on_rows(len(df))
                 log.info("    %d bars upserted: %s..%s",
                          len(df), df['date'].min(), df['date'].max())
         if i < len(pending) - 1 and sleep_secs > 0:
@@ -1060,6 +1093,7 @@ def _run_backfill(tickers: list | None = None) -> None:
              upserted, len(pending) - len(failures))
     if failures:
         log.warning("Failures (%d): %s", len(failures), failures[:20])
+    return upserted
 
 
 def _assert_fetch_date_fresh(fetch_date: str, today_et: date | None = None,
