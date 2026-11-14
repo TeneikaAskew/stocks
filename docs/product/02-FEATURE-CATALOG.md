@@ -283,11 +283,11 @@ EW brief retirement Draft [#1837](https://github.com/TeneikaAskew/stocks/pull/18
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Experimental; EW reader retirement source and local tests in Draft [#1800](https://github.com/TeneikaAskew/stocks/pull/1800) under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending |
+| Status | Experimental; default watchlist lock stage A (read-only `GET /api/insights/watchlist/default`, the ranked route and every stocks reader pinned to owner 'default', backfill target and replay fixes, INSIGHTS-04 implementation-source note) implemented in [#1910](https://github.com/TeneikaAskew/stocks/pull/1910) under the approved 2026-11-14 stage A r2 spec, replacing [#1892](https://github.com/TeneikaAskew/stocks/pull/1892); EW reader retirement source and local tests in Draft [#1800](https://github.com/TeneikaAskew/stocks/pull/1800) under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending |
 | Priority | P2 |
 | Target phase | Phase 4 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-11 |
+| Last reviewed | 2026-11-14 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/insights` |
 | Backend | `/api/insights` (13) |
@@ -356,11 +356,11 @@ EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), f
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | **Invalidated** |
+| Status | **Invalidated**; replays on Discord and the API read 1-min bars only from `market_data_intraday` or say they cannot, and start no fetch: `/replay` and `scripts/backfill_and_replay.py` probe `market_data_intraday` and `market_data_daily` and no longer run `backfill-ticker`, the market data and reference routes answer 404 for a day the table lacks and 503 for a database outage, and a guard test holds the registered replay paths to the table ([#1891](https://github.com/TeneikaAskew/stocks/pull/1891); implementation under review, not deployed, rollout pending) |
 | Priority | P0 |
 | Target phase | Phase 2 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-11-14 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/reports` |
 | Backend | `/api/backtest/replay-trades` |

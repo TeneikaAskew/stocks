@@ -201,15 +201,18 @@ def test_av_news_to_rows_tagged_data_source():
     assert rows[0]["match_method"] == "av_ticker_sentiment"
 
 
-# ── Watchlist opt-out (Codex on #1022) ────────────────────────────────────
+# ── Watchlist opt-in (Codex on #1022; FEAT-INSIGHT-001 stage A) ──────────
 #
-# run() unconditionally called add_to_watchlist(), which inserts the ticker
-# into the shared `default` watchlist or clears removed_at on a deliberately
-# removed one. That is the Discord /replay contract, but
-# scripts/backfill_and_replay.py now routes historical-test tickers through
-# the same job and every active watchlist row is consumed by the generic
-# fetchers. BACKFILL_ADD_TO_WATCHLIST=false keeps those backfills out of the
-# production universe; the default stays true.
+# run() once unconditionally called add_to_watchlist(), which inserts the
+# ticker into the shared `default` watchlist or clears removed_at on a
+# deliberately removed one. #1022 made BACKFILL_ADD_TO_WATCHLIST=false the
+# opt-out for scripts/backfill_and_replay.py's historical-test tickers, with
+# the default still true. Since the default list is exactly SPY, QQQ and IWM
+# (owner's decision 1, 2026-11-13), a Discord /replay on a ticker with no
+# daily data must not undo a removal one ticker at a time, so the default is
+# now false (owner's decision 2) and an operator opts in with "true" on one
+# execution. The comparison stays `.lower() == "true"`: TRUE opts in, yes
+# does not (Review Focus 5 of the stage A plan).
 
 
 @pytest.fixture
@@ -237,18 +240,35 @@ def stubbed_run(monkeypatch):
         yield mod, watch
 
 
-def test_watchlist_add_is_the_default(stubbed_run, monkeypatch):
+def test_watchlist_add_is_off_by_default(stubbed_run, monkeypatch, caplog):
+    """With the variable unset a backfill leaves watchlists untouched and says so."""
+    import logging
+
     mod, watch = stubbed_run
     monkeypatch.delenv("BACKFILL_ADD_TO_WATCHLIST", raising=False)
+    # The module logs under "backfill-ticker" (gcp/backfill_ticker.py:69), not its dotted path.
+    with caplog.at_level(logging.INFO, logger="backfill-ticker"):
+        assert mod.run() == 0
+    watch.assert_not_called()
+    assert "BACKFILL_ADD_TO_WATCHLIST=false" in caplog.text
+
+
+def test_watchlist_add_can_be_opted_in(stubbed_run, monkeypatch):
+    mod, watch = stubbed_run
+    monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", "true")
     assert mod.run() == 0
     watch.assert_called_once_with("AMD")
 
 
-def test_watchlist_add_can_be_opted_out(stubbed_run, monkeypatch):
+@pytest.mark.parametrize("value, opted_in", [
+    ("TRUE", True), ("True", True), ("false", False), ("yes", False), ("1", False),
+])
+def test_watchlist_add_opt_in_is_case_insensitive(stubbed_run, monkeypatch, value, opted_in):
+    """`.lower() == "true"`: any spelling of true opts in; yes and 1 do not."""
     mod, watch = stubbed_run
-    monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", "false")
+    monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", value)
     assert mod.run() == 0
-    watch.assert_not_called()
+    assert watch.call_count == (1 if opted_in else 0), (value, watch.call_args_list)
 
 
 def test_a_non_string_vendor_timestamp_is_dropped_not_raised(caplog):
