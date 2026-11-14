@@ -759,6 +759,27 @@ class TestBuildGridSummary:
         assert summary.strikes == []
         assert summary.regime == "unknown"
 
+    def test_calls_only_grid_is_unavailable(self):
+        opts = [o for o in self._build_chain() if o["type"] == "call"]
+        g = gamma.build_grid_summary("XYZ", "2026-05-23", opts, window_pct=15.0)
+        assert (g.regime, g.total_gex, g.total_vex, g.gamma_balance, g.gamma_flip) == ("unknown", None, None, None, None)
+        assert g.cells == [] and g.expirations == [] and g.strikes == []
+        assert g.spot.method == "delta"
+        assert gamma.partial_chain_warning("calls_only") in g.warnings
+
+    def test_puts_only_grid_is_unavailable(self):
+        opts = [o for o in self._build_chain() if o["type"] == "put"]
+        g = gamma.build_grid_summary("XYZ", "2026-05-23", opts, window_pct=15.0)
+        assert g.total_gex is None and g.total_vex is None and g.cells == []
+
+    def test_both_sided_grid_numerics_unchanged(self):
+        g = gamma.build_grid_summary("XYZ", "2026-05-23", self._build_chain(), window_pct=15.0)
+        assert len(g.cells) == 5 and g.total_gex == sum(c.gex for c in g.cells) and g.total_vex == sum(c.vex for c in g.cells)
+
+    def test_grid_no_spot_returns_null_totals(self):
+        g = gamma.build_grid_summary("XYZ", "2026-05-23", [], window_pct=15.0)
+        assert g.spot.method == "none" and g.total_gex is None and g.total_vex is None
+
 
 # ── True Black-Scholes-recurved gamma flip ──────────────────────────────────
 

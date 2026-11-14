@@ -193,8 +193,8 @@ class GammaGridSummary:
     gamma_balance: float | None   # gamma-median balance price (not a true flip)
     gamma_flip: float | None      # true BS-recurved zero-gamma level
     regime: str               # "positive_gamma" | "negative_gamma" | "unknown"
-    total_gex: float
-    total_vex: float
+    total_gex: float | None
+    total_vex: float | None
     cells: list[GammaGridCell]
     expirations: list[str]    # ISO dates, ascending — column headers
     strikes: list[float]      # ascending — row headers
@@ -1283,6 +1283,28 @@ def build_grid_summary(
         elif spot.method == "none":
             warnings.append("Could not estimate spot from this chain.")
 
+    # A one-sided chain is unavailable, not a one-sided total. Empty is not
+    # partial: it falls through to the no-spot return below.
+    sides = chain_sides(chain)
+    if sides in (SIDES_CALLS_ONLY, SIDES_PUTS_ONLY):
+        return GammaGridSummary(
+            ticker=ticker.upper(),
+            snapshot_date=snapshot_date,
+            snapshot_ts=snapshot_ts,
+            data_source=data_source,
+            spot=spot,
+            gamma_balance=None,
+            gamma_flip=None,
+            regime="unknown",
+            total_gex=None,
+            total_vex=None,
+            cells=[],
+            expirations=[],
+            strikes=[],
+            window_pct=window_pct,
+            warnings=warnings + [partial_chain_warning(sides)],
+        )
+
     if spot.price <= 0:
         return GammaGridSummary(
             ticker=ticker.upper(),
@@ -1293,8 +1315,8 @@ def build_grid_summary(
             gamma_balance=None,
             gamma_flip=None,
             regime="unknown",
-            total_gex=0.0,
-            total_vex=0.0,
+            total_gex=None,
+            total_vex=None,
             cells=[],
             expirations=[],
             strikes=[],
