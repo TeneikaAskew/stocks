@@ -14,7 +14,7 @@ done_when:
   - "the inventory blocks of docs/product/infrastructure/05-a-ARCHITECTURE.md, and of 05-c-DATA_DEPENDENCIES.md if its render changes, are re-rendered by scripts/maintenance/doc_inventory.py from the branch, and tests/scripts/test_doc_inventory.py passes with test_reconcile_against_snapshot_reports_the_known_deltas expecting schedulers_repo_only to be earnings-sweep-sunday, premarket-brief-late and premarket-refresh-late (repo-only until the owner's deploy and a fresher snapshot)"
   - "docs/product/03-SITE-TRACEABILITY.md gains one FEAT-DEPLOY-001 DASHBOARD-01 row in the Implementation-source notes table beginning source_identity_sha256=<the PR head's source identity>; and describing the two late scheduler entries of gcp/deploy.sh as the element's backend source with tests/gcp/test_deploy_reachability.py as the test, with no other byte of the document changed, and docs/review-evidence/site-source-snapshot.json is produced from that head and verifies (scripts/maintenance/doc_source_snapshot.py verify exits 0 with status identity-matched)"
   - "bash -n gcp/deploy.sh passes; python3 -m pytest tests/gcp/test_deploy_reachability.py tests/gcp/test_phase6_playbook_scheduler.py tests/gcp/test_strat_engine_scheduler.py passes; the FEAT-DEPLOY-001 catalog record (Status, Last reviewed) and the PR traceability entry are updated; the branch run of python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main; python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -220,7 +220,7 @@ landing time is an estimate.
 | 09:20:00 | Cloud Scheduler fires `premarket-refresh-late` (job `fetch-premarket-refresh`) and `premarket-brief-late` (job `premarket-brief`, with `BRIEF_RUN_SLOT=late`). | this spec |
 | 09:20:36 to 09:21:03 | The refresh upserts today's premarket columns for its universe of up to 50 tickers, with `pre_fetched_at` after 09:20. | live: trigger to completion 36 to 63 s |
 | 09:20:03 to 09:20:53 | The brief's container starts. In the late slot it first checks that today is a session, then waits for the refresh's write. | live: creation to start 2 to 53 s; prerequisite |
-| about 09:21:30 to 09:22:30 | The late brief builds the levels from the 09:20 snapshot, rewrites the canonical live row, appends history and posts to Discord in the form the owner picks (decision 2). | estimate: live run time 44 to 79 s; prerequisite |
+| about 09:21:30 to 09:22:30 | The late brief builds the levels from the 09:20 snapshot, rewrites the canonical live row, appends history and posts to Discord as the short "levels updated" note (decision 2). | estimate: live run time 44 to 79 s; prerequisite |
 | 09:27:00 | Deadline. If the refresh's write has not landed, the late brief writes nothing, says so in Discord and exits nonzero. The 08:30 levels stand. | prerequisite |
 | 09:29:30 | Cutoff. The late brief never writes the canonical row at or after this time. | prerequisite |
 | 09:30:00 to 09:30:30 | The signal monitor's first poll loads the levels then in the canonical row. | read, live |
@@ -311,8 +311,9 @@ not drafted here. What this spec relies on it to provide:
    structured trigger, stop and target columns, the text); history gets a row with
    `run_kind = 'scheduled'` and `triggered_by = 'cloud-scheduler:premarket-brief-late'`; no canonical
    write at or after 09:29:30.
-5. Late slot, Discord: the form the owner picks in decision 2.
-6. Whatever the owner decides on decisions 4, 6 and 7.
+5. Late slot, Discord: the short "levels updated" note, posted every session (decision 2).
+6. The model calls in the late brief, the newest bar's time in the refresh log, and the `BRIEF_AS_OF`
+   cut at the slot's clock (decisions 4, 6 and 7, each taken as recommended).
 
 Order: the prerequisite's code merges first. If this wiring reached main first, `./gcp/deploy.sh
 schedulers` or `all` would create a 09:20 entry that runs the brief without the late slot: a second
@@ -325,9 +326,9 @@ The schedule is `gcp/deploy.sh`, which the gate assigns to FEAT-DEPLOY-001. The 
 second run useful (overwrite the canonical row, wait on the refresh, stop before the open, post a short
 note, skip a holiday) is `gcp/premarket_brief.py`, FEAT-PLAYBOOK-001. The same split, in the same
 order, was used for the watched-ticker ingest
-(`docs/superpowers/specs/2026-11-14-feat-deploy-001-watched-tickers-deploy.md`). It would become three
-or four specs only if the owner picks a late insight run (decision 1, FEAT-INSIGHT-001) or a signal
-monitor that re-reads (decision 3, FEAT-SIGNAL-001).
+(`docs/superpowers/specs/2026-11-14-feat-deploy-001-watched-tickers-deploy.md`). It would have become three
+or four specs had the owner picked a late insight run (decision 1, FEAT-INSIGHT-001) or a signal
+monitor that re-reads (decision 3, FEAT-SIGNAL-001); neither was picked.
 
 ## Capacity
 
@@ -348,7 +349,7 @@ Late brief (`premarket-brief`, 1 vCPU, 1 GiB, task timeout 1800 s, live):
 
 - Volume: the brief tickers (3 today); 3 canonical rows rewritten, 3 history rows appended.
 - Velocity: the early brief's reads and writes; plus the wait, at most 84 keyed queries (one per 5 s
-  for 7 minutes); plus up to 8 model calls if decision 4 is yes.
+  for 7 minutes); plus up to 8 model calls (decision 4: yes).
 - Wall-clock: 44 to 79 s start to completion over nine executions (live); the late slot adds the
   wait, expected under 65 s and bounded at 7 minutes by the deadline. The task timeout is 3.6 times
   the worst case (499 s).
@@ -417,7 +418,22 @@ doubles its vendor calls and can still land before the 09:27 deadline. This spec
 Already decided, 2026-11-14: add a late run, keep the early one; late refresh at 09:20 ET, brief as
 soon as the refresh has finished.
 
-Open, each with what it costs and changes:
+**Decided 2026-11-14:** the owner took the recommended option on all seven ("Take your
+recommendations", then "Yes, all seven" when asked about this spec and its paid item by name):
+
+1. The insight pipeline and its Discord push stay as they are.
+2. The late brief posts a short "levels updated" note, every session.
+3. The signal monitor is left as it is.
+4. Paid model calls in the late brief: yes. Up to 8 Gemini Flash-Lite calls a late run, about
+   0.012 USD a run, about 0.36 USD a month. This is the owner's explicit yes to that spend.
+5. The split and the order are approved: the brief's late slot under FEAT-PLAYBOOK-001 first, then
+   this schedule under FEAT-DEPLOY-001.
+6. The refresh logs the newest bar's time per ticker, in the prerequisite change. No schema change
+   and no label on the brief.
+7. A `BRIEF_AS_OF` replay cuts premarket at the slot's clock, in the prerequisite if it fits its
+   size, otherwise as its own spec.
+
+The options as they were put, each with what it costs and changes:
 
 1. Insight pipeline and its Discord push: stay, add a late run, or move?
    - Stay (recommended for the first delivery). No added cost. The 08:45 reports and the 09:15 digest
