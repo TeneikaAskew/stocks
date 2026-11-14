@@ -9,7 +9,7 @@ done_when:
   - "P1 jobs: tests/gcp/test_data_refresh_deploy.py runs the real deploy functions with a fake gcloud and proves create and update of data-refresh-sequence and economic-actuals-refresh converge to the same image, command, service account, secret references, 1 vCPU, 512Mi and --max-retries 0, with update clearing stale args; that insight-pipeline create and update both carry --max-retries 0 (a preexisting retries 1 job converges to 0), that update sets --task-timeout 1800 when the job's current timeout is above 1800, keeps a current timeout at or below 1800, and refuses to continue when the current timeout cannot be read; and that the effective IAM preflight fails closed (no scheduler mutation) when the scheduler identity cannot run the controller with overrides or the controller identity cannot run, get or list executions of each child, including when the permission check itself is unavailable; fails on origin/main, where neither job exists and insight-pipeline update omits retries and timeout"
   - "P2 cutover: tests/gcp/test_data_refresh_deploy.py proves av-options-daily (0 21 * * 1-5) targets data-refresh-sequence with the override --phase options-gamma, strat-engine-daily (35 23 * * 1-5) targets it with --phase strat, gamma-levels-daily is paused, a second deploy restores neither direct target nor drops an override, every other scheduler's name, cron and target is unchanged, and an injected failure at each cutover mutation (job create or update, pause, scheduler update or create, resume) never leaves a new phase launcher enabled while a direct gamma or STRAT launcher is enabled; an ordinary all or schedulers deploy leaves the new launchers paused, and the explicit activation command refuses, with no mutation, when any recorded prerequisite is missing (merged DATA Part 3 revision, RETRY_SPLIT on main, IAM preflight, alert route); fails on origin/main"
   - "P3 macro dispatcher: tests/gcp/test_data_refresh_deploy.py proves the scheduler economic-actuals-refresh runs */15 8-18 * * 1-5 in America/New_York (last run 18:45 ET, so a release admitted at or before 17:45 ET gets its release plus 60 minutes attempt) targeting the job of the same name with the due-macro command, and that economic-events-daily keeps its 0 7 * * 1-5 schedule collection; fails on origin/main"
-  - "P4 composed acceptance: tests/integration/test_refresh_deployment_acceptance.py runs the commands the deploy script emits against isolated PostgreSQL and a recording Cloud Run transport, using the merged FEAT-DATA-001 controller, and proves one options-gamma and one strat execution per session under overlapping triggers, no gamma after a failed or one-sided options run, no STRAT before matching gamma and complete same-session market coverage, gamma waiting for the 22:00 scanner when its p95 run would cross 22:00 and then being launched after that scanner's terminal state and completing, and, with the rendered notifier log filter and the real gcp.failure_notifier.reconcile_closures, that a failed options-gamma phase opens an issue that a later successful strat phase does not close and that two consecutive overdue due-macro runs both fail without closing it, while a persisted actual of 0 lets the next run succeed and close it; fails on origin/main"
+  - "P4 composed acceptance: tests/integration/test_refresh_deployment_acceptance.py runs the commands the deploy script emits against isolated PostgreSQL and a recording Cloud Run transport, using the merged FEAT-DATA-001 controller, and proves one options-gamma and one strat execution per session under overlapping triggers, no gamma after a failed or one-sided options run, no STRAT before matching gamma and complete same-session market coverage, gamma waiting for the 22:00 scanner when its p95 run would cross 22:00 and then being launched after that scanner's terminal state and completing, with the recording transport counting at most 160 control-plane requests for that options-gamma phase at one poll per 60 s, and, with the rendered notifier log filter and the real gcp.failure_notifier.reconcile_closures, that a failed options-gamma phase opens an issue that a later successful strat phase does not close and that two consecutive overdue due-macro runs both fail without closing it, while a persisted actual of 0 lets the next run succeed and close it; fails on origin/main"
   - "P5 generated records: on the implementation head, scripts/maintenance/doc_inventory.py --insert has re-rendered the 05-a, 05-c and 05-e inventory blocks and the 05-a retry split through RETRY_SPLIT with check_generated_docs.gate_derived_numbers empty, the MODEL-TYPE-001 and MODEL-GAMMA-001 scheduler rows in docs/product/07-MODEL-REGISTRY.md and docs/product/generated/model-registry.json name the phased launchers, and tests/meta/test_model_registry_consistency.py and tests/scripts/test_check_generated_docs.py pass; the implementation PR body records the rendered configuration, a dry-run of create and update and the measured controller and due-macro durations against the Capacity table"
   - "P6 records: docs/RUNBOOK_DATA_REFRESH.md (registered in docs/DOC_REGISTRY.md) holds the activation order, the rollback, the disabled-offset inventory and the production verification queries; the FEAT-DEPLOY-001 catalog record and 12-PR-ISSUE-TRACEABILITY list the implementation PR; the (FEAT-DEPLOY-001, SHARED-07) implementation-source note carries a source identity produced and verified from the committed head; python3 scripts/gate/spec_gate.py --pr origin/main passes"
   - "P7 insider SEC identity: tests/gcp/test_data_refresh_deploy.py runs deploy_fetch_insider_transactions with a fake gcloud and a fake secret lookup and proves create and update both pass SEC_USER_AGENT from the sec-user-agent secret in --set-env-vars when the secret exists, omit it with a WARN when it does not, and leave every other flag unchanged; fails on origin/main, where the job's environment has no SEC_USER_AGENT"
@@ -21,9 +21,16 @@ supersedes: null
 
 ## Status and authority
 
-Approved by the owner on 2026-11-11 in stocks#1828. It claims no review or evidence it did not produce and takes effect when it merges. It is the deployment half of `docs/superpowers/specs/2026-11-11-feat-data-001-data-integrity.md` (FEAT-DATA-001, approved, same PR) and replaces stocks#1443 (re-cut 2 of `2026-10-12-feat-deploy-001-data-refresh.md`, from #1423). It deploys the runtime §J of that DATA spec defines and the SEC contact identity §G's fallback needs (§A here), and nothing else; the two are proposed together so the deployment is bound to an actual DATA spec on the same base.
+Approved by the owner on 2026-11-11 in stocks#1828; the text changed after that approval is listed under "Changes after approval" and is approved on merge. It claims no review or evidence it did not produce and takes effect when it merges. It is the deployment half of `docs/superpowers/specs/2026-11-11-feat-data-001-data-integrity.md` (FEAT-DATA-001, approved, same PR) and replaces stocks#1443 (re-cut 2 of `2026-10-12-feat-deploy-001-data-refresh.md`, from #1423). It deploys the runtime §J of that DATA spec defines and the SEC contact identity §G's fallback needs (§A here), and nothing else; the two are proposed together so the deployment is bound to an actual DATA spec on the same base.
+
+## Changes after approval
+
+- 2026-11-11 (46ecffcb, first review): §A and P7 deliver `SEC_USER_AGENT` to `fetch-insider-transactions`; the controller timeout rises to 36000 s for the 21:00 to 23:15 ET options-gamma window.
+- 2026-11-14 (second review and main merged in at afd476b6): the controller polls once per 60 s inside a per-phase request budget that covers that window, and P4 proves the scanner-wait path stays inside it; the due-macro monthly ceiling is recomputed on the same 30-day basis as the controller ($3.73, not $3.40), so the total is $12.59; the RETRY_SPLIT implementation is now on main (#1836), so §C, Delivery and Open questions 1 no longer wait for it.
 
 ## Problem (verified on main be2dd4d1)
+
+Re-checked on main afd476b6 on 2026-11-14: every behavior below is unchanged. Line numbers are be2dd4d1's; on afd476b6 the schedulers sit about 23 lines earlier in `gcp/deploy.sh` (for example `av-options-daily` at `:4667`), and 05-a states 43 of 67 declared jobs at retries 0 and 23 at 1 after `evaluate-ew-strikes` was retired (#1834).
 
 - Dependents run on fixed offsets: `av-options-daily` 21:00 ET (`gcp/deploy.sh:4690`, `fetch-av-options-backfill`), `gamma-levels-daily` 22:30 (`:4522`, `p2-build-gamma-levels`), `fetch-market-data-daily` 23:00 (`:4645`), `strat-engine-daily` 23:35 (`:4524`, `strat-engine`). Snapshot scanners run at 22:00 (`options-daily-features`, `:4723`) and 23:15 (`options-daily-greeks`, `:4739`). Nothing stops gamma or STRAT after a failed or one-sided options run (#1259, #1260).
 - Macro actuals are never refetched after release: `economic-events-daily` runs once at 07:00 (`:4771`).
@@ -40,7 +47,7 @@ No runtime logic (FEAT-DATA-001 §J owns it), no change to any worker job's reso
 
 `deploy_data_refresh_sequence` and `deploy_economic_actuals_refresh` create or update `data-refresh-sequence` (`python -m gcp.data_refresh_sequence scheduled-sequence`) and `economic-actuals-refresh` (`python -m gcp.data_refresh_sequence due-macro`) on the existing image and service account, existing secret references only (AV, Benzinga and FRED keys through the existing `_optional_secret_pair` helpers), 1 vCPU, 512Mi, `--max-retries 0`, task timeout 36000 s for the controller (the options-gamma phase can run from 21:00 to 23:15 ET, 8100 s, which must stay under a quarter of it) and 600 s for due-macro. Create and update carry the same flags and update clears stale args.
 
-`deploy_fetch_insider_transactions` adds `SEC_USER_AGENT` from the existing `sec-user-agent` secret to the job's environment on create and update, the same way `deploy_fetch_sec_filings` does (`gcp/deploy.sh:2944` to 2951), so the DATA §G fallback has its contact identity in production. When the secret is absent it logs a WARN and leaves the variable out, and the fallback records `unavailable`. Its other flags are unchanged.
+`deploy_fetch_insider_transactions` adds `SEC_USER_AGENT` from the existing `sec-user-agent` secret to the job's environment on create and update, the same way `deploy_fetch_sec_filings` does (its `_secret sec-user-agent` lookup and `SEC_USER_AGENT` env append), so the DATA §G fallback has its contact identity in production. When the secret is absent it logs a WARN and leaves the variable out, and the fallback records `unavailable`. Its other flags are unchanged.
 
 `deploy_insight_pipeline` sets `--max-retries 0` on both create and update. Update reads the current task timeout first: above 1800 it sets `--task-timeout 1800`; at or below 1800 it keeps it; unreadable stops the deploy with an error. The image, 2 vCPU, 8Gi and secrets are unchanged.
 
@@ -59,7 +66,7 @@ Activation is a separate explicit command. An ordinary `all` or `schedulers` dep
 
 ### C. Retry split through RETRY_SPLIT
 
-This change adds two retries-0 jobs and moves `insight-pipeline` from retries 1 to 0, which changes the 05-a split. The approved `2026-10-31-feat-cicd-001-retry-split-substitution.md` makes that split a renderer-owned substitution of `scripts/maintenance/doc_inventory.py`; its implementation (stage 3) is not on main at be2dd4d1. The implementation PR for this spec opens only after it is, and carries the rendered split; no number is typed and no exception is claimed. This replaces the predecessors' numeric-count exception, which was never approved.
+This change adds two retries-0 jobs and moves `insight-pipeline` from retries 1 to 0, which changes the 05-a split. The approved `2026-10-31-feat-cicd-001-retry-split-substitution.md` makes that split a renderer-owned substitution of `scripts/maintenance/doc_inventory.py`; its implementation was not on main at be2dd4d1 and is now (#1836, merged 2026-11-12: `doc_inventory.py` renders the split from the declared jobs). The implementation PR for this spec carries the rendered split; no number is typed and no exception is claimed. This replaces the predecessors' numeric-count exception, which was never approved.
 
 ### D. Topology documents
 
@@ -71,11 +78,11 @@ Planning ceilings; P5 replaces them with measured values. A measured duration ab
 
 | Workload | Volume | Velocity | Wall clock and cost |
 |---|---|---|---|
-| Controller, two phases per weekday | receipts and intents, under 1 MB per run | at most 120 control-plane requests and 120 SQL rounds per phase, one poll per 30 s | options-gamma at most 8100 s (21:00 to 23:15 ET, mostly waiting) and strat at most 3600 s, inside a 36000 s timeout; at $0.000024 per vCPU-s and $0.0000025 per GiB-s, at most $0.2045 and $0.0909 per run, about $8.86 per month |
-| Due-macro with due work | at most 3000 observations, about 3 MB | at most 3 pages and 6 SQL batches per run | at most 112 s per run inside 600 s; at most $0.00283 per run, at most 44 runs per weekday, about $3.40 per month ceiling |
+| Controller, two phases per weekday | receipts and intents, under 1 MB per run | one poll per 60 s while waiting; per options-gamma phase at most 160 control-plane requests and 160 SQL rounds (at most 135 polls over 8100 s, 2 launches, 6 reconcile pages), per strat phase at most 80 of each (60 polls, 1 launch, 3 reconcile pages); DATA §J | options-gamma at most 8100 s (21:00 to 23:15 ET, mostly waiting) and strat at most 3600 s, inside a 36000 s timeout; at $0.000024 per vCPU-s and $0.0000025 per GiB-s, at most $0.2045 and $0.0909 per run, about $8.86 per month |
+| Due-macro with due work | at most 3000 observations, about 3 MB | at most 3 pages and 6 SQL batches per run | at most 112 s per run inside 600 s; at most $0.00283 per run, at most 44 runs per weekday, about $3.73 per month ceiling (44 runs over 30 days, the controller's basis) |
 | Due-macro with nothing due | one indexed query | 1 SQL round | about 2 s, under $0.07 per month |
 
-Incremental compute ceiling about $12.26 per month, excluding the existing worker jobs, Cloud SQL and provider plans. Existing workers keep their resources.
+Incremental compute ceiling about $12.59 per month ($8.86 plus $3.73), excluding the existing worker jobs, Cloud SQL and provider plans. Existing workers keep their resources.
 
 ## Risks
 
@@ -87,15 +94,15 @@ Incremental compute ceiling about $12.26 per month, excluding the existing worke
 ## Delivery
 
 1. This spec PR (with the DATA spec).
-2. FEAT-DATA-001 Parts 1 to 3 merge.
-3. The RETRY_SPLIT implementation is on main.
+2. FEAT-DATA-001 Parts 1 to 3 merge (one PR or three, DATA spec Open questions 3).
+3. The RETRY_SPLIT implementation is on main (done: #1836).
 4. `feature/feat-deploy-001-data-refresh` implementation PR with its plan (P1 to P7).
 5. The topology docs PR (§D).
 6. Owner-directed activation, recorded in the runbook.
 
 ## Open questions for the owner
 
-1. Is waiting for the RETRY_SPLIT implementation acceptable, or should this implementation be re-sequenced behind another plan?
+1. Answered by events: the RETRY_SPLIT implementation merged as #1836 on 2026-11-12, so nothing waits for it.
 2. Is the activation order (docs PR merged before activation) acceptable, or should activation precede the docs PR?
 
 ## Close-out
