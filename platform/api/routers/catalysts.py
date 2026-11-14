@@ -17,7 +17,7 @@ import logging
 import math
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +30,7 @@ from api.schemas import (
 )
 
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+from lib.eastern_time import market_today
 from lib.single_flight import SingleFlight
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -172,7 +173,7 @@ def get_catalyst_events(
     Returns events from local cache by default. Pass refresh=true to fetch live
     from Benzinga API (requires BENZINGA_API_KEY).
     """
-    today = datetime.now()
+    today = market_today()
     d_from = date_from or (today - timedelta(days=3)).strftime("%Y-%m-%d")
     d_to = date_to or (today + timedelta(days=14)).strftime("%Y-%m-%d")
     ticker_list = [t.strip().upper() for t in tickers.split(",")] if tickers else None
@@ -618,7 +619,7 @@ def get_catalysts_for_ticker(
 ):
     """Get all catalyst events for a specific ticker."""
     ticker_upper = ticker.upper()
-    today = datetime.now()
+    today = market_today()
     d_from = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
     d_to = (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
@@ -682,7 +683,7 @@ def get_catalyst_snapshot(
 
     tk = ticker.upper()
     try:
-        cutoff = _date.fromisoformat(as_of) if as_of else _date.today()
+        cutoff = _date.fromisoformat(as_of) if as_of else market_today()
     except ValueError:
         raise HTTPException(status_code=400, detail="as_of must be YYYY-MM-DD")
     window_start = cutoff - timedelta(days=window_days)
@@ -711,6 +712,10 @@ def get_catalyst_snapshot(
             logger.warning("snapshot section failed: %s", exc)
             return []
 
+    # cutoff and window_start are Eastern dates and published_ts is an
+    # instant, so the window is [start 00:00 Eastern, cutoff + 1 day 00:00
+    # Eastern). Casting the dates to timestamptz reads them as UTC midnight
+    # and drops the cutoff day's evening articles (CLAUDE.md 3.9).
     news = _safe(lambda: _df_to_records(query_to_dataframe(
         """
         SELECT published_ts, title, url, source,
@@ -718,8 +723,8 @@ def get_catalyst_snapshot(
                topics
         FROM news_sentiment
         WHERE ticker = :tk
-          AND published_ts <= CAST(:cutoff AS timestamptz) + INTERVAL '23 hours 59 minutes'
-          AND published_ts >= CAST(:start AS timestamptz)
+          AND published_ts < ((CAST(:cutoff AS date) + 1)::timestamp AT TIME ZONE 'America/New_York')
+          AND published_ts >= (CAST(:start AS date)::timestamp AT TIME ZONE 'America/New_York')
         ORDER BY published_ts DESC
         LIMIT 50
         """,

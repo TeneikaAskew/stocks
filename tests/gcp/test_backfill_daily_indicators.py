@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 
 from gcp.fetchers import backfill_daily_indicators as mod
+from lib.eastern_time import market_today, market_today_sql
 
 
 def _synth_bars(n: int = 60) -> pd.DataFrame:
@@ -47,7 +48,7 @@ class TestTickerResolution:
         assert 'ema_9' in sql        # part of the OR-list
         assert 'macd' in sql         # part of the OR-list
         assert 'strat_candle' in sql # strat included too
-        assert 'CURRENT_DATE' in sql
+        assert market_today_sql() in sql
         assert params == {'d': 7}
 
     def test_gap_check_covers_every_derived_column(self):
@@ -79,7 +80,7 @@ class TestTickerResolution:
             mod._tickers_with_gaps(7)
         sql, _params = qm.call_args[0]
         # Same-day partial rows (intraday snapshot writers) are not gaps.
-        assert 'm.date < CURRENT_DATE' in sql
+        assert f'm.date < {market_today_sql()}' in sql
         # Rows whose raw OHLCV is null are uncomputable — never flag them.
         assert 'num_nulls(m.open, m.high, m.low, m.close, m.volume) = 0' in sql
         # Warmup gating: a young ticker structurally cannot fill
@@ -263,7 +264,7 @@ class TestBackfillTicker:
         is what blew the 3h task-timeout."""
         bars = _synth_bars(60)
         # Re-date the synthetic bars to end today so a recent window exists.
-        today = date.today()
+        today = market_today()
         bars['date'] = [today - timedelta(days=59 - i) for i in range(60)]
         with patch.object(mod, '_full_history', return_value=bars), \
              patch.object(mod, 'upsert_dataframe') as ups:
@@ -278,7 +279,7 @@ class TestBackfillTicker:
     def test_filter_recent_rows_shared_helper(self):
         """--dry-run must preview the same rows the live path writes
         (Codex review on PR #756): both go through _filter_recent_rows."""
-        today = date.today()
+        today = market_today()
         rows = [
             {'ticker': 'SPY', 'date': today, 'atr_14': 1.0},
             {'ticker': 'SPY', 'date': today - timedelta(days=3), 'atr_14': 1.0},

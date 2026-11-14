@@ -28,6 +28,8 @@ from typing import Optional
 
 import pandas as pd
 
+from lib.eastern_time import market_today_sql
+
 # The eight data_source values of RETIREMENT-DESIGN section 2.2.
 ALIAS_CONTROL_VALUES = (
     None, 'unknown', 'earnings_whispers', 'EarningsWhispers',
@@ -160,6 +162,9 @@ def alias_control_rows(ticker_prefix: str, earnings_date: date) -> list[dict]:
 # ── SQLite execution of a reader's own SQL ─────────────────────────────────
 
 _REWRITES = (
+    # lib.eastern_time.market_today_sql(): the reader's Eastern "today". Mapped to
+    # CURRENT_DATE first so every entry below applies to it as it always has.
+    (re.compile(re.escape(market_today_sql()), re.I), "CURRENT_DATE"),
     (re.compile(r"CURRENT_DATE\s*\+\s*\(:(\w+)\)::int", re.I),
      r"date(:__today, '+' || :\1 || ' days')"),
     (re.compile(r"\bCURRENT_DATE\b", re.I), ":__today"),

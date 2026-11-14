@@ -59,7 +59,8 @@ def execute(monkeypatch, site, rows, *, remove_predicate=False, limit=50):
         if remove_predicate:
             sql = sql.replace(EARNINGS_NOT_RETIRED_SQL, '1=1')
         # Syntax adapters only: the immutable shared fixture rejects intervals.
-        sql = sql.replace("(NOW() AT TIME ZONE 'America/New_York')::date", 'CURRENT_DATE')
+        sql = re.sub(re.escape("(NOW() AT TIME ZONE 'America/New_York')::date"), 'CURRENT_DATE',
+                     sql, flags=re.IGNORECASE)
         sql = re.sub(r"CURRENT_DATE\s*([+-])\s*\(:(\w+) \|\| ' days'\)::interval",
                      lambda m: f"date(:__today, '{m[1]}' || :{m[2]} || ' days')", sql)
         return run_earnings_sql(conn, sql, params, today=DAY)
