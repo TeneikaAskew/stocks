@@ -196,3 +196,85 @@ def test_tracked_levels_work_without_the_column():
     got = ms._fetch_tracked_levels("SPY", q, SESSION)
     assert got["status"] == "OK" and len(calls) == 2
     assert [t["price"] for t in got["calls"]] == [101.0, 102.0]
+
+
+# ── exits in thirds spec: the plan columns are not read ─────────────────
+
+PLAN_COLS = [f"{s}_plan_t{k}_{c}" for s in ("calls", "puts") for k in (1, 2, 3)
+             for c in ("price", "hit_ts")]
+
+
+class _PlanDb(_Db):
+    """premarket_analysis with the exits spec's plan columns added."""
+
+    def __init__(self):
+        super().__init__()
+        for c in PLAN_COLS:
+            self.conn.execute(f"ALTER TABLE premarket_analysis ADD COLUMN {c}")
+
+    def add(self, **row):
+        cols = list(COLS) + PLAN_COLS
+        vals = [row.get(c) for c in cols]
+        if isinstance(row.get("level_basis"), dict):
+            vals[cols.index("level_basis")] = json.dumps(row["level_basis"])
+        self.conn.execute(f"INSERT INTO premarket_analysis ({', '.join(cols)}) "
+                          f"VALUES ({', '.join('?' * len(cols))})", vals)
+
+
+def test_the_t1_slot_is_the_gating_target_not_the_plan_target(monkeypatch):
+    """Two resolved v3 rows from the Design 8 call (calls T1 253.00, plan T1
+    275.00): one reached 254.00 (t1 hit, plan t1 not), one reached 276.00
+    (both). The T1 slot is 253.00, its rate is 2 of 2, and no rung shows
+    1 of 2 (a plan hit column paired with a gating price)."""
+    from tests.lib.session_levels_helpers import d8_basis
+    stored = json.loads(json.dumps(SessionLevels.from_basis(d8_basis()).to_basis()))
+    assert stored["rule_version"] == LEVEL_RULE_VERSION
+    sl = SessionLevels.from_basis(stored)
+    lm = sl.to_level_map()
+    ct = lm.calls_trigger
+    assert ct["trigger_level"] == 252.10 and ct["targets"][0]["price"] == 253.00
+    assert ct["plan_targets"][0]["price"] == 275.00
+
+    db = _PlanDb()
+    gate = (252.10, 253.00, 275.00, 280.00)
+    for i, plan_hit in enumerate((False, True)):
+        _resolved(db, d=f"2026-10-1{i}", price=247.0, lb=stored, calls=gate,
+                  calls_hit=("trigger", "t1", "t2") if plan_hit else ("trigger", "t1"))
+        db.conn.execute(
+            "UPDATE premarket_analysis SET calls_plan_t1_price = 275.0, calls_plan_t2_price = 280.0, "
+            "calls_plan_t3_price = 285.0, calls_plan_t1_hit_ts = ? WHERE analysis_date = ?",
+            ("2026-10-1%dT15:00:00Z" % i if plan_hit else None, f"2026-10-1{i}"))
+    db.add(ticker="SPY", analysis_date=SESSION.isoformat(), run_kind="live", price=247.0,
+           level_basis=stored, calls_trigger_price=252.10, calls_t1_price=253.00,
+           calls_t2_price=275.00, calls_t3_price=280.00, calls_plan_t1_price=275.00,
+           calls_plan_t2_price=280.00, calls_plan_t3_price=285.00)
+
+    got = ms._fetch_tracked_levels("SPY", db.query, SESSION)
+    assert ("t1", 253.0) in [(t["slot"], t["price"]) for t in got["calls"]]
+    assert ("t1", 275.0) not in [(t["slot"], t["price"]) for t in got["calls"]]
+
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
+    monkeypatch.setattr(ms, "_build_continuation",
+                        lambda *a, **k: ms._unavailable("not under test"))
+
+    def q(sql, params=None):
+        if "premarket_analysis" in sql:
+            return db.query(sql, params)
+        return pd.DataFrame()
+
+    out = ms.assemble_movement_statement(
+        "SPY", "15m", engine=object(), level_map=lm, query_fn=q,
+        gamma_fn=lambda *a, **k: {"available": False}, session_date=SESSION)
+    rungs = out["levels"]["calls"]
+    assert [r["price"] for r in rungs] == [252.10, 253.00]
+    t1 = rungs[1]["reach_rate"]
+    assert (t1["slot"], t1["hits"], t1["sample_n"]) == ("t1", 2, 2)
+    assert all((r["reach_rate"].get("hits"), r["reach_rate"].get("sample_n")) != (1, 2)
+               for r in rungs)
+
+
+def test_reach_rate_sql_pairs_each_price_with_its_own_hit_column():
+    for side in ("calls", "puts"):
+        sql = ms._reach_rate_sql(side)
+        assert f"{side}_t1_price" in sql and f"{side}_t1_hit_ts" in sql
+        assert "plan_" not in sql

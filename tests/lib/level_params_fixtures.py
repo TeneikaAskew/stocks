@@ -20,7 +20,8 @@ from pathlib import Path
 import pandas as pd
 
 from lib.strat_levels import (
-    PARAM_OK, LevelParam, LevelParams, load_level_params, policy_in_force,
+    PARAM_OK, POLICY_WIDE_KEYS, LevelParam, LevelParams, load_level_params, policy_in_force,
+    policy_wide_param,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -51,6 +52,11 @@ LEGACY_1753_VALUES = {
     "target_neutral_3_r": 3.0,
     "target_conservative_1_r": 1.0,
     "target_conservative_2_r": 1.75,
+    # Exits in thirds (2026-11-11). #1753 had no spacing: 0.0 keeps every
+    # candidate, so a test of the #1753 rules keeps its targets; a test of
+    # the spacing passes its own value. The gap-fill flag is the policy seed.
+    "target_min_spacing_atr": 0.0,
+    "gap_fill_flag_atr": 0.5,
 }
 
 
@@ -146,6 +152,16 @@ def fixture_params(ticker: str = "TST", session_date: date = date(2026, 11, 6), 
             input_to="2026-11-05", run_id="00000000-0000-0000-0000-000000000001",
             atr_basis=atr_basis, policy_effective_from="2015-01-02", source="history",
         )
+    # The policy-wide keys (exit_legs, entry_cutoff_et) come from the seeded
+    # policy rows, as load_level_params builds them.
+    for key in POLICY_WIDE_KEYS:
+        if key in values:
+            continue
+        p = policy_wide_param(key, policy[key], ticker, atr_basis)
+        st = (statuses or {}).get(key, p.status)
+        params[key] = p if st == p.status else LevelParam(
+            key=key, status=st, ticker=ticker, method_id=p.method_id, atr_basis=atr_basis,
+            source="policy", extra=p.extra)
     return LevelParams(ticker=ticker, session_date=session_date, atr_basis=atr_basis,
                        policy_effective_from="2015-01-02", params=params)
 
