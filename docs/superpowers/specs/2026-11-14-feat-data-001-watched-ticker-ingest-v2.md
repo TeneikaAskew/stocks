@@ -15,7 +15,7 @@ done_when:
   - "scripts/audit_data_freshness.py gains a heartbeat check for fetch-watched-tickers, run inside audit_all's calendar guard (from _session_dependent_late_checks, its session arithmetic through _calendar) so a calendar failure yields the explicit nyse_calendar row instead of an aborted audit: a finding when job_runs holds no status success row for that job dated within the last two sessions (lib.eastern_time), and an informational row when the latest row's note carries overflow or its items_failed is above zero; tests/audits/test_audit_freshness_job_observability.py covers an absent heartbeat, an overdue one, a healthy one and an overflow note, and tests/audits/test_audit_data_freshness.py covers the calendar-failure case with job_runs present and a recorded success"
   - "docs/product/03-SITE-TRACEABILITY.md gains or updates its FEAT-DATA-001 SHARED-07 row in the Implementation-source notes table, beginning source_identity_sha256=<the PR head's source identity>; describing the fetch-watched-tickers job, its heartbeat check in the freshness watchdog and their tests, with no other byte of the document changed, and docs/review-evidence/site-source-snapshot.json is produced from that head and verifies (scripts/maintenance/doc_source_snapshot.py verify exits 0 with status identity-matched)"
   - "The FEAT-DATA-001 catalog record and the PR traceability entry are updated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: approved
+status: superseded
 supersedes: docs/superpowers/specs/2026-11-13-feat-data-001-watched-ticker-ingest.md
 ---
 
