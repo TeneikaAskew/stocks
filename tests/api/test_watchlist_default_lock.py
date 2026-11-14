@@ -192,3 +192,39 @@ def test_default_watchlist_empty_list_is_200(client):
     body = r.json()
     assert body["owner"] == "default"
     assert body["rows"] == []
+
+
+# ── GET /api/insights/watchlist ranks the default owner for every caller ───────
+
+
+def _ranked_payload() -> dict:
+    """The shape lib.agents.ranker.rank_tickers returns, with nothing ranked
+    (WatchlistResponse rejects any other shape)."""
+    return {
+        "run_id": "00000000-0000-0000-0000-000000000001",
+        "as_of": "2026-11-13T13:00:00+00:00",
+        "candidate_count": 0,
+        "excluded_count": 0,
+        "ranked": [],
+        "weights_used": {},
+        "duration_ms": 0,
+    }
+
+
+def test_ranked_watchlist_passes_default_owner_and_extras(client, monkeypatch):
+    """A signed-in caller is ranked as owner 'default' (spec section "Ranked list"), and the
+    per-call ``extras`` hook still carries the caller's own tickers, upper-cased."""
+    from api.routers import insights as insights_module
+
+    called_with: dict = {}
+
+    def fake_rank(**kwargs):
+        called_with.update(kwargs)
+        return _ranked_payload()
+
+    monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
+    monkeypatch.setattr(insights_module, "current_user_email", lambda req: "alice@example.com")
+    r = client.get("/api/insights/watchlist?extras=nvda")
+    assert r.status_code == 200, r.text
+    assert called_with["user_id"] == "default"
+    assert called_with["extras"] == ["NVDA"]

@@ -66,6 +66,10 @@ def _watchlist_owner(request: Request) -> str:
     shared "default" owner — which is also the admin-curated row set the
     premarket-brief / insight-pipeline read via the in_brief/in_insight flags,
     so local dev keeps working against the existing rows.
+
+    Called by the two web write routes only (add_to_watchlist and
+    remove_from_watchlist); every read names 'default' in code. Stage B of
+    FEAT-INSIGHT-001 turns those routes into 410 and deletes this helper.
     """
     return current_user_email(request) or "default"
 
@@ -749,13 +753,17 @@ def get_watchlist(
     cfg = RankerConfig.from_alert_config()
     weights = cfg.weights or None  # falsy → use DEFAULT_WEIGHTS
 
+    # Every caller is ranked as the default owner (FEAT-INSIGHT-001 stage A,
+    # spec section "Ranked list"): the ranked list is the default watchlist
+    # every job reads, in every auth mode; a caller's own tickers arrive as
+    # `extras` and are ranked beside it without stocks storing them.
     return rank_tickers(
         weights=weights,
         catalyst_filter=catalyst_filter,
         limit=max(1, min(limit, 50)),
         expand_universe=expand,
         extras=extras_list,
-        user_id=_watchlist_owner(request),
+        user_id="default",
     )
 
 
