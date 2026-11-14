@@ -4,9 +4,9 @@
 
 **Code:** `gcp/fetchers/evaluate_ew_strikes.py` ·
 **Writes:** none; historical `earnings_calendar.ew_*` columns retained ·
-**Job:** retired `evaluate-ew-strikes`; no scorer entry point remains ·
+**Job:** retired `evaluate-ew-strikes`; only the shared NYSE shim remains ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
-**Status:** Retired (2026-11-13) · **Rec:** REMOVE
+**Status:** Retired (operationally, 2026-11-13) · **Rec:** REMOVE
 **Doc health:** CURRENT · **Last verified:** 2026-09-26
 
 > Registered 2026-09-18 by the round-10 sweep. It was invisible to the sweep's own first pass
@@ -16,14 +16,23 @@
 > a job whose output a person reads every morning. The regex was fixed in the same change
 > (`scripts/audit_scheduler_coverage.py`).
 
-## Retirement — 2026-11-13
+## Operational retirement — 2026-11-13
 
-The scorer is removed; `nyse_sessions` remains byte-identical for the AV collector
-and earnings-session schedule consumers. No historical row, verdict column or
-calendar behavior is removed. The coordinator separately recorded evaluator job
-and scheduler deletion; this source change does not claim a new deployment.
-The historical behavior, incidents and measurements below are retained as audit
-history, not descriptions of active scoring.
+The evaluator Cloud Run job and Scheduler are removed. The separately deployed
+premarket brief no longer consumes or renders EW picks or verdicts. Its verified
+execution `premarket-brief-s7kz6` completed at 15:32:06 UTC on November 13, retaining
+non-EW earnings, prior-AMC reactions, market analysis and economic-calendar output.
+Historical rows and verdict columns remain intact.
+
+This source change removes the scorer implementation from
+`gcp/fetchers/evaluate_ew_strikes.py`; it introduces no new deployment claim. The existing
+`nyse_sessions` helper and its AV collector and earnings-session consumers remain
+required. No calendar, schema, secret or historical data is removed here.
+
+The scorer behavior and incident measurements below are retained historical
+context; they do not assert that the retired scheduled scorer is still running.
+
+## Source and test retirement
 
 Executed collection at d806bfd1 recorded 71 cases over 35 functions: 49 scorer
 cases are retired and 22 vendor cases are moved verbatim. Fresh implementation
@@ -214,7 +223,7 @@ states it (`:16-18`) without arguing it, and it matches how each position is act
 **present**, not 09:30. On a session with missing early bars the figure is understated by the
 gap.
 
-## Historical entry points
+## Entry points
 
 | Symbol | Role |
 |---|---|
@@ -226,22 +235,7 @@ gap.
 
 ## Tests
 
-`tests/gcp/test_nyse_sessions_shim.py` contains five new tests for the retained
-module: Thanksgiving absence, early close, DST open, missing-library error,
-removed scorer exports and byte-identical wrapper source.
-`tests/gcp/test_av_options_collector_entry.py` remains unchanged and exercises
-the live caller's existing `ew.nyse_sessions` patch boundary.
-
-The seven vendor functions and their helpers moved verbatim to the dedicated
-vendor-answer suite, with all 22 parametrized cases retained. The separate
-node-disposition receipt records every old/new node and the 49 retired scorer
-cases. Finite-values repair obligations and historical results remain separate.
-
-### Historical evaluator test evidence
-
-The former evaluator test module was earlier described as **62 tests** covering
-several areas. That historical count predates the executed 71-case inventory
-above; the following incident evidence is preserved.
+`tests/gcp/test_evaluate_ew_strikes.py`: **62 tests** covering several areas.
 - **Sessions.** The scoring session for every timing, including the Friday, Thanksgiving and
   Memorial Day cases, and the 13:00 early close.
 - **Verdicts.** The first tests of `_compute_verdict`.
