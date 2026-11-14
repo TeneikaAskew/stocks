@@ -46,10 +46,13 @@ def _raw():
     ])
 
 
-def test_missing_gex_is_null_genuine_zero_preserved(monkeypatch):
-    monkeypatch.setattr(mod.pd, "read_sql", lambda *a, **k: _raw())
+@pytest.mark.parametrize("builder", ["p7", "strat"])
+def test_missing_gex_is_null_genuine_zero_preserved(monkeypatch, builder):
+    from gcp.research import p7_build_multi_tf_features
+    module = p7_build_multi_tf_features if builder == "p7" else mod
+    monkeypatch.setattr(module.pd, "read_sql", lambda *a, **k: _raw())
 
-    out = mod._load_gamma_levels(_Engine(), "SPY")
+    out = module._load_gamma_levels(_Engine(), "SPY")
 
     missing = out.loc[pd.Timestamp("2026-06-17").date(), "total_gex"]
     assert missing is None or (isinstance(missing, float) and math.isnan(missing)), \

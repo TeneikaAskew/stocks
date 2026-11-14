@@ -208,6 +208,7 @@ def _build_summary_from_levels(ticker: str, snap_date: _date,
     _gf = day_levels["gamma_flip"].iloc[0]
     gamma_flip_val = float(_gf) if pd.notna(_gf) else None
     regime = day_levels["regime"].iloc[0] or "unknown"
+    # AUDIT-2026-05-13: silent fallback (or 0.0 on a NULL total_gex); see docs/audits/FALLBACK_AUDIT_2026-05-13.md
     total_gex = float(day_levels["total_gex"].iloc[0] or 0.0)
 
     def _to_level(row) -> Level:
