@@ -946,6 +946,37 @@ def _read_replace_list(path: str) -> list[tuple[str, int, int]]:
     return items
 
 
+def _uncounted_line(r: dict) -> str:
+    """The month's ``UNCOUNTED`` line: what its window holds that is not
+    counted as held, and so what a swap deletes and writes back nowhere.
+
+    ``rows``: stored rows of the window. ``label_dropped``: rows read as
+    Eastern labels that lost their Eastern minute to another row.
+    ``label_copies``: Eastern-label copies of refetched bars. ``uncounted``:
+    their sum, with its share of ``rows`` and its split by the UTC hour of the
+    key. ``carry_in``: the previous month's late bars, spared. ``tail``: this
+    month's late bars past the window end.
+
+    A figure that was not worked out prints ``n/a``, never 0: all but ``rows``
+    are decided from the refetch, and a month whose fetch failed has none.
+    """
+    def n(key):
+        return 'n/a' if r.get(key) is None else str(r[key])
+
+    rows, uncounted, hours = r.get('rows'), r.get('uncounted'), r.get('by_utc_hour')
+    if uncounted is None or rows is None:
+        share = 'n/a'
+    else:
+        share = f"{100.0 * uncounted / rows:.2f}%" if rows else "0.00%"
+    if hours is None:
+        by_hour = 'n/a'
+    else:
+        by_hour = ','.join(f"{h:02d}:{hours[h]}" for h in sorted(hours)) or '-'
+    return (f"UNCOUNTED {r['symbol']},{r['month']} rows={n('rows')} uncounted={n('uncounted')} "
+            f"share={share} label_dropped={n('label_dropped')} label_copies={n('label_copies')} "
+            f"by_utc_hour={by_hour} carry_in={n('carry_in')} tail={n('tail')}")
+
+
 def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
     """Drive replace_month over the list; striped across Cloud Run tasks.
 
@@ -994,7 +1025,8 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
             retry.append(f"{sym},{y}-{m:02d}")
             continue
         counts[r['status']] = counts.get(r['status'], 0) + 1
-        if r['status'] == REPLACE_OK:
+        if r['status'] in (REPLACE_OK, REPLACE_TAIL_NOT_WRITTEN):
+            # tail_not_written: the window's swap committed all the same.
             replaced.append(f"{r['symbol']},{r['month']}")
         for t, n in (r.get('derived_cleared') or {}).items():
             rebuild[t] = rebuild.get(t, 0) + n
@@ -1005,6 +1037,7 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
                  r['status'], r['held_sessions'], r['missing_sessions'],
                  r['deleted'], r['inserted'],
                  f" missing={r['missing']}" if r.get('missing') else "")
+        log.info("%s", _uncounted_line(r))
     log.info("replace-months summary: %s (expected %s for all %d)",
              counts, expected, len(items))
     if rebuild:

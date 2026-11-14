@@ -1117,7 +1117,10 @@ class _World:
         self.events.append(("fetch",))
         if self.during_fetch is not None:
             self.during_fetch(self)
-        return self.vendor[(sym, y, m)].copy(), fai.FETCH_OK
+        answer = self.vendor[(sym, y, m)]
+        if isinstance(answer, str):            # a FETCH_* failure reason
+            return None, answer
+        return answer.copy(), fai.FETCH_OK
 
     def _swap(self, df, table, key, ts_col, start, end, **kw):
         n = self.swap.call_count
@@ -1779,3 +1782,88 @@ def test_a_month_over_the_uncounted_bound_is_refused(tmp_path, monkeypatch, capl
     r, swap = _replace(stored, v, "IWM", 2026, 4, commit=True)
     assert (r["status"], r["uncounted"], r["rows"]) == (fai.REPLACE_OK, 25, 100)
     assert len(swap.call_args.args[0]) == 75
+
+
+# -- Design 6: what every run prints -----------------------------------------
+
+
+def _four_months() -> tuple[_World, list]:
+    """One of each: label rows and copies (IWM 2026-04), carry-ins (SPY
+    2018-03), a tail (SPY 2018-02), and a month with none of them."""
+    v = _iwm_session()
+    late = _bars("2018-02-28", list(range(240, 1201)) + [21 * 60 + 4, 22 * 60 + 10, 23 * 60 + 37], "SPY")
+    march = _bars("2018-03-01", range(240, 1201), "SPY")
+    clean = _bars("2026-09-24", range(240, 1201), "SPY")
+    world = _World().store("IWM", _iwm_stored(v)).serve("IWM", 2026, 4, v)
+    for frame in (late, march, clean):
+        world.store("SPY", _true_rows(frame))
+    world.serve("SPY", 2018, 3, march).serve("SPY", 2018, 2, late).serve("SPY", 2026, 9, clean)
+    return world, [("IWM", 2026, 4), ("SPY", 2018, 3), ("SPY", 2018, 2), ("SPY", 2026, 9)]
+
+
+UNCOUNTED_LINES = [
+    "UNCOUNTED IWM,2026-04 rows=1082 uncounted=240 share=22.18% label_dropped=206 label_copies=34 "
+    "by_utc_hour=04:57,05:43,06:46,07:60,08:3,09:17,10:14 carry_in=0 tail=0",
+    "UNCOUNTED SPY,2018-03 rows=964 uncounted=0 share=0.00% label_dropped=0 label_copies=0 "
+    "by_utc_hour=- carry_in=3 tail=0",
+    "UNCOUNTED SPY,2018-02 rows=961 uncounted=0 share=0.00% label_dropped=0 label_copies=0 "
+    "by_utc_hour=- carry_in=0 tail=3",
+    "UNCOUNTED SPY,2026-09 rows=961 uncounted=0 share=0.00% label_dropped=0 label_copies=0 "
+    "by_utc_hour=- carry_in=0 tail=0",
+]
+
+
+@pytest.mark.parametrize("commit", [False, True])
+def test_every_month_prints_an_uncounted_line(tmp_path, monkeypatch, caplog, commit):
+    """done_when[5]. The numbers are the fixtures': 206 label rows by hour 57,
+    43, 46, 60 and 34 copies by hour 3, 17, 14 of 1,082 rows (22.18%); three
+    late bars carried into March; three written past February's window."""
+    import logging
+    caplog.set_level(logging.INFO)
+    world, items = _four_months()
+    assert _run_world(tmp_path, monkeypatch, world, items, commit) == 0
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert [m for m in messages if m.startswith("UNCOUNTED")] == UNCOUNTED_LINES
+    expected = fai.REPLACE_OK if commit else fai.REPLACE_DRY
+    for line, (sym, y, m) in zip(UNCOUNTED_LINES, items):
+        before = messages[messages.index(line) - 1]
+        assert f"{sym} {y}-{m:02d} status={expected} " in before, before
+
+
+def test_an_unclassified_month_prints_n_a_not_zeros(tmp_path, monkeypatch, caplog):
+    """Label copies, carry-ins and the tail are decided from the refetch. With
+    no refetch they are unknown, and a zero would read as "none"."""
+    import logging
+    caplog.set_level(logging.INFO)
+    world = _World().store("SPY", _true_rows(_bars("2026-09-24", range(240, 1201), "SPY")))
+    world.serve("SPY", 2026, 9, fai.FETCH_RATE_LIMIT)
+    assert _run_world(tmp_path, monkeypatch, world, [("SPY", 2026, 9)], commit=True) == 1
+    assert ("UNCOUNTED SPY,2026-09 rows=961 uncounted=n/a share=n/a label_dropped=n/a "
+            "label_copies=n/a by_utc_hour=n/a carry_in=n/a tail=n/a") in caplog.text
+    assert "RETRY SPY,2026-09" in caplog.text
+
+
+def test_a_month_refused_as_short_still_prints_what_it_would_leave_uncounted(tmp_path, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    v = _iwm_session()
+    world = _World().store("IWM", _iwm_stored(v)).serve("IWM", 2026, 4, _without_five_and_six(v))
+    assert _run_world(tmp_path, monkeypatch, world, [("IWM", 2026, 4)], commit=False) == 1
+    assert "status=incomplete_refetch" in caplog.text
+    assert ("UNCOUNTED IWM,2026-04 rows=1082 uncounted=240 share=22.18% label_dropped=206 "
+            "label_copies=34 by_utc_hour=04:57,05:43,06:46,07:60,08:3,09:17,10:14 "
+            "carry_in=0 tail=n/a") in caplog.text
+
+
+def test_a_month_whose_tail_was_not_written_is_listed_as_replaced(tmp_path, monkeypatch, caplog):
+    """Its window was deleted and re-inserted, so the results computed from
+    the old bars are stale for it too; and it is not done, so it is a RETRY."""
+    import logging
+    caplog.set_level(logging.INFO)
+    stored, feb = _february()
+    world = _World().store("SPY", stored).serve("SPY", 2018, 2, feb)
+    world.fail_swap[2] = RuntimeError("db down")
+    assert _run_world(tmp_path, monkeypatch, world, [("SPY", 2018, 2)], commit=True) == 1
+    assert "REPLACED SPY,2018-02" in caplog.text
+    assert "RETRY SPY,2018-02" in caplog.text
+    assert "tail not written (3 late bars past the window end): db down" in caplog.text
