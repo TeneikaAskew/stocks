@@ -3,7 +3,7 @@ feat_id: FEAT-PLAYBOOK-001
 spec: docs/superpowers/specs/2026-11-14-feat-playbook-001-brief-market-date.md
 branch: fix/feat-playbook-001-brief-market-date
 pr: 1941
-status: ready
+status: done
 ---
 
 # The brief's live date is the exchange's date: implementation plan

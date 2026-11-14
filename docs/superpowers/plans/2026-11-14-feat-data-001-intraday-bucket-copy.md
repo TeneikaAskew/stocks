@@ -3,7 +3,7 @@ feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-13-feat-data-001-intraday-bucket-copy.md
 branch: feature/feat-data-001-intraday-bucket-copy
 pr: 1943
-status: ready
+status: done
 ---
 
 # market_data_intraday: the bucket copy of the 1-min bars and the recompute readers that place rows by proof: implementation plan

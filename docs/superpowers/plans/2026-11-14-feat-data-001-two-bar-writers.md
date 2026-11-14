@@ -3,7 +3,7 @@ feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-13-feat-data-001-two-bar-writers.md
 branch: fix/feat-data-001-two-bar-writers
 pr: 1936
-status: ready
+status: done
 ---
 
 # Two writer modules for the 1-minute bar table: implementation plan
