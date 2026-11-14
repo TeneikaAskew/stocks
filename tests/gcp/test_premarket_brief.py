@@ -146,27 +146,17 @@ def _row(ticker, source, **kw):
     return base
 
 
-def test_tier_1_when_all_three_sources_agree(mock_cloud_sql):
-    """AV + UW + EW → tier 1 (top confirmed)."""
-    install, _ = mock_cloud_sql
-    install(pd.DataFrame([
-        _row("AAPL", "alphavantage"),
-        _row("AAPL", "unusual_whales"),
-        _row("AAPL", "earnings_whispers", strategy="straddle", strike=180.0,
-             premium=2.5, score=8),
-    ]))
+def test_av_uw_mixed_ew_equals_ew_removed(real_brief_sql):
     from gcp.premarket_brief import load_earnings_for_brief
-
-    result = load_earnings_for_brief(date(2026, 4, 27))
-    assert len(result["earnings"]) == 1
-    e = result["earnings"][0]
-    assert e["tier"] == 1
-    assert sorted(e["sources"]) == [
-        "alphavantage", "earnings_whispers", "unusual_whales"
-    ]
-    # EW row wins for display (carries strategy)
-    assert e["strategy"] == "straddle"
-    assert e["strike"] == 180.0
+    rows = [_row('AAPL', source) for source in ['alphavantage', 'unusual_whales']]
+    real_brief_sql(rows + [_row('AAPL', 'earnings_whispers', strategy='straddle', strike=180., premium=2.5, score=8)])
+    actual = load_earnings_for_brief(date(2026, 4, 27))
+    real_brief_sql(rows)
+    assert actual == load_earnings_for_brief(date(2026, 4, 27))
+    assert actual['earnings'][0]['tier'] == 2
+    assert actual['earnings'][0]['sources'] == ['alphavantage', 'unusual_whales']
+    assert actual['earnings'][0]['strategy'] == ''
+    assert actual['earnings'][0]['strike'] is None
 
 
 def test_tier_6_av_only_long_tail(mock_cloud_sql):
@@ -212,19 +202,17 @@ def test_tier_2_uw_plus_yahoo_promotes_av_disagreement(mock_cloud_sql):
     assert sorted(e["sources"]) == ["unusual_whales", "yahoo"]
 
 
-def test_tier_1_three_dates_plus_ew(mock_cloud_sql):
-    """All three date sources agree + EW strategy → tier 1 (strongest signal)."""
-    install, _ = mock_cloud_sql
-    install(pd.DataFrame([
-        _row("AAPL", "alphavantage"),
-        _row("AAPL", "unusual_whales"),
-        _row("AAPL", "yahoo"),
-        _row("AAPL", "earnings_whispers", strategy="straddle"),
-    ]))
+def test_three_date_sources_mixed_ew_stay_tier2(real_brief_sql):
     from gcp.premarket_brief import load_earnings_for_brief
-
-    result = load_earnings_for_brief(date(2026, 4, 27))
-    assert result["earnings"][0]["tier"] == 1
+    rows = [_row('AAPL', source) for source in ['alphavantage', 'unusual_whales', 'yahoo']]
+    real_brief_sql(rows + [_row('AAPL', 'earnings_whispers', strategy='straddle', strike=180., premium=2.5, score=8)])
+    actual = load_earnings_for_brief(date(2026, 4, 27))
+    real_brief_sql(rows)
+    assert actual == load_earnings_for_brief(date(2026, 4, 27))
+    assert actual['earnings'][0]['tier'] == 2
+    assert actual['earnings'][0]['sources'] == ['alphavantage', 'unusual_whales', 'yahoo']
+    assert actual['earnings'][0]['strategy'] == ''
+    assert actual['earnings'][0]['strike'] is None
 
 
 def test_tier_4_yahoo_only(mock_cloud_sql):
@@ -252,17 +240,17 @@ def test_tier_4_uw_alone_demoted_from_legacy_tier_5(mock_cloud_sql):
     assert result["earnings"][0]["tier"] == 4
 
 
-def test_tier_3_yahoo_plus_ew(mock_cloud_sql):
-    """Yahoo + EW (strategy without AV/UW backing) → tier 3."""
-    install, _ = mock_cloud_sql
-    install(pd.DataFrame([
-        _row("ABC", "yahoo"),
-        _row("ABC", "earnings_whispers", strategy="bull_spread"),
-    ]))
+def test_yahoo_mixed_ew_stays_tier4(real_brief_sql):
     from gcp.premarket_brief import load_earnings_for_brief
-
-    result = load_earnings_for_brief(date(2026, 4, 27))
-    assert result["earnings"][0]["tier"] == 3
+    rows = [_row('AAPL', source) for source in ['yahoo']]
+    real_brief_sql(rows + [_row('AAPL', 'earnings_whispers', strategy='straddle', strike=180., premium=2.5, score=8)])
+    actual = load_earnings_for_brief(date(2026, 4, 27))
+    real_brief_sql(rows)
+    assert actual == load_earnings_for_brief(date(2026, 4, 27))
+    assert actual['earnings'][0]['tier'] == 4
+    assert actual['earnings'][0]['sources'] == ['yahoo']
+    assert actual['earnings'][0]['strategy'] == ''
+    assert actual['earnings'][0]['strike'] is None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -278,9 +266,7 @@ def test_top_n_keeps_highest_tier_first(mock_cloud_sql):
         # Alphabetical order would put A first; tier order should beat it.
         _row("ZULU", "alphavantage"),
         _row("ZULU", "unusual_whales"),
-        _row("ZULU", "earnings_whispers"),  # tier 1
         _row("ALPHA", "alphavantage"),       # tier 6
-        _row("BRAVO", "alphavantage"),
         _row("BRAVO", "unusual_whales"),     # tier 2
     ]))
     from gcp.premarket_brief import load_earnings_for_brief
@@ -288,7 +274,7 @@ def test_top_n_keeps_highest_tier_first(mock_cloud_sql):
     result = load_earnings_for_brief(date(2026, 4, 27), top_n=2)
     tickers = [e["ticker"] for e in result["earnings"]]
     assert tickers == ["ZULU", "BRAVO"], (
-        "top_n must keep tier-1/tier-2 names ahead of alphabetical tier-6"
+        "top_n must keep tier-2/tier-4 names ahead of alphabetical tier-6"
     )
 
 
@@ -1917,14 +1903,13 @@ class TestTradeabilityRanking:
     composite scores.
     """
 
-    def test_high_flow_tier2_beats_zero_flow_tier1(self, mock_cloud_sql):
-        """SBUX tier 2 with real flow > WELL tier 1 with zero flow."""
+    def test_high_flow_beats_zero_flow_supported_sources(self, mock_cloud_sql):
+        """Supported SBUX with real flow survives; supported WELL with none is filtered."""
         install, _ = mock_cloud_sql
         install(pd.DataFrame([
-            # WELL: tier 1 (3 sources confirm) but zero options
+            # WELL: supported sources confirm, but zero options
             _row("WELL", "alphavantage",     options_volume=0, market_cap=149_000_000_000),
             _row("WELL", "unusual_whales",   options_volume=0, market_cap=149_000_000_000),
-            _row("WELL", "earnings_whispers",options_volume=0, market_cap=149_000_000_000),
             # SBUX: tier 2 (UW + Yahoo only) but high options + high mcap
             _row("SBUX", "unusual_whales",   options_volume=20_000, market_cap=112_000_000_000),
             _row("SBUX", "yahoo",            options_volume=20_000, market_cap=112_000_000_000),
@@ -1938,22 +1923,16 @@ class TestTradeabilityRanking:
         )
 
     def test_tier_breaks_ties_at_same_score(self, mock_cloud_sql):
-        """Two names with identical options/mcap → tier 1 ranks first."""
+        """Equal numeric scores: tier 2 must beat alphabetically earlier tier 4."""
         install, _ = mock_cloud_sql
         install(pd.DataFrame([
-            _row("BBB", "unusual_whales",     options_volume=10_000, market_cap=50_000_000_000),
-            _row("BBB", "yahoo",              options_volume=10_000, market_cap=50_000_000_000),
-            _row("AAA", "alphavantage",       options_volume=10_000, market_cap=50_000_000_000),
-            _row("AAA", "unusual_whales",     options_volume=10_000, market_cap=50_000_000_000),
-            _row("AAA", "earnings_whispers",  options_volume=10_000, market_cap=50_000_000_000),
+            _row('AAA', 'unusual_whales', options_volume=10000, market_cap=50_000_000_000),
+            _row('ZZZ', 'alphavantage', options_volume=10000, market_cap=50_000_000_000),
+            _row('ZZZ', 'unusual_whales', options_volume=10000, market_cap=50_000_000_000),
         ]))
         from gcp.premarket_brief import load_earnings_for_brief
-
-        result = load_earnings_for_brief(date(2026, 4, 27))
-        tickers = [e["ticker"] for e in result["earnings"]]
-        assert tickers == ["AAA", "BBB"], (
-            "Same score → tier 1 (AAA) ranks before tier 2 (BBB)"
-        )
+        rows = load_earnings_for_brief(date(2026, 4, 27))['earnings']
+        assert [(r['ticker'], r['tier']) for r in rows] == [('ZZZ', 2), ('AAA', 4)]
 
 
 class TestConfirmedOnlyFilter:
@@ -1973,13 +1952,12 @@ class TestConfirmedOnlyFilter:
         install(pd.DataFrame([
             _row('AAA', 'alphavantage', options_volume=10_000),
             _row('AAA', 'unusual_whales', options_volume=10_000),
-            _row('AAA', 'earnings_whispers', options_volume=10_000),
             _row('LONE', 'unusual_whales', options_volume=10_000),
         ]))
         from gcp.premarket_brief import load_earnings_for_brief
         result = load_earnings_for_brief(date(2026, 4, 27))
         tickers = {e['ticker'] for e in result['earnings']}
-        assert 'AAA' in tickers       # tier 1, kept
+        assert 'AAA' in tickers       # AV/UW confirmed, kept
         assert 'LONE' not in tickers  # tier 4, filtered out
 
     def test_override_keeps_unconfirmed(self, monkeypatch, mock_cloud_sql):
@@ -2488,41 +2466,27 @@ class TestEmbedAmcReactionsSection:
                 f"section; saw between=[{between!r}]"
             )
 
-    def test_a_verdict_on_todays_row_is_never_rendered(self):
-        """Today's picks are unscored when the brief runs at 08:30 ET. A
-        verdict on one can only come from a BRIEF_AS_OF replay reading a
-        result computed from the day it replays, so the Whispers section
-        shows the pick and not the verdict (#1168)."""
+    def test_legacy_today_pick_and_verdict_not_rendered(self):
         from gcp.premarket_brief import _build_earnings_embed
-        embed = _build_earnings_embed(_earnings_brief([
-            _row_out('TEVA', 'premarket', 1,
-                     strategy='Long Calls', strike=30,
-                     ew_strike_verdict='HIT',
-                     ew_strike_move_pct=18.7,
-                     ew_minutes_to_hit=5,
-                     ew_minutes_in_zone=142,
-                     ew_day_change_pct=1.2),
-        ]))
-        whispers = embed['description'].split('Whispers')[1]
-        assert 'TEVA' in whispers and 'Strike $30' in whispers
-        assert 'HIT' not in whispers and '+18.7%' not in whispers
-        assert '\U0001f7e2' not in whispers
+        desc = _build_earnings_embed(_earnings_brief([
+            _row_out('TEVA', 'premarket', 2, strategy='Long Calls', strike=30,
+                     ew_strike_verdict='HIT', ew_strike_move_pct=18.7,
+                     ew_minutes_to_hit=5, ew_minutes_in_zone=142, ew_day_change_pct=1.2),
+        ]))['description']
+        assert 'TEVA' in desc
+        for retired in ('Long Calls', 'Strike $', 'Whispers', 'HIT', '+18.7%'):
+            assert retired not in desc
 
-    def test_ew_verdict_omitted_when_not_evaluated(self):
-        """No verdict column = no verdict text. Strategy + strike still
-        render in the Whispers section though, since the strategy alone
-        is informative."""
+    def test_legacy_unscored_pick_not_rendered(self):
         from gcp.premarket_brief import _build_earnings_embed
-        embed = _build_earnings_embed(_earnings_brief([
-            _row_out('AAPL', 'premarket', 1,
-                     strategy='Long Calls', strike=260,
-                     ew_strike_verdict=None),
-        ]))
-        desc = embed['description']
-        assert 'EW LC' not in desc            # no verdict
-        assert 'Long Calls' in desc           # strategy still shows
-        assert 'Strike $260' in desc          # strike still shows
-        assert 'Whispers' in desc             # in the Whispers section
+        desc = _build_earnings_embed(_earnings_brief([
+            _row_out('AAPL', 'premarket', 2, strategy='Long Calls', strike=260,
+                     ew_strike_verdict=None, ew_strike_move_pct=18.7,
+                     ew_minutes_to_hit=5, ew_minutes_in_zone=142, ew_day_change_pct=1.2),
+        ]))['description']
+        assert 'AAPL' in desc
+        for retired in ('Long Calls', 'Strike $', 'Whispers', 'HIT', '+18.7%'):
+            assert retired not in desc
 
 
 class TestWhispersSection:
@@ -2531,22 +2495,16 @@ class TestWhispersSection:
     actionable trigger'. Section appears only when at least one row
     has a strategy."""
 
-    def test_strategy_does_not_render_in_bmo_row(self):
+    def test_legacy_strategy_renders_in_no_section(self):
         from gcp.premarket_brief import _build_earnings_embed
-        embed = _build_earnings_embed(_earnings_brief([
-            _row_out('TEVA', 'premarket', 1,
-                     strategy='Long Calls', strike=30),
-        ]))
-        desc = embed['description']
-        # Strategy must be in Whispers section, NOT in the BMO bullet
-        bmo_section = desc.split('Whispers')[0]
-        assert 'Long Calls' not in bmo_section
-        assert 'Strike $30' not in bmo_section
-        # And IS in whispers
-        whispers_section = desc.split('Whispers')[1]
-        assert 'TEVA' in whispers_section
-        assert 'Long Calls' in whispers_section
-        assert 'Strike $30' in whispers_section
+        desc = _build_earnings_embed(_earnings_brief([
+            _row_out('TEVA', 'premarket', 2, strategy='Long Calls', strike=30,
+                     ew_strike_verdict=None, ew_strike_move_pct=18.7,
+                     ew_minutes_to_hit=5, ew_minutes_in_zone=142, ew_day_change_pct=1.2),
+        ]))['description']
+        assert 'TEVA' in desc
+        for retired in ('Long Calls', 'Strike $', 'Whispers', 'HIT', '+18.7%'):
+            assert retired not in desc
 
     def test_no_whispers_section_when_no_strategy(self):
         from gcp.premarket_brief import _build_earnings_embed
@@ -2555,16 +2513,14 @@ class TestWhispersSection:
         ]))
         assert 'Whispers' not in embed['description']
 
-    def test_whispers_section_only_lists_strategy_rows(self):
+    def test_mixed_legacy_strategy_rows_create_no_whispers(self):
         from gcp.premarket_brief import _build_earnings_embed
-        embed = _build_earnings_embed(_earnings_brief([
-            _row_out('WITH_S', 'premarket', 1,
-                     strategy='Long Calls', strike=50),
-            _row_out('NO_S',   'premarket', 2, strategy=None),
-        ]))
-        whispers = embed['description'].split('Whispers')[1]
-        assert 'WITH_S' in whispers
-        assert 'NO_S' not in whispers
+        desc = _build_earnings_embed(_earnings_brief([
+            _row_out('WITH_S', 'premarket', 2, strategy='Long Calls', strike=50),
+            _row_out('NO_S', 'premarket', 2, strategy=None),
+        ]))['description']
+        assert 'WITH_S' in desc and 'NO_S' in desc
+        assert 'Whispers' not in desc and 'Long Calls' not in desc and 'Strike $50' not in desc
 
     def test_reactions_render_between_bmo_and_amc(self):
         """Section order: BMO → reactions → AMC. Most-actionable first."""
@@ -3079,214 +3035,166 @@ _EW_PICKS = [
 ]
 
 
-def test_mondays_brief_recaps_fridays_session(mock_cloud_sql):
-    """One query over the prior session through the recapped one, then the
-    evaluator's own session rule picks the picks scored on that session."""
-    install, captured = mock_cloud_sql
-    install(pd.DataFrame(_EW_PICKS))
-    from gcp.premarket_brief import load_ew_recap
-    recap = load_ew_recap(date(2026, 9, 28))
-    assert recap['session'] == date(2026, 9, 25)
-    assert [p['ticker'] for p in recap['picks']] == ['POST_THU', 'PRE_FRI']
-    assert recap['unscored'] == 1                       # INTRA_FRI
-    assert len(captured['sqls']) == 1
-    assert (captured['params']['s'], captured['params']['e']) == (
-        date(2026, 9, 24), date(2026, 9, 25))
+def test_mondays_brief_has_no_recap_lookup(monkeypatch, real_brief_sql):
+    _assert_pipeline_without_ew(monkeypatch, real_brief_sql, '2026-09-28')
 
 
-def test_a_thursday_after_close_pick_is_recapped_monday_not_friday(mock_cloud_sql):
-    """#1151: an after-close report is scored on the next session. POST_THU
-    reacts on Friday, so Friday's brief (Thursday's session) leaves it out
-    and Monday's shows it."""
-    install, _ = mock_cloud_sql
-    install(pd.DataFrame(_EW_PICKS))
-    from gcp.premarket_brief import load_ew_recap
-    friday = load_ew_recap(date(2026, 9, 25))
-    assert friday['session'] == date(2026, 9, 24)
-    assert [p['ticker'] for p in friday['picks']] == ['PRE_THU']
-    assert 'POST_THU' in [p['ticker'] for p in load_ew_recap(date(2026, 9, 28))['picks']]
+def test_legacy_after_close_pick_does_not_trigger_recap(monkeypatch, real_brief_sql):
+    _assert_pipeline_without_ew(monkeypatch, real_brief_sql, '2026-09-25')
 
 
-def test_todays_rows_never_carry_a_verdict(mock_cloud_sql):
-    """The loader selects no verdict column, and its rows carry none even
-    when the frame does, so no path from today's rows reaches a verdict."""
-    install, captured = mock_cloud_sql
-    install(pd.DataFrame([_row('TEVA', 'earnings_whispers', strategy='Long Calls',
-                               strike=30.0, ew_strike_verdict='HIT',
-                               ew_strike_move_pct=18.7)]))
+def test_retired_columns_absent_from_loader_query(real_brief_sql):
     from gcp.premarket_brief import load_earnings_for_brief
+    calls = real_brief_sql([_row('TEVA', 'unusual_whales')])
     result = load_earnings_for_brief(date(2026, 4, 27))
-    assert 'ew_' not in captured['sqls'][0]
     assert result['earnings']
+    for column in ('ec.strategy', 'ec.strike', 'ec.premium', 'ec.score', 'ew_strike_verdict'):
+        assert column not in calls[0][0]
     assert not [k for r in result['earnings'] for k in r if k.startswith('ew_')]
 
 
-def test_the_recap_renders_the_last_sessions_verdicts():
+def test_legacy_last_session_verdicts_not_rendered():
     from gcp.premarket_brief import _build_earnings_embed
-    picks = [p for p in _EW_PICKS if p['ew_strike_verdict']][:1]   # PRE_FRI, HIT
-    data = _earnings_brief([_row_out('AAPL', 'premarket', 1)])
-    data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': picks, 'unscored': 1}
+    rows = [] if False else [_row_out('AAPL', 'premarket', 2)]
+    data = _earnings_brief(rows)
+    data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': [_EW_PICKS[0]], 'unscored': 1}
+    if False:
+        data['ew_recap']['unavailable'] = 'OperationalError: no such table earnings_calendar [SQL: secret]'
     desc = _build_earnings_embed(data)['description']
-    recap = desc.split('EW picks, Fri 09/25 session')[1]
-    assert '\U0001f7e2 **PRE_FRI**' in recap
-    assert 'EW LC $30 HIT +18.7%' in recap
-    assert 'in 5m' in recap and 'held 142m' in recap and 'day +1.2%' in recap
-    assert '+1 not scored' in recap
+    for retired in ('EW picks', 'PRE_FRI', 'POST_THU', 'HIT', 'MISS', 'not scored', 'OperationalError', 'secret'):
+        assert retired not in desc
+    if False:
+        assert desc == 'No earnings scheduled'
+    else:
+        assert '**AAPL**' in desc
 
 
-def test_the_recap_renders_on_a_day_without_earnings():
+def test_empty_day_ignores_legacy_recap():
     from gcp.premarket_brief import _build_earnings_embed
-    data = _earnings_brief([])
-    data['ew_recap'] = {'session': date(2026, 9, 25),
-                        'picks': [_EW_PICKS[1]], 'unscored': 0}   # POST_THU, MISS
+    rows = [] if True else [_row_out('AAPL', 'premarket', 2)]
+    data = _earnings_brief(rows)
+    data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': [_EW_PICKS[1]], 'unscored': 1}
+    if False:
+        data['ew_recap']['unavailable'] = 'OperationalError: no such table earnings_calendar [SQL: secret]'
     desc = _build_earnings_embed(data)['description']
-    assert 'EW picks, Fri 09/25 session' in desc
-    assert '\U0001f534 **POST_THU**' in desc and 'EW LC $30 MISS' in desc
+    for retired in ('EW picks', 'PRE_FRI', 'POST_THU', 'HIT', 'MISS', 'not scored', 'OperationalError', 'secret'):
+        assert retired not in desc
+    if True:
+        assert desc == 'No earnings scheduled'
+    else:
+        assert '**AAPL**' in desc
 
 
-def test_an_unavailable_recap_is_said_not_hidden(monkeypatch, caplog):
-    """The recap is not worth failing the morning brief for, but a missing
-    one must read as missing: an ERROR with the stack, and a line in the
-    embed naming the error's class (CLAUDE.md §3.7). Its text stays in the
-    log (Codex on #1203)."""
-    from gcp import premarket_brief as pb
-
-    def boom(today):
-        raise RuntimeError('calendar unavailable')
-
-    monkeypatch.setattr(pb, 'load_ew_recap', boom)
-    with caplog.at_level('ERROR'):
-        recap = pb._ew_recap_or_unavailable(date(2026, 9, 28))
-    assert recap['unavailable'] == 'RuntimeError'
-    errors = [r for r in caplog.records if r.levelname == 'ERROR' and r.exc_info]
-    assert errors and 'calendar unavailable' in str(errors[0].exc_info[1])
-    data = _earnings_brief([_row_out('AAPL', 'premarket', 1)])
-    data['ew_recap'] = recap
-    desc = pb._build_earnings_embed(data)['description']
-    assert 'EW picks, last session: unavailable (RuntimeError)**' in desc
-    assert 'calendar unavailable' not in desc
+def test_legacy_recap_unavailable_warning_not_rendered():
+    from gcp.premarket_brief import _build_earnings_embed
+    rows = [] if False else [_row_out('AAPL', 'premarket', 2)]
+    data = _earnings_brief(rows)
+    data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': [_EW_PICKS[0]], 'unscored': 1}
+    if True:
+        data['ew_recap']['unavailable'] = 'OperationalError: no such table earnings_calendar [SQL: secret]'
+    desc = _build_earnings_embed(data)['description']
+    for retired in ('EW picks', 'PRE_FRI', 'POST_THU', 'HIT', 'MISS', 'not scored', 'OperationalError', 'secret'):
+        assert retired not in desc
+    if False:
+        assert desc == 'No earnings scheduled'
+    else:
+        assert '**AAPL**' in desc
 
 
-def test_a_failed_recap_query_reads_as_unavailable_not_as_no_picks(monkeypatch):
-    """Codex on #1203: the recap read through query_to_dataframe, which
-    turns any failure into an empty frame, so a failed query looked like a
-    session with no picks and the unavailable line never appeared. It reads
-    through the strict path, so a failure is named."""
-    from gcp import database
-    from gcp import premarket_brief as pb
-
-    def strict(sql, params=None, timeout_s=None):
-        raise RuntimeError('connection refused')
-
-    monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
-    monkeypatch.setattr(database, 'query_to_dataframe', lambda sql, params=None: pd.DataFrame())
-    monkeypatch.setattr(database, 'query_to_dataframe_strict', strict)
-    recap = pb._ew_recap_or_unavailable(date(2026, 9, 28))
-    assert recap.get('unavailable') == 'RuntimeError'
-    assert recap['picks'] == []
+def test_recap_query_is_never_attempted(monkeypatch, real_brief_sql):
+    _assert_pipeline_without_ew(monkeypatch, real_brief_sql, '2026-09-28')
 
 
 def _busy_day(n=150):
-    """A daily brief whose earlier sections alone pass Discord's limit: the
-    Whispers section lists every EW pick of the day, uncapped (191 on the
-    busiest day since 2026-04-13)."""
-    return _earnings_brief([_row_out(f'W{i:03d}', 'premarket', 1,
-                                     strategy='Long Calls', strike=10.0 + i)
-                            for i in range(n)])
+    """Uncapped supported-source watchlist exceeds the description bound."""
+    data = _earnings_brief([_row_out(f'W{i:03d}', 'premarket', 2,
+        expected_move=12345.67, eps_actual=1.2, eps_surprise_pct=20., gap_pct=4.) for i in range(n)])
+    data['watchlist'] = [_row_out(f'FLOW{i:03d}', 'premarket', 2,
+        expected_move=12345.67, options_volume=30000, open_interest=60000,
+        market_cap=1000000000) for i in range(n)]
+    return data
 
 
-def test_the_recap_survives_a_busy_days_description_cut():
-    """Codex on #1203: the recap came last and the description was then
-    sliced to 4,090 characters, so on a busy day it was the first thing cut.
-    The sections above it give way instead, and say they were cut."""
+def test_busy_supported_day_has_no_recap_and_is_bounded():
     from gcp.premarket_brief import _build_earnings_embed
     data = _busy_day()
+    plain = _build_earnings_embed(data)['description']
     data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': [_EW_PICKS[0]], 'unscored': 1}
+    if False:
+        data['ew_recap']['unavailable'] = 'RuntimeError'
     desc = _build_earnings_embed(data)['description']
-    assert len(desc) <= 4090
-    assert 'EW picks, Fri 09/25 session' in desc
-    assert '\U0001f7e2 **PRE_FRI**' in desc and desc.endswith('_+1 not scored_')
-    assert desc.index('_... truncated_') < desc.index('EW picks, Fri 09/25 session')
+    assert desc == plain and len(desc) <= 4090
+    assert desc.endswith('_... truncated_')
+    assert all(line.count('**') % 2 == 0 for line in desc.splitlines())
+    assert '**W000**' in desc
+    assert 'EW picks' not in desc and 'RuntimeError' not in desc
 
 
-def test_the_cut_keeps_whole_lines():
-    """A line cut short left `**W` open, and Discord pairs an open bold
-    marker with the next one, the recap's own header."""
+def test_retired_recap_reservation_is_absent():
     from gcp.premarket_brief import _build_earnings_embed
     data = _busy_day()
+    plain = _build_earnings_embed(data)['description']
     data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': [_EW_PICKS[0]], 'unscored': 1}
+    if False:
+        data['ew_recap']['unavailable'] = 'RuntimeError'
     desc = _build_earnings_embed(data)['description']
-    head = desc[:desc.index('_... truncated_')]
-    assert all(line.count('**') % 2 == 0 for line in head.splitlines())
-    assert head.rstrip().endswith('Long Calls | Strike $113')
+    assert desc == plain and len(desc) <= 4090
+    assert desc.endswith('_... truncated_')
+    assert all(line.count('**') % 2 == 0 for line in desc.splitlines())
+    assert '**W000**' in desc
+    assert 'EW picks' not in desc and 'RuntimeError' not in desc
 
 
-def test_an_unavailable_recap_survives_the_cut_too():
+def test_busy_supported_day_has_no_ew_warning():
     from gcp.premarket_brief import _build_earnings_embed
     data = _busy_day()
-    data['ew_recap'] = {'session': None, 'picks': [], 'unscored': 0,
-                        'unavailable': 'RuntimeError'}
+    plain = _build_earnings_embed(data)['description']
+    data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': [_EW_PICKS[0]], 'unscored': 1}
+    if True:
+        data['ew_recap']['unavailable'] = 'RuntimeError'
     desc = _build_earnings_embed(data)['description']
-    assert len(desc) <= 4090
-    assert desc.endswith('EW picks, last session: unavailable (RuntimeError)**')
+    assert desc == plain and len(desc) <= 4090
+    assert desc.endswith('_... truncated_')
+    assert all(line.count('**') % 2 == 0 for line in desc.splitlines())
+    assert '**W000**' in desc
+    assert 'EW picks' not in desc and 'RuntimeError' not in desc
 
 
-def test_a_database_error_reaches_discord_as_its_class_only(monkeypatch, caplog):
-    """Codex on #1203: with the strict path a real database error reaches the
-    embed, and its text is the driver's: relation names, the whole statement,
-    and for a connection failure the host and the user. The embed names the
-    class; the text stays in the log with the stack."""
-    import sqlalchemy
-    from gcp import database
-    from gcp import premarket_brief as pb
-    engine = sqlalchemy.create_engine('sqlite://')  # no earnings_calendar
-
-    def strict(sql, params=None, timeout_s=None):
-        with engine.connect() as conn:
-            return pd.read_sql(sqlalchemy.text(sql), conn, params=params)
-
-    # Only for the load: the embed reads other metrics whenever Cloud SQL
-    # reports as configured, and this test must not reach for a database.
-    with monkeypatch.context() as m, caplog.at_level('ERROR'):
-        m.setattr(database, 'is_cloud_sql_configured', lambda: True)
-        m.setattr(database, 'query_to_dataframe_strict', strict)
-        recap = pb._ew_recap_or_unavailable(date(2026, 9, 28))
-    assert recap['unavailable'] == 'OperationalError'
-    assert any('no such table: earnings_calendar' in str(r.exc_info[1])
-               for r in caplog.records if r.exc_info)
-    data = _earnings_brief([_row_out('AAPL', 'premarket', 1)])
-    data['ew_recap'] = recap
-    desc = pb._build_earnings_embed(data)['description']
-    assert 'no such table' not in desc and '[SQL:' not in desc
-    assert desc.splitlines()[-1] == (
-        '**\U0001f52e EW picks, last session: unavailable (OperationalError)**')
+def test_retired_recap_database_error_cannot_reach_embed():
+    from gcp.premarket_brief import _build_earnings_embed
+    rows = [] if False else [_row_out('AAPL', 'premarket', 2)]
+    data = _earnings_brief(rows)
+    data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': [_EW_PICKS[0]], 'unscored': 1}
+    if True:
+        data['ew_recap']['unavailable'] = 'OperationalError: no such table earnings_calendar [SQL: secret]'
+    desc = _build_earnings_embed(data)['description']
+    for retired in ('EW picks', 'PRE_FRI', 'POST_THU', 'HIT', 'MISS', 'not scored', 'OperationalError', 'secret'):
+        assert retired not in desc
+    if False:
+        assert desc == 'No earnings scheduled'
+    else:
+        assert '**AAPL**' in desc
 
 
-def test_a_quiet_day_is_not_cut():
+def test_quiet_supported_day_preserves_complete_content():
     from gcp.premarket_brief import _build_earnings_embed
     data = _busy_day(3)
+    plain = _build_earnings_embed(data)['description']
     data['ew_recap'] = {'session': date(2026, 9, 25), 'picks': [_EW_PICKS[0]], 'unscored': 0}
     desc = _build_earnings_embed(data)['description']
-    assert '_... truncated_' not in desc
-    assert '**W002** — Long Calls | Strike $12' in desc and 'EW picks, Fri 09/25 session' in desc
+    assert desc == plain and '_... truncated_' not in desc
+    assert all(f'**W{i:03d}**' in desc for i in range(3))
 
 
-def test_a_null_metric_read_back_as_nan_renders_as_absent(mock_cloud_sql):
-    """pandas hands a NULL integer back as NaN, and `_ew_verdict_str` calls
-    int() on the minutes. Production's SNX (KEPT, 2026-09-24) has a NULL
-    ew_minutes_to_hit. The recap passes None, never NaN, so the row renders
-    without that figure instead of raising."""
-    install, _ = mock_cloud_sql
+def test_legacy_nan_recap_metrics_are_ignored():
+    from gcp.premarket_brief import _build_earnings_embed
     pick = _ew_pick(9, 'SNX', date(2026, 9, 24), 'premarket', 'HIT')
     pick.update(ew_minutes_to_hit=float('nan'), ew_minutes_in_zone=float('nan'))
-    install(pd.DataFrame([pick]))
-    from gcp.premarket_brief import _build_earnings_embed, load_ew_recap
-    recap = load_ew_recap(date(2026, 9, 25))
-    assert recap['picks'][0]['ew_minutes_to_hit'] is None
-    data = _earnings_brief([_row_out('AAPL', 'premarket', 1)])
-    data['ew_recap'] = recap
-    desc = _build_earnings_embed(data)['description']
-    assert 'EW LC $30 HIT +18.7%' in desc and 'in ' not in desc.split('SNX')[1].split('\n')[0]
+    data = _earnings_brief([_row_out('AAPL', 'premarket', 2)])
+    plain = _build_earnings_embed(data)['description']
+    data['ew_recap'] = {'session': date(2026, 9, 24), 'picks': [pick]}
+    assert _build_earnings_embed(data)['description'] == plain
+    assert 'SNX' not in plain and 'nan' not in plain
 
 
 class TestStratReplayClock:
@@ -3578,3 +3486,293 @@ class TestExplanationInputsReadTfBias:
                       tf_continuity_frames=None)
         asyncio.run(be.explain_ticker('QQQ', d))
         assert 'TF bias unavailable | FTFC unavailable' in seen[0][1]
+
+
+@pytest.fixture
+def real_brief_sql(monkeypatch):
+    """Execute the loaders' unmodified SQL on disposable SQLite, never a live DB.
+
+    Only the pandas date boundary is adapted; no source filtering in Python.
+    Predicate removal is an explicit negative control, not a second query.
+    """
+    import sqlite3
+    from gcp import database
+    from lib import earnings_reactions as er
+    connections = []
+    monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+    monkeypatch.setattr(er, 'enrich_with_playability', lambda rows: None)
+    monkeypatch.setattr(er, 'conditional_lean_summary', lambda **kw: kw)
+
+    def install(rows, *, remove_predicate=False):
+        conn = sqlite3.connect(':memory:')
+        connections.append(conn)
+        pd.DataFrame(rows).to_sql('earnings_calendar', conn, index=False)
+        market = []
+        for row in rows:
+            for d in (date(2026, 4, 24), date(2026, 4, 27), date(2026, 4, 28)):
+                market.append(dict(ticker=row['ticker'], date=d, close=100.,
+                                   gap_pct=3., pre_high=104., pre_low=101., pre_vwap=102.))
+        pd.DataFrame(market).drop_duplicates(['ticker', 'date']).to_sql(
+            'market_data_daily', conn, index=False)
+        calls = []
+
+        def query(sql, params=None):
+            calls.append((sql, dict(params or {})))
+            if remove_predicate:
+                sql = sql.replace(er.earnings_not_retired_sql('ec'), '1=1')
+            frame = pd.read_sql_query(sql, conn, params=params)
+            if 'earnings_date' in frame:
+                frame['earnings_date'] = pd.to_datetime(frame['earnings_date']).dt.date
+            return frame
+
+        monkeypatch.setattr(database, 'query_to_dataframe', query)
+        return calls
+    yield install
+    for conn in connections:
+        conn.close()
+
+
+@pytest.mark.parametrize('weekly,include_unconfirmed', [(False, '0'), (False, '1'), (True, '0')])
+def test_retired_sources_excluded_by_real_brief_sql(real_brief_sql, monkeypatch, weekly, include_unconfirmed):
+    from gcp.premarket_brief import load_earnings_for_brief
+    from lib import earnings_reactions as er
+    monkeypatch.setenv('BRIEF_INCLUDE_UNCONFIRMED', include_unconfirmed)
+    monkeypatch.setenv('BRIEF_MIN_REACTION_QUARTERS', '12')
+    def enrich(rows):
+        for row in rows:
+            row.update(playability_n_q=12, playability_score=10.)
+    monkeypatch.setattr(er, 'enrich_with_playability', enrich)
+    monkeypatch.setattr(er, 'score_quintile', lambda score: 'Q3')
+    rows = [_row('MIX', s, earnings_time='premarket') for s in ('alphavantage', 'unusual_whales')]
+    for i, source in enumerate(('earnings_whispers', 'EarningsWhispers')):
+        rows.extend([_row('MIX', source, expected_move=9., options_volume=30000),
+                     _row(f'RETIRED{i}', source, expected_move=9., options_volume=30000)])
+    controls = [None, 'unknown', 'Earnings_Whispers', 'alphavantage', 'unusual_whales', 'yahoo']
+    rows.append(_row('MIX', None))
+    rows.extend(_row(f'CONTROL{i}', s) for i, s in enumerate(controls))
+    today = date(2026, 4, 26) if weekly else date(2026, 4, 27)
+    real_brief_sql(rows)
+    actual = load_earnings_for_brief(today, weekly=weekly, top_n=0)
+    retained = [r for r in rows if r['data_source'] not in er.RETIRED_EARNINGS_SOURCES]
+    calls = real_brief_sql(retained)
+    expected = load_earnings_for_brief(today, weekly=weekly, top_n=0)
+    assert actual == expected
+    assert len(calls) == 1
+    assert actual['earnings'][0]['ticker'] == 'MIX'
+    assert actual['earnings'][0]['tier'] == 2
+    if weekly or include_unconfirmed == '1':
+        assert {r['ticker'] for r in actual['earnings']} == {'MIX', *(f'CONTROL{i}' for i in range(6))}
+    for row in actual['earnings']:
+        assert (row['strategy'], row['strike'], row['premium'], row['score']) == ('', None, None, None)
+    monkeypatch.setenv('BRIEF_INCLUDE_UNCONFIRMED', '1')
+    real_brief_sql(rows, remove_predicate=True)
+    control = load_earnings_for_brief(today, weekly=weekly, top_n=0)
+    assert {'RETIRED0', 'RETIRED1'} <= {r['ticker'] for r in control['earnings']}
+    assert next(r for r in control['earnings'] if r['ticker'] == 'MIX')['expected_move'] == 9.
+
+
+def test_retired_sources_excluded_by_real_prior_amc_sql(real_brief_sql, monkeypatch):
+    from gcp.premarket_brief import load_yesterday_amc_reactions
+    from lib import earnings_reactions as er
+    rows = [_row('MIX', 'unusual_whales', earnings_time='postmarket', options_volume=20000)]
+    rows += [_row('MIX', s, earnings_time='postmarket', expected_move=9., options_volume=30000)
+             for s in er.RETIRED_EARNINGS_SOURCES]
+    rows += [_row(f'ONLY{i}', s, earnings_time='postmarket', options_volume=30000)
+             for i, s in enumerate(er.RETIRED_EARNINGS_SOURCES)]
+    lean_calls = []
+    monkeypatch.setattr(er, 'conditional_lean_summary', lambda **kw: lean_calls.append(kw))
+    calls = real_brief_sql(rows)
+    actual = load_yesterday_amc_reactions(date(2026, 4, 28), top_n=0)
+    assert len(calls) == 1 and 'MAX(ec.strategy)' not in calls[0][0]
+    assert len(actual) == 1
+    assert (actual[0]['expected_move'], actual[0]['options_volume'], actual[0]['strategy']) == (5., 20000, '')
+    actual_calls = lean_calls[:]
+    lean_calls.clear()
+    real_brief_sql([rows[0]])
+    assert load_yesterday_amc_reactions(date(2026, 4, 28), top_n=0) == actual
+    assert lean_calls == actual_calls and len(lean_calls) == 1
+    real_brief_sql(rows, remove_predicate=True)
+    control = load_yesterday_amc_reactions(date(2026, 4, 28), top_n=0)
+    assert {r['ticker'] for r in control} == {'MIX', 'ONLY0', 'ONLY1'}
+    mixed = next(r for r in control if r['ticker'] == 'MIX')
+    assert (mixed['expected_move'], mixed['options_volume']) == (9., 30000)
+
+
+@pytest.mark.parametrize('mode', ['daily', 'weekly'])
+def test_legacy_ew_payload_cannot_render(mode):
+    from gcp.premarket_brief import _build_earnings_embed
+    data = _earnings_brief([_row_out('AAPL', 'premarket', 2, strategy='Long Calls', strike=30.,
+                                    ew_strike_verdict='HIT')])
+    data['mode'] = mode
+    data['ew_recap'] = {'picks': [_EW_PICKS[0]], 'unscored': 2, 'unavailable': 'RuntimeError'}
+    desc = _build_earnings_embed(data)['description']
+    assert '**AAPL**' in desc
+    for retired in ('Whispers', 'EW ', 'Long Calls', 'Strike $30', 'HIT', 'RuntimeError'):
+        assert retired not in desc
+
+
+def _assert_pipeline_without_ew(monkeypatch, real_brief_sql, as_of, *, live=False):
+    import builtins
+    import inspect
+    import socket
+    import subprocess
+    from gcp import database, premarket_brief as pb
+    from lib import earnings_reactions as er
+    from lib.config import AppConfig
+    from tests.lib.level_params_fixtures import legacy_db
+    today = date.fromisoformat(as_of)
+    cfg = AppConfig()
+    cfg.market.tickers = []
+    monkeypatch.setenv('BRIEF_TICKERS', 'IWM')
+    monkeypatch.setattr(pb.DataLoader, 'load_daily', lambda *a, **k: pd.DataFrame())
+    monkeypatch.setenv('BRIEF_LLM_DISABLE', '1')
+    monkeypatch.setenv('BRIEF_AMC_REACTIONS', '1')
+    if live:
+        monkeypatch.delenv('BRIEF_AS_OF', raising=False)
+        class Clock(date):
+            @classmethod
+            def today(cls):
+                return today
+        monkeypatch.setattr(pb, 'date', Clock)
+    else:
+        monkeypatch.setenv('BRIEF_AS_OF', as_of)
+    def forbidden(*args, **kwargs):
+        pytest.fail('retired acquisition or external I/O attempted')
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(socket, 'create_connection', forbidden)
+    monkeypatch.setattr(subprocess, 'Popen', forbidden)
+    monkeypatch.setattr(pb.requests.sessions.Session, 'request', forbidden)
+    monkeypatch.setattr(database, 'query_to_dataframe_strict', forbidden)
+    # Exercise the real parameter loader through its supported isolated query boundary.
+    monkeypatch.setattr(pb, '_level_params_query', legacy_db('IWM').query)
+    monkeypatch.setattr(er, 'get_calibration_options_metrics', lambda: {})
+    monkeypatch.setattr(pb, 'load_economic_events', lambda *a, **k: {'today': [], 'week': []})
+    original_import = builtins.__import__
+    def guarded_import(name, *args, **kwargs):
+        if 'evaluate_ew_strikes' in name:
+            forbidden()
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', guarded_import)
+    # Full loaders still execute. Retired rows are present, not prefiltered.
+    calls = real_brief_sql([
+        _row('LEGACY', 'earnings_whispers', earnings_date=today),
+        _row('LEGACY2', 'EarningsWhispers', earnings_date=today),
+    ])
+    brief = pb.generate_premarket_brief(cfg=cfg)
+    messages = pb.format_discord_messages_routed(brief)
+    assert brief['analysis_date'] == today
+    assert 'ew_recap' not in brief['earnings']
+    assert brief['earnings']['earnings'] == []
+    assert len(calls) == (1 if today.weekday() == 6 else 2)
+    assert all('ew_strike' not in sql for sql, _ in calls)
+    assert 'Whispers' not in str(messages) and 'EW picks' not in str(messages)
+    assert not hasattr(pb, 'load_ew_recap') and not hasattr(pb, '_ew_recap_or_unavailable')
+    assert 'evaluate_ew_strikes' not in inspect.getsource(pb)
+    return brief
+
+
+@pytest.mark.parametrize('as_of,live', [('2026-04-27', True), ('2026-04-26', False), ('2026-04-27', False)])
+def test_brief_pipeline_never_acquires_ew_recap(monkeypatch, real_brief_sql, as_of, live):
+    _assert_pipeline_without_ew(monkeypatch, real_brief_sql, as_of, live=live)
+
+
+def test_non_ew_brief_contract_after_retirement(real_brief_sql, monkeypatch):
+    from gcp.premarket_brief import load_earnings_for_brief
+    from lib import earnings_reactions as er
+    monkeypatch.setenv('BRIEF_INCLUDE_UNCONFIRMED', '0')
+    monkeypatch.setenv('BRIEF_MIN_REACTION_QUARTERS', '12')
+    rows = []
+    for ticker in ('TRACK_A', 'TRACK_B', 'LOW', 'ILLIQUID'):
+        for source in ('alphavantage', 'unusual_whales', 'earnings_whispers', 'EarningsWhispers'):
+            rows.append(_row(ticker, source, earnings_time='premarket',
+                             options_volume=0 if ticker == 'ILLIQUID' else 20000,
+                             open_interest=60000))
+    def enrich(items):
+        for item in items:
+            item.update(playability_n_q=5 if item['ticker'] == 'TRACK_B' else 12,
+                        playability_score=1. if item['ticker'] == 'LOW' else 10.,
+                        playability_archetype='bullish_trend')
+    monkeypatch.setattr(er, 'enrich_with_playability', enrich)
+    monkeypatch.setattr(er, 'score_quintile', lambda score: 'Q1' if score == 1. else 'Q3')
+    real_brief_sql(rows)
+    actual = load_earnings_for_brief(date(2026, 4, 27))
+    real_brief_sql([r for r in rows if r['data_source'] not in er.RETIRED_EARNINGS_SOURCES])
+    assert actual == load_earnings_for_brief(date(2026, 4, 27))
+    for key, ticker in [('earnings', 'TRACK_A'), ('watchlist', 'TRACK_B'), ('low_conviction', 'LOW')]:
+        assert [r['ticker'] for r in actual[key]] == [ticker]
+        assert actual[key][0]['strategy'] == '' and actual[key][0]['score'] is None
+        assert actual[key][0]['playability_score'] in (1., 10.)
+    real_brief_sql([_row('Z', 'alphavantage'), _row('Z', 'unusual_whales'),
+                    _row('B', 'yahoo'), _row('A', 'alphavantage')])
+    weekly = load_earnings_for_brief(date(2026, 4, 26), weekly=True)
+    assert [(r['ticker'], r['tier']) for r in weekly['earnings']] == [('Z', 2), ('B', 4), ('A', 6)]
+
+
+def test_non_ew_embed_golden_after_retirement(monkeypatch):
+    """Exact non-EW output captured from landed main 82967a88, not the new renderer."""
+    from gcp import premarket_brief as pb
+    from lib import earnings_reactions as er
+    monkeypatch.setattr(er, 'get_calibration_options_metrics', lambda: {})
+    data = _earnings_brief([
+        _row_out('BMO', 'premarket', 2, expected_move=5., gap_pct=3.),
+        _row_out('AMC', 'postmarket', 4, eps_actual=1.2, eps_surprise_pct=20.),
+    ])
+    data.update(yesterday_amc_reactions=[_row_out('PRIOR', 'postmarket', 2, gap_pct=-3.7)],
+                watchlist=[_row_out('WATCH', 'premarket', 2, options_volume=6000, open_interest=60000)],
+                low_conviction=[_row_out('LOW', 'premarket', 2)])
+    expected = {'daily': {'title': 'Earnings Today — Wed 04/29 — 3', 'description': '**☀️ Reporting Before Open** (2)\n🔵 **BMO** — EM $5.00 | 📈 +3.0%\n  ⤷ _Also reporting (lower conviction): LOW_\n\n**📊 Reactions to Last Night’s AMC** (top 1 by |gap|)\n**PRIOR** — EPS 1.00 | 📉 -3.7%\n\n**🌙 Reporting After Close** (1)\n**AMC** — ✅ +20.0% EPS 1.00→1.20\n\n**📊 High-Flow Watchlist** (1)\n_Huge flow but < 12Q history — no score/archetype. DYOR._\n**WATCH** — OI 60k | Vol 6k | 1.0B mcap', 'color': 15965202}, 'weekly': {'title': 'Earnings Week Ahead — Wed 04/29 to Wed 04/29 — 2', 'description': '**Wed 04/29** — 2\n🔵 **BMO** — EM $5.00 | 📈 +3.0%\n**AMC** — ✅ +20.0% EPS 1.00→1.20', 'color': 15965202}, 'empty': {'title': 'Earnings (Today)', 'description': 'No earnings scheduled', 'color': 8359053}}
+    assert pb._build_earnings_embed(data) == expected['daily']
+    assert pb._build_earnings_embed(dict(data, mode='weekly')) == expected['weekly']
+    assert pb._build_earnings_embed({'earnings': []}) == expected['empty']
+
+
+@pytest.mark.parametrize('section,ticker,label', [
+    ('watchlist', 'WATCH', 'High-Flow Watchlist'),
+    ('low_conviction', 'LOW', 'Also reporting'),
+    ('yesterday_amc_reactions', 'PRIOR', 'Reactions to Last Night'),
+])
+def test_non_ew_section_survives_empty_track_a(section, ticker, label):
+    from gcp.premarket_brief import _build_earnings_embed
+    data = _earnings_brief([])
+    data[section] = [_row_out(ticker, 'premarket', 2, expected_move=5.67)]
+    desc = _build_earnings_embed(data)['description']
+    assert label in desc and ticker in desc
+    assert 'No earnings scheduled' not in desc
+    assert 'Whispers' not in desc and 'EW picks' not in desc
+
+
+def test_actual_track_b_only_loader_still_renders(real_brief_sql, monkeypatch):
+    from gcp.premarket_brief import load_earnings_for_brief, _build_earnings_embed
+    from lib import earnings_reactions as er
+    monkeypatch.setenv('BRIEF_INCLUDE_UNCONFIRMED', '0')
+    monkeypatch.setenv('BRIEF_MIN_REACTION_QUARTERS', '12')
+    def enrich(rows):
+        for row in rows:
+            row.update(playability_n_q=5, playability_score=10.)
+    monkeypatch.setattr(er, 'enrich_with_playability', enrich)
+    real_brief_sql([_row('TRACK_B', source, open_interest=60000)
+                    for source in ('alphavantage', 'unusual_whales')])
+    data = load_earnings_for_brief(date(2026, 4, 27))
+    assert data['earnings'] == []
+    assert [row['ticker'] for row in data['watchlist']] == ['TRACK_B']
+    desc = _build_earnings_embed(data)['description']
+    assert '**TRACK_B**' in desc and 'High-Flow Watchlist' in desc
+
+
+def test_long_non_ew_output_keeps_complete_financial_rows():
+    from gcp.premarket_brief import _build_earnings_embed
+    data = _earnings_brief([_row_out(f'A{i:03d}', 'premarket', 2,
+                                   expected_move=5.67) for i in range(25)])
+    data['watchlist'] = [_row_out(f'B{i:03d}', 'premarket', 2,
+        expected_move=5.67, options_volume=30000, open_interest=60000,
+        market_cap=1000000000) for i in range(100)]
+    data['yesterday_amc_reactions'] = [_row_out(f'P{i:03d}', 'postmarket', 2,
+        expected_move=5.67, gap_pct=-3.7) for i in range(5)]
+    desc = _build_earnings_embed(data)['description']
+    assert len(desc) <= 4090 and desc.endswith('_... truncated_')
+    for line in desc.splitlines():
+        if line.startswith('**B'):
+            assert line.endswith('1.0B mcap')
+            assert 'EM $5.67' in line
+        assert line.count('**') % 2 == 0
+    assert 'Whispers' not in desc and 'EW picks' not in desc
