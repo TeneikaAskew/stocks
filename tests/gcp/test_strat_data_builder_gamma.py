@@ -190,3 +190,41 @@ def test_four_hour_bars_sit_on_the_eastern_grid_in_winter():
     keys = sorted(out.index)
     assert keys == [pd.Timestamp("2026-01-15 13:00", tz="UTC"),   # 08:00 EST
                     pd.Timestamp("2026-01-15 17:00", tz="UTC")]   # 12:00 EST
+
+
+@pytest.mark.parametrize('builder', ['p7', 'strat_engine'])
+def test_research_featurize_tf_retains_legacy_valid_minute_features(builder):
+    """A shared adapter change must not silently erase trained candle inputs."""
+    import numpy as np
+    from lib.eastern_time import eastern_index_to_utc
+    from gcp.research import p7_build_multi_tf_features
+
+    module = p7_build_multi_tf_features if builder == 'p7' else mod
+    index = eastern_index_to_utc(pd.date_range('2026-04-20 09:30', periods=390, freq='min'))
+    values = 100 + np.arange(390) / 100
+    raw = pd.DataFrame({'open': values, 'high': values + .02, 'low': values - .02,
+                        'close': values + .01, 'volume': 100.}, index=index)
+    features = module._featurize_tf(raw, '5m', '5m')
+    assert features['strat_candle'].value_counts().to_dict() == {'2U': 77, 'X': 1}
+    assert features.iloc[0]['open'] == 100.
+    assert features.iloc[0]['close'] == pytest.approx(100.05)
+    assert features.iloc[-1]['close'] == pytest.approx(103.90)
+
+
+@pytest.mark.parametrize('builder', ['p7','strat'])
+@pytest.mark.parametrize('bars,expected', [
+    ([(100,90,95,96),(101,89,94,99),(102,90,95,100)], 'clean_2u_bull'),
+    ([(100,90,95,96),(99,89,94,93),(98,90,94,95),(99,89,94,95)], '212_bull_reversal'),
+    ([(100,90,95,96),(101,89,94,99),(100,90,94,95),(101,89,94,95)], '312_bull_reversal'),
+])
+def test_research_combo_features_keep_declared_legacy_patterns(builder,bars,expected):
+    """Canonical 32 and outside-212 fixes cannot rewrite persisted model inputs."""
+    from gcp.research import p7_build_multi_tf_features
+    module = p7_build_multi_tf_features if builder == 'p7' else mod
+    frame = pd.DataFrame(bars,columns=['high','low','open','close'],
+                         index=pd.date_range('2026-04-20 13:30',periods=len(bars),freq='min',tz='UTC'))
+    frame['volume'] = 100.
+    result = module._featurize_tf(frame,'1m',None)
+    assert result.iloc[-1]['strat_combo'] == expected
+    assert bool(result.iloc[-1]['is_reversal']) is expected.endswith('_reversal')
+    assert result.attrs['strat_rule_version'] == 'legacy-pattern-v1'

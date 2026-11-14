@@ -1,0 +1,95 @@
+name: Architecture export
+
+# On-demand export of what the repo declares and what GCP runs, as one JSON
+# file for the backend architecture diagram (FEAT-CICD-001).
+# Spec: docs/superpowers/specs/2026-11-10-feat-cicd-001-architecture-export.md
+#
+# Replaces the monthly model-written refresh as the diagram's source. Every
+# fact comes from scripts/maintenance/doc_inventory.py, the same code that
+# renders the inventory blocks in 05-a and 05-c, so nothing here is written
+# by a language model. The run writes nothing back to the repository: the
+# export is a run artifact, and the counts and drift go to the job summary.
+#
+# Run it from the Actions tab (Run workflow, branch main) or with
+#   gh workflow run architecture-export.yml --ref main
+#
+# Required GitHub secrets: GCP_WIF_PROVIDER, GCP_WIF_SA_EMAIL (the same
+# Workload Identity pair the monthly refresh used). The service account needs
+# only the viewer roles doc_inventory.live_snapshot reads with; this workflow
+# reads no database and holds no database secret.
+#
+# No handle-failure job: that reusable workflow opens issues and draft PRs,
+# which needs write permissions this read-only workflow must not hold (spec
+# done_when "On-demand workflow"). A run is always started by a person, who
+# sees a failure in the run itself; verify-docs-against-live.yml is the same
+# shape for the same reason.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # WIF token
+
+env:
+  GCP_PROJECT: adept-mountain-474619-d4
+
+concurrency:
+  group: architecture-export
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # The Workload Identity provider's attribute condition pins
+      # assertion.ref to refs/heads/main, so a dispatch from any other ref
+      # would die inside the auth step with no explanation. Refuse first and
+      # say why. The ref goes through env, never into the script text.
+      - name: Refuse to run from anywhere but main
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::This workflow authenticates to GCP through a Workload Identity provider pinned to refs/heads/main, so it cannot run from ${REF}. Dispatch it from main."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+          # doc_inventory reads domain mappings with --region, which only the
+          # beta surface accepts.
+          install_components: beta
+
+      # The auth step writes gha-creds-*.json into the workspace root. The
+      # exporter's clean-tree check covers gcp/, lib/, scripts/, platform/api
+      # and platform/deploy.sh only, so that file does not trip it.
+      - name: Export
+        run: |
+          python3 -m scripts.maintenance.architecture_export --live \
+            --output architecture-export.json --summary architecture-export-summary.md
+          cat architecture-export-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the export
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-export
+          path: architecture-export.json
+          retention-days: 30
+          if-no-files-found: error

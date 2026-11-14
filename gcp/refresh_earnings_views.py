@@ -12,11 +12,13 @@ Two modes:
 
   --mode=daily (7:30am ET, before the morning brief)
     Rebuilds earnings_upcoming_with_history for the next 14 days. Joins
-    earnings_calendar (deduped per ticker) with earnings_ticker_lean,
-    computes per-event implied_move_pct (expected_move / prev_close),
-    runs lib.earnings_reactions.recommended_structure() in BOTH
-    long-only AND IC modes (user wants to see both), and emits
-    last_3_events as compact JSONB.
+    earnings_calendar (deduped per ticker, retired EarningsWhispers rows
+    excluded) with earnings_ticker_lean, computes per-event
+    implied_move_pct (expected_move / prev_close), and emits
+    last_3_events as compact JSONB. The score-dependent fields
+    (playability_score, quintile, confidence_label and both recommended
+    structures) are written NULL: their only input, earnings_calendar.score,
+    came from EarningsWhispers, retired 2026-10-31.
 
 Idempotent: re-running same-day replaces today's rows via UNIQUE on
 (refresh_date, ticker, earnings_date). Weekly REFRESH is naturally
@@ -47,9 +49,10 @@ from gcp.database import (  # noqa: E402
     execute_sql,
     get_engine,
     is_cloud_sql_configured,
-    query_to_dataframe,
+    query_to_dataframe_strict as query_to_dataframe,
     upsert_dataframe,
 )
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL  # noqa: E402
 from lib.logging_config import setup_logging  # noqa: E402
 
 setup_logging()
@@ -125,18 +128,23 @@ def refresh_weekly() -> None:
 def refresh_daily(days_ahead: int) -> None:
     """Rebuild today's row set in earnings_upcoming_with_history.
 
-    Pulls next N days of upcoming earnings, joins lean stats, computes
-    per-event implied_move + both recommendation modes, attaches the
-    last-3-events JSONB summary.
+    Pulls next N days of upcoming earnings (retired sources excluded),
+    joins lean stats, computes per-event implied_move, attaches the
+    last-3-events JSONB summary. The five score-dependent fields are NULL
+    (see the row build below).
     """
     today = date.today()
     log.info("refresh_daily — days_ahead=%d as_of=%s", days_ahead, today)
 
     # ── Pull upcoming reporters (deduped per ticker) + market_data_daily.close
-    upcoming_sql = """
+    # Retired-source rows are excluded inside the aggregating subquery, so an
+    # EarningsWhispers row cannot win MIN/MAX (date, time, expected_move,
+    # volumes). score and strategy had no writer but EarningsWhispers and are
+    # no longer selected.
+    upcoming_sql = f"""
         SELECT u.ticker, u.earnings_date, u.earnings_time, u.company_name,
                u.market_cap, u.sector, u.eps_estimate, u.expected_move,
-               u.options_volume, u.open_interest, u.score, u.strategy,
+               u.options_volume, u.open_interest,
                (SELECT close FROM market_data_daily md
                  WHERE md.ticker = u.ticker
                    AND md.date < u.earnings_date
@@ -151,12 +159,11 @@ def refresh_daily(days_ahead: int) -> None:
                    MAX(eps_estimate)  AS eps_estimate,
                    MAX(expected_move) AS expected_move,
                    MAX(options_volume) AS options_volume,
-                   MAX(open_interest) AS open_interest,
-                   MAX(score)         AS score,
-                   MAX(strategy)      AS strategy
+                   MAX(open_interest) AS open_interest
             FROM earnings_calendar
             WHERE earnings_date BETWEEN CURRENT_DATE
                                     AND CURRENT_DATE + (:days)::int
+              AND {EARNINGS_NOT_RETIRED_SQL}
             GROUP BY ticker
         ) u
         ORDER BY u.earnings_date, u.ticker
@@ -164,10 +171,7 @@ def refresh_daily(days_ahead: int) -> None:
     upcoming = query_to_dataframe(upcoming_sql, {'days': days_ahead})
     if upcoming is None or upcoming.empty:
         log.info("  no upcoming reporters in window — clearing today's rows")
-        execute_sql(
-            "DELETE FROM earnings_upcoming_with_history WHERE refresh_date = :d",
-            {'d': today},
-        )
+        _replace_upcoming_rows(pd.DataFrame(), today)
         return
     log.info("  found %d upcoming reporters", len(upcoming))
 
@@ -191,7 +195,7 @@ def refresh_daily(days_ahead: int) -> None:
     last3_sql = f"""
         SELECT ticker, reported_date, beat_meet_miss,
                reaction_gap_pct, eps_surprise_pct,
-               realized_vs_implied_ratio
+               realized_vs_implied_ratio, daily_path_v1
         FROM (
             SELECT *,
                    ROW_NUMBER() OVER (
@@ -214,17 +218,10 @@ def refresh_daily(days_ahead: int) -> None:
                     'gap_pct': _safe_float(r['reaction_gap_pct']),
                     'eps_surprise_pct': _safe_float(r['eps_surprise_pct']),
                     'ratio': _safe_float(r['realized_vs_implied_ratio']),
+                    'daily_path_v1': r.get('daily_path_v1') if isinstance(r.get('daily_path_v1'), dict) else None,
                 }
                 for _, r in group.iterrows()
             ]
-
-    # ── Live calibration metrics (for IC mode + long-only SKIP filter)
-    from lib.earnings_reactions import (
-        confidence_label, get_calibration_options_metrics,
-        recommended_structure, score_quintile,
-    )
-    calib = get_calibration_options_metrics() or {}
-    log.info("  live calibration metrics loaded: %s", list(calib.keys()) or 'EMPTY')
 
     # ── Build rows for upsert
     rows = []
@@ -236,23 +233,10 @@ def refresh_daily(days_ahead: int) -> None:
         if expected_move is not None and prev_close is not None and prev_close > 0:
             implied_pct = expected_move / prev_close * 100.0
 
-        score = _safe_float(u.get('score'))
-        q = score_quintile(score)
-        conf = confidence_label(score)
         # Archetype derivation lives on the lean stats — historical archetype
         # via dir_consistency + reversal_rate. If lean missing, default to None.
         lean_row = lean_by_ticker.get(ticker, {})
         archetype = _derive_archetype(lean_row)
-
-        # BOTH recommendation modes
-        long_only_rec = recommended_structure(
-            archetype, q, calib,
-            implied_move_pct=implied_pct, long_only=True,
-        )
-        ic_mode_rec = recommended_structure(
-            archetype, q, calib,
-            implied_move_pct=implied_pct, long_only=False,
-        )
 
         rows.append({
             'refresh_date': today,
@@ -268,12 +252,16 @@ def refresh_daily(days_ahead: int) -> None:
             'implied_move_pct': implied_pct,
             'options_volume': _safe_int(u.get('options_volume')),
             'open_interest': _safe_int(u.get('open_interest')),
-            'playability_score': score,
-            'quintile': q,
+            # earnings_calendar.score had one writer, EarningsWhispers,
+            # retired 2026-10-31. A recommendation that needs a quintile is
+            # unavailable without one; it is not derived from the archetype
+            # alone (that would turn SKIP into LONG CALL).
+            'playability_score': None,
+            'quintile': None,
             'archetype': archetype,
-            'confidence_label': conf,
-            'recommended_structure_long_only': long_only_rec,
-            'recommended_structure_ic_mode': ic_mode_rec,
+            'confidence_label': None,
+            'recommended_structure_long_only': None,
+            'recommended_structure_ic_mode': None,
             'total_quarters': _safe_int(lean_row.get('total_quarters')),
             'n_beats':        _safe_int(lean_row.get('n_beats')),
             'n_meets':        _safe_int(lean_row.get('n_meets')),
@@ -297,15 +285,8 @@ def refresh_daily(days_ahead: int) -> None:
 
     # ── Replace today's rows
     log.info("  deleting prior rows for refresh_date=%s", today)
-    execute_sql(
-        "DELETE FROM earnings_upcoming_with_history WHERE refresh_date = :d",
-        {'d': today},
-    )
     df = pd.DataFrame(rows)
-    upsert_dataframe(
-        df, 'earnings_upcoming_with_history',
-        conflict_cols=['refresh_date', 'ticker', 'earnings_date'],
-    )
+    _replace_upcoming_rows(df, today)
     log.info("  inserted %d rows", len(df))
 
 
@@ -354,6 +335,29 @@ def _safe_int(v) -> Optional[int]:
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────
+
+
+def _replace_upcoming_rows(frame: pd.DataFrame, refresh_date: date) -> int:
+    """One local transaction: a failed insert cannot erase the prior snapshot."""
+    import math
+    import sqlalchemy as sa
+    if not frame.empty and (frame['refresh_date'] != refresh_date).any():
+        raise ValueError('upcoming refresh_date partition mismatch')
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text("DELETE FROM earnings_upcoming_with_history WHERE refresh_date = :d"),
+            {"d": refresh_date})
+        table = sa.Table('earnings_upcoming_with_history', sa.MetaData(), autoload_with=conn)
+        if not frame.empty:
+            records = frame.to_dict('records')
+            for row in records:
+                for key, value in row.items():
+                    if isinstance(value, float) and not math.isfinite(value):
+                        row[key] = None
+            conn.execute(table.insert(), records)
+    return len(frame)
+
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(

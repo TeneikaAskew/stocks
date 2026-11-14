@@ -65,13 +65,7 @@
    "main::date.today()"
   ],
   "sql-utc-date": [
-   "_query_watchlist::str#d981990c2f8d"
-  ]
- },
- "gcp/earnings_reactions_brief.py": {
-  "host-today": [
-   "_resolve_analysis_date::date.today()",
-   "_resolve_analysis_date::date.today()"
+   "_query_watchlist::fstr#3c17358f2881"
   ]
  },
  "gcp/fetchers/backfill_daily_indicators.py": {
@@ -249,7 +243,7 @@
    "refresh_daily::date.today()"
   ],
   "sql-utc-date": [
-   "refresh_daily::str#c3af586845e3"
+   "refresh_daily::fstr#e2ebe6247dcf"
   ]
  },
  "gcp/regime_combo_job.py": {
@@ -485,7 +479,7 @@
  "lib/agents/ranker/candidates.py": {
   "sql-utc-date": [
    "_candidates_from_8k::str#9217b328cc62",
-   "_candidates_from_earnings::str#c40c97687812",
+   "_candidates_from_earnings::fstr#0f0d3d5b42de",
    "_candidates_from_economic::str#4697442839ec",
    "_candidates_from_insiders::str#d40735d495cf",
    "_candidates_from_top_movers::str#c692cfa35034"
@@ -504,11 +498,6 @@
   "host-today": [
    "_check_chain_freshness::date_type.today()",
    "summarize_gamma_levels::date_type.today()"
-  ],
-  "tz-localize-none": [
-   "summarize_strat_status::_ts.tz_convert('UTC').tz_localize(None)",
-   "summarize_strat_status::cutoff.tz_convert('UTC').tz_localize(None)",
-   "summarize_strat_status::df.index.tz_localize(None)"
   ]
  },
  "lib/data_loader.py": {
@@ -594,15 +583,9 @@
    "reprice_intraday_option::bars['Time'].dt.tz_localize(None)"
   ]
  },
- "lib/strat.py": {
-  "tz-localize-none": [
-   "compute_strat_status::cutoff.tz_convert('UTC').tz_localize(None)",
-   "compute_strat_status::df.index.tz_localize(None)"
-  ]
- },
  "lib/strat_levels.py": {
   "tz-localize-none": [
-   "compute_current_levels::ad_ts.tz_convert('UTC').tz_localize(None)"
+   "_compute_current_levels::ad_ts.tz_convert('UTC').tz_localize(None)"
   ]
  },
  "lib/strategies/calibration.py": {
@@ -655,7 +638,7 @@
  },
  "platform/api/routers/earnings.py": {
   "sql-utc-date": [
-   "upcoming::str#34ef893a84c8"
+   "upcoming::fstr#9dbb3d5e81df"
   ]
  },
  "platform/api/routers/grid.py": {
@@ -830,7 +813,6 @@
    "_resolve_scope::datetime.now()",
    "_resolve_target_dates_for_av_options::datetime.now()",
    "fetch_alphavantage_earnings::datetime.now()",
-   "fetch_earnings_whispers::datetime.now()",
    "main::datetime.now()",
    "main::datetime.now()",
    "main::datetime.now()",

@@ -104,7 +104,7 @@ def switch_api_key():
     return ALPHA_VANTAGE_API_KEY
 
 
-def fetch_intraday_month(symbol, month, interval='1min', outputsize='full', adjusted=True):
+def fetch_intraday_month(symbol, month, interval='1min', outputsize='full'):
     """
     Fetch 1-minute intraday data for a specific month from Alpha Vantage.
 
@@ -113,7 +113,6 @@ def fetch_intraday_month(symbol, month, interval='1min', outputsize='full', adju
         month: Month in YYYY-MM format
         interval: Time interval (1min, 5min, 15min, 30min, 60min)
         outputsize: 'compact' (last 100 points) or 'full' (full month)
-        adjusted: Whether to adjust for splits/dividends
 
     Returns:
         DataFrame with OHLCV data or None on failure
@@ -124,7 +123,7 @@ def fetch_intraday_month(symbol, month, interval='1min', outputsize='full', adju
         'interval': interval,
         'month': month,
         'outputsize': outputsize,
-        'adjusted': 'true' if adjusted else 'false',
+        'adjusted': 'false',  # as traded, like every 1-min request
         'entitlement': 'realtime',
         'extended_hours': 'true',
         'apikey': ALPHA_VANTAGE_API_KEY,

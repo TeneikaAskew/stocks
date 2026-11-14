@@ -15,7 +15,8 @@ What it assembles (and where each piece comes from):
       consulted (calibration not cleared; QQQ 30m especially is gated).
 
   levels
-      lib.strat_levels.build_level_map — the levels-to-go ladder (the next
+      lib.strat_levels.build_session_levels (or the session's live
+      level_basis), the levels-to-go ladder (the next
       structural lines price has to clear each way). A rung is annotated
       with the POPULATION historical reach-rate AND the sample size N of the
       premarket-playbook slot (trigger / t1 / t2 / t3) whose tracked price
@@ -235,9 +236,8 @@ def _build_continuation(engine, ticker: str, tf: str, as_of) -> dict:
 # ── Piece 2: levels ladder + population reach-rates per slot ───────────────
 #
 # The ladder (`level_map.call_levels` / `put_levels`, from
-# lib.strat_levels.select_nearest_levels) and the outcome columns in
-# `premarket_analysis` (trigger / t1 / t2 / t3, from identify_triggers) are
-# built from DIFFERENT level sets: the ladder keeps highs and lows only, the
+# the level builder) and the outcome columns in `premarket_analysis`
+# (trigger / t1 / t2 / t3) were, before FEAT-STRAT-001, built from DIFFERENT level sets: the ladder keeps highs and lows only, the
 # playbook's slots include opens and closes. Measured on 2026-09-07 (#1024),
 # 49.7% of persisted call triggers were opens/closes the ladder never shows,
 # so annotating ladder position i with slot i+1 pinned a statistic about one
@@ -247,7 +247,7 @@ def _build_continuation(engine, ticker: str, tf: str, as_of) -> dict:
 # explicit UNAVAILABLE envelope (Rule 3.7 — never a borrowed rate).
 
 # Slot order in the playbook: the trigger is the nearest fresh structural
-# line, t1..t3 the next three beyond it (lib.strat_levels.identify_triggers).
+# line, t1..t3 the next three beyond it (lib.strat_levels.build_session_levels).
 _REACH_SLOTS = ("trigger", "t1", "t2", "t3")
 # Two lines are "the same price" when they land on the same cent under the ONE
 # rule lib.strat_levels.price_cents defines for the ladder, target de-dupe and
@@ -311,10 +311,18 @@ def _reach_rate_sql(side: str) -> str:
     # the same cent as its `price` would have promoted its t1 to trigger under
     # the current builder. Such rows are out of every population rather than
     # counted with shifted ordinals (Codex P2 on #1030, round 8).
-    a0, b0 = (price["trigger"], "price") if side == "calls" else ("price", price["trigger"])
+    # FEAT-STRAT-001: only rows built under the current level rule
+    # (level_basis.rule_version) are in the population, so new-rule rungs
+    # never show old-rule rates. For those rows the trigger is anchored to
+    # level_basis's own cleared mark (max(reference, pre_high) for calls,
+    # min(reference, pre_low) for puts), inclusive in cents: a gap-down call,
+    # a gap-up put and a trigger on the mark's own cent are all valid picks.
+    mark_key = "cleared_above" if side == "calls" else "cleared_below"
+    mark = f"(level_basis->>'{mark_key}')::float8"
+    a0, b0 = (price["trigger"], mark) if side == "calls" else (mark, price["trigger"])
     cond = (
-        f"{_finite('price')} AND {_finite(price['trigger'])} AND "
-        f"round({a0}::numeric, 2) - round({b0}::numeric, 2) >= {_LEVEL_PRICE_TOL}"
+        f"{_finite(price['trigger'])} AND {mark} IS NOT NULL AND "
+        f"round({a0}::numeric, 2) - round({b0}::numeric, 2) >= 0"
     )
     for k in _REACH_SLOTS:
         this = _finite(price[k])
@@ -336,7 +344,8 @@ def _reach_rate_sql(side: str) -> str:
     return (
         "SELECT " + ", ".join(parts) + " "
         "FROM premarket_analysis "
-        "WHERE ticker = :ticker AND outcome_resolved_at IS NOT NULL"
+        "WHERE ticker = :ticker AND outcome_resolved_at IS NOT NULL "
+        "AND level_basis->>'rule_version' = :rule_version"
     )
 
 
@@ -354,7 +363,9 @@ def _fetch_reach_rates(ticker: str, side: str, query_fn) -> dict:
         return _unavailable(f"unknown side {side!r}")
 
     try:
-        df = query_fn(_reach_rate_sql(side), {"ticker": ticker.upper()})
+        from lib.strat_levels import LEVEL_RULE_VERSION  # noqa: PLC0415
+        df = query_fn(_reach_rate_sql(side), {"ticker": ticker.upper(),
+                                              "rule_version": LEVEL_RULE_VERSION})
     except Exception as e:  # EXTERNAL: DB round-trip — surface, don't fabricate
         if is_backend_outage(e):   # Cloud SQL down is not this source's failure
             raise
@@ -404,9 +415,9 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
     (Codex P2 on #1030). Overnight, on weekends, and before the brief has run,
     there is no row for today and every rung reports that honestly.
     """
+    cols = ", ".join(f"{s}_{k}_price" for s in ("calls", "puts") for k in _REACH_SLOTS)
     sql = (
-        "SELECT analysis_date, price, "
-        + ", ".join(f"{s}_{k}_price" for s in ("calls", "puts") for k in _REACH_SLOTS)
+        "SELECT analysis_date, price, level_basis, " + cols
         + " FROM premarket_analysis WHERE ticker = :ticker AND analysis_date = :d"
         # run_kind='live': these slot assignments annotate the LIVE
         # ladder with reach-rate tiers, so a replay brief that overwrote
@@ -416,7 +427,12 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
     )
     params: dict = {"ticker": ticker.upper(), "d": session_date}
     try:
-        df = query_fn(sql, params)
+        try:
+            df = query_fn(sql, params)
+        except Exception as e:  # level_basis column not applied yet
+            if is_backend_outage(e):
+                raise
+            df = query_fn(sql.replace("level_basis, ", "", 1), params)
     except Exception as e:  # EXTERNAL: DB round-trip — surface, don't fabricate
         if is_backend_outage(e):   # Cloud SQL down is not this source's failure
             raise
@@ -439,19 +455,28 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
         # 5). New rows are already distinct (identify_triggers); this only
         # changes what a legacy session row matches.
         beyond = (lambda a, b: a > b) if side == "calls" else (lambda a, b: a < b)
+        at_or_beyond = (lambda a, b: a >= b) if side == "calls" else (lambda a, b: a <= b)
         out: list = []
-        # Seed with the row's own anchor when it is a real number, so a legacy
-        # trigger on the anchor's cent is skipped and its t1 promoted, as the
-        # current identify_triggers would have built the row (round 8).
-        anchor = row.get("price")
-        last_c = _cents(anchor) if anchor is not None and anchor == anchor else None
+        # New-rule rows (level_basis at the current rule_version) seed from
+        # the basis's own cleared mark, inclusive, so a valid trigger is
+        # never skipped and its T1 never relabelled as the trigger. Legacy
+        # rows seed with the row's own anchor, so a legacy trigger on the
+        # anchor's cent is skipped and its t1 promoted (round 8).
+        mark = _new_rule_mark(row.get("level_basis"), side)
+        if mark is not None:
+            last_c, first_cmp = _cents(mark), at_or_beyond
+        else:
+            anchor = row.get("price")
+            last_c = _cents(anchor) if anchor is not None and anchor == anchor else None
+            first_cmp = beyond
         for k in _REACH_SLOTS:
             v = row.get(f"{side}_{k}_price")
             # NaN-safe without pandas: NaN != NaN.
             if v is None or v != v:
                 continue
             c = _cents(v)
-            if last_c is not None and not beyond(c, last_c):
+            cmp = first_cmp if not out else beyond
+            if last_c is not None and not cmp(c, last_c):
                 continue
             out.append({"slot": _REACH_SLOTS[len(out)], "price": float(v), "persisted_as": k})
             last_c = c
@@ -463,6 +488,22 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
         calls=_side("calls"),
         puts=_side("puts"),
     )
+
+
+def _new_rule_mark(basis, side: str) -> Optional[float]:
+    """The cleared mark of a level_basis written under the current rule, or
+    None for a legacy row (no basis, or another rule_version)."""
+    from lib.strat_levels import LEVEL_RULE_VERSION, parse_level_basis  # noqa: PLC0415
+
+    b = parse_level_basis(basis)
+    if not b or b.get("rule_version") != LEVEL_RULE_VERSION:
+        return None
+    v = b.get("cleared_above" if side == "calls" else "cleared_below")
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None
 
 
 def _match_slot(price, tracked_side: list) -> Optional[dict]:
@@ -497,6 +538,17 @@ def _build_levels(level_map, reach_calls: dict, reach_puts: dict, tracked: dict)
     """
     if level_map is None:
         return _unavailable("level map unavailable")
+    # A side the builder could not check against its window (no prior-session
+    # ATR) is not an empty ladder: the builder returns status ok with both
+    # sides atr_unavailable, live or from a stored level_basis, and an OK
+    # envelope with no rungs would present "could not calculate" as "nothing
+    # to calculate" (Rule 3.7; Codex P1 on #1753).
+    if "atr_unavailable" in (getattr(level_map, "reason_long", None),
+                             getattr(level_map, "reason_short", None)):
+        return _unavailable(
+            "atr_unavailable: the prior session's ATR(14) is unavailable, so no "
+            "level can be checked against the trigger window"
+        )
 
     tracked_ok = isinstance(tracked, dict) and tracked.get("status") == "OK"
     analysis_date = tracked.get("analysis_date") if tracked_ok else None

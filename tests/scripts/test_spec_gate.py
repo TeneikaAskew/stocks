@@ -5023,7 +5023,7 @@ def test_measure_inventory_render_runs_the_actual_gate(inventory_repo):
         spaced = root.parent / 'render repository with spaces'
         root.rename(spaced); root = spaced
         write(root, MAIN_PY, 'raise RuntimeError("dirty worktree must not run")\n')
-        r, report = measurement(root, '--ref', 'base', '--max-rss-mib', '128', '--max-seconds', '10', '--output', str(root.parent/'accepted-output.json'))
+        r, report = measurement(root, '--ref', 'base', '--max-rss-mib', '512', '--max-seconds', '10', '--output', str(root.parent/'accepted-output.json'))
         assert r.returncode == 0 and report['kind'] == 'committed-inventory-render', r.stdout + r.stderr
         assert json.loads((root.parent/'accepted-output.json').read_text()) == report
         assert report['worker']['ref'] == _git(root, 'rev-parse', 'base') and report['worker']['renderer_exit'] == 0
@@ -6531,3 +6531,311 @@ def test_redundant_retirement_of_a_spec_draft_or_legacy_at_fork_refused(tmp_path
         on_base(repo, {P_SPEC: at_fork})
         r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: flip}, {**N0_MAIN, P_SPEC: flip})
         assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], (name, r.stdout)
+
+
+# ── the declared retry split is a renderer-owned substitution (FEAT-CICD-001 retry-split spec, done_when[2]) ────
+# A fixture tree whose deploy.sh declares five jobs at retries 0, 0, 1, 1 and 2, whose 05-a states the split in the
+# three owned shapes (§6's list, §11's two) and other retry text that is not owned, and whose 05-i and 05-k carry a
+# retry mention each. The head moves one job from retries 1 to 0; its 05-a is the trusted render of base prose.
+
+ARCH_DOC = GENERATED[0]
+DEPS_DOC = GENERATED[1]
+GUIDE_DOC, NOTIFIER_DOC = f"{INFRA}/05-i-GCP_IMPLEMENTATION_GUIDE.md", f"{INFRA}/05-k-FAILURE_NOTIFIER_DEPLOYMENT.md"
+RETRY_JOB = 'deploy_retry_probe_{i}() {{\n    gcloud run jobs create retry-probe-{i} \\\n        --command python3 \\\n        --max-retries {k} \\\n        --args gcp/probe.py\n}}\n'
+
+
+def retry_deploy(*retries: int) -> str:
+    return "#!/bin/bash\n" + "".join(RETRY_JOB.format(i=i, k=k) for i, k in enumerate(retries))
+
+
+RETRY_SECTION_6 = ("5 are declared by a `deploy_*` function; 4 run live, so 1 declared job is not deployed. "
+                   "Retry policy is **`--max-retries 0` for 2 of the 5 declared jobs, `1` for 2 and `2` for one** "
+                   "(each row below says which).")
+RETRY_SECTION_11 = ("1. **Per-job retries**: `--max-retries 0` is the norm (2 of the 5 declared jobs); the 2 "
+                    "`--max-retries 1` jobs are idempotent fetchers worth one retry.")
+RETRY_MONITOR = "`retry-probe-0` (09:25, `--max-retries 0`, 8 h timeout) polls every 60 s."
+
+
+def retry_skeleton(extra: str = "") -> str:
+    return edit(skeleton(ARCH_DOC), "Prose after jobs.",
+                f"Prose after jobs.\n\n{RETRY_SECTION_6}\n\n{RETRY_MONITOR}\n\n{RETRY_SECTION_11}{extra}")
+
+
+def retry_prs(root: Path, cases: dict[str, dict[str, str | None]]) -> dict[str, subprocess.CompletedProcess]:
+    """pr() for each case, the cases split across copies of root run side by side: each copy is an independent
+    fixture repository, so the verdicts are those of the same cases run one by one, in less wall time on the
+    registry job's runner."""
+    import concurrent.futures
+    workers = max(1, min(4, os.cpu_count() or 1, len(cases)))
+    names = list(cases)
+    chunks = [names[i::workers] for i in range(workers)]
+    copies = [root] + [root.parent / f"{root.name}-retry-{i}" for i in range(1, workers)]
+    for c in copies[1:]:
+        shutil.copytree(root, c, symlinks=True)
+
+    def run(where: Path, chunk: list[str]) -> dict[str, subprocess.CompletedProcess]:
+        return {k: pr(where, BRANCH, cases[k], **DOCS_OK) for k in chunk}
+
+    out: dict[str, subprocess.CompletedProcess] = {}
+    with concurrent.futures.ThreadPoolExecutor(workers) as pool:
+        for part in pool.map(run, copies, chunks):
+            out.update(part)
+    return out
+
+
+@pytest.fixture(scope="session")
+def retry_template(inventory_template, tmp_path_factory):
+    """inventory_template with the retry fixture on its base, and the computed head: deploy.sh moving retry-probe-2
+    from retries 1 to 0 and 05-a rendered over the base prose by this checkout's renderer."""
+    if inventory_template is None:
+        return None
+    template, _ = inventory_template
+    root = tmp_path_factory.mktemp("retry") / "repo"
+    shutil.copytree(template, root, symlinks=True)
+    on_base(root, {"gcp/deploy.sh": retry_deploy(0, 0, 1, 1, 2), ARCH_DOC: retry_skeleton(),
+                   GUIDE_DOC: "# Guide\n\nYahoo Finance rate limits. Job has `max-retries 2`.\n",
+                   NOTIFIER_DOC: "# Notifier\n\n    --memory 256Mi --cpu 1 --max-retries 0 \\\n"}, then=render)
+    _git(root, "checkout", "-q", "-b", "computed", "base")
+    head_deploy = retry_deploy(0, 0, 0, 1, 2)
+    write(root, "gcp/deploy.sh", head_deploy)
+    render(root, (ARCH_DOC,))
+    head_arch = (root / ARCH_DOC).read_text(encoding="utf-8")
+    _git(root, "checkout", "-q", "-f", "main")
+    _git(root, "branch", "-q", "-D", "computed")
+    return root, head_deploy, head_arch
+
+
+@pytest.fixture
+def retry_repo(retry_template, tmp_path):
+    if retry_template is None:
+        return None
+    template, head_deploy, head_arch = retry_template
+    root = tmp_path / "repo"
+    shutil.copytree(template, root, symlinks=True)
+    return root, head_deploy, head_arch
+
+
+def test_the_retry_fixture_renders_the_computed_split(retry_repo):
+    if RENDERER_HERE:
+        _root, _deploy, head_arch = retry_repo
+        assert "`--max-retries 0` for 3 of the 5 declared jobs, `1` for 1 and `2` for one" in head_arch
+        assert "`--max-retries 0` is the norm (3 of the 5 declared jobs); the 1 `--max-retries 1` jobs" in head_arch
+        assert "5 are declared by a `deploy_*` function; 4 run live" in head_arch and RETRY_MONITOR in head_arch
+
+
+def test_a_head_carrying_only_the_computed_retry_split_is_accepted(retry_repo):
+    """The control every refusal below differs from in one condition."""
+    if RENDERER_HERE:
+        root, head_deploy, head_arch = retry_repo
+        r = pr(root, BRANCH, {**CODE, "gcp/deploy.sh": head_deploy, ARCH_DOC: head_arch}, **DOCS_OK)
+        assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_the_render_check_refuses_every_retry_change_it_does_not_own(retry_repo):
+    if RENDERER_HERE:
+        root, head_deploy, a = retry_repo
+        owned = "outside its inventory blocks"
+        not_here = "changes in this feature change"
+        cases = {
+            # a hand-typed wrong count in each owned shape
+            "§6 count": (edit(a, "`1` for 1 and", "`1` for 2 and"), owned),
+            "§11 norm count": (edit(a, "the norm (3 of", "the norm (4 of"), owned),
+            "§11 jobs count": (edit(a, "the 1 `--max-retries 1` jobs", "the 2 `--max-retries 1` jobs"), owned),
+            # neighbouring prose on either owned line
+            "§6 neighbouring words": (edit(a, "(each row below says which)", "(each row says which)"), owned),
+            "§6 declared total": (edit(a, "5 are declared by", "4 are declared by"), owned),
+            "§6 live figures": (edit(a, "4 run live, so 1 declared", "5 run live, so 0 declared"), owned),
+            "§11 neighbouring words": (edit(a, "idempotent fetchers worth", "fetchers worth"), owned),
+            # a non-owned phrasing, a flag digit, and another retry mention in 05-a
+            "a non-owned phrasing": (edit(a, RETRY_MONITOR, RETRY_MONITOR + " 3 jobs use `--max-retries 0`."), owned),
+            "a flag digit in §6": (edit(a, "`2` for one**", "`3` for one**"), owned),
+            "the signal-monitor sentence": (edit(a, "(09:25, `--max-retries 0`", "(09:25, `--max-retries 1`"), owned),
+            # a head that deletes an owned shape its merge-base carries
+            "§6 list deleted": (edit(a, "Retry policy is **`--max-retries 0` for 3 of the 5 declared jobs, `1` for 1 and `2` for one** ", ""), owned),
+            "§11 norm deleted": (edit(a, "`--max-retries 0` is the norm (3 of the 5 declared jobs); ", ""), owned),
+            "§11 jobs deleted": (edit(a, "the 1 `--max-retries 1` jobs are", "they are"), owned),
+        }
+        files = {k: {**CODE, "gcp/deploy.sh": head_deploy, ARCH_DOC: text} for k, (text, _f) in cases.items()}
+        fragments = {k: f for k, (_t, f) in cases.items()}
+        # 05-i and 05-k carry retry mentions the renderer never touches
+        files["05-i retry mention"] = {**CODE, "gcp/deploy.sh": head_deploy, ARCH_DOC: a,
+                                       GUIDE_DOC: "# Guide\n\nYahoo Finance rate limits. Job has `max-retries 1`.\n"}
+        files["05-k retry mention"] = {**CODE, "gcp/deploy.sh": head_deploy, ARCH_DOC: a,
+                                       NOTIFIER_DOC: "# Notifier\n\n    --memory 256Mi --cpu 1 --max-retries 1 \\\n"}
+        fragments.update({"05-i retry mention": not_here, "05-k retry mention": not_here})
+        # an owned shape added to 05-c or 05-e, whose merge-base prose carries none
+        for label, doc in (("an owned shape in 05-c", DEPS_DOC), ("an owned shape in 05-e", API_DOC)):
+            files[label] = {**CODE, "gcp/deploy.sh": head_deploy, ARCH_DOC: a,
+                            doc: edit((root / doc).read_text(encoding="utf-8"), "Prose before the blocks.",
+                                      f"Prose before the blocks.\n\n{SEEDED_COMPUTED}")}
+            fragments[label] = owned
+        outcomes = retry_prs(root, files)
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, fragments[k])}
+        assert missed == {}, missed
+
+
+SEEDED_STALE = "Retry policy is **`--max-retries 0` for 2 of the 5 declared jobs, `1` for 2 and `2` for one**; " \
+               "`--max-retries 0` is the norm (2 of the 5 declared jobs); the 2 `--max-retries 1` jobs retry."
+SEEDED_COMPUTED = "Retry policy is **`--max-retries 0` for 3 of the 5 declared jobs, `1` for 1 and `2` for one**; " \
+                  "`--max-retries 0` is the norm (3 of the 5 declared jobs); the 1 `--max-retries 1` jobs retry."
+
+
+def seeded_retry_case(root: Path, head_deploy: str, a: str, where: str) -> tuple[int, bool]:
+    """In its own copy of root: seed the stale phrasing on base, then (control's return code, attempt refused)."""
+    at = root.parent / f"seeded-{where.replace(' ', '-')}"
+    shutil.copytree(root, at, symlinks=True)
+    if where == "a fourth 05-a phrasing":
+        doc, stale, computed = ARCH_DOC, "the 2 jobs at `--max-retries 1` stay two.", "the 1 jobs at `--max-retries 1` stay one."
+    else:
+        doc, stale, computed = (DEPS_DOC if where == "05-c" else API_DOC), SEEDED_STALE, SEEDED_COMPUTED
+    on_base(at, {doc: edit((at / doc).read_text(encoding="utf-8"), "Prose before the blocks.",
+                           f"Prose before the blocks.\n\n{stale}")})
+    if doc == ARCH_DOC:
+        kept = {ARCH_DOC: edit(a, "Prose before the blocks.", f"Prose before the blocks.\n\n{stale}")}
+    else:
+        kept = {ARCH_DOC: a, doc: (at / doc).read_text(encoding="utf-8")}
+    moved = {**kept, doc: edit(kept[doc], stale, computed)}
+    control = pr(at, BRANCH, {**CODE, "gcp/deploy.sh": head_deploy, **kept}, **DOCS_OK)
+    attempt = pr(at, BRANCH, {**CODE, "gcp/deploy.sh": head_deploy, **moved}, **DOCS_OK)
+    return control.returncode, refused(attempt, "outside its inventory blocks")
+
+
+def test_the_split_is_not_rendered_beyond_05a_or_its_three_shapes(retry_repo):
+    """The merge-base document already carries the stale phrasing and the head the computed numbers: a renderer
+    applied beyond 05-a's exact path or to a fourth shape would accept it. The control keeps the stale phrasing.
+    Each place runs in its own copy of the fixture repository, side by side."""
+    if RENDERER_HERE:
+        import concurrent.futures
+        root, head_deploy, a = retry_repo
+        places = ("05-c", "05-e", "a fourth 05-a phrasing")
+        with concurrent.futures.ThreadPoolExecutor(min(3, os.cpu_count() or 1)) as pool:
+            results = dict(zip(places, pool.map(lambda w: seeded_retry_case(root, head_deploy, a, w), places)))
+        assert results == {w: (0, True) for w in places}, results
+
+
+# FEAT-CICD-001 test suite audit, Part A gate-policy stage (#1847, #1849): the gate's own suite may run
+# on exactly four workers, and nothing else about pytest's workers widens.
+REGISTRY_WF = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+               "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: |\n{LINES}")
+REGISTRY_CMDS = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "{SUITE}",
+                 'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
+SERIAL_SUITE = "python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest"
+PINNED_XDIST = "python3 -m pip install --quiet pytest-xdist==3.8.0"
+
+
+def registry_workflow(suite: str, before: tuple[str, ...] = ()) -> str:
+    """registry-check with `before` lines ahead of its contract commands and `suite` as its suite line."""
+    lines = (*before, *(c.replace("{SUITE}", suite) for c in REGISTRY_CMDS))
+    return REGISTRY_WF.replace("{LINES}", "".join(f"          {c}\n" for c in lines))
+
+
+def test_the_gate_suite_may_run_on_exactly_four_workers(repo):
+    """#1847: four workers ran the same 185 node ids 55 to 65 percent faster on main 56d63397, with
+    every broken-gate control failing the same node ids. `invokes()` read `-n 4` as an argument outside
+    PYTEST_ARGS, so a workflow running the suite on four workers lost its required suite command.
+    The exact pair is accepted on the suite contract command, in both gate workflows, with or without
+    an exactly pinned pytest-xdist installed first."""
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    for wf, text in ((".github/workflows/spec-gate.yml", gate_workflow(c=SUITE_CMD + " -n 4")),
+                     (".github/workflows/spec-gate.yml", gate_workflow(c="python3 -m pytest tests/scripts/test_spec_gate.py -n 4 -q -p no:cacheprovider --noconftest")),
+                     (".github/workflows/spec-gate.yml", gate_workflow(c="|\n          " + PINNED_XDIST + "\n          " + SUITE_CMD + " -n 4")),
+                     (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE + " -n 4")),
+                     (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE + " -n 4", (PINNED_XDIST,)))):
+        r = pr(repo, "chore/gate-workflow", {wf: text}, **cap)
+        assert r.returncode == 0, (wf, text, r.stdout)
+
+
+WORKER_FORMS = {
+    "three workers": "-n 3",
+    "auto workers": "-n auto",
+    "joined -n4": "-n4",
+    "long --numprocesses": "--numprocesses 4",
+    "a --dist mode": "-n 4 --dist load",
+    "xdist named with -p": "-n 4 -p xdist",
+    "a --maxprocesses cap": "-n 4 --maxprocesses 4",
+    "a second -n 4": "-n 4 -n 4",
+    "the pair as the argument of -p": "-p -n 4",
+}
+
+
+def test_no_other_worker_form_runs_the_gate_suite(repo):
+    """#1847: only the pair `-n 4`, once, passes. Each other count, spelling, alias, distribution mode or
+    plugin flag is refused in both gate workflows, as the suite line itself and as an extra line."""
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    for form, tail in WORKER_FORMS.items():
+        for wf, text in ((".github/workflows/spec-gate.yml", gate_workflow(c=SUITE_CMD + " " + tail)),
+                         (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE + " " + tail)),
+                         (".github/workflows/spec-gate.yml", gate_workflow(a="|\n          " + SUITE_CMD + " " + tail + "\n          " + VERDICT_CMD))):
+            r = pr(repo, "chore/gate-workflow", {wf: text}, **cap)
+            assert r.returncode == 1 and ("no longer executes" in r.stdout or "beyond what the gate needs" in r.stdout), (form, wf, r.stdout)
+
+
+def test_four_workers_belong_to_the_gate_suite_alone(repo):
+    """#1847: the pair is accepted on the gate's own suite only; the exporter suite or any other pytest
+    line carrying it is still more than the gate's workflows need."""
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    for pre in ("python3 -m pytest tests/scripts/test_export_model_registry.py -q -n 4",):
+        r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (pre, r.stdout)
+
+
+UNPINNED_XDIST = {
+    "bare": "pytest-xdist",
+    "underscore spelling": "pytest_xdist",
+    "mixed case": "PyTest-XDist",
+    "with an extra": "pytest-xdist[psutil]",
+    "a wildcard version": "pytest-xdist==3.*",
+    "beside a pinned package": "pyyaml==6.0.2 pytest-xdist",
+    "a second unpinned copy": "pytest-xdist==3.8.0 pytest-xdist",
+}
+# bounds other than one `==` go through uv, where only the pin rule can refuse them (red-team policy seat)
+OTHER_INSTALLERS = ("uv pip install pytest-xdist", "pipx install pytest-xdist", "uv pip install 'pytest_xdist'",
+                    "uv pip install --system 'pytest-xdist>=3.8'", "uv pip install --system 'pytest-xdist==3.8.0,<4'",
+                    "uvx --with=pytest-xdist pytest --version", "pipx inject pytest py''test-xdist")
+# the same name as the shell reads it once quotes, backslashes and `\\` continuations are gone (red-team shell seat)
+SHELL_SPELLINGS = ("uv pip install pytest\\-xdist", 'uv pip install "pytest"-xdist', "uv pip install pytest-\\\n          xdist",
+                   "/usr/bin/pip3 install pytest\\-xdist", "printf 'pytest%sxdist' - > requirements-ci.txt",
+                   "uv pip install --system pytest-x''dist", "uv pip install --system pytest-x\\dist", "uv pip install pytest-xd\\\n          ist")
+
+
+def test_pytest_xdist_installs_only_at_an_exact_version(repo):
+    """#1847: the workers that judge the gate are a reviewed release, so a gate workflow installs
+    pytest-xdist only with an exact `==` version; any other spelling of it is refused, whatever the
+    suite line carries (here the serial suite, so the refusal rests on the install alone),
+    whichever installer names it and however the shell spells it."""
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    for form, packages in UNPINNED_XDIST.items():
+        for wf, text in ((".github/workflows/spec-gate.yml", gate_workflow(c="|\n          python3 -m pip install --quiet " + packages + "\n          " + SUITE_CMD)),
+                         (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE, ("python3 -m pip install --quiet " + packages,)))):
+            r = pr(repo, "chore/gate-workflow", {wf: text}, **cap)
+            assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (form, wf, r.stdout)
+    for line in (*OTHER_INSTALLERS, *SHELL_SPELLINGS):
+        r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow(c="|\n          " + line + "\n          " + SUITE_CMD)}, **cap)
+        assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (line, r.stdout)
+
+
+def test_a_spec_without_a_status_key_is_named_missing(repo):
+    """#1849: a spec with no `status` key was refused only because its missing value is outside the
+    three statuses, so dropping `status` from REQUIRED_SPEC_KEYS changed no test. The missing key is
+    named, on the base spec a change is measured against and on a spec a PR adds."""
+    unstated = front(**{"feat_id": "FEAT-MODEL-001", "req_ids": "[REQ-MODEL-001]", "done_when": DONE})
+    newer = "docs/superpowers/specs/2026-09-02-model-decisions-two.md"
+    r = pr(repo, "docs/spec-feat-model-001", {newer: unstated})
+    assert r.returncode == 1 and f"{newer}: missing frontmatter key 'status'" in r.stdout, r.stdout
+    on_base(repo, {SPEC: unstated})
+    r = pr(repo, BRANCH, CODE)
+    assert r.returncode == 1 and f"{SPEC}: missing frontmatter key 'status'" in r.stdout, r.stdout
+
+
+def test_a_spec_status_outside_the_three_is_refused(repo):
+    """#1849: only draft, approved and superseded are spec statuses; no test refused another value, so
+    a fourth status could join SPEC_STATUSES unseen. Each is refused on a spec a PR adds and on the
+    base spec a change is measured against."""
+    newer = "docs/superpowers/specs/2026-09-02-model-decisions-two.md"
+    for status in ("done", "ready", "proposed", "Approved", "approved."):
+        r = pr(repo, "docs/spec-feat-model-001", {newer: spec(status=status)})
+        assert r.returncode == 1 and f"{newer}: status must be draft | approved | superseded" in r.stdout, (status, r.stdout)
+    for status in ("done", "ready", "proposed", "Approved", "approved."):
+        on_base(repo, {SPEC: spec(status=status)})
+        r = pr(repo, BRANCH, CODE)
+        assert r.returncode == 1 and f"{SPEC}: status must be draft | approved | superseded" in r.stdout, (status, r.stdout)

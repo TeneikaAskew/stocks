@@ -6,21 +6,27 @@ import pytest
 
 from lib.strat_levels import (
     classify_level_strat,
-    compute_previous_levels,
-    compute_current_levels,
+    _compute_previous_levels as compute_previous_levels,
+    _compute_current_levels as compute_current_levels,
     compute_gap_levels,
     detect_level_clusters,
     detect_pmg_temporal,
-    compute_room_to_run,
     compute_risk_reward,
-    identify_triggers,
-    build_level_map,
+    build_session_levels,
     format_levels_for_brief,
-    select_nearest_levels,
     StratLevel,
     LevelMap,
-    MIN_ROOM_PCT,
 )
+from lib.strat_levels import build_level_map as _build_level_map
+from tests.lib.level_params_fixtures import fixture_params
+
+
+def build_level_map(ticker, df, price, *args, atr=None, **kw):
+    """The deprecated shim with the ticker's LevelParams (every key at the
+    #1753 values) and the ATR named as ATR(14), the policy's day-one basis."""
+    return _build_level_map(ticker, df, price, *args,
+                            atr={'atr_14': atr} if atr is not None else {},
+                            params=fixture_params(ticker), **kw)
 
 
 def _daily_df(n=60):
@@ -74,10 +80,16 @@ class TestClassifyLevelStrat:
 # ─── compute_previous_levels ──────────────────────────────────────────────
 
 
+def _prev(df):
+    """Previous-period levels with the last row's date as the session, the
+    only path the builder uses (no iloc[-2] fallback, FEAT-STRAT-001)."""
+    return compute_previous_levels(df, analysis_date=pd.Timestamp(df['Date'].iloc[-1]).date())
+
+
 class TestComputePreviousLevels:
     def test_returns_daily_levels(self):
         df = _daily_df(30)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         assert 'PDH' in levels
         assert 'PDL' in levels
         assert levels['PDH'].timeframe == 'day'
@@ -85,56 +97,55 @@ class TestComputePreviousLevels:
 
     def test_returns_weekly_levels(self):
         df = _daily_df(30)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         assert 'PWH' in levels
         assert 'PWL' in levels
         assert levels['PWH'].timeframe == 'week'
 
     def test_returns_monthly_levels(self):
         df = _daily_df(60)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         assert 'PMH' in levels
         assert 'PML' in levels
 
     def test_returns_quarter_levels(self):
         df = _daily_df(200)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         assert 'PQH' in levels
         assert 'PQL' in levels
         assert levels['PQH'].timeframe == 'quarter'
 
     def test_pdh_price_matches_prev_day_high(self):
         df = _daily_df(30)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         expected = float(df['High'].iloc[-2])
         assert levels['PDH'].price == expected
 
     def test_levels_classified(self):
         df = _daily_df(30)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         assert levels['PDH'].strat_class in ('1', '2U', '2D', '3', 'Failed_2U', 'Failed_2D')
 
     def test_empty_df(self):
-        assert compute_previous_levels(pd.DataFrame()) == {}
+        assert compute_previous_levels(pd.DataFrame(), analysis_date=pd.Timestamp('2025-03-03').date()) == {}
 
     def test_returns_close_levels(self):
         """Close levels (PDC/PWC/PMC/PQC/PYC) ship alongside H/L so
         traders charting against PDC have a source of truth.
 
-        Uses 520 biz days (~2 years) so the legacy path's "need ≥2
-        groupings to compute previous period" requirement is satisfied
-        even for the year timeframe (PYC).
+        Uses 520 biz days (about 2 years) so a previous year exists for
+        the year timeframe (PYC).
         """
         df = _daily_df(520)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         for k in ('PDC', 'PWC', 'PMC', 'PQC', 'PYC'):
             assert k in levels, f"missing {k}"
             assert levels[k].level_type == 'close'
 
     def test_pdc_price_matches_prev_day_close(self):
         df = _daily_df(30)
-        levels = compute_previous_levels(df)
-        # Legacy path: prev day = iloc[-2]
+        levels = _prev(df)
+        # analysis_date is the last row's date, so the prior day is iloc[-2]
         expected = float(df['Close'].iloc[-2])
         assert levels['PDC'].price == expected
 
@@ -499,7 +510,7 @@ class TestDetectLevelClusters:
             StratLevel('PWL', 262.30, 'week', 'low', '2D', False, ''),
             StratLevel('PMH', 270.00, 'month', 'high', '2U', False, ''),
         ]
-        zones = detect_level_clusters(levels, tolerance_pct=0.15)
+        zones = detect_level_clusters(levels, tolerance_atr=0.15, atr=2.62)
         assert len(zones) == 1
         assert 'PDL' in zones[0]['level_names']
         assert 'PWL' in zones[0]['level_names']
@@ -509,7 +520,7 @@ class TestDetectLevelClusters:
             StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
             StratLevel('PWH', 270.00, 'week', 'high', '2U', False, ''),
         ]
-        zones = detect_level_clusters(levels, tolerance_pct=0.15)
+        zones = detect_level_clusters(levels, tolerance_atr=0.15, atr=2.62)
         assert len(zones) == 0
 
     def test_strength_scoring(self):
@@ -518,13 +529,13 @@ class TestDetectLevelClusters:
             StratLevel('PWL', 262.30, 'week', 'low', '2D', False, ''),
             StratLevel('GAP_L', 262.10, 'day', 'gap_low', 'gap_up', False, ''),
         ]
-        zones = detect_level_clusters(levels, tolerance_pct=0.15)
+        zones = detect_level_clusters(levels, tolerance_atr=0.15, atr=2.62)
         assert len(zones) == 1
         # count=3, unique TFs=2 (day, week) → 3 + 0.5 = 3.5
         assert zones[0]['strength'] == 3.5
 
     def test_empty(self):
-        assert detect_level_clusters([], tolerance_pct=0.15) == []
+        assert detect_level_clusters([], tolerance_atr=0.15, atr=2.62) == []
 
 
 # ─── detect_pmg_temporal ──────────────────────────────────────────────────
@@ -559,45 +570,6 @@ class TestDetectPMGTemporal:
         assert len(results) == 0
 
 
-# ─── compute_room_to_run ─────────────────────────────────────────────────
-
-
-class TestRoomToRun:
-    def test_call_direction(self):
-        levels = [
-            StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
-            StratLevel('PWH', 268.00, 'week', 'high', '2U', False, ''),
-        ]
-        result = compute_room_to_run(263.00, levels, 'CALL')
-        assert result['next_level'].name == 'PDH'
-        assert result['distance_pct'] > 0
-        assert result['has_room'] is True
-
-    def test_put_direction(self):
-        levels = [
-            StratLevel('PDL', 260.00, 'day', 'low', '2D', False, ''),
-            StratLevel('PWL', 257.00, 'week', 'low', '2D', False, ''),
-        ]
-        result = compute_room_to_run(263.00, levels, 'PUT')
-        assert result['next_level'].name == 'PDL'
-        assert result['has_room'] is True
-
-    def test_insufficient_room(self):
-        levels = [
-            StratLevel('PDH', 263.05, 'day', 'high', '2U', False, ''),
-        ]
-        result = compute_room_to_run(263.00, levels, 'CALL')
-        # 0.05/263 = 0.019% < MIN_ROOM_PCT
-        assert result['has_room'] is False
-
-    def test_no_levels_in_direction(self):
-        levels = [
-            StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
-        ]
-        result = compute_room_to_run(266.00, levels, 'CALL')
-        assert result['next_level'] is None
-
-
 # ─── compute_risk_reward ─────────────────────────────────────────────────
 
 
@@ -615,110 +587,83 @@ class TestRiskReward:
 # ─── identify_triggers ───────────────────────────────────────────────────
 
 
-class TestIdentifyTriggers:
+class TestSessionPicks:
+    """The side picks build_session_levels makes (they replaced
+    identify_triggers): one candidate set, one side rule, one window."""
+
+    def _session(self, levels, ref, atr=5.0):
+        from tests.lib.session_levels_helpers import session
+        return session(levels, prior_close=ref, atr=atr)
+
     def _levels(self):
-        return {
-            'PDH': StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
-            'PDL': StratLevel('PDL', 260.00, 'day', 'low', '2D', False, ''),
-            'PWH': StratLevel('PWH', 268.00, 'week', 'high', '2U', False, ''),
-            'PWL': StratLevel('PWL', 257.00, 'week', 'low', '2D', False, ''),
-        }
+        return {'PDH': 265.00, 'PDL': 260.00, 'PWH': 268.00, 'PWL': 257.00}
 
     def test_calls_trigger(self):
-        triggers = identify_triggers(263.00, self._levels())
-        assert triggers['calls'] is not None
-        assert triggers['calls']['trigger_name'] == 'PDH'
-        assert triggers['calls']['trigger_level'] == 265.00
+        sl = self._session(self._levels(), 263.00)
+        assert sl.long.trigger['name'] == 'PDH'
+        assert sl.long.trigger['price'] == 265.00
+        assert sl.to_level_map().calls_trigger['trigger_level'] == 265.00
 
     def test_puts_trigger(self):
-        triggers = identify_triggers(263.00, self._levels())
-        assert triggers['puts'] is not None
-        assert triggers['puts']['trigger_name'] == 'PDL'
-
-    def test_reasoning_includes_combo(self):
-        triggers = identify_triggers(
-            263.00, self._levels(),
-            daily_strat_class='2U', combo='212_bull_reversal',
-        )
-        assert '212_bull_reversal' in triggers['calls']['reasoning']
-        assert 'Daily 2U' in triggers['calls']['reasoning']
-
-    def test_reasoning_empty_when_no_context(self):
-        triggers = identify_triggers(263.00, self._levels())
-        assert triggers['calls']['reasoning'] == ''
+        sl = self._session(self._levels(), 263.00)
+        assert sl.short.trigger['name'] == 'PDL'
+        assert sl.to_level_map().puts_trigger['trigger_name'] == 'PDL'
 
     def test_targets_are_distinct_prices_beyond_the_trigger(self):
-        """Two lines on one number consume one slot, and a line at the
-        trigger's own price is never a target (it was T1 == trigger on
-        13-17% of persisted IWM/SPY/QQQ rows, and the outcome resolver then
-        marked T1 hit on the trigger bar itself)."""
-        levels = {
-            'PDH': StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
-            'PWH': StratLevel('PWH', 265.00, 'week', 'high', '2U', False, ''),   # == trigger
-            'PDO': StratLevel('PDO', 266.50, 'day', 'open', '', False, ''),
-            'PWC': StratLevel('PWC', 266.504, 'week', 'close', '', False, ''),  # == PDO
-            'PMH': StratLevel('PMH', 268.00, 'month', 'high', '2U', False, ''),
-            'PQH': StratLevel('PQH', 270.00, 'quarter', 'high', '2U', False, ''),
-            'PDL': StratLevel('PDL', 260.00, 'day', 'low', '2D', False, ''),
-        }
-        triggers = identify_triggers(263.00, levels)
-        calls = triggers['calls']
-        assert calls['trigger_level'] == 265.00
-        assert [t['price'] for t in calls['targets']] == [266.50, 268.00, 270.00]
+        """Two lines on one cent are one rung (the structural name in
+        priority order wins), a line at the trigger's own cent is never a
+        target, and opens are never candidates."""
+        sl = self._session({
+            'PDH': 265.00, 'PWH': 265.00,        # == trigger: one rung, alias PWH
+            'PWC': 266.504, 'PMH': 268.00, 'PQH': 270.00, 'PDL': 260.00,
+        }, 263.00)
+        assert sl.long.trigger['name'] == 'PDH'
+        assert sl.long.trigger['aliases'] == ['PWH']
+        assert [round(t['price'], 2) for t in sl.long.targets] == [266.50, 268.00, 270.00]
 
     def test_room_is_measured_to_the_first_distinct_target(self):
-        """A line on the trigger's own cent is skipped as a target, so the
-        advertised room must be to the target actually persisted, not ~0%
-        to the skipped duplicate (Codex P2 on #1030, round 5)."""
-        levels = {
-            'PDH': StratLevel('PDH', 100.004, 'day', 'high', '2U', False, ''),
-            'PWC': StratLevel('PWC', 100.0049, 'week', 'close', '', False, ''),  # same cent
-            'PMH': StratLevel('PMH', 101.00, 'month', 'high', '2U', False, ''),
-            'PDL': StratLevel('PDL', 98.00, 'day', 'low', '2D', False, ''),
-        }
-        calls = identify_triggers(99.5, levels)['calls']
+        sl = self._session({'PDH': 100.004, 'PWC': 100.0049, 'PMH': 101.00, 'PDL': 98.00},
+                           99.5, atr=1.0)
+        calls = sl.to_level_map().calls_trigger
         assert [t['price'] for t in calls['targets']] == [101.00]
-        assert calls['room_to_first_target'] == pytest.approx((101.0 - 100.004) / 100.004 * 100, abs=1e-3)
+        assert calls['room_to_first_target'] == pytest.approx(
+            (101.0 - 100.004) / 100.004 * 100, abs=1e-3)
 
-    def test_a_line_on_the_anchors_cent_is_not_a_trigger(self):
-        """100.0041 against a 100.004 anchor is the same cent; the trigger is
-        the first line a full cent beyond, the same rule select_nearest_levels
-        applies to the ladder (Codex P2 on #1030, round 7)."""
-        levels = {
-            'PDO': StratLevel('PDO', 100.0041, 'day', 'open', '', False, ''),
-            'PDH': StratLevel('PDH', 101.00, 'day', 'high', '2U', False, ''),
-            'PWH': StratLevel('PWH', 102.00, 'week', 'high', '2U', False, ''),
-            'PDL': StratLevel('PDL', 99.9961, 'day', 'low', '2D', False, ''),  # same cent, below
-            'PWL': StratLevel('PWL', 98.00, 'week', 'low', '2D', False, ''),
-        }
-        triggers = identify_triggers(100.004, levels)
-        assert triggers['calls']['trigger_name'] == 'PDH'
-        assert triggers['calls']['trigger_level'] == 101.00
-        assert triggers['puts']['trigger_name'] == 'PWL'
-        assert triggers['calls']['stop_name'] == 'PWL'
+    def test_no_premarket_a_level_on_the_references_cent_is_on_neither_list(self):
+        """Spec revision 2: with no premarket snapshot, a level on the
+        reference's own cent is on neither list; the trigger is the next
+        real level out."""
+        sl = self._session({'PDH': 101.00, 'PDC': 100.0041, 'PWL': 98.00}, 100.004, atr=1.0)
+        assert sl.long.trigger['name'] == 'PDH'
+        assert sl.short.trigger['name'] == 'PWL'
+
+    def test_with_premarket_a_level_on_the_references_cent_is_on_both_lists(self):
+        """With a snapshot and no premarket beyond it, a level on the
+        reference's own cent is both the long and the short trigger."""
+        from tests.lib.session_levels_helpers import session
+        sl = session({'PDH': 101.00, 'PDC': 100.0041, 'PWL': 98.00}, prior_close=100.004,
+                     atr=1.0, premarket={'pre_high': 100.0, 'pre_low': 100.0,
+                                         'pre_vwap': 100.004})
+        assert sl.long.trigger['name'] == 'PDC'
+        assert sl.short.trigger['name'] == 'PDC'
+        assert sl.long.targets[0]['name'] == 'PDH'
+        assert sl.short.targets[0]['name'] == 'PWL'
 
     def test_targets_one_cent_apart_are_distinct_despite_float_error(self):
         """240.01 - 240.00 < 0.01 in binary; integer cents keep them apart."""
-        levels = {
-            'PDH': StratLevel('PDH', 240.00, 'day', 'high', '2U', False, ''),
-            'PWH': StratLevel('PWH', 240.01, 'week', 'high', '2U', False, ''),
-            'PMH': StratLevel('PMH', 241.00, 'month', 'high', '2U', False, ''),
-            'PDL': StratLevel('PDL', 235.00, 'day', 'low', '2D', False, ''),
-        }
-        calls = identify_triggers(238.00, levels)['calls']
-        assert calls['trigger_level'] == 240.00
-        assert [t['price'] for t in calls['targets']] == [240.01, 241.00]
-        assert all(t['price'] > calls['trigger_level'] for t in calls['targets'])
+        sl = self._session({'PDH': 240.00, 'PWH': 240.01, 'PMH': 241.00, 'PDL': 235.00}, 238.00)
+        assert sl.long.trigger['price'] == 240.00
+        assert [t['price'] for t in sl.long.targets] == [240.01, 241.00]
 
 
-# ─── build_level_map ──────────────────────────────────────────────────────
+# ─── build_level_map (deprecated shim over build_session_levels) ─────────
 
 
 class TestBuildLevelMap:
     def test_returns_level_map(self):
         df = _daily_df(60)
         price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price, '2U', '212_bull_reversal')
+        lm = build_level_map('IWM', df, price, '2U', '212_bull_reversal', atr=3.0)
         assert isinstance(lm, LevelMap)
         assert lm.ticker == 'IWM'
         assert len(lm.levels) > 0
@@ -727,9 +672,14 @@ class TestBuildLevelMap:
     def test_has_triggers(self):
         df = _daily_df(60)
         price = float(df['Close'].iloc[-1])
-        lm = build_level_map('SPY', df, price)
-        # Should have at least calls or puts
+        lm = build_level_map('SPY', df, price, atr=3.0)
         assert lm.calls_trigger is not None or lm.puts_trigger is not None
+
+    def test_no_atr_gives_no_trigger(self):
+        df = _daily_df(60)
+        lm = build_level_map('SPY', df, float(df['Close'].iloc[-1]))
+        assert lm.calls_trigger is None and lm.puts_trigger is None
+        assert lm.reason_long == lm.reason_short == 'atr_unavailable'
 
 
 # ─── format_levels_for_brief ──────────────────────────────────────────────
@@ -775,136 +725,73 @@ class TestDisplayLevelName:
 
 
 class TestFormatLevelsForBrief:
-    def test_contains_calls_puts(self):
+    def _lm(self, atr=3.0):
         df = _daily_df(60)
         price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price, '2U', '212_bull_reversal')
-        text = format_levels_for_brief(lm, 'bullish', '212_bull_reversal', '2U')
+        return build_level_map('IWM', df, price, '2U', '212_bull_reversal', atr=atr)
+
+    def test_contains_calls_puts(self):
+        text = format_levels_for_brief(self._lm(), 'bullish', '212_bull_reversal', '2U')
         assert 'CALLS above' in text or 'PUTS below' in text
 
     def test_bias_denied_for_puts_when_bullish(self):
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
-        text = format_levels_for_brief(lm, 'bullish')
+        text = format_levels_for_brief(self._lm(), 'bullish')
         if 'PUTS below' in text:
             assert 'only if bias denied' in text
 
     def test_bearish_bias_denied_for_calls(self):
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
-        text = format_levels_for_brief(lm, 'bearish')
+        text = format_levels_for_brief(self._lm(), 'bearish')
         if 'CALLS above' in text:
             assert 'only if bias denied' in text
 
-    # ── Regime-aware playbook output (PR α) ───────────────────────────
+    def test_room_to_trigger_is_the_triggers_own_distance(self):
+        from tests.lib.session_levels_helpers import session
+        lm = session({'PDH': 102.0, 'PWH': 104.0, 'PDL': 99.0}, prior_close=100.0,
+                     atr=2.0).to_level_map()
+        text = format_levels_for_brief(lm, 'bullish')
+        assert 'CALLS above 102.00 (PDH)' in text
+        assert 'T1: 104.00 (PWH)' in text
+        assert 'Room to trigger: 2.00%' in text
 
-    def test_orb_only_regime_suppresses_calls_and_puts(self):
-        """orb_only: pre-market cleared every level; the playbook
-        replaces CALLS/PUTS with an ORB-wait banner."""
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
+    # ── orb_only: one copy per reason (FEAT-STRAT-001 Design 6) ────────
+
+    def test_orb_only_sides_render_the_reason_copy(self):
+        """A side with no trigger prints its ORB_ONLY_COPY line and no
+        CALLS above / PUTS below line."""
+        from lib.strat_levels import orb_only_text
+        lm = self._lm(atr=None)
         text = format_levels_for_brief(lm, 'bullish', regime='orb_only')
-        assert 'ORB-only' in text
-        assert 'wait' in text.lower() or '15-min' in text
-        # Suppressed: no CALLS/PUTS lines
+        assert '  CALLS: ' + orb_only_text('atr_unavailable', 'long', lm.window_long) in text
+        assert '  PUTS: ' + orb_only_text('atr_unavailable', 'short', lm.window_short) in text
         assert 'CALLS above' not in text
         assert 'PUTS below' not in text
 
-    def test_orb_only_banner_names_cleared_levels(self):
-        """orb_only: banner must name the LAST cleared structural level
-        with its price so the trader sees what's now behind them.
-        Regression for the original 'every structural level' wording
-        which was technically true but useless."""
-        levels = [
-            StratLevel(name='PDH', price=220.0, timeframe='day',
-                       level_type='high', strat_class='2U'),
-            StratLevel(name='PWH', price=225.0, timeframe='week',
-                       level_type='high', strat_class='2U'),
-            StratLevel(name='PMH', price=228.0, timeframe='month',
-                       level_type='high', strat_class='2U'),
-            StratLevel(name='PDL', price=215.0, timeframe='day',
-                       level_type='low', strat_class='2U'),
-        ]
-        lm = LevelMap(
-            ticker='IWM', as_of='2026-04-28',
-            current_price=230.0, levels=levels,
-        )
-        text = format_levels_for_brief(lm, 'bullish', regime='orb_only')
-        # Last cleared bullish level (closest to spot) named with price
-        assert 'Last bullish level passed' in text
-        assert 'PMH' in text and '228.00' in text
-        assert 'PWH' in text and '225.00' in text
-        assert 'PDH' in text and '220.00' in text
-        # Spot price referenced for context
-        assert '230.00' in text
-
-    def test_orb_only_banner_short_bias_names_cleared_lows(self):
-        """Mirror: bear bias names the LAST cleared LOW with its price."""
-        levels = [
-            StratLevel(name='PDL', price=200.0, timeframe='day',
-                       level_type='low', strat_class='2D'),
-            StratLevel(name='PWL', price=195.0, timeframe='week',
-                       level_type='low', strat_class='2D'),
-            StratLevel(name='PQL', price=190.0, timeframe='quarter',
-                       level_type='low', strat_class='2D'),
-        ]
-        lm = LevelMap(
-            ticker='IWM', as_of='2026-04-28',
-            current_price=185.0, levels=levels,
-        )
-        text = format_levels_for_brief(lm, 'bearish', regime='orb_only')
-        assert 'Last bearish level passed' in text
-        # Closest-to-spot low (PQL $190) is the LAST level price passed
-        assert 'PQL' in text and '190.00' in text
-        assert 'PWL' in text and '195.00' in text
+    def test_all_broken_by_premarket_copy(self):
+        from lib.strat_levels import orb_only_text
+        from tests.lib.session_levels_helpers import session
+        sl = session({'PDH': 220.0, 'PWH': 225.0, 'PMH': 228.0, 'PDL': 215.0},
+                     prior_close=218.0, atr=2.0,
+                     premarket={'pre_high': 240.0, 'pre_low': 216.0, 'pre_vwap': 219.0})
+        assert sl.long.reason == 'all_broken_by_premarket'
+        text = format_levels_for_brief(sl.to_level_map(), 'bullish')
+        assert '  CALLS: ' + orb_only_text('all_broken_by_premarket', 'long') in text
+        assert 'cleared every structural' not in text
 
     def test_orb_only_banner_no_warning_emoji(self):
-        """No ⚠ in the banner — user wants plain text. Brain emoji is
-        added by the embed builder, not by the level formatter."""
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
-        text = format_levels_for_brief(lm, 'bullish', regime='orb_only')
-        assert '⚠' not in text
+        """No warning sign in the banner; the embed builder adds its own."""
+        text = format_levels_for_brief(self._lm(atr=None), 'bullish', regime='orb_only')
+        assert '\u26a0' not in text
 
-    def test_extended_regime_prepends_warning_keeps_triggers(self):
-        """extended: per-side warning header + standard CALLS/PUTS still
-        rendered. The legacy global 'Extended gap' header was replaced
-        with per-side banners ('CALLS: extended gap...' /
-        'PUTS: extended gap...') so a bullish ticker whose CALL side is
-        normal but PUT side is gap-extended only sees a warning on the
-        relevant side."""
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
-        text = format_levels_for_brief(lm, 'bullish', regime='extended')
-        # Per-side banner uses lowercase 'extended gap'.
-        assert 'extended gap' in text
-        assert 'ORB' in text
-        # Still has trigger lines (extended ≠ skip the trade)
-        assert 'CALLS above' in text or 'PUTS below' in text
-
-    def test_normal_regime_matches_legacy_output(self):
-        """normal regime: identical to the legacy no-regime call."""
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
-        text_normal = format_levels_for_brief(lm, 'bullish', regime='normal')
-        text_legacy = format_levels_for_brief(lm, 'bullish')
-        assert text_normal == text_legacy
+    def test_regime_argument_does_not_change_the_side_blocks(self):
+        """The sides come from the SessionLevels projection, so a caller's
+        regime argument cannot relabel a side that has a trigger."""
+        lm = self._lm()
+        assert (format_levels_for_brief(lm, 'bullish', regime='normal')
+                == format_levels_for_brief(lm, 'bullish'))
 
     def test_default_regime_is_normal(self):
-        """No regime kwarg → backwards-compat with pre-α callers."""
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
-        text = format_levels_for_brief(lm, 'bullish')
-        # No regime banner of any kind when default is 'normal'.
+        text = format_levels_for_brief(self._lm(), 'bullish')
         assert 'extended gap' not in text.lower()
-        assert 'ORB-only' not in text
 
 
 # ─── levels_to_named_dict (PR α adapter) ──────────────────────────────────
@@ -935,31 +822,32 @@ class TestLevelsToNamedDict:
 # ─── select_nearest_levels (next-N each way) ─────────────────────────────
 
 
-class TestSelectNearestLevels:
-    """The brief's 'next two call levels / next two put levels' display.
+class TestNextLevelsLadder:
+    """The brief's NEXT LEVELS ladder: the first two rungs of each side
+    list from build_session_levels (it replaced select_nearest_levels).
 
-    Mirrors the user's worked example: price 250, with PWH 251.50 and PDH
-    252 above (call levels) and PQL 248 and PMH 245 below (put levels).
+    The user's worked example: price 250, with PWH 251.50 and PDH 252 above
+    (call levels) and PQL 248 and PMH 245 below (put levels).
     """
 
+    @staticmethod
+    def _ladder(levels, ref=250.0, atr=5.0):
+        from tests.lib.session_levels_helpers import session
+        lm = session(levels, prior_close=ref, atr=atr).to_level_map()
+        return {'calls': lm.call_levels, 'puts': lm.put_levels}
+
     def _levels(self):
-        return {
-            'PWH': StratLevel('PWH', 251.50, timeframe='week', level_type='high'),
-            'PDH': StratLevel('PDH', 252.00, timeframe='day', level_type='high'),
-            'PQL': StratLevel('PQL', 248.00, timeframe='quarter', level_type='low'),
-            'PMH': StratLevel('PMH', 245.00, timeframe='month', level_type='high'),
-        }
+        return {'PWH': 251.50, 'PDH': 252.00, 'PQL': 248.00, 'PMH': 245.00}
 
     def test_next_two_call_levels_nearest_first(self):
-        out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
+        out = self._ladder(self._levels())
         assert [lv['name'] for lv in out['calls']] == ['PWH', 'PDH']
         assert out['calls'][0]['price'] == 251.50
         assert out['calls'][0]['period'] == 'week'
         assert out['calls'][1]['price'] == 252.00
 
     def test_next_two_put_levels_nearest_first(self):
-        out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
-        # nearest below first: PQL (248) then PMH (245)
+        out = self._ladder(self._levels())
         assert [lv['name'] for lv in out['puts']] == ['PQL', 'PMH']
         assert out['puts'][0]['price'] == 248.00
         assert out['puts'][1]['price'] == 245.00
@@ -968,53 +856,45 @@ class TestSelectNearestLevels:
         """292.705 renders as 292.71 (half-up, matching Postgres numeric), not
         the 292.70 Python's round() gives; and two lines on the same cent
         collapse to one rung."""
-        levels = {
-            'PWH': StratLevel('PWH', 292.705, timeframe='week', level_type='high'),
-            'PDH': StratLevel('PDH', 292.714, timeframe='day', level_type='high'),  # same cent
-            'PMH': StratLevel('PMH', 294.0, timeframe='month', level_type='high'),
-        }
-        out = select_nearest_levels(290.0, levels, atr=5.0, n=2)
+        out = self._ladder({'PWH': 292.705, 'PDH': 292.714, 'PMH': 294.0}, ref=290.0)
         assert [lv['price'] for lv in out['calls']] == [292.71, 294.0]
 
-    def test_levels_on_the_anchors_cent_are_neither_call_nor_put(self):
-        """current_price 100.004 with lines at 100.0041 and 100.0039 must not
-        become a call rung AND a put rung both displayed as 100.00: sides are
-        partitioned on the shared cents rule (Codex P2 on #1030, round 5)."""
-        levels = {
-            'PDH': StratLevel('PDH', 100.0041, timeframe='day', level_type='high'),
-            'PDL': StratLevel('PDL', 100.0039, timeframe='day', level_type='low'),
-            'PWH': StratLevel('PWH', 101.0, timeframe='week', level_type='high'),
-            'PWL': StratLevel('PWL', 99.0, timeframe='week', level_type='low'),
-        }
-        out = select_nearest_levels(100.004, levels, atr=5.0, n=2)
+    def test_with_premarket_a_level_on_the_references_cent_is_on_both_sides(self):
+        """FEAT-STRAT-001: with a snapshot and no premarket beyond it, a level
+        on the reference's own cent is on both lists, once, as one rung."""
+        from tests.lib.session_levels_helpers import session
+        lm = session({'PDH': 100.0041, 'PDL': 100.0039, 'PWH': 101.0, 'PWL': 99.0},
+                     prior_close=100.004, atr=5.0,
+                     premarket={'pre_high': 100.0, 'pre_low': 100.0,
+                                'pre_vwap': 100.004}).to_level_map()
+        out = {'calls': lm.call_levels, 'puts': lm.put_levels}
+        assert [lv['price'] for lv in out['calls']] == [100.0, 101.0]
+        assert [lv['price'] for lv in out['puts']] == [100.0, 99.0]
+        assert out['calls'][0]['name'] == out['puts'][0]['name'] == 'PDH'
+
+    def test_no_premarket_a_level_on_the_references_cent_is_on_neither_side(self):
+        """Spec revision 2: with no snapshot the reference's own cent is on
+        neither ladder."""
+        out = self._ladder({'PDH': 100.0041, 'PDL': 100.0039, 'PWH': 101.0, 'PWL': 99.0},
+                           ref=100.004)
         assert [lv['price'] for lv in out['calls']] == [101.0]
         assert [lv['price'] for lv in out['puts']] == [99.0]
 
     def test_direction_is_positional_not_by_high_low(self):
-        # a prior-month HIGH below price is a PUT (bearish) level
-        out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
-        put_names = [lv['name'] for lv in out['puts']]
-        assert 'PMH' in put_names  # month HIGH, but it sits below price
+        out = self._ladder(self._levels())
+        assert 'PMH' in [lv['name'] for lv in out['puts']]  # a month HIGH below price
 
     def test_distance_pct_sign(self):
-        out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
-        assert out['calls'][0]['distance_pct'] > 0   # above
-        assert out['puts'][0]['distance_pct'] < 0    # below
+        out = self._ladder(self._levels())
+        assert out['calls'][0]['distance_pct'] > 0
+        assert out['puts'][0]['distance_pct'] < 0
 
     def test_dedup_coincident_prices(self):
-        lvls = {
-            'PDH': StratLevel('PDH', 252.00, timeframe='day', level_type='high'),
-            'PWH': StratLevel('PWH', 252.00, timeframe='week', level_type='high'),
-            'PMH': StratLevel('PMH', 255.00, timeframe='month', level_type='high'),
-        }
-        out = select_nearest_levels(250.0, lvls, atr=5.0, n=2)
-        prices = [lv['price'] for lv in out['calls']]
-        assert prices == [252.00, 255.00]  # 252 not counted twice
+        out = self._ladder({'PDH': 252.00, 'PWH': 252.00, 'PMH': 255.00})
+        assert [lv['price'] for lv in out['calls']] == [252.00, 255.00]
 
     def test_short_side_not_padded(self):
-        # only one level above -> calls has length 1, never fabricated
-        lvls = {'PDH': StratLevel('PDH', 252.00, timeframe='day', level_type='high')}
-        out = select_nearest_levels(250.0, lvls, atr=5.0, n=2)
+        out = self._ladder({'PDH': 252.00})
         assert len(out['calls']) == 1
         assert out['puts'] == []
 
@@ -1024,10 +904,11 @@ class TestSelectNearestLevels:
         lm = build_level_map('TEST', df, price, atr=float(df['Close'].iloc[-1] * 0.01))
         assert isinstance(lm.call_levels, list)
         assert isinstance(lm.put_levels, list)
+        from lib.strat_levels import price_cents
         for lv in lm.call_levels:
-            assert lv['price'] > price
+            assert price_cents(lv['price']) >= price_cents(price)
         for lv in lm.put_levels:
-            assert lv['price'] < price
+            assert price_cents(lv['price']) <= price_cents(price)
 
 
 # ─── daily_data_freshness (shared with the premarket brief) ──────────────
@@ -1074,3 +955,59 @@ class TestDailyDataFreshness:
         from lib.strat_levels import daily_data_freshness
         for last, ad in ((date(2026, 9, 10), date(2026, 9, 14)), (date(2026, 9, 11), date(2026, 9, 14)), (None, date(2026, 9, 14))):
             assert _resolve_data_freshness(last, ad) == daily_data_freshness(last, ad)
+
+    # FEAT-DATA-001 (2026-11-11 spec): the rule counts NYSE sessions, so a
+    # session that follows only weekend days and holidays reads its previous
+    # session as fresh. On origin/main every one of these was STALE_DAILY_DATA
+    # and the brief skipped the ticker.
+    @pytest.mark.parametrize('last, session, gap', [
+        ((2026, 5, 22), (2026, 5, 26), 4),   # Memorial Day Monday
+        ((2026, 6, 18), (2026, 6, 22), 4),   # Juneteenth Friday
+        ((2026, 7, 2), (2026, 7, 6), 4),     # Independence Day observed Friday
+        ((2026, 9, 4), (2026, 9, 8), 4),     # Labor Day Monday
+        ((2026, 11, 25), (2026, 11, 27), 2), # Thanksgiving Thursday
+        ((2026, 4, 2), (2026, 4, 5), 3),     # Sunday weekly brief across Good Friday
+    ])
+    def test_previous_session_across_holidays_is_fresh(self, last, session, gap):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(*last), date(*session)) == (False, gap, 'fresh')
+
+    @pytest.mark.parametrize('last, session, gap', [
+        ((2026, 5, 21), (2026, 5, 26), 5),   # Friday 05-22 missing
+        ((2026, 11, 24), (2026, 11, 27), 3), # Wednesday 11-25 missing
+        ((2026, 9, 10), (2026, 9, 14), 4),   # Friday 09-11 missing
+        ((2026, 9, 11), (2026, 9, 15), 4),   # Monday 09-14 missing
+    ])
+    def test_a_missing_session_is_still_stale(self, last, session, gap):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(*last), date(*session)) == (True, gap, 'STALE_DAILY_DATA')
+
+    def test_short_gap_never_reads_the_calendar(self, monkeypatch):
+        from datetime import date
+        from lib import eastern_time
+        from lib.strat_levels import daily_data_freshness
+
+        def boom(*_a, **_k):
+            raise AssertionError('calendar consulted for a gap of 0 or 1 day')
+        monkeypatch.setattr(eastern_time, 'previous_session', boom)
+        assert daily_data_freshness(date(2026, 11, 25), date(2026, 11, 25)) == (False, 0, 'fresh')
+        assert daily_data_freshness(date(2026, 11, 25), date(2026, 11, 26)) == (False, 1, 'fresh')
+
+    def test_calendar_failure_raises(self, monkeypatch):
+        from datetime import date
+        import pandas_market_calendars as mcal
+        from lib import eastern_time
+        from lib.strat_levels import daily_data_freshness
+
+        def no_calendar(name, *a, **k):
+            raise RuntimeError('calendar down')
+        eastern_time._reset_session_cache()
+        monkeypatch.setattr(mcal, 'get_calendar', no_calendar)
+        try:
+            with pytest.raises(RuntimeError, match='calendar down'):
+                daily_data_freshness(date(2026, 11, 25), date(2026, 11, 27))
+        finally:
+            monkeypatch.undo()
+            eastern_time._reset_session_cache()
