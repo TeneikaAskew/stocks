@@ -92,12 +92,13 @@ def test_news_article_to_rows_skips_invalid_timestamp():
 
 def test_news_fetch_by_topics_handles_av_rate_limit_response():
     """AV's 'Information' rate-limit response must be handled gracefully
-    (return empty DF, no exception)."""
+    (return an error outcome with an empty frame, no exception)."""
     from gcp.fetchers import fetch_news_sentiment as fns
 
-    with patch.object(fns, "_fetch", return_value=[]):
+    with patch.object(fns, "_fetch", return_value=fns.FetchOutcome("error", "provider_information")):
         df = fns.fetch_by_topics(["mergers_and_acquisitions"], "k", 100)
-    assert df.empty
+    assert df.frame.empty
+    assert df.outcomes == (fns.SourceOutcome("error", "provider_information"),)
 
 
 def test_news_fetch_by_topics_truncates_over_5_topics():
@@ -108,7 +109,7 @@ def test_news_fetch_by_topics_truncates_over_5_topics():
 
     def capture(params):
         seen.update(params)
-        return []  # Empty feed — we only care about params shape
+        return fns.FetchOutcome("empty")  # Empty feed — only params shape matters
 
     with patch.object(fns, "_fetch", side_effect=lambda p: capture(p)):
         fns.fetch_by_topics(
