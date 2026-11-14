@@ -1323,3 +1323,158 @@ def test_the_only_replay_exemption_is_the_style_history_loader():
     exposed = replay_reach_offenders(rel, src, REPLAY_PATH[rel], vendor_holders(sources), {})
     assert exposed, "emptying REPLAY_EXEMPT changes nothing: the exemption is dead"
     assert all(f" in {fn}: " in o for o in exposed), exposed
+
+
+# ── two writer modules for the 1-minute bar table (FEAT-DATA-001) ──────────
+#
+# Owner's rule, 2026-11-13: every replay reads 1-minute bars only from
+# market_data_intraday, so the table needs a short, known list of what
+# writes it and of what starts those writers. Until this section four files
+# wrote it by name (the two fetchers, the backfill-ticker job and the
+# parquet migration) and nothing listed any of them.
+#
+# The scan reads source as a syntax tree, not as raw text: the 300-character
+# window of _ROW_WRITE above hides a table name behind a long argument, and
+# it does not see MERGE, DELETE, UPDATE, TRUNCATE, a quoted identifier or a
+# keyword argument.
+#
+# What the scan does not see: a table name held in a variable and passed in
+# from another file (test_the_yahoo_archive_is_the_one_named_deleter pins
+# the one known case), a partition name built in an f-string field, a
+# reflected sa.Table, DDL (DROP, DETACH), SQL an operator runs by hand, a
+# write helper that is not in INTRADAY_WRITE_HELPERS, and anything outside
+# SCAN_ROOTS.
+
+INTRADAY_TABLE = "market_data_intraday"
+# gcp/schema.sql: the table's five list partitions.
+INTRADAY_PARTITION_SUFFIXES = ("_spy", "_iwm", "_qqq", "_spx", "_other")
+
+SANCTIONED_INTRADAY_WRITERS = {
+    "gcp/fetchers/fetch_alphavantage_intraday.py",   # nightly, bulk backfill, replace_month
+    "gcp/fetchers/fetch_market_data.py",             # the daily fetcher, write_intraday_to_sql
+}
+
+# The five write helpers of gcp/database.py, and pandas' own.
+INTRADAY_WRITE_HELPERS = (
+    "upsert_dataframe", "bulk_insert_dataframe", "bulk_copy_upsert",
+    "bulk_copy_update", "replace_rows_in_window", "to_sql",
+)
+
+# The table or one of its partitions, with an optional `public.` and optional
+# double quotes around either name. market_data_intraday_flow_15m and
+# archive_yahoo_market_data_intraday are other tables: the name may not run
+# on into a word character, and a statement needs whitespace before it.
+_INTRADAY_NAME = (
+    r'(?:"?public"?\.)?"?' + INTRADAY_TABLE
+    + r"(?:" + "|".join(INTRADAY_PARTITION_SUFFIXES) + r')?(?!\w)"?'
+)
+_INTRADAY_ARGUMENT = re.compile(_INTRADAY_NAME, re.I)
+_INTRADAY_STATEMENT = re.compile(
+    r"\b(?:INSERT\s+INTO|MERGE\s+INTO|COPY|DELETE\s+FROM|UPDATE|TRUNCATE(?:\s+TABLE)?)\s+"
+    + _INTRADAY_NAME,
+    re.I,
+)
+
+
+def _code_strings(tree: ast.AST):
+    """(node, text) of every string the code holds: each string constant that
+    is neither a docstring nor a part of an f-string, and each f-string as the
+    join of its literal parts. Adjacent literals are one constant already."""
+    docstrings = _docstring_nodes(tree)
+    in_fstring: set[int] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.JoinedStr):
+            in_fstring.update(id(v) for v in n.values)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.JoinedStr):
+            yield n, "".join(v.value for v in n.values
+                             if isinstance(v, ast.Constant) and isinstance(v.value, str))
+        elif (isinstance(n, ast.Constant) and isinstance(n.value, str)
+              and id(n) not in docstrings and id(n) not in in_fstring):
+            yield n, n.value
+
+
+def intraday_write_sites(src: str) -> list[tuple[int, str]]:
+    """Every write of the 1-minute bar table in a source text, sorted, as
+    (line, what): "sql" for a statement, at the first line of its string, or
+    the helper's name, at the line of its call. Raises SyntaxError on text
+    that does not parse."""
+    tree = _replay_tree(src)
+    sites: list[tuple[int, str]] = []
+    for node, text in _code_strings(tree):
+        if _INTRADAY_STATEMENT.search(text):
+            sites.append((node.lineno, "sql"))
+    for n in ast.walk(tree):
+        if not (isinstance(n, ast.Call) and _call_name(n) in INTRADAY_WRITE_HELPERS):
+            continue
+        arguments = list(n.args) + [k.value for k in n.keywords]
+        if any(isinstance(c, ast.Constant) and isinstance(c.value, str)
+               and _INTRADAY_ARGUMENT.fullmatch(c.value)
+               for a in arguments for c in ast.walk(a)):
+            sites.append((n.lineno, _call_name(n)))
+    return sorted(sites)
+
+
+_INTRADAY_MUST_CATCH = [
+    'upsert_dataframe(pd.DataFrame(rows), "market_data_intraday", ["ticker", "interval", "ts"])',
+    "bulk_insert_dataframe(df, 'market_data_intraday', chunksize=5000)",
+    'bulk_copy_upsert(df, "market_data_intraday", ["ticker", "interval", "ts"])',
+    'bulk_copy_update(df, "market_data_intraday", ["ticker", "interval", "ts"], ["close"])',
+    "replace_rows_in_window(df, 'market_data_intraday', {'ticker': s, 'interval': '1min'}, 'ts', a, b)",
+    'df.to_sql("market_data_intraday", engine, if_exists="append")',
+    'execute_sql("INSERT INTO market_data_intraday (ticker) VALUES (:t)")',
+    'cur.execute("COPY market_data_intraday FROM STDIN")',
+    'execute_sql("DELETE FROM market_data_intraday WHERE ticker = :t")',
+    'execute_sql("UPDATE market_data_intraday SET volume = 0 WHERE ticker = :t")',
+    'execute_sql("TRUNCATE TABLE market_data_intraday")',
+    'execute_sql("MERGE INTO market_data_intraday m USING staged s ON m.ts = s.ts WHEN NOT MATCHED THEN INSERT VALUES (s.ts)")',
+    'execute_sql("insert into public.market_data_intraday_spy (ticker) values (:t)")',
+    'execute_sql("TRUNCATE market_data_intraday_other")',
+    "execute_sql('INSERT INTO \"market_data_intraday\" (ticker) VALUES (:t)')",
+    'execute_sql("DELETE FROM " "market_data_intraday WHERE ticker = :t")',
+    'execute_sql("WITH gone AS (DELETE FROM market_data_intraday_qqq WHERE ts < :c RETURNING 1) SELECT count(*) FROM gone")',
+    "upsert_dataframe(pd.DataFrame([" + ", ".join(["{'ticker': 'SPY'}"] * 30) + "]), 'market_data_intraday', ['ticker', 'interval', 'ts'])",
+    'upsert_dataframe(df, conflict_cols=["ticker", "interval", "ts"], table="market_data_intraday")',
+    """execute_sql(f"DELETE FROM market_data_intraday WHERE ticker = '{t}'")""",
+]
+_INTRADAY_MUST_IGNORE = [
+    'query_to_dataframe("SELECT ts FROM market_data_intraday WHERE ticker = :t")',
+    'query_to_dataframe("SELECT ts FROM market_data_intraday WHERE ticker = :t FOR UPDATE")',
+    'upsert_dataframe(df, "market_data_daily", ["ticker", "date"])',
+    'execute_sql("DELETE FROM archive_yahoo_market_data_intraday WHERE ticker = :t")',
+    'execute_sql("INSERT INTO market_data_intraday_flow_15m (ticker) VALUES (:t)")',
+    'log.info("wrote %d rows to market_data_intraday", n)',
+    'def f():\n    """DELETE FROM market_data_intraday is never run here."""\n    return 1',
+    "x = 1  # UPDATE market_data_intraday by hand",
+]
+
+
+def test_the_intraday_writer_scan_catches_the_obvious_rewrites():
+    """The scan is the whole allowlist: a write it walks past is a third
+    writer nobody listed. Each must-catch row is a rewrite a reviewer found
+    passing an earlier form of the scan (a quoted identifier, adjacent
+    literals, MERGE INTO, a table name past 300 characters, a keyword
+    argument); each must-ignore row is a read, another table, or text that
+    is not code."""
+    assert len(_INTRADAY_MUST_CATCH) == 20
+    assert len(_INTRADAY_MUST_IGNORE) == 8
+
+    missed = [s for s in _INTRADAY_MUST_CATCH if not intraday_write_sites(s)]
+    assert missed == [], missed
+    caught = [s for s in _INTRADAY_MUST_IGNORE if intraday_write_sites(s)]
+    assert caught == [], caught
+
+    # the long-argument row really is past the old raw-text window
+    long_call = max(_INTRADAY_MUST_CATCH, key=len)
+    assert long_call.index("'market_data_intraday'") - long_call.index("(") > 300, long_call
+
+
+def test_the_intraday_writer_scan_reads_partitions_and_refuses_unparseable_text():
+    """A helper called with a partition or a schema-qualified name is the
+    same write, and a file that does not parse must fail the scan, not be
+    skipped: a skipped file is an unread file."""
+    assert intraday_write_sites('bulk_insert_dataframe(df, "market_data_intraday_other")')
+    assert intraday_write_sites(
+        'upsert_dataframe(df, "public.market_data_intraday", ["ticker", "interval", "ts"])')
+    with pytest.raises(SyntaxError):
+        intraday_write_sites("def (:")
