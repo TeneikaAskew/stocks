@@ -931,7 +931,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) | Self-healing backfill of derived indicator columns in market_data_daily. | `backfill-daily-indicators` |
 | [`gcp/fetchers/build_options_daily_features.py`](../../../gcp/fetchers/build_options_daily_features.py) | Populate the materialized `options_daily_features` table (perf fix). | `build-options-daily-features` |
 | [`gcp/fetchers/compute_earnings_reactions.py`](../../../gcp/fetchers/compute_earnings_reactions.py) | Cloud Run Job: Populate earnings_reactions from earnings_history ⨝ market_data_daily. | `compute-earnings-reactions` |
-| [`gcp/fetchers/evaluate_ew_strikes.py`](../../../gcp/fetchers/evaluate_ew_strikes.py) | EW strike verdict evaluator — runs after market close to score how | — |
+| [`gcp/fetchers/evaluate_ew_strikes.py`](../../../gcp/fetchers/evaluate_ew_strikes.py) | Compatibility NYSE calendar shim after scorer retirement. | — |
 | [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) | Cloud Run Job: Fetch AlphaVantage 1-min historical intraday → Cloud SQL. | `fetch-alphavantage-intraday`, `intraday-bulk-backfill` |
 | [`gcp/fetchers/fetch_av_earnings_options_backfill.py`](../../../gcp/fetchers/fetch_av_earnings_options_backfill.py) | Cloud Run Job: backfill T-1 options snapshots for every earnings event. | `earnings-options-backfill` |
 | [`gcp/fetchers/fetch_av_historical_options.py`](../../../gcp/fetchers/fetch_av_historical_options.py) | Cloud Run Job: Fetch daily AV HISTORICAL_OPTIONS and write to Cloud SQL. | `fetch-av-options-backfill` |

@@ -1649,7 +1649,7 @@
    "type": "Heuristic"
   },
   "MODEL-EWV-001": {
-   "blocking_issues": "Operationally retired 2026-11-13: evaluator job/scheduler removed and the deployed brief no longer consumes EW results. Scorer source removal remains pending P-I; the shared NYSE helper remains required. Historical evidence: #1151 fixed and re-scored 2026-09-26: after-close reporters had been scored against the pre-announcement session, 1,263 of 2,383 scored rows. Each pick is now scored on the NYSE session its news reaches, and the stored verdicts were re-computed: 1,233 of 1,251 stored after-close closes are now nearer the next session's daily close than the report day's, where 1,226 of 1,249 were nearer the report day's before, and 328 of 1,263 verdicts flipped · #1168 fixed: the weekday premarket brief recaps the last session's verdicts, and today's rows carry none · #1181 fixed: each empty call is counted by the vendor's reason, a run whose every call came back empty is decided by one SPY call, and share classes are sent dashed",
+   "blocking_issues": "Operationally retired 2026-11-13: evaluator job/scheduler removed and the deployed brief no longer consumes EW results. This source change removes the scorer; the shared NYSE shim and its consumers remain required. Historical evidence: #1151 fixed and re-scored 2026-09-26: after-close reporters had been scored against the pre-announcement session, 1,263 of 2,383 scored rows. Each pick is now scored on the NYSE session its news reaches, and the stored verdicts were re-computed: 1,233 of 1,251 stored after-close closes are now nearer the next session's daily close than the report day's, where 1,226 of 1,249 were nearer the report day's before, and 328 of 1,263 verdicts flipped · #1168 fixed: the weekday premarket brief recaps the last session's verdicts, and today's rows carry none · #1181 fixed: each empty call is counted by the vendor's reason, a run whose every call came back empty is decided by one SPY call, and share classes are sent dashed",
    "code": "`gcp/fetchers/evaluate_ew_strikes.py`",
    "code_paths": [
     "gcp/fetchers/evaluate_ew_strikes.py"
@@ -2615,7 +2615,7 @@
  ],
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "9752340744b8580d57910eadb6df84c536081b42",
-  "docs/product/07-MODEL-REGISTRY.md": "5a6d4fae8beb35532db208132a4fd0bb26fa8a68",
+  "docs/product/07-MODEL-REGISTRY.md": "540177c9d933a81896afe071313fb208282b05bb",
   "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
  },
  "tables": [
