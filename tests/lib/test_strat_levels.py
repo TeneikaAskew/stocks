@@ -1507,6 +1507,37 @@ class TestAtrLevelsCopy:
         assert calls == ['  CALLS: ' + orb_only_text('all_broken_by_premarket', 'long')]
         assert lines[-1].startswith('    ATR levels')
 
+    def test_a_basis_from_the_previous_loader_prints_no_line(self):
+        """Once the policy rows exist, the previous loader records the rung
+        keys among its parameters but writes no rung fields: that basis
+        still rebuilds none (Codex P2 on #1951)."""
+        import json
+        from lib.strat_levels import SessionLevels
+        stored = json.loads(json.dumps(d8_session().to_basis()))
+        for k in ('atr_rungs', 'atr_rungs_dropped', 'atr_rung_status', 'atr_rung_anchors',
+                  'atr_rung_params'):
+            stored.pop(k)
+        assert all(k in stored['params'] for k in D8_RUNG_PARAMS)
+        old = SessionLevels.from_basis(stored)
+        assert old.atr_rungs == [] and old.atr_rung_status is None
+        text = format_levels_for_brief(old.to_level_map(), 'neutral')
+        assert text == D8_CALLS + "\n\n" + D8_PUTS + "\n\n" + D8_NEXT_LEVELS
+
+    @pytest.mark.parametrize('side,key,word', [('long', 'trigger_window_long_atr', 'up'),
+                                               ('short', 'trigger_window_short_atr', 'down')])
+    @pytest.mark.parametrize('status', ['insufficient_history', 'params_unavailable'])
+    def test_a_side_window_not_ok_prints_its_status(self, side, key, word, status):
+        """A side whose window is not ok prints that status in place of its
+        rungs, never 'none', and the other side is unchanged (Codex P2 on
+        #1951)."""
+        sl = d8_session(statuses={key: status})
+        assert sl.atr_rung_status == 'ok'
+        line = format_levels_for_brief(sl.to_level_map(), 'neutral').split('\n')[-1]
+        other = ('down 241.20 (PMK_L-0.5), 234.20 (PMK_L-1)' if word == 'up'
+                 else 'up 259.10 (PMK_H+0.5), 266.10 (PMK_H+1)')
+        assert f'{word} unavailable ({status})' in line
+        assert other in line and 'none' not in line
+
     def test_a_basis_without_rungs_prints_no_line(self):
         """A stored level_basis written before ATR rungs rebuilds none and
         renders the base's text."""

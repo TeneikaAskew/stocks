@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from lib.strat_levels import LEVEL_RULE_VERSION, LevelParams, SessionLevels, SideLevels
+from lib.strat_levels import ATR_RUNG_KEYS, LEVEL_RULE_VERSION, LevelParams, SessionLevels, SideLevels
 from tests.lib.level_params_fixtures import fixture_params
 
 _TF = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}
@@ -51,6 +51,10 @@ def basis(levels: dict, *, prior_close: float, atr, premarket: dict | None = Non
         "levels": [_level(n, p) for n, p in levels.items()],
         "pmg_zones": [],
     }
+    if any(k in lp.params for k in ATR_RUNG_KEYS):
+        # A brief built under the ATR rung rule records `atr_rung_status`,
+        # the marker SessionLevels.from_basis rebuilds rungs on.
+        out["atr_rung_status"] = None
     if reference is not None:
         out["reference"] = reference
         out["reference_source"] = "caller"

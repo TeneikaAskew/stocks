@@ -1804,8 +1804,16 @@ class SessionLevels:
             return out
         ref_c = price_cents(self.reference)
         for side, key, above in ((self.long, 'up', True), (self.short, 'down', False)):
-            window = (side.window or {}).get('value') \
-                if (side.window or {}).get('status') == PARAM_OK else None
+            # A side whose window is not ok keeps that status on the line
+            # (no-silent-fallbacks rule): an empty list would read as a
+            # window that was evaluated and held no rungs (Codex P2 on #1951).
+            w = side.window or {}
+            w_status = w.get('status') or PARAMS_UNAVAILABLE
+            window = w.get('value') if w_status == PARAM_OK else None
+            if window is None:
+                out[f'{key}_status'] = w_status if w_status != PARAM_OK else PARAMS_UNAVAILABLE
+                continue
+            out[f'{key}_status'] = PARAM_OK
             rungs = [r for r in self.atr_rungs
                      if (r['cents'] >= ref_c if above else r['cents'] < ref_c)
                      and _within_staleness_window(r['price'], self.reference, self.atr, window)]
@@ -1934,11 +1942,13 @@ class SessionLevels:
                 period_label=d.get('period_label', ''),
             ) for d in (basis.get('levels') or [])],
             pmg_zones=list(basis.get('pmg_zones') or []),
-            # A basis written before ATR rungs (no ATR rung keys, and no
-            # ATR rung parameter among the parameters it recorded) rebuilds
-            # none, so a stored brief, its replay and its copy are unchanged.
-            atr_rung_rule=('atr_rung_status' in basis or (
-                recorded is not None and any(k in recorded.params for k in ATR_RUNG_KEYS))),
+            # A basis written before ATR rungs rebuilds none, so a stored
+            # brief, its replay and its copy are unchanged. The marker is
+            # `atr_rung_status`, which every basis built under the rung rule
+            # carries; parameter keys are not a marker, because the previous
+            # loader records every policy key, the rung keys included, once
+            # the policy rows exist (Codex P2 on #1951).
+            atr_rung_rule='atr_rung_status' in basis,
         )
         if recorded is None:
             # A pre-parameter basis stored zones from the old percentage
@@ -3149,12 +3159,16 @@ def _format_atr_levels(atr_levels: Optional[dict]) -> Optional[str]:
             text += f", also {alias.removesuffix(ATR_RUNG_SUFFIX)}"
         return f"{r['price']:.2f} ({text})"
 
-    def _list(rungs):
+    def _list(key):
+        side_status = atr_levels.get(f'{key}_status', PARAM_OK)
+        if side_status != PARAM_OK:
+            return f"unavailable ({side_status})"
+        rungs = atr_levels.get(key)
         return ', '.join(_rung_text(r) for r in rungs) if rungs else 'none'
 
     return (f"    ATR levels, ATR({atr_length(atr_levels.get('atr_basis'))}) "
-            f"{atr_levels['atr']:.2f}: up {_list(atr_levels.get('up'))}; "
-            f"down {_list(atr_levels.get('down'))}")
+            f"{atr_levels['atr']:.2f}: up {_list('up')}; "
+            f"down {_list('down')}")
 
 
 # ---------------------------------------------------------------------------
