@@ -103,7 +103,7 @@ def client(route,monkeypatch):
 def test_opt_in_contract(route,client):
     asyncio.run(route.get_live_history('IWM'))
     assert client.calls[0]['outputsize']=='compact'
-    assert 'adjusted' not in client.calls[0]
+    assert client.calls[0]['adjusted']=='false'
     r=asyncio.run(route._get_opening_history('IWM',NOW, principal='fixture@example.test'))
     assert r['opening']['status']=='available'
     assert len(client.calls)==2
