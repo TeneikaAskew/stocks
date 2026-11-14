@@ -20,13 +20,18 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.eastern_time import ET, ET_NAME
+from lib.earnings_reactions import earnings_not_retired_sql
 
 from lib.data_loader import DataLoader
 from lib.indicators import add_brief_indicators
 from lib.strat import (CONTINUITY_DISPLAY_ORDER, StratClassifier, compute_strat_status,
                        timeframe_continuity_record)
-from lib.strat_levels import build_level_map, format_levels_for_brief, levels_to_named_dict
+from lib.strat_levels import (
+    LevelParamsUnavailable, build_session_levels,
+    format_levels_for_brief, load_level_params, premarket_snapshot_from_daily,
+)
 from lib.signals import check_call_conditions, check_put_conditions
+from lib.strategies.calibration import resolve_rsi_bands
 from lib.config import load_config
 
 # Configure logging for the Cloud Run Job. Without this, `logger.info()`
@@ -234,8 +239,11 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
                 "snapshot_date": None, "days_behind": None}
 
 
-def _delete_null_close_rows(ticker: str) -> int:
-    """Delete market_data_daily rows for `ticker` that have NULL close.
+def _delete_null_close_rows(ticker: str, before) -> int:
+    """Delete market_data_daily rows for `ticker` dated before `before` that
+    have NULL close. The session's own row (dated `before`, written by
+    fetch-premarket-refresh with pre_* only until the nightly close lands)
+    is never touched: the brief reads its premarket snapshot from it.
 
     Some upstream fetchers (mystery 06:44 EDT script on 2026-04-30
     inserted 43 NULL placeholder rows — see
@@ -256,8 +264,8 @@ def _delete_null_close_rows(ticker: str) -> int:
     try:
         deleted = execute_sql(
             "DELETE FROM market_data_daily "
-            "WHERE ticker = :t AND close IS NULL",
-            {'t': ticker.upper()},
+            "WHERE ticker = :t AND close IS NULL AND date < :d",
+            {'t': ticker.upper(), 'd': str(before)},
         )
         # execute_sql returns the driver rowcount as of commit 1b6b2067 —
         # use the real count instead of a hardcoded "did the cleanup
@@ -304,17 +312,10 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     On weekdays (weekly=False): returns today's earnings only.
     On Sundays (weekly=True):   returns the upcoming Mon-Fri earnings.
 
-    Tickers are tiered by source coverage so the most-confirmed names always
-    appear first within each day (vs alphabetical order getting truncated):
-        Tier 1: AV + UW + EW   (all three sources — top confirmed + strategy)
-        Tier 2: AV + UW        (top market-movers per UW, no EW strategy)
-        Tier 3: AV + EW        (strategy pick without UW validation)
-        Tier 4: AV + (EW or UW alone without AV — edge case)
-        Tier 5: EW-only or UW-only
-        Tier 6: AV-only        (long-tail small caps)
-
-    Within each tier, display row prefers EW > AV > UW so strategy details
-    (strike/premium/score) surface when available.
+    Surviving date-source tiers retain their numbers: two or more agreeing
+    sources are tier 2, UW or Yahoo alone tier 4, and AV alone tier 6.
+    Display metadata prefers AV, then UW, then Yahoo. Retired sources are
+    excluded in SQL before any grouping or calculations.
 
     The result is capped at ``top_n`` rows AFTER tier-then-market-cap sort —
     so the cut keeps the most-confirmed, most-liquid names. Pass ``top_n=0``
@@ -342,20 +343,20 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
 
     # Pull all rows, then dedupe + tier in Python
     # Pull liquidity/quality signals too so we can break tier ties.
-    # Most are UW-only; AV/EW rows leave them NULL → sort gates handle that.
+    # Most are UW-only; AV rows leave them NULL → sort gates handle that.
     #
     # LEFT JOIN market_data_daily on (ticker, earnings_date) so the embed
     # can surface today's pre-market gap next to BMO reporters and any
     # available pre-session range for AMC names whose post-day reaction
     # is in scope. NULL when the ticker isn't in the daily fetcher
     # universe — handled downstream.
-    sql = """
+    sql = f"""
         SELECT ec.ticker, ec.earnings_date, ec.company_name, ec.earnings_time,
                ec.eps_estimate, ec.eps_actual, ec.eps_surprise_pct,
                ec.expected_move, ec.sector, ec.market_cap,
                ec.stock_volume, ec.options_volume, ec.open_interest,
                ec.rv_1d_last_12q,
-               ec.strategy, ec.strike, ec.premium, ec.score, ec.data_source,
+               ec.data_source,
                md.gap_pct, md.pre_high, md.pre_low, md.pre_vwap,
                -- Most recent trading day's close BEFORE earnings_date.
                -- Used to convert ec.expected_move (in DOLLARS) to a
@@ -369,6 +370,7 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         LEFT JOIN market_data_daily md
           ON md.ticker = ec.ticker AND md.date = ec.earnings_date
         WHERE ec.earnings_date BETWEEN :start AND :end
+          AND {earnings_not_retired_sql('ec')}
         ORDER BY ec.ticker, ec.earnings_date
     """
     df = query_to_dataframe(sql, {'start': start, 'end': end})
@@ -384,41 +386,18 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         groups[key]['sources'].add(row['data_source'])
         groups[key]['rows'].append(row)
 
-    # Row priority within a group: EW carries strategy info, prefer it
-    row_prio = {'earnings_whispers': 0, 'alphavantage': 1, 'unusual_whales': 2,
-                'yahoo': 3}
+    row_prio = {'alphavantage': 1, 'unusual_whales': 2, 'yahoo': 3}
 
     def _tier(sources: set) -> int:
-        """Tier rows by independent date-source coverage.
-
-        AV (SEC filings), UW (analyst-expected), and Yahoo (Yahoo Finance
-        calendar) are all *date-confirming* sources — when 2+ agree on a
-        date, that date is well-established. EW signals trader interest
-        (a strategy was published) but isn't a date-of-truth source on
-        its own.
-
-        AV's date is sometimes wrong (~20% of SP500 names — observed
-        cases: SBUX, V, STX, EA, FSLR). Yahoo was added so a UW-only
-        row that Yahoo confirms gets promoted to tier 2 instead of
-        being cut by the top-N cap.
-        """
+        """Keep the surviving independent date-source confirmation tiers."""
         has_av = 'alphavantage' in sources
         has_uw = 'unusual_whales' in sources
-        has_ew = 'earnings_whispers' in sources
         has_yh = 'yahoo' in sources
-        n_date_sources = int(has_av) + int(has_uw) + int(has_yh)
-
-        if n_date_sources >= 2 and has_ew:
-            return 1   # 2+ dates agree + EW strategy — strongest signal
-        if n_date_sources >= 2:
-            return 2   # 2+ independent date sources agree
-        if (has_uw or has_yh) and has_ew:
-            return 3   # UW or Yahoo + EW strategy
+        if int(has_av) + int(has_uw) + int(has_yh) >= 2:
+            return 2
         if has_uw or has_yh:
-            return 4   # one non-AV date source confirmed
-        if has_ew:
-            return 5   # EW alone (rare — strategy without confirmed date)
-        return 6   # AV only (long tail; AV often has stale dates)
+            return 4
+        return 6
 
     def _max_non_null(rows, key):
         """Largest non-null value of `key` across a row group, or None."""
@@ -435,11 +414,11 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         all along.
 
         Selection: any specific value beats 'unknown'; within specific
-        values UW > AV > EW (UW's time-of-day is the most reliable per
+        values UW > AV (UW's time-of-day is the most reliable per
         the Yahoo cross-check observations). Yahoo's calendar API never
         surfaces BMO/AMC so its time is always 'unknown' here.
         """
-        src_prio = {'unusual_whales': 0, 'alphavantage': 1, 'earnings_whispers': 2}
+        src_prio = {'unusual_whales': 0, 'alphavantage': 1}
         specific = [r for r in rows_list
                     if r.get('earnings_time')
                     and r['earnings_time'] != 'unknown']
@@ -461,15 +440,8 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         options_vol = _max_non_null(rows_list, 'options_volume')
         oi = _max_non_null(rows_list, 'open_interest')
         rv_12q = _max_non_null(rows_list, 'rv_1d_last_12q')
-        # Coalesce expected_move (UW & EW provide it; AV & Yahoo don't).
-        # Without this the embed would show blank EM for tier-2 names
-        # whose 'best' row is the AV one (best is by EW>AV>UW priority).
+        # Preserve supported-source coalescing when the display row lacks a value.
         expected_move = _max_non_null(rows_list, 'expected_move')
-        # Same pattern for eps_estimate — AV/UW/Yahoo all provide it,
-        # but EW does not. When best is the EW row, eps_estimate would
-        # render NULL even though other rows have it. Coalesce so
-        # tickers with EW strategy picks still show the estimate (and
-        # the "EPS X→Y" form rather than "EPS act Y" alone).
         eps_estimate = _max_non_null(rows_list, 'eps_estimate')
         # is_s_p_500 dropped: UW's flag is missing for ~half of real
         # SP500 names (WELL/WM/MDLZ/NXPI/OKE etc.) so it's noise rather
@@ -495,10 +467,6 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
                      and not pd.isna(r.get('eps_surprise_pct'))]
         eps_surprise_pct = surprises[0] if surprises else None
 
-        # No ew_* verdict column: today's picks are unscored when the brief
-        # runs, and a BRIEF_AS_OF replay reading them would show a verdict
-        # computed from the day it replays. load_ew_recap shows the last
-        # session's instead (#1168).
         def _first_non_null(key):
             for rr in rows_list:
                 v = rr.get(key)
@@ -521,12 +489,12 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
             'options_volume': options_vol,
             'open_interest': oi,
             'rv_1d_last_12q': rv_12q,
-            'strategy': best.get('strategy') or '',
-            'strike': best.get('strike'),
-            'premium': best.get('premium'),
-            'score': best.get('score'),
+            'strategy': '',
+            'strike': None,
+            'premium': None,
+            'score': None,
             'source': best.get('data_source'),
-            'sources': sorted(group['sources']),
+            'sources': sorted(group['sources'], key=lambda source: (source is not None, source or '')),
             'tier': _tier(group['sources']),
             'gap_pct': gap,
             'pre_high': pre_h,
@@ -539,14 +507,14 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
 
     # Filter out names without options flow — earnings are only tradeable
     # via options for our use case, and a ticker with options_volume=0
-    # (or NULL) means UW reported no options activity. AV-only / EW-only
+    # (or NULL) means UW reported no options activity. AV-only
     # rows often have NULL options_volume because the field is UW-derived;
     # those long-tail names rarely have meaningful options markets anyway.
     # NULL → 0 → filtered.
     #
     # Weekly mode (Sunday) skips this filter (#396): UW (unusual_whales)
     # only enriches options_volume for the immediate forward window — for
-    # next-week earnings dates that come from yahoo/AV/EW, options_volume
+    # next-week earnings dates that come from yahoo/AV, options_volume
     # is NULL until UW catches up Mon morning. On Sunday the brief's job
     # is informational ("here's what's coming") not tradeability ranking,
     # so dropping every row because UW hasn't refreshed produces an
@@ -556,9 +524,6 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     #   1. AV ∩ UW source confirmation — both AlphaVantage AND Unusual
     #      Whales must list the (ticker, date). UW's curated daily list
     #      is the gate (~25-37 names/day); AV cross-confirms the date.
-    #      EW is NOT a gate — it cuts out major institutional names
-    #      (SONY, TCOM, JBS) and high-OI small-caps that don't fit EW's
-    #      strategy templates but are still tradeable.
     #   2. options_volume > 0 — must have some daily flow
     #   3. open_interest > 1000 — drops tiny chains (real positions exist)
     #   4. mcap: no floor — let OI gate the micro-caps
@@ -716,77 +681,6 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
 
 # ── Yesterday-AMC reaction view (PR 3) ──────────────────────────────────────
 
-def load_ew_recap(today: date) -> dict:
-    """The Earnings Whispers picks scored on the last NYSE session before
-    `today`, with their verdicts (#1168).
-
-    evaluate-ew-strikes scores a pick at 23:00 ET once its session has
-    closed, so an 08:30 brief can show the session before it, never its own:
-    today's picks are unscored, and a replay reading them would show a
-    verdict computed from the day it replays. The session each pick is
-    scored on comes from the evaluator's own rule (scoring_session), so the
-    two cannot disagree about which picks belong to a session.
-
-    One query: the picks dated from the prior session through the recapped
-    one. That covers an after-close report on the prior session and a
-    before-open or intraday one on the recapped session; scoring_session
-    keeps exactly those. Returns ``{'session', 'picks', 'unscored'}``. The
-    picks are the scored ones, and ``unscored`` counts the rest, so a
-    missing verdict is counted rather than hidden. Raises on any failure;
-    _ew_recap_or_unavailable decides what the brief shows then.
-    """
-    from gcp.database import is_cloud_sql_configured, query_to_dataframe_strict
-    from gcp.fetchers.evaluate_ew_strikes import nyse_sessions, scoring_session
-
-    if not is_cloud_sql_configured():
-        raise RuntimeError("Cloud SQL not configured")
-    # Three weeks back always holds two sessions; a week ahead lets
-    # scoring_session place a pick dated on the recapped session.
-    sessions = nyse_sessions(today - timedelta(days=21), today + timedelta(days=7))
-    before = sessions.index[sessions.index < pd.Timestamp(today)]
-    session, prior = before[-1].date(), before[-2].date()
-    df = query_to_dataframe_strict("""
-        SELECT id, ticker, earnings_date, earnings_time, strategy, strike,
-               ew_strike_verdict, ew_strike_move_pct, ew_minutes_to_hit,
-               ew_minutes_in_zone, ew_day_change_pct
-          FROM earnings_calendar
-         WHERE data_source = 'earnings_whispers'
-           AND strike IS NOT NULL
-           AND earnings_date BETWEEN :s AND :e
-    """, {'s': prior, 'e': session})
-    picks, unscored = [], 0
-    for rec in df.to_dict('records'):
-        # pandas reads a NULL number back as NaN, and the render calls int()
-        # on the minutes: pass None, which it skips.
-        row = {k: (None if isinstance(v, float) and pd.isna(v) else v)
-               for k, v in rec.items()}
-        scored_on = scoring_session(pd.Timestamp(row['earnings_date']).date(),
-                                    row['earnings_time'], sessions)
-        if scored_on is None or scored_on.date != session:
-            continue
-        if row.get('ew_strike_verdict') is None:
-            unscored += 1
-            continue
-        picks.append(row)
-    picks.sort(key=lambda r: (r['ticker'], r['id']))
-    return {'session': session, 'picks': picks, 'unscored': unscored}
-
-
-def _ew_recap_or_unavailable(today: date) -> dict:
-    """load_ew_recap, or an envelope that says why it is missing.
-
-    Not worth failing the brief for, but a missing recap must read as missing
-    (CLAUDE.md §3.7): the embed names the error's class, and its text, which
-    can carry hosts, users and markdown, stays in the log with the stack.
-    """
-    try:
-        return load_ew_recap(today)
-    except Exception as e:
-        logger.exception("EW recap load failed for %s", today)
-        return {'session': None, 'picks': [], 'unscored': 0,
-                'unavailable': type(e).__name__}
-
-
 def load_yesterday_amc_reactions(today: date, top_n: int = 5) -> list[dict]:
     """Yesterday's AMC reporters + today's pre-market gap reaction.
 
@@ -817,7 +711,7 @@ def load_yesterday_amc_reactions(today: date, top_n: int = 5) -> list[dict]:
     while prior.weekday() >= 5:  # Sat=5, Sun=6
         prior -= timedelta(days=1)
 
-    sql = """
+    sql = f"""
         SELECT ec.ticker, ec.earnings_date,
                MAX(ec.eps_estimate)      AS eps_estimate,
                MAX(ec.eps_actual)        AS eps_actual,
@@ -825,12 +719,12 @@ def load_yesterday_amc_reactions(today: date, top_n: int = 5) -> list[dict]:
                MAX(ec.market_cap)        AS market_cap,
                MAX(ec.options_volume)    AS options_volume,
                MAX(ec.expected_move)     AS expected_move,
-               MAX(ec.strategy)          AS strategy,
                md.gap_pct, md.pre_high, md.pre_low
           FROM earnings_calendar ec
           LEFT JOIN market_data_daily md
                  ON md.ticker = ec.ticker AND md.date = :today
          WHERE ec.earnings_date = :prior
+           AND {earnings_not_retired_sql('ec')}
            AND ec.earnings_time = 'postmarket'
            AND COALESCE(ec.options_volume, 0) > 0
          GROUP BY ec.ticker, ec.earnings_date, md.gap_pct, md.pre_high, md.pre_low
@@ -856,7 +750,7 @@ def load_yesterday_amc_reactions(today: date, top_n: int = 5) -> list[dict]:
             'market_cap': r.get('market_cap'),
             'options_volume': r.get('options_volume'),
             'expected_move': r.get('expected_move'),
-            'strategy': r.get('strategy') or '',
+            'strategy': '',
             'strike': None, 'premium': None, 'score': None,
             'sources': [],
             'gap_pct': float(gap),
@@ -1053,6 +947,13 @@ def _resolve_brief_tickers(default_tickers: list[str]) -> list[str]:
     return default_tickers
 
 
+def _level_params_query(sql: str, params: dict):
+    """The strict reader load_level_params runs on: a failed query or a
+    missing table raises (CLAUDE.md 3.7), never an empty frame."""
+    from gcp import database  # noqa: PLC0415
+    return database.query_to_dataframe_strict(sql, params)
+
+
 def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     """Generate pre-market brief for all tickers.
 
@@ -1071,6 +972,12 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     building_threshold = cfg.signal.premarket_building_threshold
 
     analysis_date = _resolve_analysis_date()
+
+    # The per-ticker level parameters in force on the session, read once for
+    # every ticker of the run (FEAT-STRAT-001). A missing table or a failed
+    # query raises LevelParamsUnavailable here, before any ticker is built,
+    # so the brief exits non-zero without writing a row.
+    level_params = load_level_params(_level_params_query, tickers, analysis_date)
 
     loader = DataLoader(data_dir=data_dir)
     strat = StratClassifier(strat_config=cfg.strat)
@@ -1122,7 +1029,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             )
             # Opportunistic cleanup so future runs don't re-encounter
             # these rows. Fire-and-forget — failure here is non-fatal.
-            _delete_null_close_rows(ticker)
+            _delete_null_close_rows(ticker, analysis_date)
         if df.empty or len(df) < 2:
             brief['tickers'][ticker] = {'status': 'NO DATA (all rows null)'}
             continue
@@ -1177,7 +1084,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         if is_stale:
             logger.warning(
                 "[brief:%s] STALE_DAILY_DATA — last bar %s, analysis_date %s, "
-                "gap=%d session(s); skipping per-ticker analysis to avoid "
+                "gap=%d calendar day(s); skipping per-ticker analysis to avoid "
                 "republishing stale signals. See Track B audit G.P0.4.",
                 ticker, last_bar_date_obj, analysis_date, gap_days,
             )
@@ -1210,6 +1117,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         bb_upper = _safe_float(latest.get('BB_Upper'))
         bb_lower = _safe_float(latest.get('BB_Lower'))
         atr14 = _safe_float(latest.get('ATR14'))
+        atr5 = _safe_float(latest.get('ATR5'))
         macd = _safe_float(latest.get('MACD'))
         macd_sig = _safe_float(latest.get('MACD_Signal'))
         stoch_k = _safe_float(latest.get('StochRSI_K'))
@@ -1257,8 +1165,20 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             ftfc_labels = {}
 
         # ── Signal conditions ───────────────────────────────────────────
-        call_score, _ = check_call_conditions(latest)
-        put_score, _ = check_put_conditions(latest)
+        # RSI bands are the ticker's own: the ticker_calibration row in force
+        # on analysis_date, through the resolver the signal monitor uses
+        # (Tier A), else its Tier-B constants (FEAT-SIGNAL-001, 2026-11-11
+        # spec). Replays read the row in force on the replayed session.
+        rsi_bands = resolve_rsi_bands(ticker, as_of=analysis_date)
+        rsi_band_tier = (rsi_bands['call_tier'] if rsi_bands['call_tier'] == rsi_bands['put_tier']
+                         else f"{rsi_bands['call_tier']}/{rsi_bands['put_tier']}")
+        logger.info(
+            "[brief:%s] RSI bands call=%s put=%s tier=%s calibration_date=%s",
+            ticker, rsi_bands['call'], rsi_bands['put'], rsi_band_tier,
+            rsi_bands['calibration_date'],
+        )
+        call_score, _ = check_call_conditions(latest, rsi_range=rsi_bands['call'])
+        put_score, _ = check_put_conditions(latest, rsi_range=rsi_bands['put'])
         signal_status = _resolve_signal_status(
             call_score=call_score,
             put_score=put_score,
@@ -1295,6 +1215,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'bb_upper': bb_upper,
             'bb_lower': bb_lower,
             'atr14': atr14,
+            'atr5': atr5,
             'above_sma200': above_sma200,
             'vol_regime': _vol_regime(vol_20d),
             'volatility_20d': vol_20d,
@@ -1302,6 +1223,10 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'consecutive_up': consec_up,
             'consecutive_down': consec_down,
             'signal_status': signal_status,
+            'rsi_call_band': rsi_bands['call'],
+            'rsi_put_band': rsi_bands['put'],
+            'rsi_band_tier': rsi_band_tier,
+            'rsi_band_calibration_date': rsi_bands['calibration_date'],
             'strat_candle': daily_strat,
             'strat_combo': daily_combo,
             'strat_setup': bool(daily_setup),
@@ -1383,11 +1308,6 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         except Exception as e:
             logger.warning("yesterday-AMC-reactions load failed: %s", e)
 
-    # The last session's EW verdicts (#1168). Weekdays only, like the AMC
-    # reactions: Monday's brief recaps Friday's session.
-    if not is_sunday:
-        brief['earnings']['ew_recap'] = _ew_recap_or_unavailable(today)
-
     # Economic events: Sunday brief needs a full week lookahead, weekday needs ~5 days
     brief['events'] = load_economic_events(today, days_ahead=7 if is_sunday else 5)
 
@@ -1427,6 +1347,11 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             print(f"[brief:{ticker}] load_daily → {len(df)} rows", file=sys.stderr, flush=True)
             if df.empty:
                 continue
+            # The session's OWN premarket snapshot (the row dated
+            # analysis_date, written by fetch-premarket-refresh at 08:20 ET),
+            # read before the frame is cut to prior sessions. The prior
+            # day's pre_* is never this session's (FEAT-STRAT-001).
+            session_premarket = premarket_snapshot_from_daily(df, analysis_date)
             # Same as_of cutoff applied above for the strat block — keep
             # the level map honest on historical replays so PDH/PDL/PWH
             # / etc. don't silently leak future bars (e.g. ARM 4/20
@@ -1439,143 +1364,38 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                     print(f"[brief:{ticker}] insufficient bars before {analysis_date}",
                           file=sys.stderr, flush=True)
                     continue
-            close_col = 'Close' if 'Close' in df.columns else 'Last'
-            from lib.indicators import calculate_historical_levels
-            ts = df['Time'] if 'Time' in df.columns else pd.Series(df.index)
-            levels_df = calculate_historical_levels(
-                ts, df['High'], df['Low'], df['Open'], df[close_col],
+            # The last completed session's ATR(14) and ATR(5), as the brief
+            # computed them above; the policy's atr_basis picks the one every
+            # distance is measured in. Missing ATR gives no trigger on either
+            # side (reason atr_unavailable).
+            atrs = {'atr_14': d.get('atr14'), 'atr_5': d.get('atr5')}
+            session_levels = build_session_levels(
+                ticker, analysis_date, df, atrs, session_premarket,
+                level_params[ticker.upper()],
+                daily_strat_class=str(d.get('strat_candle') or ''),
             )
-            for col in levels_df.columns:
-                df[col] = levels_df[col].values
-            # Pass atr_14 from the latest daily row so build_level_map
-            # can apply the ATR + % staleness filter (drops year-old
-            # crash lows like ASTX 2026-04-28 PYL=15.03 from PUT
-            # trigger selection). When atr_14 is missing/NaN the filter
-            # falls back to the percent-only axis.
-            atr_for_filter = float(d.get('atr14') or 0.0) or None
-            print(f"[brief:{ticker}] calling build_level_map "
-                  f"(current_price={d.get('price')}, atr={atr_for_filter})",
-                  file=sys.stderr, flush=True)
-            level_map = build_level_map(
-                ticker=ticker, daily_df=df, current_price=d['price'],
-                atr=atr_for_filter,
-                analysis_date=analysis_date,
-            )
-            # 2026-05-10 — append intraday premarket levels (PMK_H / PMK_L)
-            # so they get persisted alongside the structural ones. Pre-fix
-            # the trade_planner had to synthesize a trigger above pre_high
-            # via ATR projection (5/6 QQQ: $695.52 = pre_high+0.20×ATR),
-            # which on tight days like 5/6 was never reached during RTH.
-            # With PMK_H persisted, the planner can use pre_high directly
-            # as a candidate trigger AND signal_monitor sees PMK_H/L as
-            # triggerable crossings live during the session.
-            try:
-                from lib.strat_levels import compute_premarket_levels
-                latest_for_pmk = df.iloc[-1] if len(df) else None
-                _pmk_h = float(latest_for_pmk.get('pre_high')) if (
-                    latest_for_pmk is not None
-                    and pd.notna(latest_for_pmk.get('pre_high'))
-                ) else None
-                _pmk_l = float(latest_for_pmk.get('pre_low')) if (
-                    latest_for_pmk is not None
-                    and pd.notna(latest_for_pmk.get('pre_low'))
-                ) else None
-                pmk_levels = compute_premarket_levels(_pmk_h, _pmk_l)
-                if pmk_levels:
-                    level_map.levels.extend(pmk_levels.values())
-                    print(f"[brief:{ticker}] appended {len(pmk_levels)} PMK levels "
-                          f"(PMK_H={_pmk_h}, PMK_L={_pmk_l})",
-                          file=sys.stderr, flush=True)
-            except Exception as exc:
-                print(f"[brief:{ticker}] PMK levels skipped: {type(exc).__name__}: {exc}",
-                      file=sys.stderr, flush=True)
-            print(f"[brief:{ticker}] build_level_map → {len(level_map.levels)} levels"
-                  f" (calls_trigger={'yes' if level_map.calls_trigger else 'NO (filtered)'}, "
-                  f"puts_trigger={'yes' if level_map.puts_trigger else 'NO (filtered)'})",
+            atr_for_filter = session_levels.atr
+            level_map = session_levels.to_level_map()
+            d['level_basis'] = session_levels.to_basis()
+            d['premarket_status'] = session_levels.premarket_status
+            print(f"[brief:{ticker}] build_session_levels → {len(level_map.levels)} levels"
+                  f" (calls={level_map.calls_trigger and level_map.calls_trigger['trigger_name']}"
+                  f" reason={level_map.reason_long}, puts="
+                  f"{level_map.puts_trigger and level_map.puts_trigger['trigger_name']}"
+                  f" reason={level_map.reason_short}, premarket={session_levels.premarket_status})",
                   file=sys.stderr, flush=True)
 
-            # Compute the gap regime so the playbook can flag orb_only /
-            # extended setups instead of publishing a stale level-break
-            # plan. Same algorithm the 9:15 AM insight pipeline uses
-            # (lib.agents.trade_planner.select_trigger_and_regime).
-            #
-            # We evaluate BOTH directions (long AND short) — previously
-            # only the bias direction was checked, which meant a
-            # bullish-bias ticker's bias-denial PUT setup never got
-            # filtered. The bias direction is treated as the "primary"
-            # regime that drives the playbook formatter; the
-            # opposite-side regime is logged and used downstream for
-            # per-side banners (so a denied PUT on a bullish ticker can
-            # still be flagged as 'extended' / 'orb_only').
-            regime_long = regime_short = 'normal'
-            regime_compute_error = None
-            try:
-                from lib.agents.trade_planner import (
-                    PlanContext, select_trigger_and_regime,
-                )
-                level_dict = levels_to_named_dict(level_map)
-                ftfc_dir = (d.get('ftfc_direction') or '').lower()
-                latest_row = df.iloc[-1]
-                pre_high_v = latest_row.get('pre_high')
-                pre_low_v = latest_row.get('pre_low')
-                pre_vwap_v = latest_row.get('pre_vwap')
-                gap_pct_v = latest_row.get('gap_pct')
-
-                def _ctx(direction: str) -> PlanContext:
-                    return PlanContext(
-                        direction=direction,
-                        conviction='medium',
-                        close=float(d['price']),
-                        atr=float(d.get('atr14') or 0.0),
-                        trigger_high=level_dict.get('PDH'),
-                        trigger_low=level_dict.get('PDL'),
-                        pwh=level_dict.get('PWH'), pwl=level_dict.get('PWL'),
-                        pmh=level_dict.get('PMH'), pml=level_dict.get('PML'),
-                        pqh=level_dict.get('PQH'), pql=level_dict.get('PQL'),
-                        pyh=level_dict.get('PYH'), pyl=level_dict.get('PYL'),
-                        effective_pdh=level_dict.get('PDH'),
-                        effective_pdl=level_dict.get('PDL'),
-                        pre_high=float(pre_high_v) if pd.notna(pre_high_v) else None,
-                        pre_low=float(pre_low_v) if pd.notna(pre_low_v) else None,
-                        pre_vwap=float(pre_vwap_v) if pd.notna(pre_vwap_v) else None,
-                        gap_pct=float(gap_pct_v) if pd.notna(gap_pct_v) else None,
-                    )
-
-                # `select_trigger_and_regime` returns a 5-tuple as of
-                # the synthetic-trigger refactor in
-                # `lib/agents/trade_planner.py` —
-                # `(regime, trigger, stop_anchor, distance_atr, is_synthetic)`.
-                # The brief only consumes the regime here; the rest
-                # use `*_` so future renames or extensions to the
-                # planner's return shape don't ripple back. Pre-fix
-                # this unpacked 4 elements, which produced the
-                # `regime classifier failed: ValueError: too many
-                # values to unpack (expected 4)` warning observed
-                # surfacing via the `regime_compute_error` defensive
-                # path during the 2026-05-09 brief replays.
-                regime_long, *_ = select_trigger_and_regime(_ctx('long'), 'long')
-                regime_short, *_ = select_trigger_and_regime(_ctx('short'), 'short')
-                # Bias direction = primary regime for legacy callers.
-                regime = regime_short if 'bear' in ftfc_dir else regime_long
-                d['regime'] = regime
-                d['regime_long'] = regime_long
-                d['regime_short'] = regime_short
-                print(f"[brief:{ticker}] regime_long={regime_long} "
-                      f"regime_short={regime_short} primary={regime}",
-                      file=sys.stderr, flush=True)
-            except Exception as exc:
-                # Regime compute is best-effort. Fall back to 'normal'
-                # so the playbook still renders. Surface the error in
-                # the brief so silent failures don't mask real bugs.
-                regime = 'normal'
-                regime_compute_error = f"{type(exc).__name__}: {exc}"
-                print(f"[brief:{ticker}] regime compute failed: "
-                      f"{regime_compute_error}",
-                      file=sys.stderr, flush=True)
-                d['regime'] = 'normal'
-                d['regime_long'] = 'normal'
-                d['regime_short'] = 'normal'
-                d['regime_compute_error'] = regime_compute_error
+            # Per-side regime comes from the same SessionLevels; there is no
+            # second level walk.
+            ftfc_dir = (d.get('ftfc_direction') or '').lower()
+            regime_long = level_map.regime_long
+            regime_short = level_map.regime_short
+            regime = regime_short if 'bear' in ftfc_dir else regime_long
+            d['regime'] = regime
+            d['regime_long'] = regime_long
+            d['regime_short'] = regime_short
+            d['reason_long'] = level_map.reason_long
+            d['reason_short'] = level_map.reason_short
 
             d['playbook'] = format_levels_for_brief(
                 level_map=level_map, bias=d.get('ftfc_direction', 'mixed'),
@@ -1974,23 +1794,25 @@ def _resolve_data_freshness(
       * ``gap_days``     — calendar-day gap between ``last_bar_date``
                            and ``analysis_date``. None-input maps to
                            sentinel ``-1`` (status='unknown').
-      * ``is_stale``     — True if the gap > 1 calendar day AND the
-                           weekend-exemption doesn't apply. The
-                           weekend exemption: a Monday brief that
-                           reads Friday's bar (gap=3) is fresh, NOT
-                           stale. Implemented as
-                           ``analysis_date.weekday() == 0 and gap == 3``.
-                           Tuesday-after-holiday-Monday with gap=4
-                           still flags as stale; that's a deliberate
-                           bias toward false-positives on holiday
-                           weeks (overflagging is recoverable; under-
-                           flagging is the audit's failure mode).
+      * ``is_stale``    : True when the gap is over one calendar
+                           day AND the last bar is older than the last
+                           NYSE session before ``analysis_date``
+                           (``lib.eastern_time.previous_session``). So a
+                           Monday reading Friday, a Sunday weekly brief
+                           reading Friday and every session after an
+                           NYSE holiday (the Tuesday after Memorial Day
+                           reading Friday, the Friday after Thanksgiving
+                           reading Wednesday) are fresh, while a frame
+                           missing a session is stale. Until the
+                           2026-11-11 FEAT-DATA-001 spec this counted
+                           calendar days and skipped every post-holiday
+                           session.
       * ``status``       — string written to
                            ``premarket_analysis.data_freshness_status``:
                              'fresh' | 'STALE_DAILY_DATA' | 'unknown'.
 
-    Pure function for unit-testability — does not touch globals or
-    DataFrames. The caller (``generate_premarket_brief``) handles
+    Reads only the process-wide NYSE session cache (and only for a gap
+    of two days or more); a calendar failure raises. The caller (``generate_premarket_brief``) handles
     resolving ``last_bar_date`` from ``df.iloc[-1].name`` and
     propagating the verdict into the per-ticker dict.
     """
@@ -2509,11 +2331,10 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
 
     mode = earnings_data.get('mode', 'daily')
     rows = earnings_data.get('earnings', [])
-    ew_recap = earnings_data.get('ew_recap') or {}
-    has_recap = mode == 'daily' and bool(
-        ew_recap.get('picks') or ew_recap.get('unscored') or ew_recap.get('unavailable'))
-
-    if not rows and not has_recap:
+    has_daily_sections = mode != 'weekly' and any(
+        earnings_data.get(key) for key in
+        ('watchlist', 'low_conviction', 'yesterday_amc_reactions'))
+    if not rows and not has_daily_sections:
         return {
             'title': 'Earnings (Today)' if mode == 'daily' else 'Earnings (Week Ahead)',
             'description': 'No earnings scheduled',
@@ -2534,47 +2355,6 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
             return None if (f != f) else f  # NaN check (NaN != NaN)
         except (ValueError, TypeError):
             return None
-
-    def _ew_verdict_str(r):
-        """Render EW strike verdict from prior eval — e.g.
-        'EW LC $30 HIT +18.7% in 5m, held 142m, day +1.2%'.
-
-        Only fires when ew_strike_verdict is populated (post-eval).
-        Strategy is abbreviated:
-            LC=Long Calls  LP=Long Puts  CC=Covered Calls
-            BS=Bull Spreads  BR=Bear Spreads
-        """
-        verdict = r.get('ew_strike_verdict')
-        if not verdict:
-            return ''
-        strat = r.get('strategy') or ''
-        abbrev = {
-            'Long Calls': 'LC', 'Long Puts': 'LP',
-            'Covered Calls': 'CC',
-            'Bull Spreads': 'BS', 'Bear Spreads': 'BR',
-        }.get(strat, strat[:6] if strat else '')
-        strike = _valid_num(r.get('strike'))
-        move = _valid_num(r.get('ew_strike_move_pct'))
-        ttl = r.get('ew_minutes_to_hit')
-        iz = r.get('ew_minutes_in_zone')
-        day = _valid_num(r.get('ew_day_change_pct'))
-
-        head_parts = ['EW']
-        if abbrev: head_parts.append(abbrev)
-        if strike is not None: head_parts.append(f'${strike:.0f}')
-        head_parts.append(verdict)  # HIT / MISS / KEPT / ASSIGNED
-        if move is not None:
-            head_parts.append(f'{move:+.1f}%')
-        head = ' '.join(head_parts)
-
-        tail_parts = []
-        if ttl is not None and verdict in ('HIT', 'ASSIGNED'):
-            tail_parts.append(f'in {int(ttl)}m')
-        if iz is not None:
-            tail_parts.append(f'held {int(iz)}m')
-        if day is not None:
-            tail_parts.append(f'day {day:+.1f}%')
-        return head + (', ' + ', '.join(tail_parts) if tail_parts else '')
 
     def _gap_str(gap):
         """Render gap_pct as up/down arrow + signed pct, or '' when no signal.
@@ -2635,22 +2415,11 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         tier = r.get('tier', 6)
         if not show_tier_badge:
             badge = ''
-        elif tier == 1:
-            badge = '\U0001f7e2 '   # green circle: all 3 sources
         elif tier == 2:
-            badge = '\U0001f535 '   # blue circle: AV + UW (top market-movers)
-        elif tier == 3:
-            badge = '\U0001f7e1 '   # yellow circle: AV + EW (strategy pick)
+            badge = '\U0001f535 '   # two independent date sources confirm
         else:
             badge = ''
-        # Field order: EM \u2192 verdict \u2192 gap \u2192 strategy \u2192 strike.
-        # EM first = "what range should I expect?" \u2014 the actionable
-        # number for sizing & strike selection. Verdict next once known
-        # (beat/miss replaces estimate), then gap (the actual reaction).
-        # Strategy + strike last since they're recommendations, not
-        # observed facts. EW's \u2605 score removed (too noisy, didn't help).
-        # Strategy block (text + strike) goes at the end together \u2014 see
-        # below where it's appended after the verdict + gap.
+        # Expected move, earnings beat/miss and observed gap.
         extras = []
         em = _valid_num(r.get('expected_move'))
         if em is not None:
@@ -2744,39 +2513,8 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
                 extras.append(conf)
         except Exception:
             pass
-        # Strategy + strike + EW verdict deliberately NOT rendered here
-        # — those move to the dedicated 🔮 Whispers section at the
-        # bottom of the embed. Mixing strategy recommendations with the
-        # earnings-event row was misleading: EW strategies can span
-        # multiple days around the report and aren't always actionable
-        # today. The Whispers section makes the recommendation context
-        # explicit so traders don't read "Long Calls Strike $16" as
-        # "buy this NOW".
         extra_str = f' — {" | ".join(extras)}' if extras else ''
         return f'{badge}**{ticker}**{extra_str}'
-
-    def _whispers_row(r):
-        """🔮 Whispers section row: today's pick, strategy + strike. Never
-        a verdict: today's picks are unscored when the brief runs, and a
-        verdict here could only come from a replay reading a result from
-        the day it replays (#1168). _recap_row shows the last session's."""
-        parts = []
-        if r.get('strategy'):
-            parts.append(r['strategy'])
-        strike = _valid_num(r.get('strike'))
-        if strike is not None:
-            parts.append(f'Strike ${strike:.0f}')
-        extra = f' — {" | ".join(parts)}' if parts else ''
-        return f'**{r["ticker"]}**{extra}'
-
-    def _recap_row(r):
-        """A scored pick from the last session. Lead dot is the outcome:
-            🟢 = HIT (long calls/puts went above/below) or KEPT (CC held)
-            🔴 = MISS (strike never crossed) or ASSIGNED (CC breached)
-        """
-        verdict = r.get('ew_strike_verdict')
-        dot = '\U0001f7e2 ' if verdict in ('HIT', 'KEPT') else '\U0001f534 '
-        return f'{dot}**{r["ticker"]}** — {_ew_verdict_str(r)}'
 
     def _confirmed_count(day_rows):
         return sum(1 for r in day_rows if r.get('tier', 6) <= 3)
@@ -2965,56 +2703,18 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
                 w_lines.append(f"**{r['ticker']}**{extra}")
             sections.append('\n'.join(w_lines))
 
-        # 5. Whispers — separated from the BMO/AMC rows so EW's strategy
-        # picks (strike, structure, historical hit-rate) don't get read
-        # as "today's actionable recommendation". An EW Long Call $16
-        # might be a 3-day position around earnings, not a today-only
-        # trigger. Putting it in its own section makes the context clear.
-        whispers = [r for r in rows if r.get('strategy')]
-        if whispers:
-            w_lines = [f'\n**\U0001f52e Whispers** ({len(whispers)})']
-            w_lines.extend(_whispers_row(r) for r in whispers)
-            sections.append('\n'.join(w_lines))
-
-        # 6. How the last session's EW picks played out (#1168): scored by
-        # evaluate-ew-strikes the evening after their session.
-        recap = ''
-        if ew_recap.get('unavailable'):
-            # The error's class only; _ew_recap_or_unavailable keeps its text
-            # out of Discord and in the log (Codex on #1203).
-            recap = (f'\n**\U0001f52e EW picks, last session: unavailable '
-                     f'({ew_recap["unavailable"]})**')
-        elif has_recap:
-            s = ew_recap.get('session')
-            label = s.strftime('%a %m/%d') if hasattr(s, 'strftime') else str(s)
-            picks = ew_recap.get('picks') or []
-            RECAP_CAP = 10
-            r_lines = [f'\n**\U0001f52e EW picks, {label} session** ({len(picks)} scored)']
-            r_lines.extend(_recap_row(r) for r in picks[:RECAP_CAP])
-            if len(picks) > RECAP_CAP:
-                r_lines.append(f'_+{len(picks) - RECAP_CAP} more_')
-            if ew_recap.get('unscored'):
-                r_lines.append(f'_+{ew_recap["unscored"]} not scored_')
-            recap = '\n'.join(r_lines)
-
         description = '\n'.join(sections).strip()
-        if recap:
-            # The recap comes last but must survive the 4,090-character cut
-            # below: on a busy day the Whispers section alone passes it, so
-            # the sections above give way instead, and say so (Codex on #1203).
-            room = 4090 - len(recap) - 1
-            if len(description) > room:
-                # Whole lines only: a line cut short can leave a bold marker
-                # open, and Discord pairs it with the recap header's.
-                cut = '\n_... truncated_'
-                head = description[:max(room - len(cut), 0) + 1]
-                kept = head.rsplit('\n', 1)[0] if '\n' in head else ''
-                description = kept.rstrip() + cut
-            description = f'{description}\n{recap}'.strip()
+
+    if len(description) > 4090:
+        # Never turn a financial value into a different one by cutting a row.
+        notice = '\n_... truncated_'
+        head = description[:4090 - len(notice) + 1]
+        kept = head.rsplit('\n', 1)[0] if '\n' in head else ''
+        description = kept.rstrip() + notice
 
     return {
         'title': title,
-        'description': description[:4090],
+        'description': description,
         'color': 0xf39c12,
     }
 
@@ -3435,6 +3135,11 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'llm_orb_explanation': brief.get('llm_orb_explanation'),
             'llm_analysis': data.get('llm_analysis'),
             'llm_playbook': data.get('llm_playbook'),
+            # FEAT-STRAT-001: the SessionLevels snapshot (levels, ATR(14),
+            # the last daily bar date, the session premarket snapshot and
+            # the picks). Dropped by upsert_dataframe and
+            # bulk_insert_dataframe until gcp/schema.sql adds the column.
+            'level_basis': data.get('level_basis'),
         })
 
     if not rows:
@@ -3749,7 +3454,13 @@ def main(argv: Optional[list[str]] = None):
 
     print(f"Generating pre-market brief... (allow_update={allow_update}, "
           f"run_kind={run_kind}, triggered_by={triggered_by})")
-    brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
+    try:
+        brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
+    except LevelParamsUnavailable as exc:
+        # INTERNAL failure (CLAUDE.md 3.7): no premarket_analysis row is
+        # written for any ticker; the job goes red.
+        logger.error("premarket brief aborted: %s (%s)", exc.reason, exc)
+        sys.exit(1)
     print(json.dumps(brief, indent=2, default=str))
 
     # Persist to Cloud SQL — always writes history; current-table

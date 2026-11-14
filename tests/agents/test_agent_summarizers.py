@@ -23,7 +23,12 @@ def patch_query(monkeypatch):
     def set_result(needle: str, df: pd.DataFrame) -> None:
         store[needle] = df
 
+    from tests.lib.level_params_fixtures import ParamsDb
+    params_db = ParamsDb()   # the seeded policy, no ticker rows
+
     def fake_query(sql: str, params=None):
+        if "level_param_policy" in sql:
+            return params_db.query(sql, params)
         for needle, df in store.items():
             if needle in sql:
                 return df
@@ -446,6 +451,10 @@ def test_build_context_bundle_catches_exceptions(monkeypatch):
         raise RuntimeError("DB down")
 
     monkeypatch.setattr(summarizers, "_query", bad_query)
+    # The level parameter tables read (strict reader) succeeds here; when it
+    # fails the whole run fails (test_build_context_bundle_raises_on_level_params_unavailable).
+    from tests.lib.level_params_fixtures import ParamsDb
+    monkeypatch.setattr(summarizers, "_query_strict", ParamsDb().query)
     bundle = summarizers.build_context_bundle("SPY")
     # Every section should have failed gracefully.
     # `signals` was removed from the bundle on 2026-05-11 to break the
@@ -1013,6 +1022,7 @@ def test_build_context_bundle_forwards_inclusive_today_to_backtest(monkeypatch):
     monkeypatch.setattr(summarizers, "summarize_backtest_metrics", fake_backtest)
     monkeypatch.setattr(summarizers, "_query", lambda sql, params=None: pd.DataFrame())
     for name in ("summarize_market_context", "summarize_strat_status",
+                 "summarize_session_levels",
                  "summarize_options_flow", "summarize_gamma_levels",
                  "summarize_catalysts", "summarize_news_sentiment"):
         monkeypatch.setattr(summarizers, name,
@@ -1386,3 +1396,59 @@ def test_foundation_status_adapter_preserves_clock_completion_and_qualification(
     assert snap.observation_ts == pd.Timestamp(close_clock).isoformat()
     assert snap.bar_validity['valid'] is False
     assert snap.confirmed_setups['timeframes']['1w']['state'] != 'confirmed'
+
+
+def test_catalyst_earnings_retire_ew_before_order_and_limit(monkeypatch):
+    """Run summarize_catalysts, faking SQL I/O only; EW must not consume LIMIT."""
+    import json
+    from datetime import timedelta
+    from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+    from tests.fixtures import earnings_calendar_sources as source
+
+    today = date(2026, 11, 11)
+    rows = [
+        source.ew_only('MIX', today),
+        source.ew_raw_alias('MIX', today + timedelta(days=1)),
+        *[source.av('MIX', today + timedelta(days=n)) for n in range(2, 8)],
+        *source.alias_control_rows('SRC', today),
+        source.av('AV', today), source.uw('UW', today),
+        source.yahoo('YAHOO', today), source.ew_only('EWONLY', today),
+    ]
+    main_sql = (
+        'SELECT earnings_date, company_name FROM earnings_calendar '
+        'WHERE ticker = :ticker AND earnings_date BETWEEN :start AND :end '
+        'ORDER BY earnings_date ASC LIMIT 5'
+    )
+    conn = source.make_db(rows)
+    use_main = False
+
+    def query(sql, params=None):
+        if 'FROM earnings_calendar' not in sql:
+            return pd.DataFrame()
+        stripped = sql.replace('AND ' + EARNINGS_NOT_RETIRED_SQL, '')
+        assert ' '.join(stripped.split()) == main_sql
+        return source.run_earnings_sql(conn, main_sql if use_main else sql, params)
+
+    monkeypatch.setattr(summarizers, '_query', query)
+    try:
+        use_main = True
+        baseline = {ticker: summarizers.summarize_catalysts(ticker, as_of=today)
+                    for ticker in {row['ticker'] for row in rows}}
+        assert baseline['MIX']['events'][0] == {
+            'name': 'Earnings — Zz Corp', 'date': '2026-11-11',
+            'impact': 'high', 'kind': 'earnings'}
+        assert len(baseline['MIX']['events']) == 5
+        assert all(baseline[ticker]['events'] for ticker in ['SRC2', 'SRC3', 'EWONLY'])
+        use_main = False
+        actual = {ticker: summarizers.summarize_catalysts(ticker, as_of=today)
+                  for ticker in baseline}
+        assert actual['MIX']['events'] == [
+            {'name': 'Earnings — Acme', 'date': str(today + timedelta(days=n)),
+             'impact': 'high', 'kind': 'earnings'} for n in range(2, 7)]
+        assert {ticker for ticker, result in actual.items() if result['events']} == {
+            'MIX', 'SRC0', 'SRC1', 'SRC4', 'SRC5', 'SRC6', 'SRC7', 'AV', 'UW', 'YAHOO'}
+        for ticker in ['SRC0', 'SRC1', 'SRC4', 'SRC5', 'SRC6', 'SRC7', 'AV', 'UW', 'YAHOO']:
+            assert json.dumps(actual[ticker], sort_keys=True).encode() == \
+                json.dumps(baseline[ticker], sort_keys=True).encode()
+    finally:
+        conn.close()

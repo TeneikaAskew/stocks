@@ -590,3 +590,122 @@ def test_load_watchlist_default_when_helper_raises_and_no_env(monkeypatch):
 
     wl = cand_mod._load_watchlist()
     assert wl == ["SPY", "IWM", "QQQ"]
+
+
+def test_earnings_candidates_retire_ew_at_query_layer(monkeypatch):
+    """The real ranker must filter before MIN, retaining every non-alias."""
+    import json
+    from dataclasses import asdict
+    from datetime import timedelta
+    from lib.agents.ranker import candidates
+    from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+    from tests.fixtures import earnings_calendar_sources as source
+
+    today = date(2026, 11, 11)
+    rows = [
+        source.ew_only('MIX', today, earnings_time='postmarket'),
+        source.av('MIX', today + timedelta(days=1), earnings_time='premarket'),
+        *source.alias_control_rows('SRC', today),
+        source.av('AV', today), source.uw('UW', today),
+        source.yahoo('YAHOO', today),
+        source.ew_only('EWONLY', today),
+    ]
+    main_sql = """
+        SELECT DISTINCT ticker, MIN(earnings_date) AS next_date,
+               MIN(earnings_time) AS earnings_time
+        FROM earnings_calendar
+        WHERE earnings_date BETWEEN CURRENT_DATE
+          AND CURRENT_DATE + (:days || ' days')::interval
+        GROUP BY ticker
+    """
+    conn = source.make_db(rows)
+    use_main = False
+
+    def query(sql, params):
+        # Removing just the shared predicate must recover current main SQL.
+        stripped = sql.replace('AND ' + EARNINGS_NOT_RETIRED_SQL, '')
+        assert ' '.join(stripped.split()) == ' '.join(main_sql.split())
+        selected = main_sql if use_main else sql
+        selected = selected.replace(
+            "CURRENT_DATE + (:days || ' days')::interval",
+            "date(:__today, '+' || :days || ' days')",
+        )
+        return source.run_earnings_sql(conn, selected, params, today=today)
+
+    monkeypatch.setattr(candidates, '_query', query)
+    try:
+        use_main = True
+        baseline = {}
+        candidates._candidates_from_earnings(baseline, 7)
+        assert baseline['MIX'].metadata['earnings'] == [
+            {'date': '2026-11-11', 'timing': 'postmarket'}]
+        assert {'SRC2', 'SRC3', 'EWONLY'} <= baseline.keys()
+        use_main = False
+        actual = {}
+        candidates._candidates_from_earnings(actual, 7)
+        assert actual['MIX'].metadata['earnings'] == [
+            {'date': '2026-11-12', 'timing': 'premarket'}]
+        assert set(actual) == {'MIX', 'SRC0', 'SRC1', 'SRC4', 'SRC5',
+                               'SRC6', 'SRC7', 'AV', 'UW', 'YAHOO'}
+        for ticker in set(actual) - {'MIX'}:
+            assert json.dumps(asdict(actual[ticker]), sort_keys=True).encode() == \
+                json.dumps(asdict(baseline[ticker]), sort_keys=True).encode()
+    finally:
+        conn.close()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# The owner the ranker loads (FEAT-INSIGHT-001 stage A)
+#
+# GET /api/insights/watchlist pins user_id="default" for every caller; the
+# source scan in tests/gcp/test_watchlist_readers_default_owner.py accepts
+# the one forwarding expression in candidates._load_watchlist without
+# resolving it, because the two tests below prove the chain behaviourally:
+# rank_tickers -> gather_candidates -> _load_watchlist -> load_watchlist.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_rank_tickers_threads_user_id_to_gather_candidates(monkeypatch):
+    """The first link: rank_tickers forwards user_id and extras to
+    gather_candidates unchanged."""
+    from lib.agents.ranker import rank as rank_module
+
+    seen: dict = {}
+
+    def fake_gather(**kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(rank_module, "gather_candidates", fake_gather)
+    result = rank_module.rank_tickers(
+        user_id="default", extras=["NVDA"], persist_audit=False,
+    )
+    assert seen["user_id"] == "default"
+    assert seen["extras"] == ["NVDA"]
+    assert result["candidate_count"] == 0 and result["ranked"] == []
+
+
+def test_gather_candidates_loads_the_default_owner(monkeypatch, patch_candidates_query):
+    """The last link (lib/agents/ranker/candidates.py, _load_watchlist):
+    with user_id=None and with user_id="default", load_watchlist is called
+    for the default owner with surface="all". The other candidate sources
+    are empty here. Extras dedupe case-insensitively into one manual
+    candidate (Review Focus 3 of the stage A plan)."""
+    from lib.agents.ranker.candidates import gather_candidates
+
+    calls: list[dict] = []
+
+    def fake_load(*args, **kwargs):
+        calls.append(dict(kwargs))
+        return ["SPY"]
+
+    monkeypatch.setattr("gcp.fetchers._watchlist.load_watchlist", fake_load)
+    for user_id in (None, "default"):
+        cands = gather_candidates(user_id=user_id, extras=["nvda", "NVDA"])
+        by_ticker = {c.ticker: c for c in cands}
+        assert set(by_ticker) == {"SPY", "NVDA"}
+        assert by_ticker["NVDA"].catalyst_types == ["manual"]
+    assert calls == [
+        {"user_id": "default", "surface": "all"},
+        {"user_id": "default", "surface": "all"},
+    ]

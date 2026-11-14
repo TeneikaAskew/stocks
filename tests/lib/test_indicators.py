@@ -55,6 +55,9 @@ _PINNED_ADD_ALL_COLUMNS = {
     # inline mag_dataset._add_phase1_features). Intraday-only / Time-gated.
     'BB20_Bandwidth', 'Realized_Vol_Z', 'Range_Expansion_Ratio',
     'Intraday_Range_vs_PrevDay',
+    # FEAT-STRAT-001 per-ticker level parameters (2026-11-08): ATR(5) stored
+    # beside ATR(14) (IndicatorConfig.atr_extra_periods).
+    'ATR5',
 }
 _SOURCE_COLUMNS = {'Time', 'Open', 'High', 'Low', 'Close', 'Volume'}
 
@@ -89,10 +92,10 @@ class TestFeatureTiering:
             f"  added: {sorted(new - _PINNED_ADD_ALL_COLUMNS)}\n"
             f"  removed: {sorted(_PINNED_ADD_ALL_COLUMNS - new)}"
         )
-        # 6 source + 93 indicators = 99 total. +4 over the post-merge 95 from
+        # 6 source + 94 indicators = 100 total (ATR5 added 2026-11-08). +4 over the post-merge 95 from
         # the 2026-06-01 magnitude block (BB20_Bandwidth, Realized_Vol_Z,
         # Range_Expansion_Ratio, Intraday_Range_vs_PrevDay).
-        assert len(out.columns) == len(_SOURCE_COLUMNS) + len(_PINNED_ADD_ALL_COLUMNS) == 99
+        assert len(out.columns) == len(_SOURCE_COLUMNS) + len(_PINNED_ADD_ALL_COLUMNS) == 100
 
     def test_feature_groups_keys_and_membership(self):
         assert set(FEATURE_GROUPS) == {'signal', 'brief', 'regime', 'strat', 'magnitude'}

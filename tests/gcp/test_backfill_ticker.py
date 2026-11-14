@@ -201,15 +201,18 @@ def test_av_news_to_rows_tagged_data_source():
     assert rows[0]["match_method"] == "av_ticker_sentiment"
 
 
-# ── Watchlist opt-out (Codex on #1022) ────────────────────────────────────
+# ── Watchlist opt-in (Codex on #1022; FEAT-INSIGHT-001 stage A) ──────────
 #
-# run() unconditionally called add_to_watchlist(), which inserts the ticker
-# into the shared `default` watchlist or clears removed_at on a deliberately
-# removed one. That is the Discord /replay contract, but
-# scripts/backfill_and_replay.py now routes historical-test tickers through
-# the same job and every active watchlist row is consumed by the generic
-# fetchers. BACKFILL_ADD_TO_WATCHLIST=false keeps those backfills out of the
-# production universe; the default stays true.
+# run() once unconditionally called add_to_watchlist(), which inserts the
+# ticker into the shared `default` watchlist or clears removed_at on a
+# deliberately removed one. #1022 made BACKFILL_ADD_TO_WATCHLIST=false the
+# opt-out for scripts/backfill_and_replay.py's historical-test tickers, with
+# the default still true. Since the default list is exactly SPY, QQQ and IWM
+# (owner's decision 1, 2026-11-13), a Discord /replay on a ticker with no
+# daily data must not undo a removal one ticker at a time, so the default is
+# now false (owner's decision 2) and an operator opts in with "true" on one
+# execution. The comparison stays `.lower() == "true"`: TRUE opts in, yes
+# does not (Review Focus 5 of the stage A plan).
 
 
 @pytest.fixture
@@ -237,18 +240,35 @@ def stubbed_run(monkeypatch):
         yield mod, watch
 
 
-def test_watchlist_add_is_the_default(stubbed_run, monkeypatch):
+def test_watchlist_add_is_off_by_default(stubbed_run, monkeypatch, caplog):
+    """With the variable unset a backfill leaves watchlists untouched and says so."""
+    import logging
+
     mod, watch = stubbed_run
     monkeypatch.delenv("BACKFILL_ADD_TO_WATCHLIST", raising=False)
+    # The module logs under "backfill-ticker" (gcp/backfill_ticker.py:69), not its dotted path.
+    with caplog.at_level(logging.INFO, logger="backfill-ticker"):
+        assert mod.run() == 0
+    watch.assert_not_called()
+    assert "BACKFILL_ADD_TO_WATCHLIST=false" in caplog.text
+
+
+def test_watchlist_add_can_be_opted_in(stubbed_run, monkeypatch):
+    mod, watch = stubbed_run
+    monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", "true")
     assert mod.run() == 0
     watch.assert_called_once_with("AMD")
 
 
-def test_watchlist_add_can_be_opted_out(stubbed_run, monkeypatch):
+@pytest.mark.parametrize("value, opted_in", [
+    ("TRUE", True), ("True", True), ("false", False), ("yes", False), ("1", False),
+])
+def test_watchlist_add_opt_in_is_case_insensitive(stubbed_run, monkeypatch, value, opted_in):
+    """`.lower() == "true"`: any spelling of true opts in; yes and 1 do not."""
     mod, watch = stubbed_run
-    monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", "false")
+    monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", value)
     assert mod.run() == 0
-    watch.assert_not_called()
+    assert watch.call_count == (1 if opted_in else 0), (value, watch.call_args_list)
 
 
 def test_a_non_string_vendor_timestamp_is_dropped_not_raised(caplog):
@@ -329,3 +349,86 @@ def test_a_non_mapping_feed_entry_is_dropped_not_raised():
     feed = [None, 42, "AMD", ["AMD"], good]
     rows = av_news_to_rows(feed)
     assert [r["ticker"] for r in rows] == ["AMD"], rows
+
+
+# ── Premarket filter reads the prior session's ATR (no look-ahead) ──────
+
+
+def _backfill_premarket_row(monkeypatch, target_high: float, target_low: float) -> dict:
+    """Run compute_indicators_for_dates for one date on stubbed reads and
+    return the row it upserts. Only the target date's daily high and low
+    vary between calls."""
+    import pandas as pd
+    import gcp.database as db
+    from gcp import backfill_ticker as mod
+
+    fd = date(2026, 11, 6)
+    days = pd.bdate_range(end=pd.Timestamp(fd), periods=60)
+    rows = []
+    for i, d in enumerate(days):
+        base = 100.0 + 0.01 * i
+        hi, lo = (target_high, target_low) if d.date() == fd else (base + 0.5, base - 0.5)
+        rows.append({"date": d.date(), "Open": base, "High": hi, "Low": lo,
+                     "Close": base, "Volume": 1_000_000})
+    daily_asc = pd.DataFrame(rows)
+    daily_desc = daily_asc.iloc[::-1].reset_index(drop=True)
+
+    # 08:00 to 08:29 ET premarket bars near the prior close, one of which
+    # wicks 1.5 above its body: past half the prior ATR (about 1.0), inside
+    # half of an ATR the target day's own wide range inflates.
+    start = pd.Timestamp("2026-11-06 08:00", tz="America/New_York").tz_convert("UTC")
+    ts = pd.Series([start + pd.Timedelta(minutes=m) for m in range(30)])
+    o = pd.Series([100.6] * 30)
+    c = pd.Series([100.62] * 30)
+    h = pd.Series([100.65] * 30)
+    lw = pd.Series([100.55] * 30)
+    h.iloc[15] = 102.2
+    ibars = pd.DataFrame({"ts": ts, "open": o, "high": h, "low": lw,
+                          "close": c, "volume": [1000] * 30})
+
+    def fake_query(sql, params=None):
+        return daily_desc.copy() if "market_data_daily" in sql else ibars.copy()
+
+    written = []
+    monkeypatch.setattr(db, "query_to_dataframe", fake_query)
+    monkeypatch.setattr(db, "upsert_dataframe", lambda frame, *a, **k: written.append(frame))
+    # SPY's print thresholds in force on fd (per-ticker parameters,
+    # 2026-11-08), here at the #1753 values.
+    from tests.lib.level_params_fixtures import install_level_params
+    install_level_params(monkeypatch, ["SPY"])
+    mod.compute_indicators_for_dates("SPY", [fd])
+    assert len(written) == 1
+    return written[0].iloc[0].to_dict()
+
+
+def test_backfill_premarket_ignores_the_target_sessions_own_range(monkeypatch):
+    """stocks#1753 review: the backfill passed the target date's completed
+    ATR(14) to the premarket filter, so that session's regular-hours range
+    decided which premarket prints survived. With the prior session's ATR,
+    the persisted premarket extremes and VWAP do not depend on it."""
+    calm = _backfill_premarket_row(monkeypatch, 100.6 + 0.5, 100.6 - 0.5)
+    wild = _backfill_premarket_row(monkeypatch, 100.6 + 40.0, 100.6 - 40.0)
+    for key in ("pre_high", "pre_low", "pre_vwap"):
+        assert calm.get(key) == wild.get(key), key
+    # The 102.2 wick is a spike under the prior ATR, so it never sets pre_high.
+    assert calm["pre_high"] < 101.0
+
+
+def test_backfill_premarket_passes_the_prior_session_inputs(monkeypatch):
+    import lib.indicators as ind
+
+    seen = {}
+    real = ind.calculate_premarket_context
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ind, "calculate_premarket_context", spy)
+    _backfill_premarket_row(monkeypatch, 100.6 + 40.0, 100.6 - 40.0)
+    # The prior session: open and close 100.58, a one-point range, so its
+    # ATR(14) is about 1.0, far below the target day's 80-point bar.
+    assert seen["prev_close"] == pytest.approx(100.58)
+    assert seen["prev_open"] == pytest.approx(100.58)
+    assert seen["atr"] == pytest.approx(1.0, abs=0.05)
+    assert seen["stale_print_atr"] == 0.1 and seen["spike_atr"] == 0.5

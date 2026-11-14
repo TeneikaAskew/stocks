@@ -19,6 +19,10 @@ def no_network(monkeypatch):
     monkeypatch.setattr(socket, 'create_connection', refuse)
     import gcp.database as database
     monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: False)
+    # The level parameter tables (per-ticker parameters, 2026-11-08), read
+    # once per brief run: every key at the #1753 values.
+    from tests.lib.level_params_fixtures import install_level_params
+    install_level_params(monkeypatch)
 
 
 def _daily(invalid=False):
@@ -44,15 +48,14 @@ def _brief(monkeypatch, frame):
     monkeypatch.setattr(DataLoader, 'load_daily', lambda *a, **k: frame.copy())
     monkeypatch.setattr(pb, 'add_brief_indicators',
                         lambda df, **k: df.assign(RSI=50., Consecutive_Up=0, Consecutive_Down=0))
-    monkeypatch.setattr(pb, 'check_call_conditions', lambda row: (4, []))
-    monkeypatch.setattr(pb, 'check_put_conditions', lambda row: (3, []))
+    monkeypatch.setattr(pb, 'check_call_conditions', lambda row, **k: (4, []))
+    monkeypatch.setattr(pb, 'check_put_conditions', lambda row, **k: (3, []))
     monkeypatch.setattr(pb, 'load_earnings_for_brief', lambda *a, **k: {'earnings': []})
-    monkeypatch.setattr(pb, '_ew_recap_or_unavailable', lambda *a, **k: {})
     monkeypatch.setattr(pb, 'load_economic_events', lambda *a, **k: {'today': []})
     monkeypatch.setattr(pb, '_load_gamma_freshness', lambda *a, **k: dict(
         data_source='unavailable', snapshot_ts=None, snapshot_date=None, days_behind=None))
     # Stop the unrelated playbook/persistence branch at its isolated boundary.
-    monkeypatch.setattr(pb, 'build_level_map', lambda **k: (_ for _ in ()).throw(
+    monkeypatch.setattr(pb, 'build_session_levels', lambda *a, **k: (_ for _ in ()).throw(
         ValueError('isolated playbook boundary')))
     monkeypatch.setattr(pb, '_delete_null_close_rows',
                         lambda *a: pytest.fail('STRAT must not delete invalid observations'))

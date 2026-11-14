@@ -16,7 +16,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, date, timedelta, time as dt_time
+from datetime import datetime, date, timedelta, timezone, time as dt_time
 from pathlib import Path
 
 import pandas as pd
@@ -25,6 +25,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from lib.eastern_time import ET, eastern_bounds_utc, eastern_index_to_utc
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 
 from lib.logging_config import setup_logging
@@ -75,7 +76,7 @@ def av_listed_symbol(ticker: str) -> str:
 
 
 def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
-                      adjusted: bool = True) -> tuple[pd.DataFrame, str]:
+                      adjusted: bool = False) -> tuple[pd.DataFrame, str]:
     """1-minute OHLCV bars from AlphaVantage TIME_SERIES_INTRADAY, with why
     there are none when there are none.
 
@@ -85,6 +86,8 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
     symbol from a rate limit from a transport error (#1181). A failure in this
     code rather than in the vendor's reply is raised, not named.
     """
+    if adjusted:
+        raise ValueError("1-min bars are fetched as traded only; adjusted=True is not supported")
     av_symbol = av_listed_symbol(ticker)
     if not api_key:
         log.warning("    No AV API key — cannot fetch intraday for %s", ticker)
@@ -98,7 +101,7 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
         'interval': '1min',
         'month': month,
         'outputsize': 'full',
-        'adjusted': 'true' if adjusted else 'false',  # False = as-traded, to compare with a strike (#1151)
+        'adjusted': 'false',  # as traded, always: the table and every reader are as traded (#1151)
         # Required to get current-day bars. Without it AV returns
         # historical-only — `month=2026-04` with default entitlement
         # gave 0 bars for 2026-04-30 even mid-session.
@@ -162,7 +165,7 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
     return df, FETCH_OK
 
 
-def fetch_minute_data(ticker: str, fetch_date: str, api_key: str, *, adjusted: bool = True) -> pd.DataFrame:
+def fetch_minute_data(ticker: str, fetch_date: str, api_key: str, *, adjusted: bool = False) -> pd.DataFrame:
     """fetch_minute_bars without the reason: the bars, or an empty frame when
     AlphaVantage returned none, which is what the daily fetcher and the
     premarket refresh read."""
@@ -320,13 +323,31 @@ def build_daily_row(ticker: str, minute_df: pd.DataFrame, fetch_date: str,
 from gcp.database import DAILY_INDICATOR_TO_SQL_COLUMN as _DAILY_IND_TO_SQL
 
 
-def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
+def read_level_params_for_run(tickers, session_date):
+    """The level parameters in force on `session_date` for every ticker of
+    this run, in one query (FEAT-STRAT-001). Raises LevelParamsUnavailable
+    when the tables cannot be read; the caller decides what that stops."""
+    from gcp.database import query_to_dataframe_strict
+    from lib.strat_levels import load_level_params
+    return load_level_params(query_to_dataframe_strict, list(tickers), session_date)
+
+
+def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
+                                        level_params=None):
     """
     Query the last 250 daily bars from Cloud SQL, compute all multi-day
     technical indicators on the full series, then upsert today's values back.
 
     Calling this after the OHLCV row for fetch_date has been upserted ensures
     that every indicator uses the correct daily-close series (not 1-min bars).
+
+    `level_params` is the ticker's LevelParams in force on fetch_date, read
+    once per run for the whole universe (read_level_params_for_run). The
+    premarket print filter runs with its pm_stale_print_atr and pm_spike_atr
+    only when both are ok; otherwise the snapshot is written with
+    pre_filter_status naming why (level_params_unavailable when the run
+    could not read the tables) and NULL excluded counts, and the level
+    builder refuses it.
     """
     from lib.indicators import add_all_indicators
     from gcp.database import query_to_dataframe, upsert_dataframe
@@ -448,18 +469,39 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
             intraday_sql,
             {'ticker': ticker.upper(), 'start': pm_start, 'end': pm_end},
         )
+        intraday_read_at = datetime.now(timezone.utc)
         if not intraday.empty:
+            # Every input describes the last completed session (the row
+            # before fetch_date): its close, its open and its ATR columns.
+            # The fetch date's own ATR includes the session being filtered.
             prev_close = None
-            atr14 = None
-            try:
-                prev_close = float(df['Close'].iloc[-2]) if len(df) >= 2 else None
-            except Exception:
-                pass
-            try:
-                atr14 = float(last.get('atr_14')) if last.get('atr_14') is not None else None
-            except Exception:
-                pass
+            prev_open = None
+            atrs = {'atr_14': None, 'atr_5': None}
+            if len(df) >= 2:
+                prior_row = enriched.iloc[-2]
+                try:
+                    prev_close = float(df['Close'].iloc[-2])
+                except Exception:
+                    pass
+                try:
+                    prev_open = float(df['Open'].iloc[-2])
+                except Exception:
+                    pass
+                # add_all_indicators names the columns ATR14 / ATR5 (atr_14
+                # and atr_5 are their SQL names, which this frame never carries).
+                for col, frame_col in (('atr_14', 'ATR14'), ('atr_5', 'ATR5')):
+                    try:
+                        v = prior_row.get(frame_col)
+                        atrs[col] = float(v) if v is not None and pd.notna(v) else None
+                    except Exception:
+                        pass
 
+            if level_params is None:
+                pm_filter = {'status': 'level_params_unavailable', 'atr': None,
+                             'stale_print_atr': None, 'spike_atr': None, 'params': None}
+            else:
+                from lib.strat_levels import premarket_filter_inputs
+                pm_filter = premarket_filter_inputs(level_params, atrs)
             pm = calculate_premarket_context(
                 times=intraday['ts'],
                 open_=intraday['open'],
@@ -468,7 +510,10 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
                 close=intraday['close'],
                 volume=intraday['volume'],
                 prev_close=prev_close,
-                atr14=atr14,
+                atr=pm_filter['atr'],
+                prev_open=prev_open,
+                stale_print_atr=pm_filter['stale_print_atr'],
+                spike_atr=pm_filter['spike_atr'],
             )
             if pm['bar_count'] > 0:
                 if pm['pre_high'] is not None: row['pre_high'] = pm['pre_high']
@@ -477,6 +522,21 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
                 if pm['pre_volume'] is not None: row['pre_volume'] = pm['pre_volume']
                 if pm['gap_pct'] is not None: row['gap_pct'] = pm['gap_pct']
                 if pm['pre_range_atr'] is not None: row['pre_range_atr'] = pm['pre_range_atr']
+                # Provenance (FEAT-STRAT-001): when these bars were read and
+                # how many prints the filter dropped. upsert_dataframe drops
+                # the keys while market_data_daily lacks the columns.
+                row['pre_fetched_at'] = intraday_read_at
+                filtered = bool(pm.get('filtered'))
+                row['pre_excluded_stale_prints'] = (
+                    int(pm['excluded_prior_close_prints']) if filtered else None)
+                row['pre_excluded_spikes'] = (
+                    int(pm['excluded_spike_prints']) if filtered else None)
+                # Whether the prints were filtered with the ticker's own
+                # thresholds, and which (Design 8). Not ok: NULL counts and
+                # the builder refuses the snapshot (premarket_unfiltered).
+                row['pre_filter_status'] = 'ok' if filtered else (
+                    pm_filter['status'] if pm_filter['status'] != 'ok' else 'atr_unavailable')
+                row['pre_filter_params'] = pm_filter['params']
                 log.info("    ✓ pre-market context computed (%d bars)", pm['bar_count'])
             else:
                 log.info("    no pre-market bars for %s on %s (likely weekend / holiday)",
@@ -515,7 +575,7 @@ def write_intraday_to_sql(ticker: str, df: pd.DataFrame, fetch_date: str):
     log.info("    ✓ intraday: %d rows for %s", len(out), ticker)
 
 
-def process_ticker(ticker: str, fetch_date: str, av_api_key: str):
+def process_ticker(ticker: str, fetch_date: str, av_api_key: str, *, level_params=None):
     """Full pipeline for one ticker: fetch → enrich → write to Cloud SQL.
 
     Intraday-optional: AV has no 1-min coverage for the long tail of
@@ -563,7 +623,7 @@ def process_ticker(ticker: str, fetch_date: str, av_api_key: str):
         log.info("    ✓ daily OHLCV upserted (source: %s)", daily_row.get('data_source'))
 
         # 5. Compute multi-day indicators from the full daily series in Cloud SQL
-        compute_and_upsert_daily_indicators(ticker, fetch_date)
+        compute_and_upsert_daily_indicators(ticker, fetch_date, level_params=level_params)
 
 
 def fetch_and_upsert_vix(lookback_days: int = 7) -> int:
@@ -628,9 +688,9 @@ def _earnings_tickers_in_window(
 
     Filtering:
       - ``require_options=True`` (default): only return tickers with at
-        least one source row marking ``has_options=true``. EW and UW
-        populate this flag; AV and Yahoo never do, so this is effectively
-        "EW or UW listed it as options-tradable" — the right cut for an
+        least one retained source row marking ``has_options=true``. UW
+        populates this flag; AV and Yahoo never do. Retired EW rows are
+        excluded before aggregation — preserving the options cut for an
         earnings-options pipeline. In a typical 7d window this collapses
         a ~3,500-ticker universe to ~500.
       - ``require_options=False``: legacy behaviour, returns all reporters
@@ -668,9 +728,9 @@ def _earnings_tickers_in_window(
     # only filled on UW rows, while many UW rows ALSO have stock_volume.
     # An optionable name with high options volume is the canonical
     # "tradeable earnings ticker" — exactly what we want the daily
-    # fetcher to backfill. NULLS LAST on every signal so AV-only /
-    # EW-only rows sink without disappearing entirely.
-    sql = """
+    # fetcher to backfill. NULLS LAST orders retained rows with missing
+    # liquidity signals last; retired EW rows are excluded before grouping.
+    sql = f"""
         SELECT ticker,
                BOOL_OR(COALESCE(has_options, false))   AS optionable,
                BOOL_OR(COALESCE(is_s_p_500, false))    AS sp500,
@@ -678,7 +738,7 @@ def _earnings_tickers_in_window(
                MAX(options_volume)                     AS options_volume,
                MAX(market_cap)                         AS market_cap
         FROM earnings_calendar
-        WHERE earnings_date BETWEEN
+        WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date BETWEEN
             CURRENT_DATE - (:back || ' days')::interval AND
             CURRENT_DATE + (:ahead || ' days')::interval
         GROUP BY ticker
@@ -778,14 +838,15 @@ def _backfill_targets() -> list:
              ORDER BY t.ticker
         """
     else:
-        sql = """
+        sql = f"""
             WITH eligible AS (
                 SELECT DISTINCT ticker FROM earnings_calendar
-                 WHERE COALESCE(options_volume, 0) > 0
+                 WHERE {EARNINGS_NOT_RETIRED_SQL} AND COALESCE(options_volume, 0) > 0
                    AND COALESCE(stock_volume,   0) >= 500000
               UNION
                 SELECT ticker FROM watchlists
-                 WHERE COALESCE(in_brief, false) OR COALESCE(in_insight, false)
+                 WHERE user_id = 'default' AND removed_at IS NULL
+                   AND (COALESCE(in_brief, false) OR COALESCE(in_insight, false))
             ),
             eh_eligible AS (
                 SELECT DISTINCT eh.ticker FROM earnings_history eh
@@ -1106,10 +1167,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--require-options', action='store_true',
                         default=os.environ.get('REQUIRE_OPTIONS', 'true').lower() != 'false',
                         help=('Filter the earnings union to tickers with '
-                              '`has_options=true` from EW or UW. Default: '
+                              '`has_options=true` from a retained source. Default: '
                               'true. AV/Yahoo never set this flag, so the '
-                              'filter effectively means "EW or UW confirmed '
-                              'this is options-tradable around earnings" — '
+                              'filter uses retained UW confirmation that '
+                              'this is options-tradable around earnings — '
                               'the right cut for an earnings-options pipeline. '
                               'Set REQUIRE_OPTIONS=false to disable.'))
     parser.add_argument('--backfill', action='store_true',
@@ -1197,9 +1258,21 @@ def main():
     log.info("  AV key        : %s", 'yes' if av_api_key else 'NO (required for all data sources)')
 
     errors = []
+    # FEAT-STRAT-001: the premarket print thresholds for the whole universe,
+    # read once. Unreadable tables do not stop the daily bars: every
+    # premarket snapshot is written unfiltered (pre_filter_status
+    # level_params_unavailable) and the run exits non-zero.
+    from lib.strat_levels import LevelParamsUnavailable
+    try:
+        run_params = read_level_params_for_run(tickers, fetch_date)
+    except LevelParamsUnavailable as e:
+        log.error("  ✗ level_params_unavailable: %s (premarket snapshots written unfiltered)", e)
+        errors.append('level_params')
+        run_params = {}
     for ticker in tickers:
         try:
-            process_ticker(ticker, fetch_date, av_api_key)
+            process_ticker(ticker, fetch_date, av_api_key,
+                           level_params=run_params.get(ticker.upper()))
         except Exception as e:
             log.error("  ✗ %s failed: %s", ticker, e)
             errors.append(ticker)

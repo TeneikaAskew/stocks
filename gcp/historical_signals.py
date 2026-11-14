@@ -46,6 +46,12 @@ COLS = (
     'conditions_met',
     'duration_minutes',
     'return_pct',
+    # FEAT-SIGNAL-001: return_pct is the best close of the next 20 rows;
+    # realized_return_pct is the fixed exit named by realized_rule
+    # ('next-open-20m-1c-v1'), NULL when the signal is not scoreable and on
+    # rows written before the column existed.
+    'realized_return_pct',
+    'realized_rule',
     'best_return',
     'best_window_min',
     'return_5min',

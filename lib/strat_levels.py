@@ -14,6 +14,7 @@ Dependencies:
   - lib/indicators.py (calculate_historical_levels for Prev_* columns)
 """
 
+from lib import eastern_time
 from lib.eastern_time import ET_NAME, session_count
 import pandas as pd
 import numpy as np
@@ -67,9 +68,26 @@ class LevelMap:
     room_to_run_down: Optional[float] = None
     # Next-N structural levels each way (nearest-first), each a dict with
     # price/name/period/level_type/distance_pct. `call_levels` are above the
-    # current price, `put_levels` below — see select_nearest_levels().
+    # current price, `put_levels` below; see SessionLevels.to_level_map().
     call_levels: list = field(default_factory=list)
     put_levels: list = field(default_factory=list)
+    # Per-side regime and orb_only reason from build_session_levels.
+    regime_long: str = 'normal'
+    regime_short: str = 'normal'
+    reason_long: Optional[str] = None
+    reason_short: Optional[str] = None
+    atr: Optional[float] = None
+    # 'ok', 'premarket_unavailable' or 'premarket_unfiltered' from
+    # build_session_levels; the brief prints PREMARKET_MISSING_NOTE when the
+    # snapshot was unavailable and PREMARKET_UNFILTERED_NOTE when the
+    # snapshot was refused for want of calibrated filter thresholds.
+    premarket_status: Optional[str] = None
+    # Each side's trigger-window parameter (LevelParam.to_basis() plus key
+    # and ticker), so the orb_only copy states the ticker's own window.
+    window_long: Optional[dict] = None
+    window_short: Optional[dict] = None
+    # 'ok', or why there are no PMG zones (the cluster tolerance's status).
+    pmg_status: str = 'ok'
 
 
 # ─── Per-leg intraday state (resolver-parity) ─────────────────────────────
@@ -228,9 +246,9 @@ def classify_level_strat(
 # ─── Previous period levels (fixed, no repainting) ───────────────────────
 
 
-def compute_previous_levels(
+def _compute_previous_levels(
     daily_df: pd.DataFrame,
-    analysis_date: Optional[date_type] = None,
+    analysis_date: date_type,
 ) -> Dict[str, StratLevel]:
     """Compute previous-period H/L/C levels from daily OHLCV data.
 
@@ -262,9 +280,8 @@ def compute_previous_levels(
             for week/month/quarter and ``< analysis_date`` for day —
             independent of where df's last bar happens to sit.
 
-            When None (legacy callers), falls back to iloc[-2]
-            behavior, which assumes df's last row is today's
-            in-progress bar.
+            Required. There is no iloc[-2] fallback: the previous
+            period always comes from the period filter (FEAT-STRAT-001).
     """
     if daily_df.empty or len(daily_df) < 2:
         return {}
@@ -335,28 +352,21 @@ def compute_previous_levels(
         if grp.empty:
             continue
 
-        # Pick the previous-period row.
-        if analysis_date is not None:
-            if period_freq is None:
-                cutoff = analysis_date
-            elif period_freq == 'Y':
-                cutoff = analysis_date.year
-            else:
-                cutoff = pd.Period(analysis_date, freq=period_freq)
-            prev_grp = grp[grp.index < cutoff]
-            if prev_grp.empty:
-                continue
-            prev_period = prev_grp.iloc[-1]
-            prev_label = str(prev_grp.index[-1])
-            p_n2 = prev_grp.iloc[-2] if len(prev_grp) >= 2 else None
+        # Pick the previous-period row by period filter only: the period
+        # immediately before the one containing analysis_date. There is no
+        # iloc[-2] fallback (FEAT-STRAT-001 done_when 3).
+        if period_freq is None:
+            cutoff = analysis_date
+        elif period_freq == 'Y':
+            cutoff = analysis_date.year
         else:
-            # Legacy: assume df's last row is today's in-progress bar
-            # → previous period is iloc[-2].
-            if len(grp) < 2:
-                continue
-            prev_period = grp.iloc[-2]
-            prev_label = str(grp.index[-2])
-            p_n2 = grp.iloc[-3] if len(grp) >= 3 else None
+            cutoff = pd.Period(analysis_date, freq=period_freq)
+        prev_grp = grp[grp.index < cutoff]
+        if prev_grp.empty:
+            continue
+        prev_period = prev_grp.iloc[-1]
+        prev_label = str(prev_grp.index[-1])
+        p_n2 = prev_grp.iloc[-2] if len(prev_grp) >= 2 else None
 
         h_name = f'{prefix}H'
         l_name = f'{prefix}L'
@@ -398,7 +408,7 @@ def compute_previous_levels(
 # ─── Current period levels (live, repainting) ────────────────────────────
 
 
-def compute_current_levels(
+def _compute_current_levels(
     daily_df: pd.DataFrame,
     current_price: float,
     analysis_date: Optional[date_type] = None,
@@ -664,7 +674,12 @@ def compute_premarket_levels(
 # ─── Gap levels ─────────────────────────────────────────────────────────────
 
 
-def compute_gap_levels(daily_df: pd.DataFrame, lookback: int = 20) -> List[StratLevel]:
+# The gap-level lookback in bars: a count that sets the product's shape, not a
+# distance (the per-ticker parameter spec's Non-goals keep it).
+GAP_LEVEL_LOOKBACK_BARS = 20
+
+
+def compute_gap_levels(daily_df: pd.DataFrame, lookback: int = GAP_LEVEL_LOOKBACK_BARS) -> List[StratLevel]:
     """Detect unfilled gaps from recent sessions.
 
     A gap exists when today's low > yesterday's high (gap up)
@@ -737,19 +752,24 @@ def compute_gap_levels(daily_df: pd.DataFrame, lookback: int = 20) -> List[Strat
 
 def detect_level_clusters(
     levels: List[StratLevel],
-    tolerance_pct: float = 0.15,
+    tolerance_atr: float,
+    atr: float,
 ) -> list:
     """Detect PMG zones where multiple timeframe levels cluster.
 
     Args:
         levels: list of StratLevel objects
-        tolerance_pct: percentage band (0.15 = within 0.15%)
+        tolerance_atr: the ticker's level_cluster_atr parameter: two levels
+            closer than this many ATRs (the ticker's typical 15-minute move)
+            trade as one zone
+        atr: the ATR of the policy's basis for the last completed session
 
     Returns:
         list of dicts: [{center_price, level_names, timeframes, count, strength}]
     """
     if not levels:
         return []
+    band = float(tolerance_atr) * float(atr)
 
     sorted_levels = sorted(levels, key=lambda lv: lv.price)
     zones = []
@@ -765,17 +785,15 @@ def detect_level_clusters(
         for j in range(i + 1, len(sorted_levels)):
             if j in used:
                 continue
-            if lvl.price == 0:
-                continue
-            pct_diff = abs(sorted_levels[j].price - lvl.price) / lvl.price * 100
-            if pct_diff <= tolerance_pct:
+            if abs(sorted_levels[j].price - lvl.price) <= band:
                 cluster.append(sorted_levels[j])
                 used.add(j)
 
         if len(cluster) >= 2:
             center = sum(lv.price for lv in cluster) / len(cluster)
             timeframes = set(lv.timeframe for lv in cluster)
-            strength = len(cluster) + (len(timeframes) - 1) * 0.5
+            # One point per level and half a point per extra timeframe.
+            strength = (2 * len(cluster) + len(timeframes) - 1) / 2
 
             zones.append({
                 'center_price': round(center, 2),
@@ -844,66 +862,6 @@ def detect_pmg_temporal(
     return results
 
 
-# ─── Room to run ──────────────────────────────────────────────────────────
-
-
-MIN_ROOM_PCT = 0.20
-
-# Staleness filter for trigger / stop selection. A level is too stale
-# to drive an intraday playbook when BOTH conditions hold:
-#   distance > MAX_TRIGGER_DISTANCE_ATR × atr_14    AND
-#   distance > MAX_TRIGGER_DISTANCE_PCT × current_price
-# Both axes matter:
-#   * Pure ATR fails for high-vol small-caps (ASTX atr_14 ≈ 27% of
-#     price → 5×ATR includes a year-old crash low at 41% from spot).
-#   * Pure % fails for tight-range index ETFs where 8% would over-
-#     filter every legitimate quarterly pivot.
-# Defaults: 3.0 ATR matches `_EXTENDED_DISTANCE_ATR` in
-# lib.agents.trade_planner; 8% is the empirical "too far for an
-# intraday level-break" threshold from the ASTX 2026-04-28 case.
-MAX_TRIGGER_DISTANCE_ATR = 3.0
-MAX_TRIGGER_DISTANCE_PCT = 0.08
-
-
-def compute_room_to_run(
-    current_price: float,
-    levels: List[StratLevel],
-    direction: str,
-) -> dict:
-    """Distance from current price to next level in the trade direction.
-
-    Args:
-        current_price: current market price
-        levels: list of StratLevel objects
-        direction: "CALL" or "PUT"
-
-    Returns:
-        dict with next_level, distance_pct, targets, has_room
-    """
-    sorted_levels = sorted(levels, key=lambda lv: lv.price)
-
-    if direction == 'CALL':
-        targets = [lv for lv in sorted_levels if lv.price > current_price]
-        if not targets:
-            return {'next_level': None, 'distance_pct': 0.0, 'targets': [], 'has_room': False}
-        next_level = targets[0]
-        distance_pct = (next_level.price - current_price) / current_price * 100
-    else:
-        targets = [lv for lv in sorted_levels if lv.price < current_price]
-        targets.reverse()
-        if not targets:
-            return {'next_level': None, 'distance_pct': 0.0, 'targets': [], 'has_room': False}
-        next_level = targets[0]
-        distance_pct = (current_price - next_level.price) / current_price * 100
-
-    return {
-        'next_level': next_level,
-        'distance_pct': round(distance_pct, 3),
-        'targets': targets[:5],
-        'has_room': distance_pct >= MIN_ROOM_PCT,
-    }
-
-
 # ─── Risk/Reward ──────────────────────────────────────────────────────────
 
 
@@ -920,291 +878,1560 @@ def compute_risk_reward(
     return round(reward / risk, 2)
 
 
-# ─── Trigger identification ───────────────────────────────────────────────
+# ─── Distance window and the cents rule ───────────────────────────────────
 
 
 def _within_staleness_window(
     level_price: float, current_price: float, atr: Optional[float],
+    window_atr: Optional[float],
 ) -> bool:
-    """A level is "fresh enough" to be a trigger/stop candidate when
-    its distance from spot fits BOTH the ATR and percent budgets.
+    """The one distance rule (FEAT-STRAT-001): a level is close enough to be a
+    trigger, a stop, a target, a ladder rung or the Room to trigger line when
+    its distance from the reference is within `window_atr` of this ticker's
+    ATR. `window_atr` is the side's calibrated window: a level above the
+    reference uses trigger_window_long_atr, a level below uses
+    trigger_window_short_atr (so a long's stop is windowed by the short one).
 
-    When `atr` is None or non-positive, the ATR axis is skipped and
-    only the percent budget is enforced (back-compat for callers that
-    didn't pass ATR; preserves prior behavior for unit tests with
-    synthetic data).
+    There is no percent axis and no fallback: without a positive ATR or a
+    window nothing is in it, and build_session_levels reports the reason.
     """
-    distance = abs(level_price - current_price)
-    pct_ok = distance <= MAX_TRIGGER_DISTANCE_PCT * current_price
-    if atr is None or atr <= 0:
-        return pct_ok
-    atr_ok = distance <= MAX_TRIGGER_DISTANCE_ATR * atr
-    return pct_ok and atr_ok
+    if atr is None or not _finite_positive(atr):
+        return False
+    if window_atr is None or not _finite_positive(window_atr):
+        return False
+    if current_price is None or not _finite_positive(current_price):
+        return False
+    distance = abs(float(level_price) - float(current_price))
+    return distance <= float(window_atr) * float(atr)
+
+
+def _finite_positive(x) -> bool:
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return False
+    return v == v and v not in (float('inf'), float('-inf')) and v > 0
 
 
 def price_cents(x) -> int:
     """A price as integer cents, under ONE rounding rule shared by everything
-    that decides whether two lines are "the same price": the ladder's emitted
-    prices (select_nearest_levels), target de-duplication (_distinct_targets),
-    the movement-statement slot match, and the reach-rate SQL's
-    `round(price::numeric, 2)`.
+    that decides whether two lines are "the same price": the side lists, the
+    broken rule, target de-duplication, the movement-statement slot match, and
+    the reach-rate SQL's `round(price::numeric, 2)`.
 
     Decimal on the float's shortest repr, half-up, because three other rules
     disagree on real data (Codex P2 on #1030): for 292.705, Python
-    `round(x, 2)` gives 292.70 (binary 292.705 is a hair below), 
+    `round(x, 2)` gives 292.70 (binary 292.705 is a hair below),
     `int(round(x * 100))` gives 29270, and Postgres `round(::numeric, 2)`
     gives 292.71. This helper gives 29271, matching Postgres, so a level
     persisted raw in `premarket_analysis` and the same level rendered on the
     ladder land on the same cent.
     """
-    from decimal import Decimal, ROUND_HALF_UP  # noqa: PLC0415
+    from decimal import Decimal, ROUND_HALF_UP
 
     return int(Decimal(str(float(x))).quantize(Decimal("0.01"), ROUND_HALF_UP) * 100)
 
 
-def _distinct_targets(candidates, trigger_price: float, n: int = 3) -> list:
-    """The next ``n`` fresh levels beyond ``trigger_price`` at DISTINCT prices.
+# ─── Per-ticker level parameters (FEAT-STRAT-001, 2026-11-08) ────────────
+#
+# Every distance the level and plan code decides with is a per-ticker value
+# calibrated from the ticker's own bars (lib.level_calibration) and stored in
+# ticker_level_params, under the statistic, lookback and minimum sample of
+# level_param_policy (gcp/schema.sql). load_level_params reads the rows in
+# force on a session for every ticker of a run in one query. There is no
+# default row and no constant behind it.
 
-    Two structural lines routinely sit on the same number (PDH == PWH on a
-    week whose high printed yesterday; PDO == PWC after a flat open). Before
-    this filter ``targets`` was a plain positional slice, so a coincident line
-    became a target at the trigger's own price: T1 == trigger on 13-17% of
-    IWM/SPY/QQQ premarket rows, and the outcome resolver then marked T1 hit on
-    the trigger bar itself. A target at zero distance is not a target; skip
-    anything within a cent of the trigger or of a target already taken, the
-    same tolerance ``select_nearest_levels`` uses.
-    """
-    # Integer cents under the shared rule (price_cents), not a float
-    # threshold: 240.01 - 240.00 is 0.00999… in binary and a `< 0.01` test
-    # would call them the same line.
-    out, taken = [], {price_cents(trigger_price)}
-    for lv in candidates:
-        c = price_cents(lv.price)
-        if c in taken:
-            continue
-        taken.add(c)
-        out.append(lv)
-        if len(out) >= n:
-            break
+PARAM_OK = 'ok'
+# Statuses a calibration run writes (ticker_level_params.status).
+CALIBRATION_STATUSES = ('ok', 'insufficient_history', 'input_unavailable',
+                        'no_positive_target')
+# Statuses only the loader gives: no row for the ticker and key, or rows only
+# in an ATR basis other than the policy's basis in force on the session.
+PARAMS_UNAVAILABLE = 'params_unavailable'
+PARAMS_BASIS_MISMATCH = 'params_basis_mismatch'
+LOADER_STATUSES = (PARAMS_UNAVAILABLE, PARAMS_BASIS_MISMATCH)
+
+# Policy keys that are not parameters.
+POLICY_ATR_BASIS = 'atr_basis'
+POLICY_CALIBRATION_UNIVERSE = 'calibration_universe'
+NON_PARAMETER_KEYS = (POLICY_ATR_BASIS, POLICY_CALIBRATION_UNIVERSE)
+
+# The ATR columns a basis may name, with the add_all_indicators column each
+# is read from in a DataLoader frame.
+ATR_COLUMNS = {'atr_14': 'ATR14', 'atr_5': 'ATR5'}
+
+PERSONAS = ('aggressive', 'neutral', 'conservative')
+
+
+def trigger_window_key(side: str) -> str:
+    return 'trigger_window_long_atr' if side == 'long' else 'trigger_window_short_atr'
+
+
+def entry_buffer_key(persona: str, edge: str) -> str:
+    return f'entry_buffer_{persona}_{edge}_atr'
+
+
+def stop_key(persona: str) -> str:
+    return f'stop_{persona}_atr'
+
+
+MIN_STOP_KEY = 'min_stop_atr'
+PM_SPIKE_KEY = 'pm_spike_atr'
+PM_STALE_PRINT_KEY = 'pm_stale_print_atr'
+LEVEL_CLUSTER_KEY = 'level_cluster_atr'
+
+
+def target_key(persona: str, k: int) -> str:
+    return f'target_{persona}_{k}_r'
+
+
+# The persona whose stop tightens to the nearest structure on the stop side.
+STRUCTURAL_STOP_PERSONA = 'conservative'
+
+
+def persona_stop_price(persona: str, sign: float, midpoint: float, atr: float,
+                       stop_atr: float, min_stop_atr: float, structure=()) -> float:
+    """The persona's stop price for an entry midpoint: the one rule the
+    planner publishes (lib.agents.trade_planner) and the calibration
+    measures its targets' R with (lib.level_calibration), so a published
+    target's reach share is a share in the R the plan actually carries.
+
+    The stop sits stop_atr x ATR from the midpoint on the losing side
+    (`sign` is +1 for a long, -1 for a short). The conservative persona
+    tightens it to the closest level in `structure` (the caller's swing
+    extreme, 200-day SMA and the builder's stop anchor) that lies on the
+    stop side of the midpoint. Then the floor: no stop closer to the
+    midpoint than min_stop_atr x ATR."""
+    stop = midpoint - sign * stop_atr * atr
+    if persona == STRUCTURAL_STOP_PERSONA:
+        candidates = [stop]
+        for level in structure:
+            if level is None:
+                continue
+            if (sign > 0 and level < midpoint) or (sign < 0 and level > midpoint):
+                candidates.append(level)
+        stop = max(candidates) if sign > 0 else min(candidates)
+    min_distance = min_stop_atr * atr
+    if abs(midpoint - stop) < min_distance:
+        stop = midpoint - sign * min_distance
+    return stop
+
+
+class LevelParamsUnavailable(RuntimeError):
+    """The parameter tables cannot be read: a missing table, a failed query,
+    or an empty policy. An INTERNAL failure (CLAUDE.md 3.7): the brief exits
+    non-zero, the insight run is marked failed with reason
+    level_params_unavailable, the signal monitor skips its level refresh."""
+
+    reason = 'level_params_unavailable'
+
+
+class LevelParamUnavailable(LookupError):
+    """A caller asked for the value of a parameter whose status is not ok.
+    Names the key, the status and the sample so the copy can say why."""
+
+    def __init__(self, param: 'LevelParam'):
+        self.param = param
+        self.key = param.key
+        self.status = param.status
+        super().__init__(
+            f"level parameter {param.key} for {param.ticker or '<ticker>'} is "
+            f"{param.status} (sample_n={param.sample_n}, min_sample={param.min_sample})")
+
+
+def _iso(v) -> Optional[str]:
+    d = _to_date(v)
+    return d.isoformat() if d is not None else None
+
+
+def _opt_float(v) -> Optional[float]:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None
+
+
+def _opt_int(v) -> Optional[int]:
+    f = _opt_float(v)
+    return int(f) if f is not None else None
+
+
+def _json_obj(v) -> dict:
+    import json as _json
+    if v is None:
+        return {}
+    if isinstance(v, dict):
+        return dict(v)
+    if isinstance(v, str):
+        try:
+            out = _json.loads(v)
+        except ValueError:
+            return {}
+        return out if isinstance(out, dict) else {}
+    return {}
+
+
+@dataclass(frozen=True)
+class LevelParam:
+    """One parameter of one ticker as in force on one session."""
+    key: str
+    status: str
+    value: Optional[float] = None
+    ticker: str = ''
+    effective_from: Optional[str] = None
+    method_id: Optional[str] = None
+    sample_n: Optional[int] = None
+    min_sample: Optional[int] = None
+    statistic_q: Optional[float] = None
+    lookback_sessions: Optional[int] = None
+    input_from: Optional[str] = None
+    input_to: Optional[str] = None
+    run_id: Optional[str] = None
+    atr_basis: Optional[str] = None
+    policy_effective_from: Optional[str] = None
+    source: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == PARAM_OK and self.value is not None
+
+    def to_basis(self) -> dict:
+        return {
+            'value': self.value, 'status': self.status,
+            'effective_from': self.effective_from, 'method_id': self.method_id,
+            'sample_n': self.sample_n, 'min_sample': self.min_sample,
+            'statistic_q': self.statistic_q,
+            'lookback_sessions': self.lookback_sessions,
+            'input_from': self.input_from, 'input_to': self.input_to,
+            'run_id': self.run_id, 'atr_basis': self.atr_basis,
+            'policy_effective_from': self.policy_effective_from,
+            'source': self.source,
+        }
+
+    @classmethod
+    def from_basis(cls, key: str, d: dict, ticker: str = '') -> 'LevelParam':
+        status = d.get('status') or PARAMS_UNAVAILABLE
+        value = _opt_float(d.get('value')) if status == PARAM_OK else None
+        if status == PARAM_OK and value is None:
+            raise ValueError(f"level_basis records {key} as ok with no value")
+        return cls(
+            key=key, status=status, value=value, ticker=ticker,
+            effective_from=_iso(d.get('effective_from')), method_id=d.get('method_id'),
+            sample_n=_opt_int(d.get('sample_n')), min_sample=_opt_int(d.get('min_sample')),
+            statistic_q=_opt_float(d.get('statistic_q')),
+            lookback_sessions=_opt_int(d.get('lookback_sessions')),
+            input_from=_iso(d.get('input_from')), input_to=_iso(d.get('input_to')),
+            run_id=(str(d['run_id']) if d.get('run_id') is not None else None),
+            atr_basis=d.get('atr_basis'),
+            policy_effective_from=_iso(d.get('policy_effective_from')),
+            source=d.get('source'),
+        )
+
+
+@dataclass
+class LevelParams:
+    """Every level and plan parameter of one ticker in force on one session,
+    with the policy that produced them. ``value(key)`` answers only for status
+    ok and raises LevelParamUnavailable otherwise; ``status(key)`` always
+    answers."""
+    ticker: str
+    session_date: Optional[date_type]
+    atr_basis: str
+    policy_effective_from: Optional[str]
+    params: Dict[str, LevelParam] = field(default_factory=dict)
+
+    def param(self, key: str) -> LevelParam:
+        p = self.params.get(key)
+        if p is None:
+            return LevelParam(key=key, status=PARAMS_UNAVAILABLE, ticker=self.ticker)
+        return p
+
+    def status(self, key: str) -> str:
+        return self.param(key).status
+
+    def ok(self, key: str) -> bool:
+        return self.param(key).ok
+
+    def value(self, key: str) -> float:
+        p = self.param(key)
+        if not p.ok:
+            raise LevelParamUnavailable(p)
+        return float(p.value)
+
+    def first_not_ok(self, keys) -> Optional[LevelParam]:
+        for k in keys:
+            p = self.param(k)
+            if not p.ok:
+                return p
+        return None
+
+    def to_basis(self) -> dict:
+        return {
+            'atr_basis': self.atr_basis,
+            'policy_effective_from': self.policy_effective_from,
+            'params': {k: p.to_basis() for k, p in sorted(self.params.items())},
+        }
+
+    @classmethod
+    def from_basis(cls, ticker: str, session_date, d: Optional[dict]) -> Optional['LevelParams']:
+        """The parameters a level_basis recorded, or None when it recorded
+        none (a basis written before per-ticker parameters)."""
+        if not isinstance(d, dict) or not isinstance(d.get('params'), dict) or not d.get('atr_basis'):
+            return None
+        return cls(
+            ticker=ticker, session_date=_to_date(session_date),
+            atr_basis=str(d['atr_basis']),
+            policy_effective_from=_iso(d.get('policy_effective_from')),
+            params={k: LevelParam.from_basis(k, v, ticker)
+                    for k, v in d['params'].items() if isinstance(v, dict)},
+        )
+
+
+def basis_records_params(basis) -> bool:
+    """Whether a stored level_basis recorded the parameters it was built
+    with. A reader that holds such a basis never reads the parameter tables;
+    one that does not (a basis written before parameters were recorded)
+    passes the rows in force on that basis's session to from_basis."""
+    return isinstance(basis, dict) and isinstance(basis.get('params'), dict) \
+        and bool(basis.get('atr_basis'))
+
+
+LEVEL_PARAMS_SQL = (
+    "SELECT 'policy' AS row_kind, NULL AS ticker, p.param_key, NULL AS value, "
+    "NULL AS status, NULL AS atr_basis, p.method_id, p.statistic_q, "
+    "p.lookback_sessions, p.min_sample, p.extra, p.effective_from, "
+    "NULL AS policy_effective_from, NULL AS sample_n, NULL AS input_from, "
+    "NULL AS input_to, NULL AS run_id, NULL AS source "
+    "FROM level_param_policy p WHERE p.effective_from <= :session_date "
+    "UNION ALL "
+    "SELECT 'ticker' AS row_kind, t.ticker, t.param_key, t.value, t.status, "
+    "t.atr_basis, t.method_id, NULL AS statistic_q, NULL AS lookback_sessions, "
+    "NULL AS min_sample, NULL AS extra, t.effective_from, "
+    "t.policy_effective_from, t.sample_n, t.input_from, t.input_to, t.run_id, "
+    "t.source FROM ("
+    "SELECT tp.ticker, tp.param_key, tp.value, tp.status, tp.atr_basis, "
+    "tp.method_id, tp.effective_from, tp.policy_effective_from, tp.sample_n, "
+    "tp.input_from, tp.input_to, tp.run_id, tp.source, "
+    "ROW_NUMBER() OVER (PARTITION BY tp.ticker, tp.param_key, tp.atr_basis "
+    "ORDER BY tp.effective_from DESC) AS rn "
+    "FROM ticker_level_params tp "
+    "WHERE tp.ticker IN ({tickers}) AND tp.effective_from <= :session_date"
+    ") t WHERE t.rn = 1"
+)
+
+
+def _policy_row(r) -> dict:
+    return {
+        'param_key': r['param_key'], 'method_id': r.get('method_id'),
+        'statistic_q': _opt_float(r.get('statistic_q')),
+        'lookback_sessions': _opt_int(r.get('lookback_sessions')),
+        'min_sample': _opt_int(r.get('min_sample')),
+        'extra': _json_obj(r.get('extra')), 'effective_from': _iso(r.get('effective_from')),
+    }
+
+
+def policy_in_force(rows) -> Dict[str, dict]:
+    """The policy row in force per key from policy rows already bounded to
+    effective_from on or before the session: the greatest effective_from."""
+    out: Dict[str, dict] = {}
+    for r in rows:
+        row = _policy_row(r)
+        key, eff = row['param_key'], row['effective_from']
+        if key not in out or (eff or '') > (out[key]['effective_from'] or ''):
+            out[key] = row
     return out
 
 
-def identify_triggers(
-    current_price: float,
-    levels: Dict[str, StratLevel],
-    daily_strat_class: str = '',
-    combo: str = '',
-    atr: Optional[float] = None,
-) -> dict:
-    """Identify CALL/PUT trigger levels for the premarket brief.
+def policy_atr_basis(policy: Dict[str, dict]) -> str:
+    row = policy.get(POLICY_ATR_BASIS)
+    column = (row or {}).get('extra', {}).get('column')
+    if column not in ATR_COLUMNS:
+        raise LevelParamsUnavailable(
+            f"level_param_policy has no usable atr_basis row in force (got {column!r}); "
+            f"expected one of {sorted(ATR_COLUMNS)}")
+    return column
 
-    Produces the "CALLS above X (PDH) / PUTS below Y (PDL)" format.
-    Wires daily_strat_class and combo into the reasoning string.
 
-    Stale-level filter (PR for ASTX 2026-04-28):
-      Levels farther than 3×ATR AND 8% from current price are excluded
-      from trigger AND stop selection. They stay in the `levels` dict
-      (and the persisted `strat_levels` table) so the realtime
-      signal-monitor still tracks them for break alerts — but they no
-      longer drive playbook entries. Without this, a year-old crash
-      low (e.g. PYL 41% below spot) would surface as the PUT trigger,
-      and the same level would be used as a 41% stop on the CALL side.
+def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]:
+    """The parameters in force on `session_date` for every ticker in
+    `tickers`, in ONE query. `query_fn(sql, params)` returns a DataFrame and
+    must raise on failure (gcp.database.query_to_dataframe_strict).
+
+    Per ticker and parameter key, the row used is, among the rows whose
+    atr_basis is the policy atr_basis in force on the session, the one with
+    the greatest effective_from on or before it. A key with rows only in
+    another basis gets status params_basis_mismatch (no row of another basis
+    is ever used); a key with no row gets params_unavailable. A missing
+    table, a failed query or an empty policy raises LevelParamsUnavailable.
+
+    Callers read once per run and pass the result to every build: the run's
+    cache is the dict this returns.
     """
-    all_levels = sorted(levels.values(), key=lambda lv: lv.price)
-    # Partition on the shared cents rule, as select_nearest_levels does: a
-    # line on the anchor's own cent cannot be "broken above" or "below" at
-    # the card's precision, so it is neither a trigger nor a stop. Without
-    # this a raw 100.0041 against a 100.004 anchor was persisted as the
-    # trigger, the ladder omitted it, and every visible rung's slot shifted
-    # by one (Codex P2 on #1030, round 7).
-    anchor_c = price_cents(current_price)
-    above_all = [lv for lv in all_levels if price_cents(lv.price) > anchor_c]
-    below_all = [lv for lv in all_levels if price_cents(lv.price) < anchor_c]
-    below_all.reverse()
+    session = _to_date(session_date)
+    if session is None:
+        raise LevelParamsUnavailable(f"load_level_params: no session date ({session_date!r})")
+    names = sorted({str(t).upper() for t in tickers if t})
+    if not names:
+        return {}
+    placeholders = ', '.join(f':t{i}' for i in range(len(names)))
+    sql_params = {f't{i}': t for i, t in enumerate(names)}
+    sql_params['session_date'] = session.isoformat()
+    try:
+        df = query_fn(LEVEL_PARAMS_SQL.format(tickers=placeholders), sql_params)
+    except Exception as exc:
+        raise LevelParamsUnavailable(f"level parameter query failed: {exc}") from exc
+    if df is None:
+        raise LevelParamsUnavailable("level parameter query returned no result set")
+    records = df.to_dict('records') if len(df) else []
+    policy_records = [r for r in records if r.get('row_kind') == 'policy']
+    policy = policy_in_force(policy_records)
+    # Every policy version on or before the session, by key and
+    # effective_from: a ticker row carries the metadata (quantile, minimum
+    # sample, lookback) of the policy version it was calibrated under, not
+    # the version in force now (Codex P2 on e4bb463e). A value retained
+    # under an older policy keeps that policy's coverage claim.
+    versions = {(row['param_key'], row['effective_from']): row
+                for row in map(_policy_row, policy_records)}
+    if not policy:
+        raise LevelParamsUnavailable(
+            f"level_param_policy holds no row in force on {session.isoformat()}")
+    basis = policy_atr_basis(policy)
+    policy_version = max(p['effective_from'] or '' for p in policy.values()) or None
+    keys = sorted(k for k in policy if k not in NON_PARAMETER_KEYS)
+    by_ticker: Dict[str, Dict[str, list]] = {t: {} for t in names}
+    for r in records:
+        if r.get('row_kind') != 'ticker':
+            continue
+        t = str(r.get('ticker') or '').upper()
+        if t in by_ticker:
+            by_ticker[t].setdefault(r['param_key'], []).append(r)
+    out: Dict[str, LevelParams] = {}
+    for t in names:
+        params: Dict[str, LevelParam] = {}
+        for key in keys:
+            pol = policy[key]
+            common = dict(key=key, ticker=t, min_sample=pol['min_sample'],
+                          statistic_q=pol['statistic_q'],
+                          lookback_sessions=pol['lookback_sessions'])
+            rows = by_ticker[t].get(key, [])
+            same = [r for r in rows if r.get('atr_basis') == basis]
+            if same:
+                r = max(same, key=lambda x: _iso(x.get('effective_from')) or '')
+                row_policy = _iso(r.get('policy_effective_from'))
+                ver = versions.get((key, row_policy))
+                if ver is None:
+                    raise LevelParamsUnavailable(
+                        f"ticker_level_params {t} {key} (effective {_iso(r.get('effective_from'))}) "
+                        f"names policy version {row_policy!r}, which level_param_policy does not hold "
+                        f"on or before {session.isoformat()}")
+                common = dict(key=key, ticker=t, min_sample=ver['min_sample'],
+                              statistic_q=ver['statistic_q'],
+                              lookback_sessions=ver['lookback_sessions'])
+                status = r.get('status') or PARAMS_UNAVAILABLE
+                value = _opt_float(r.get('value')) if status == PARAM_OK else None
+                if status == PARAM_OK and value is None:
+                    raise LevelParamsUnavailable(
+                        f"ticker_level_params {t} {key} is ok with no value; the table's CHECK was bypassed")
+                params[key] = LevelParam(
+                    status=status, value=value,
+                    effective_from=_iso(r.get('effective_from')), method_id=r.get('method_id'),
+                    sample_n=_opt_int(r.get('sample_n')),
+                    input_from=_iso(r.get('input_from')), input_to=_iso(r.get('input_to')),
+                    run_id=(str(r['run_id']) if r.get('run_id') is not None else None),
+                    atr_basis=basis,
+                    policy_effective_from=_iso(r.get('policy_effective_from')),
+                    source=r.get('source'), **common)
+            elif rows:
+                other = max(rows, key=lambda x: _iso(x.get('effective_from')) or '')
+                params[key] = LevelParam(
+                    status=PARAMS_BASIS_MISMATCH, method_id=pol['method_id'],
+                    atr_basis=other.get('atr_basis'),
+                    effective_from=_iso(other.get('effective_from')), **common)
+            else:
+                params[key] = LevelParam(status=PARAMS_UNAVAILABLE,
+                                         method_id=pol['method_id'], **common)
+        out[t] = LevelParams(ticker=t, session_date=session, atr_basis=basis,
+                             policy_effective_from=policy_version, params=params)
+    return out
 
-    above_fresh = [
-        lv for lv in above_all
-        if _within_staleness_window(lv.price, current_price, atr)
-    ]
-    below_fresh = [
-        lv for lv in below_all
-        if _within_staleness_window(lv.price, current_price, atr)
-    ]
 
-    result = {'calls': None, 'puts': None}
+# ─── One level builder (FEAT-STRAT-001) ───────────────────────────────────
+#
+# build_session_levels is the only code that turns daily bars, ATR(14) and a
+# premarket snapshot into levels, side lists, triggers, stops, targets and the
+# ladder. The brief, the planner, the signal monitor, the playbook resolver and
+# the movement statement all read a SessionLevels (or its level_basis JSON).
 
-    # Reasoning context
-    ctx_parts = []
-    if daily_strat_class:
-        ctx_parts.append(f'Daily {daily_strat_class}')
-    if combo and combo != 'none':
-        ctx_parts.append(f'Combo: {combo}')
-    reasoning = ', '.join(ctx_parts) if ctx_parts else ''
+# v2 (2026-11-08): every distance is a per-ticker calibrated parameter
+# recorded in level_basis.params; reach rates count only v2 rows.
+LEVEL_RULE_VERSION = 'feat-strat-001.v2'
 
-    if above_fresh:
-        trigger = above_fresh[0]
-        targets_above = _distinct_targets(above_fresh[1:], trigger.price)
-        # Room to the FIRST DISTINCT target, the one persisted and displayed —
-        # over all_levels a line on the trigger's own cent reported ~0% room
-        # while T1 sat a full percent away (Codex P2 on #1030, round 5).
-        room = compute_room_to_run(trigger.price, targets_above, 'CALL')
+# Trigger candidates in tie-break priority: at one price to the cent the
+# earlier name wins, so a structural level beats the parent bar and both beat
+# a premarket extreme on the same cent.
+PRIOR_PERIOD_CANDIDATES = (
+    'PDH', 'PDL', 'PDC', 'PWH', 'PWL', 'PWC', 'PMH', 'PML', 'PMC',
+    'PQH', 'PQL', 'PQC', 'PYH', 'PYL', 'PYC',
+)
+PARENT_BAR_HIGH = 'parent_bar_high'
+PARENT_BAR_LOW = 'parent_bar_low'
+PREMARKET_HIGH = 'PMK_H'
+PREMARKET_LOW = 'PMK_L'
+_CANDIDATE_ORDER = PRIOR_PERIOD_CANDIDATES + (
+    PARENT_BAR_HIGH, PARENT_BAR_LOW, PREMARKET_HIGH, PREMARKET_LOW,
+)
+_CANDIDATE_PRIORITY = {name: i for i, name in enumerate(_CANDIDATE_ORDER)}
 
-        # Stop on the OPPOSITE side must also be fresh — using a stale
-        # year-low as the stop on a CALL trade gives a meaningless
-        # 41%-below stop. If no fresh opposite-side level exists, omit
-        # the stop and let the playbook formatter / persona logic
-        # default to an ATR-based stop downstream.
-        stop_lv = below_fresh[0] if below_fresh else None
+# Inside-bar walks stop after this many bars, as the planner's walk did.
+_PARENT_BAR_LOOKBACK = 10
 
-        result['calls'] = {
-            'trigger_level': trigger.price,
-            'trigger_name': trigger.name,
-            'targets': [
-                {'price': t.price, 'name': t.name, 'timeframe': t.timeframe}
-                for t in targets_above
-            ],
-            'stop': stop_lv.price if stop_lv else None,
-            'stop_name': stop_lv.name if stop_lv else None,
-            'room_to_first_target': room['distance_pct'] if room['targets'] else 0,
-            'reasoning': reasoning,
-        }
+# A side with no trigger because its window parameter is not ok carries the
+# parameter's status as its reason (Design 6).
+PARAM_ORB_ONLY_REASONS = {
+    'insufficient_history': 'params_insufficient_history',
+    'input_unavailable': 'params_input_unavailable',
+    'no_positive_target': 'params_unavailable',
+    PARAMS_UNAVAILABLE: 'params_unavailable',
+    PARAMS_BASIS_MISMATCH: 'params_basis_mismatch',
+}
 
-    if below_fresh:
-        trigger = below_fresh[0]
-        targets_below = _distinct_targets(below_fresh[1:], trigger.price)
-        room = compute_room_to_run(trigger.price, targets_below, 'PUT')
-        stop_lv = above_fresh[0] if above_fresh else None
+ORB_ONLY_REASONS = (
+    'all_broken_by_premarket', 'next_level_outside_window', 'no_levels',
+    'atr_unavailable', 'stale_daily', 'params_insufficient_history',
+    'params_input_unavailable', 'params_unavailable', 'params_basis_mismatch',
+)
 
-        result['puts'] = {
-            'trigger_level': trigger.price,
-            'trigger_name': trigger.name,
-            'targets': [
-                {'price': t.price, 'name': t.name, 'timeframe': t.timeframe}
-                for t in targets_below
-            ],
-            'stop': stop_lv.price if stop_lv else None,
-            'stop_name': stop_lv.name if stop_lv else None,
-            'room_to_first_target': room['distance_pct'] if room['targets'] else 0,
-            'reasoning': reasoning,
-        }
+_WAIT = "Wait for the 15-min opening range."
 
-    return result
+# The one copy table for an orb_only side, rendered by the brief banners, the
+# planner rationale, the Discord push and the schema descriptions. The
+# window and parameter rows are filled from the side's recorded parameter
+# (orb_only_text's `detail`): the ticker's own window, its coverage share
+# (the sessions whose move stayed inside it) and its exceedance share (the
+# sessions that went past it), each its own figure.
+ORB_ONLY_COPY = {
+    'all_broken_by_premarket': (
+        "Pre-market traded through every {side} level within reach. " + _WAIT
+    ),
+    'next_level_outside_window': (
+        "No unbroken {side} level within {window} x ATR({atr_n}); {ticker}'s "
+        "daily move stayed inside that distance on {coverage} of the last "
+        "{lookback} sessions and went past it on {exceedance}. " + _WAIT
+    ),
+    'no_levels': (
+        "No {side} level in the level history. " + _WAIT
+    ),
+    'atr_unavailable': (
+        "ATR({atr_n}) is unavailable, so no {side} level can be checked against "
+        "{ticker}'s {window} x ATR({atr_n}) window. " + _WAIT
+    ),
+    'stale_daily': (
+        "The prior session's daily bar is missing, so no {side} level is "
+        "published. " + _WAIT
+    ),
+    'params_insufficient_history': (
+        "No {side} trigger: {param} needs {min_sample} samples of {ticker}'s "
+        "history and has {sample_n}, so its window is not calibrated. " + _WAIT
+    ),
+    'params_input_unavailable': (
+        "No {side} trigger: the bars {param} is calibrated from are unavailable "
+        "for {ticker}. " + _WAIT
+    ),
+    'params_unavailable': (
+        "No {side} trigger: {param} has no calibrated value for {ticker}. " + _WAIT
+    ),
+    'params_basis_mismatch': (
+        "No {side} trigger: {ticker}'s values are being recalibrated for the new "
+        "ATR basis, so {param} is not used until that run completes. " + _WAIT
+    ),
+}
+
+# Fallback lines for a row whose detail was not recorded (a level_basis from
+# before per-ticker parameters); they state no number.
+_ORB_ONLY_COPY_NO_DETAIL = {
+    'next_level_outside_window': "No unbroken {side} level within the ticker's calibrated window. " + _WAIT,
+    'atr_unavailable': "ATR is unavailable, so no {side} level can be checked against the ticker's window. " + _WAIT,
+    'params_insufficient_history': "No {side} trigger: the ticker's window parameter has too little history. " + _WAIT,
+    'params_input_unavailable': "No {side} trigger: the window parameter's input bars are unavailable. " + _WAIT,
+    'params_unavailable': "No {side} trigger: the ticker's window parameter is not calibrated. " + _WAIT,
+    'params_basis_mismatch': "No {side} trigger: the ticker's values are being recalibrated for the new ATR basis. " + _WAIT,
+}
+
+# Owner ruling 2026-11-08: a brief built without the session's premarket
+# snapshot points the reader to Insights, whose refresh reads it later.
+PREMARKET_MISSING_NOTE = (
+    "Premarket levels were not available when this brief ran. "
+    "Refer to Insights for premarket levels."
+)
+
+# A snapshot whose prints were not filtered with the ticker's calibrated
+# thresholds (pre_filter_status not ok) is refused by the builder.
+PREMARKET_UNFILTERED_NOTE = (
+    "Premarket high and low are unfiltered (this ticker's print-filter "
+    "thresholds are not calibrated), so levels use the prior close."
+)
+
+ORB_ONLY_SCHEMA_DESCRIPTION = (
+    "'orb_only' = no trigger on this side; the reason is one of "
+    + ", ".join(ORB_ONLY_REASONS)
+    + " (lib.strat_levels.ORB_ONLY_COPY). " + _WAIT
+)
 
 
-def reanchor_triggers(
-    level_map: 'LevelMap',
-    price: float,
-    daily_strat_class: str = '',
-    combo: str = '',
-    atr: Optional[float] = None,
-) -> dict:
-    """Recompute the playbook's trigger legs against a DIFFERENT anchor price.
+def share_text(x: float) -> str:
+    """A share as a whole percent, or one decimal under 10%."""
+    pct = float(x) * 100
+    return f"{pct:.0f}%" if round(pct, 1) == round(pct) else f"{pct:.1f}%"
 
-    The structural levels themselves never move intraday — every one derives
-    from a completed prior period. What moves is which level sits nearest
-    above/below the anchor, and therefore which becomes the trigger, which
-    become the targets, and which becomes the opposite-side stop.
 
-    The premarket brief anchors on the 8:31 price (yesterday's close). Audit
-    §15.5 measured re-anchoring on the 9:31 open across 174 ticker-days and
-    found the PUT leg significantly better re-anchored (paired +0.126%/leg,
-    t=+3.75; day-clustered +0.066, t=+2.51, 67% positive days; survives
-    dropping the top-3 days; last-30 window +11.1 vs +1.0), while calls were a
-    wash (t=+0.17). This is the seam that makes that measurable on live data.
+def atr_length(basis: Optional[str]) -> str:
+    """'14' for atr_14, '5' for atr_5."""
+    return str(basis or '').rsplit('_', 1)[-1] or '?'
 
-    Reconstructs the SAME structural set `build_level_map` handed to
-    `identify_triggers` — prev + current period levels, no gap levels. Gap
-    levels are named `GAP_H_*` / `GAP_L_*` and are context for PMG clustering,
-    never first-class trigger candidates; excluding them here keeps the
-    re-anchor apples-to-apples with the published leg rather than quietly
-    widening the candidate set.
 
-    Returns the same {'calls': ..., 'puts': ...} shape as `identify_triggers`.
-    """
-    structural = {
-        lv.name: lv for lv in level_map.levels
-        if lv.name and not lv.name.startswith('GAP_')
+def multiple_text(x: float) -> str:
+    """An ATR multiple as copy: two decimals with trailing zeros dropped
+    (2.4, 2.61, 3)."""
+    return f"{float(x):.2f}".rstrip('0').rstrip('.')
+
+
+def orb_only_text(reason: Optional[str], side: str, detail: Optional[dict] = None) -> str:
+    """The orb_only copy for one side. `side` is long/short or call/put.
+    `detail` is the side's recorded window parameter (SideLevels.window: a
+    LevelParam.to_basis() dict plus key and ticker); the window, coverage and
+    parameter rows state the ticker's own values from it."""
+    word = {'long': 'call', 'short': 'put', 'calls': 'call', 'puts': 'put',
+            'CALLS': 'call', 'PUTS': 'put'}.get(side, side)
+    reason = reason or 'no_levels'
+    template = ORB_ONLY_COPY.get(reason, ORB_ONLY_COPY['no_levels'])
+    d = detail if isinstance(detail, dict) else {}
+    q = _opt_float(d.get('statistic_q'))
+    value = _opt_float(d.get('value'))
+    fields = {
+        'side': word, 'ticker': d.get('ticker') or 'the ticker',
+        'atr_n': atr_length(d.get('atr_basis')), 'param': d.get('key') or 'the window parameter',
+        'window': multiple_text(value) if value is not None else None,
+        'coverage': share_text(q) if q is not None else None,
+        'exceedance': share_text(1 - q) if q is not None else None,
+        'lookback': d.get('lookback_sessions'),
+        'sample_n': d.get('sample_n'), 'min_sample': d.get('min_sample'),
     }
-    return identify_triggers(price, structural, daily_strat_class, combo, atr=atr)
+    needed = {name for name in ('window', 'coverage', 'exceedance', 'lookback', 'sample_n', 'min_sample')
+              if '{' + name + '}' in template}
+    if any(fields[name] is None for name in needed):
+        template = _ORB_ONLY_COPY_NO_DETAIL.get(reason, template)
+    return template.format(**fields)
 
 
-# Level types that count as a "next level" for the brief's call/put display.
-# Prior-period HIGHS and LOWS (and gap highs/lows) are the structural lines
-# price breaks; closes and opens are reference lines, not breakout levels, so
-# they're excluded here even though identify_triggers considers the full set.
-_NEXT_LEVEL_TYPES = frozenset({'high', 'low', 'gap_high', 'gap_low'})
+@dataclass
+class SideLevels:
+    """One side (long = calls, short = puts) of a session's levels."""
+    side: str
+    candidates: list = field(default_factory=list)
+    trigger: Optional[dict] = None
+    regime: str = 'orb_only'
+    reason: Optional[str] = 'no_levels'
+    targets: list = field(default_factory=list)
+    stop: Optional[dict] = None
+    ladder: list = field(default_factory=list)
+    room_pct: Optional[float] = None
+    distance_atr: Optional[float] = None
+    # The side's trigger-window parameter as used (LevelParam.to_basis()
+    # plus key and ticker); the copy states the ticker's own window from it.
+    window: Optional[dict] = None
+
+    @property
+    def rungs(self) -> list:
+        """The ordered side list: unbroken, in-window, distinct by cent."""
+        return [c for c in self.candidates if not c['broken'] and c['in_window']]
+
+    def to_dict(self) -> dict:
+        return {
+            'side': self.side, 'candidates': self.candidates,
+            'trigger': self.trigger, 'regime': self.regime,
+            'reason': self.reason, 'targets': self.targets, 'stop': self.stop,
+            'ladder': self.ladder, 'room_pct': self.room_pct,
+            'distance_atr': self.distance_atr, 'window': self.window,
+        }
 
 
-def select_nearest_levels(
-    current_price: float,
-    levels: Dict[str, StratLevel],
-    atr: Optional[float] = None,
-    n: int = 2,
-    level_types: frozenset = _NEXT_LEVEL_TYPES,
-) -> dict:
-    """Pick the next ``n`` structural levels above and below the price.
+@dataclass
+class SessionLevels:
+    """Every level decision for one ticker and session (FEAT-STRAT-001)."""
+    ticker: str
+    session_date: date_type
+    status: str = 'ok'                       # ok | stale_daily | no_data
+    rule_version: str = LEVEL_RULE_VERSION
+    built_at: str = ''
+    last_bar_date: Optional[date_type] = None
+    # The ATR every parameter is measured in: the column the policy's
+    # atr_basis names, for the last completed session.
+    atr: Optional[float] = None
+    atr_14: Optional[float] = None
+    atr_5: Optional[float] = None
+    atr_basis: Optional[str] = None
+    # The ticker's level parameters in force on the session (or recorded in
+    # the level_basis it was rebuilt from). Never read from the tables here.
+    params: Optional[LevelParams] = None
+    pmg_status: str = 'ok'
+    prior_close: Optional[float] = None
+    reference: Optional[float] = None
+    reference_source: str = 'prior_close'    # pre_vwap | prior_close | caller
+    premarket: Optional[dict] = None
+    premarket_status: str = 'premarket_unavailable'
+    cleared_above: Optional[float] = None
+    cleared_below: Optional[float] = None
+    levels: List[StratLevel] = field(default_factory=list)
+    pmg_zones: list = field(default_factory=list)
+    strat_class: str = ''
+    long: SideLevels = field(default_factory=lambda: SideLevels('long'))
+    short: SideLevels = field(default_factory=lambda: SideLevels('short'))
 
-    Returns ``{'calls': [...], 'puts': [...]}`` where ``calls`` are the
-    nearest ``n`` levels ABOVE the current price (bullish targets) and
-    ``puts`` the nearest ``n`` BELOW (bearish targets), each ordered
-    nearest-first. Direction is purely positional — a prior-MONTH high
-    sitting below price is a put (bearish) level, a prior-WEEK low above
-    price is a call level. This matches how a trader reads the tape: "what
-    are the next two lines price has to clear going up, and the next two it
-    breaks going down."
+    def side(self, direction: str) -> SideLevels:
+        return self.long if direction in ('long', 'calls', 'call') else self.short
 
-    Only prior-period highs/lows (and gap highs/lows) are considered by
-    default (``level_types``) — closes and opens are reference lines, not
-    the structural breakout levels the trader means by "next level".
+    def level_named(self, name: str) -> Optional[StratLevel]:
+        return next((lv for lv in self.levels if lv.name == name), None)
 
-    Each entry is a dict ``{price, name, period, level_type,
-    distance_pct}``. Levels are de-duplicated by price (within a cent) so
-    two coincident lines (e.g. PDH == PWH) don't both consume a slot. The
-    same staleness window as ``identify_triggers`` is applied so a year-old
-    crash low 40% away never surfaces as a "next level". When fewer than
-    ``n`` qualifying levels exist on a side the list is short — never padded
-    with a fabricated price (CLAUDE.md §3.7).
+    # ── derived builds ──────────────────────────────────────────────
+    def with_premarket(self, premarket) -> 'SessionLevels':
+        """Apply a newer premarket snapshot: it replaces the premarket high
+        and low candidates and the reference, keeps every structural level,
+        and recomputes broken status and picks. A snapshot dated another
+        session is refused and recorded as premarket_unavailable."""
+        snap, status = _accept_premarket(premarket, self.session_date)
+        if snap is None:
+            if status == 'premarket_unfiltered' and self.premarket is None:
+                return _assemble(self, premarket=None, premarket_status=status,
+                                 reference=None, reference_source=None)
+            return self
+        return _assemble(self, premarket=snap, premarket_status='ok',
+                         reference=None, reference_source=None)
+
+    def with_reference(self, reference: float) -> 'SessionLevels':
+        """The same levels against a caller's reference (the signal
+        monitor's put re-anchor passes the session open)."""
+        return _assemble(self, premarket=self.premarket,
+                         premarket_status=self.premarket_status,
+                         reference=reference, reference_source='caller')
+
+    # ── projections ─────────────────────────────────────────────────
+    def to_level_map(self, include_premarket: bool = True) -> LevelMap:
+        """The LevelMap shape persist_level_map, the strat_levels writes and
+        format_levels_for_brief consume. Parent-bar levels are candidates
+        only and are not persisted as strat_levels rows."""
+        persisted = [
+            lv for lv in self.levels
+            if lv.name not in (PARENT_BAR_HIGH, PARENT_BAR_LOW)
+            and (include_premarket or lv.name not in (PREMARKET_HIGH, PREMARKET_LOW))
+        ]
+        return LevelMap(
+            ticker=self.ticker,
+            as_of=self.built_at or pd.Timestamp.now(ET_NAME).isoformat(),
+            current_price=float(self.reference) if self.reference is not None else float('nan'),
+            levels=sorted(persisted, key=lambda lv: lv.price),
+            pmg_zones=list(self.pmg_zones),
+            calls_trigger=_legacy_trigger_dict(self.long),
+            puts_trigger=_legacy_trigger_dict(self.short),
+            room_to_run_up=self.long.room_pct,
+            room_to_run_down=self.short.room_pct,
+            call_levels=list(self.long.ladder),
+            put_levels=list(self.short.ladder),
+            regime_long=self.long.regime,
+            regime_short=self.short.regime,
+            reason_long=self.long.reason,
+            reason_short=self.short.reason,
+            atr=self.atr,
+            premarket_status=self.premarket_status,
+            window_long=self.long.window,
+            window_short=self.short.window,
+            pmg_status=self.pmg_status,
+        )
+
+    def published_prices(self) -> set:
+        """Cents of every level the builder knows; any published price must
+        be one of these or an offset from one."""
+        return {price_cents(lv.price) for lv in self.levels}
+
+    def to_basis(self) -> dict:
+        """The level_basis JSON written with a brief row and carried on an
+        insight report."""
+        def _lv(lv: StratLevel) -> dict:
+            return {'name': lv.name, 'price': float(lv.price),
+                    'timeframe': lv.timeframe, 'level_type': lv.level_type,
+                    'period_label': lv.period_label,
+                    'strat_class': lv.strat_class, 'is_current': bool(lv.is_current)}
+        return {
+            'rule_version': self.rule_version,
+            'ticker': self.ticker,
+            'session_date': self.session_date.isoformat(),
+            'built_at': self.built_at,
+            'status': self.status,
+            'last_bar_date': self.last_bar_date.isoformat() if self.last_bar_date else None,
+            'atr': self.atr,
+            'atr_14': self.atr_14,
+            'atr_5': self.atr_5,
+            'atr_basis': self.atr_basis,
+            'policy_effective_from': self.params.policy_effective_from if self.params else None,
+            'params': self.params.to_basis()['params'] if self.params else None,
+            'pmg_status': self.pmg_status,
+            'prior_close': self.prior_close,
+            'reference': self.reference,
+            'reference_source': self.reference_source,
+            'premarket': dict(self.premarket) if self.premarket else None,
+            'premarket_status': self.premarket_status,
+            'cleared_above': self.cleared_above,
+            'cleared_below': self.cleared_below,
+            'strat_class': self.strat_class,
+            'levels': [_lv(lv) for lv in self.levels],
+            'pmg_zones': list(self.pmg_zones),
+            'long': self.long.to_dict(),
+            'short': self.short.to_dict(),
+        }
+
+    @classmethod
+    def from_basis(cls, basis: dict, params: Optional[LevelParams] = None) -> 'SessionLevels':
+        """Rebuild from a stored level_basis. The levels, ATR, prior close,
+        premarket snapshot and the parameters it recorded are the inputs; the
+        picks are recomputed under the current rule so a reader never trusts
+        a stale pick. The parameter tables are never read: a basis that
+        recorded parameters rebuilds with exactly those, so a later
+        calibration run leaves its picks unchanged. `params` is used only
+        for a basis written before parameters were recorded (a replay passes
+        the rows in force on the replayed session); with neither, every side
+        is orb_only with reason params_unavailable."""
+        if not isinstance(basis, dict):
+            raise ValueError('level_basis must be a JSON object')
+        session = _to_date(basis.get('session_date'))
+        if session is None:
+            raise ValueError('level_basis has no session_date')
+        ticker = str(basis.get('ticker') or '')
+        recorded = LevelParams.from_basis(ticker, session, {
+            'atr_basis': basis.get('atr_basis'),
+            'policy_effective_from': basis.get('policy_effective_from'),
+            'params': basis.get('params'),
+        })
+        use = recorded if recorded is not None else params
+        atr_basis = use.atr_basis if use is not None else basis.get('atr_basis')
+        atr_14 = _opt_float(basis.get('atr_14'))
+        atr_5 = _opt_float(basis.get('atr_5'))
+        if recorded is None and basis.get('atr_14') is None:
+            # A pre-parameter basis recorded ATR(14) as `atr`.
+            atr_14 = _opt_float(basis.get('atr'))
+        atrs = {'atr_14': atr_14, 'atr_5': atr_5}
+        basis_atr = atrs.get(atr_basis) if atr_basis else None
+        base = cls(
+            ticker=ticker,
+            session_date=session,
+            status=basis.get('status') or 'ok',
+            built_at=basis.get('built_at') or '',
+            last_bar_date=_to_date(basis.get('last_bar_date')),
+            atr=basis_atr if _finite_positive(basis_atr) else None,
+            atr_14=atr_14, atr_5=atr_5, atr_basis=atr_basis, params=use,
+            pmg_status=basis.get('pmg_status') or 'ok',
+            prior_close=basis.get('prior_close'),
+            strat_class=basis.get('strat_class') or '',
+            levels=[StratLevel(
+                name=d['name'], price=float(d['price']),
+                timeframe=d.get('timeframe', ''), level_type=d.get('level_type', 'pivot'),
+                strat_class=d.get('strat_class', ''), is_current=bool(d.get('is_current')),
+                period_label=d.get('period_label', ''),
+            ) for d in (basis.get('levels') or [])],
+            pmg_zones=list(basis.get('pmg_zones') or []),
+        )
+        if recorded is None:
+            # A pre-parameter basis stored zones from the old percentage
+            # tolerance: they are rebuilt from its levels with the
+            # parameters supplied (or none), never carried as calibrated
+            # output (Codex P2 on e4bb463e).
+            base.pmg_zones, base.pmg_status = _pmg_zones(
+                [lv for lv in base.levels if lv.name not in (
+                    PREMARKET_HIGH, PREMARKET_LOW, PARENT_BAR_HIGH, PARENT_BAR_LOW)],
+                use, base.atr)
+        if base.status != 'ok':
+            return _assemble(base, premarket=None, premarket_status='premarket_unavailable',
+                             reference=None, reference_source=None)
+        snap, pm_status = _accept_premarket(basis.get('premarket'), session)
+        if snap is None and basis.get('premarket_status') == 'premarket_unfiltered':
+            pm_status = 'premarket_unfiltered'
+        ref = basis.get('reference') if basis.get('reference_source') == 'caller' else None
+        return _assemble(base, premarket=snap, premarket_status=pm_status, reference=ref,
+                         reference_source='caller' if ref is not None else None)
+
+
+def _to_date(v) -> Optional[date_type]:
+    """A date from a date, datetime, Timestamp or ISO string; None otherwise."""
+    from datetime import datetime as _dt
+    if v is None:
+        return None
+    if isinstance(v, _dt):
+        return v.date()
+    if isinstance(v, date_type):
+        return v
+    try:
+        ts = pd.Timestamp(v)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(ts):
+        return None
+    return ts.date()
+
+
+def _premarket_value(snap, key):
+    if snap is None:
+        return None
+    v = snap.get(key) if isinstance(snap, dict) else getattr(snap, key, None)
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and f > 0 else None
+
+
+def _premarket_count(v) -> Optional[int]:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return int(f) if f == f and f >= 0 else None
+
+
+# The premarket provenance columns on market_data_daily (FEAT-STRAT-001):
+# when the snapshot was fetched and how many prints the filter dropped. Every
+# reader tolerates their absence (the schema change waits on the owner).
+PREMARKET_PROVENANCE_COLUMNS = {
+    'pre_fetched_at': 'fetched_at',
+    'pre_excluded_stale_prints': 'excluded_stale_prints',
+    'pre_excluded_spikes': 'excluded_spikes',
+    # Per-ticker level parameters (2026-11-08): whether the prints were
+    # filtered with the ticker's calibrated thresholds, and which.
+    'pre_filter_status': 'pre_filter_status',
+    'pre_filter_params': 'pre_filter_params',
+}
+
+
+SESSION_PREMARKET_SQL = (
+    "SELECT date, pre_high, pre_low, pre_vwap, gap_pct{provenance} "
+    "FROM market_data_daily WHERE ticker = :ticker AND date = :d LIMIT 1"
+)
+
+
+def premarket_filter_inputs(params: 'LevelParams', atrs) -> dict:
+    """What the premarket print filter (lib.indicators
+    calculate_premarket_context) runs with for one ticker, and what the
+    fetcher records beside the snapshot (pre_filter_status,
+    pre_filter_params).
+
+    `params` is the ticker's LevelParams in force on the session; `atrs` the
+    last completed session's ATR columns ({'atr_14': x, 'atr_5': y}). Returns
+    {status, atr, stale_print_atr, spike_atr, params}: status 'ok' when both
+    thresholds are ok and the ATR in the policy's basis is positive, and then
+    the three numbers are set; otherwise the first non-ok threshold status,
+    or 'atr_unavailable', and the three numbers are None so no print is
+    filtered and the snapshot is labelled unfiltered."""
+    if not isinstance(params, LevelParams):
+        raise TypeError(f"premarket_filter_inputs takes LevelParams, not {type(params).__name__}")
+    atr = _atr_inputs(atrs).get(params.atr_basis)
+    stale = params.param(PM_STALE_PRINT_KEY)
+    spike = params.param(PM_SPIKE_KEY)
+    record = {
+        'atr_basis': params.atr_basis,
+        'atr': atr,
+        'policy_effective_from': params.policy_effective_from,
+    }
+    for p in (stale, spike):
+        record[p.key] = {'value': p.value, 'status': p.status,
+                         'effective_from': p.effective_from, 'run_id': p.run_id}
+    not_ok = next((p.status for p in (stale, spike) if not p.ok), None)
+    status = not_ok or ('atr_unavailable' if atr is None else PARAM_OK)
+    ok = status == PARAM_OK
+    return {
+        'status': status,
+        'atr': atr if ok else None,
+        'stale_print_atr': stale.value if ok else None,
+        'spike_atr': spike.value if ok else None,
+        'params': record,
+    }
+
+
+_MISSING_SCHEMA_MARKERS = (
+    '42703', '42p01',                      # PostgreSQL undefined_column / undefined_table
+    'undefinedcolumn', 'undefinedtable',
+    'no such column', 'no such table',     # SQLite
+)
+
+
+def _is_missing_schema_error(exc: BaseException) -> bool:
+    """True when `exc` says a column or table does not exist (the schema
+    change not applied yet), and only then. A timeout, a lost connection or
+    any other failure is not a missing schema."""
+    text_ = f"{type(exc).__name__} {exc}".lower()
+    if any(m in text_ for m in _MISSING_SCHEMA_MARKERS):
+        return True
+    return 'does not exist' in text_ and ('column' in text_ or 'relation' in text_)
+
+
+def read_session_premarket(query_fn, ticker: str, session_date) -> Optional[dict]:
+    """The session's own premarket snapshot from its market_data_daily row,
+    with the provenance columns when the table has them. `query_fn(sql,
+    params)` returns a DataFrame. A missing-column error (the schema change
+    not applied yet) or an empty result retries the read without the
+    provenance columns; any other raised failure propagates, so a failed
+    read is never taken for a session with no premarket."""
+    params = {'ticker': str(ticker).upper(), 'd': str(_to_date(session_date))}
+    extended = SESSION_PREMARKET_SQL.format(
+        provenance=''.join(f', {c}' for c in PREMARKET_PROVENANCE_COLUMNS))
+    try:
+        df = query_fn(extended, params)
+    except Exception as exc:  # re-raised unless a missing column
+        if not _is_missing_schema_error(exc):
+            raise
+        df = None
+    if df is None or getattr(df, 'empty', True):
+        # A missing provenance column, or a query_fn that already turns its
+        # SQL errors into an empty frame: read the snapshot without them.
+        df = query_fn(SESSION_PREMARKET_SQL.format(provenance=''), params)
+    if df is None or getattr(df, 'empty', True):
+        return None
+    return premarket_snapshot_from_row(df.iloc[0], session_date)
+
+
+def premarket_snapshot_from_row(row, session_date) -> Optional[dict]:
+    """A premarket snapshot dated `session_date` from one market_data_daily
+    row (a dict or Series with pre_high, pre_low, pre_vwap, gap_pct and, when
+    present, the provenance columns), or None when it holds no premarket."""
+    if row is None:
+        return None
+    get = row.get if hasattr(row, 'get') else (lambda k, d=None: getattr(row, k, d))
+    snap = {'date': _to_date(session_date).isoformat()}
+    for col in ('pre_high', 'pre_low', 'pre_vwap', 'gap_pct'):
+        v = get(col, None)
+        try:
+            snap[col] = float(v) if v is not None and pd.notna(v) else None
+        except (TypeError, ValueError):
+            snap[col] = None
+    for col, key in PREMARKET_PROVENANCE_COLUMNS.items():
+        v = get(col, None)
+        try:
+            snap[key] = None if v is None or pd.isna(v) else v
+        except (TypeError, ValueError):
+            snap[key] = v
+    if snap['pre_high'] is None and snap['pre_low'] is None and snap['pre_vwap'] is None:
+        return None
+    return snap
+
+
+def _accept_premarket(premarket, session_date: date_type) -> Tuple[Optional[dict], str]:
+    """The session's own premarket snapshot as a plain dict with
+    'ok', or (None, why). A snapshot with no date, or dated any other day,
+    is refused as premarket_unavailable. A snapshot whose prints were not
+    filtered with the ticker's calibrated thresholds (pre_filter_status not
+    'ok', including a row written before the status existed) is refused as
+    premarket_unfiltered: its pre_high, pre_low and pre_vwap may carry the
+    bad prints the filter drops."""
+    if premarket is None:
+        return None, 'premarket_unavailable'
+    get = premarket.get if isinstance(premarket, dict) else (lambda k, d=None: getattr(premarket, k, d))
+    snap_date = _to_date(get('date'))
+    if snap_date is None or snap_date != session_date:
+        return None, 'premarket_unavailable'
+    if get('pre_filter_status') != PARAM_OK:
+        has_values = any(_premarket_value(premarket, k) is not None
+                         for k in ('pre_high', 'pre_low', 'pre_vwap'))
+        return None, ('premarket_unfiltered' if has_values else 'premarket_unavailable')
+    fetched = get('fetched_at')
+    if fetched is not None:
+        try:
+            ts = pd.Timestamp(fetched)
+            fetched = None if pd.isna(ts) else (
+                ts.tz_localize('UTC') if ts.tzinfo is None else ts.tz_convert('UTC')).isoformat()
+        except (TypeError, ValueError):
+            fetched = None
+    stale = _premarket_count(get('excluded_stale_prints'))
+    spikes = _premarket_count(get('excluded_spikes'))
+    out = {
+        'date': snap_date.isoformat(),
+        'fetched_at': fetched,
+        'pre_high': _premarket_value(premarket, 'pre_high'),
+        'pre_low': _premarket_value(premarket, 'pre_low'),
+        'pre_vwap': _premarket_value(premarket, 'pre_vwap'),
+        'gap_pct': None,
+        # Prints the premarket filter dropped (lib.indicators
+        # calculate_premarket_context): stale prior-close prints and
+        # isolated spikes. None when the writer did not record them.
+        'excluded_stale_prints': stale,
+        'excluded_spikes': spikes,
+        'excluded_bars': (None if stale is None and spikes is None
+                          else (stale or 0) + (spikes or 0)),
+        'pre_filter_status': PARAM_OK,
+        'pre_filter_params': _json_obj(get('pre_filter_params')) or None,
+    }
+    gp = get('gap_pct')
+    try:
+        out['gap_pct'] = float(gp) if gp is not None and float(gp) == float(gp) else None
+    except (TypeError, ValueError):
+        out['gap_pct'] = None
+    if out['pre_high'] is None and out['pre_low'] is None and out['pre_vwap'] is None:
+        return None, 'premarket_unavailable'
+    return out, 'ok'
+
+
+def _normalize_daily(daily_df: pd.DataFrame) -> pd.DataFrame:
+    """Daily bars on a naive DatetimeIndex with Open/High/Low/Close columns."""
+    if daily_df is None or len(daily_df) == 0:
+        return pd.DataFrame(columns=['Open', 'High', 'Low', 'Close'])
+    df = daily_df.copy()
+    for c in ('date', 'Date', 'Time', 'timestamp'):
+        if c in df.columns:
+            df.index = pd.to_datetime(df[c])
+            break
+    if not isinstance(df.index, pd.DatetimeIndex):
+        df.index = pd.to_datetime(df.index)
+    if df.index.tz is not None:
+        df.index = df.index.tz_localize(None)  # tz-ok: daily bars are session-date labels; the wall date is kept
+    rename = {}
+    for c in df.columns:
+        cl = str(c).lower()
+        if cl in ('open', 'high', 'low') and c not in ('Open', 'High', 'Low'):
+            rename[c] = cl.capitalize()
+        elif cl in ('close', 'last') and 'Close' not in df.columns and c != 'Close':
+            rename[c] = 'Close'
+    df = df.rename(columns=rename)
+    for c in ('Open', 'High', 'Low', 'Close'):
+        if c not in df.columns:
+            return pd.DataFrame(columns=['Open', 'High', 'Low', 'Close'])
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+    return df.sort_index()
+
+
+def find_parent_bar(daily_df: pd.DataFrame) -> Optional[Tuple[float, float, str]]:
+    """The parent bar of the last completed bar in `daily_df`.
+
+    `daily_df` must already end at the prior session (build_session_levels
+    bounds it). When that bar is not an inside bar it is its own parent; when
+    it is, walk back through the run of inside bars to the bar that contains
+    them. Returns (high, low, date label) or None.
     """
-    candidates = [lv for lv in levels.values()
-                  if not level_types or lv.level_type in level_types]
-    # Partition on the shared cents rule: a level on the anchor's own cent is
-    # neither a call nor a put line at the card's precision, and two raw
-    # prices a hair either side of the anchor must not become a call rung and
-    # a put rung at the same displayed price (Codex P2 on #1030, round 5).
-    anchor_c = price_cents(current_price)
-    above = sorted((lv for lv in candidates if price_cents(lv.price) > anchor_c),
-                   key=lambda lv: lv.price)
-    below = sorted((lv for lv in candidates if price_cents(lv.price) < anchor_c),
-                   key=lambda lv: -lv.price)
-    above = [lv for lv in above
-             if _within_staleness_window(lv.price, current_price, atr)]
-    below = [lv for lv in below
-             if _within_staleness_window(lv.price, current_price, atr)]
+    df = _normalize_daily(daily_df)
+    n = len(df)
+    if n == 0:
+        return None
+    highs = df['High'].to_numpy(dtype=float)
+    lows = df['Low'].to_numpy(dtype=float)
+    i = n - 1
+    walked = 0
+    while (i >= 1 and walked < _PARENT_BAR_LOOKBACK
+           and StratClassifier.classify_candle(highs[i], lows[i], highs[i - 1], lows[i - 1]) == '1'):
+        i -= 1
+        walked += 1
+    if highs[i] != highs[i] or lows[i] != lows[i]:
+        return None
+    return float(highs[i]), float(lows[i]), str(df.index[i].date())
 
-    def _take(seq):
-        # De-duplicate and emit on the shared cents rule (price_cents), so the
-        # price a consumer sees is the same cent every other comparison uses.
-        out, seen = [], set()
-        for lv in seq:
-            c = price_cents(lv.price)
-            if c in seen:
-                continue
-            seen.add(c)
-            out.append({
-                'price': c / 100.0,
-                'name': lv.name,
-                'period': lv.timeframe,
-                'level_type': lv.level_type,
-                'distance_pct': round((c / 100.0 - current_price) / current_price * 100, 2),
-            })
-            if len(out) >= n:
+
+def _atr_inputs(atr) -> Dict[str, Optional[float]]:
+    """The ATR columns a caller passes, {'atr_14': x, 'atr_5': y}, each a
+    positive float or None. A bare number is refused: which ATR it is decides
+    every distance, so the caller names the column."""
+    if not hasattr(atr, 'get'):
+        raise TypeError(
+            "build_session_levels takes atr as a mapping of ATR columns "
+            f"({sorted(ATR_COLUMNS)}) to the last completed session's values, not {atr!r}")
+    out = {}
+    for col in ATR_COLUMNS:
+        v = atr.get(col)
+        out[col] = float(v) if _finite_positive(v) else None
+    return out
+
+
+def atr_inputs_from_frame(daily_df: pd.DataFrame, session_date) -> Dict[str, Optional[float]]:
+    """ATR(14) and ATR(5) of the last completed session before `session_date`
+    from a DataLoader frame (columns ATR14 / ATR5) or a market_data_daily
+    frame (atr_14 / atr_5). A column the frame lacks is None."""
+    df = _normalize_daily(daily_df) if daily_df is not None and len(daily_df) else None
+    out: Dict[str, Optional[float]] = {col: None for col in ATR_COLUMNS}
+    if df is None or not len(df):
+        return out
+    df = df[df.index.normalize() < pd.Timestamp(_to_date(session_date))]
+    df = df[df['Close'].notna()]
+    if not len(df):
+        return out
+    last = df.iloc[-1]
+    for col, frame_col in ATR_COLUMNS.items():
+        for c in (frame_col, col):
+            if c in df.columns:
+                v = last.get(c)
+                out[col] = float(v) if _finite_positive(v) else None
                 break
+    return out
+
+
+def build_session_levels(
+    ticker: str,
+    session_date: date_type,
+    daily_df: pd.DataFrame,
+    atr,
+    premarket,
+    params: LevelParams,
+    reference: Optional[float] = None,
+    *,
+    daily_strat_class: str = '',
+) -> SessionLevels:
+    """Build every level decision for `ticker` on `session_date`.
+
+    * Daily bars are bounded to dates before session_date, null-close rows
+      dropped, and freshness checked with daily_data_freshness: a frame whose
+      last bar is not the prior session gives status stale_daily, no levels.
+    * Previous periods come from the period filter only, never iloc[-2].
+    * The parent bar is found from the last completed bar.
+    * `premarket` (a dict or object with date, pre_high, pre_low, pre_vwap,
+      gap_pct, fetched_at, excluded_stale_prints, excluded_spikes,
+      pre_filter_status) is used only when its own date is session_date and
+      its prints were filtered with the ticker's calibrated thresholds;
+      otherwise premarket_unavailable or premarket_unfiltered is recorded.
+    * The reference is the snapshot's pre_vwap, else the prior close, unless
+      the caller passes `reference`.
+    * `atr` maps ATR columns to the last completed session's values
+      ({'atr_14': ..., 'atr_5': ...}); the policy's atr_basis picks the one
+      every distance is measured in. Missing or not positive gives no
+      trigger on either side, reason atr_unavailable.
+    * `params` is the ticker's LevelParams in force on the session
+      (load_level_params, read once per run). Each side's window is its own
+      trigger_window_*_atr; a window that is not ok gives no trigger on that
+      side with the parameter's status as the reason. PMG zones use
+      level_cluster_atr.
+    """
+    if not isinstance(params, LevelParams):
+        raise TypeError("build_session_levels needs the ticker's LevelParams "
+                        "(lib.strat_levels.load_level_params)")
+    session_date = _to_date(session_date)
+    atrs = _atr_inputs(atr)
+    atr_v = atrs.get(params.atr_basis)
+    base = SessionLevels(ticker=ticker, session_date=session_date, atr=atr_v,
+                         atr_14=atrs['atr_14'], atr_5=atrs['atr_5'],
+                         atr_basis=params.atr_basis, params=params,
+                         built_at=pd.Timestamp.now(ET_NAME).isoformat(),
+                         strat_class=daily_strat_class or '')
+    df = _normalize_daily(daily_df)
+    if len(df):
+        df = df[df.index.normalize() < pd.Timestamp(session_date)]
+        df = df[df['Close'].notna() & df['High'].notna() & df['Low'].notna()]
+    if len(df) < 2:
+        base.status = 'no_data'
+        return _assemble(base, premarket=None, premarket_status='premarket_unavailable',
+                         reference=None, reference_source=None)
+    last_bar = df.index[-1].date()
+    base.last_bar_date = last_bar
+    is_stale, _gap, _status = daily_data_freshness(last_bar, session_date)
+    if is_stale:
+        base.status = 'stale_daily'
+        return _assemble(base, premarket=None, premarket_status='premarket_unavailable',
+                         reference=None, reference_source=None)
+    base.prior_close = float(df['Close'].iloc[-1])
+
+    snap, pm_status = _accept_premarket(premarket, session_date)
+    anchor = (float(reference) if reference is not None
+              else (snap['pre_vwap'] if snap and snap.get('pre_vwap') else base.prior_close))
+
+    prev_levels = _compute_previous_levels(df, analysis_date=session_date)
+    curr_levels = _compute_current_levels(df, anchor, analysis_date=session_date)
+    gap_levels = compute_gap_levels(df.assign(Time=df.index))
+    base.pmg_zones, base.pmg_status = _pmg_zones(
+        list(prev_levels.values()) + list(curr_levels.values()) + gap_levels, params, atr_v)
+    levels = list(prev_levels.values()) + list(curr_levels.values()) + gap_levels
+    parent = find_parent_bar(df)
+    if parent is not None:
+        ph, pl, plabel = parent
+        levels.append(StratLevel(name=PARENT_BAR_HIGH, price=ph, timeframe='day',
+                                 level_type='high', period_label=plabel))
+        levels.append(StratLevel(name=PARENT_BAR_LOW, price=pl, timeframe='day',
+                                 level_type='low', period_label=plabel))
+    base.levels = levels
+    return _assemble(base, premarket=snap, premarket_status=pm_status, reference=reference,
+                     reference_source='caller' if reference is not None else None)
+
+
+def _pmg_zones(levels: List[StratLevel], params: Optional[LevelParams],
+               atr: Optional[float]) -> tuple:
+    """(PMG zones, pmg_status) for the clustered levels: the previous,
+    current and gap levels (never premarket or parent-bar levels), with the
+    ticker's level_cluster_atr in force. The one rule for a fresh build and
+    for a stored basis that recorded no parameters."""
+    if params is None:
+        return [], PARAMS_UNAVAILABLE
+    if atr is None:
+        return [], 'atr_unavailable'
+    cluster = params.param(LEVEL_CLUSTER_KEY)
+    if not cluster.ok:
+        return [], cluster.status
+    return detect_level_clusters(levels, tolerance_atr=cluster.value, atr=atr), 'ok'
+
+
+
+def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_status: str,
+              reference: Optional[float], reference_source: Optional[str]) -> SessionLevels:
+    """Recompute reference, cleared marks, broken status and picks from a
+    SessionLevels' structural levels plus a premarket snapshot."""
+    out = SessionLevels(
+        ticker=base.ticker, session_date=base.session_date, status=base.status,
+        rule_version=LEVEL_RULE_VERSION, built_at=base.built_at,
+        last_bar_date=base.last_bar_date, atr=base.atr, atr_14=base.atr_14,
+        atr_5=base.atr_5, atr_basis=base.atr_basis, params=base.params,
+        pmg_status=base.pmg_status,
+        prior_close=base.prior_close, strat_class=base.strat_class,
+        pmg_zones=list(base.pmg_zones),
+    )
+    structural = [lv for lv in base.levels
+                  if lv.name not in (PREMARKET_HIGH, PREMARKET_LOW)]
+    if base.status != 'ok':
+        out.levels = []
+        out.long = SideLevels('long', reason=base.status if base.status == 'stale_daily' else 'no_levels')
+        out.short = SideLevels('short', reason=out.long.reason)
         return out
 
-    return {'calls': _take(above), 'puts': _take(below)}
+    out.premarket = premarket
+    out.premarket_status = 'ok' if premarket else premarket_status
+    pre_high = premarket.get('pre_high') if premarket else None
+    pre_low = premarket.get('pre_low') if premarket else None
+    if reference is not None:
+        out.reference = float(reference)
+        out.reference_source = 'caller'
+    elif premarket and premarket.get('pre_vwap'):
+        out.reference = float(premarket['pre_vwap'])
+        out.reference_source = 'pre_vwap'
+    else:
+        out.reference = float(base.prior_close) if base.prior_close is not None else None
+        out.reference_source = 'prior_close'
+
+    pm_levels = compute_premarket_levels(pre_high, pre_low)
+    out.levels = structural + list(pm_levels.values())
+
+    ref = out.reference
+    if ref is None:
+        out.long = SideLevels('long', reason='no_levels')
+        out.short = SideLevels('short', reason='no_levels')
+        return out
+    out.cleared_above = max(ref, pre_high) if pre_high is not None else ref
+    out.cleared_below = min(ref, pre_low) if pre_low is not None else ref
+    candidates = _candidate_rungs(out.levels)
+    if not premarket:
+        # Spec revision 2: with no premarket snapshot nothing has traded
+        # yet, so a candidate on the reference's own cent (PDC itself when
+        # the reference is the prior close, or any level sharing that cent)
+        # is on neither side list and the trigger is the next real level
+        # out. With a snapshot such a level stays on both lists.
+        ref_cents = price_cents(ref)
+        candidates = [c for c in candidates if c['cents'] != ref_cents]
+    out.long = _pick_side('long', candidates, ref, out.cleared_above, out.atr, out.params)
+    out.short = _pick_side('short', candidates, ref, out.cleared_below, out.atr, out.params)
+    return out
 
 
-# ─── Level map builder ────────────────────────────────────────────────────
+def _candidate_rungs(levels: List[StratLevel]) -> list:
+    """The one candidate set, distinct by cent: prior-period highs, lows and
+    closes, the parent bar's high and low, and the premarket high and low.
+    At one cent the higher-priority name wins and the others are aliases."""
+    by_cent: Dict[int, dict] = {}
+    for lv in sorted((lv for lv in levels if lv.name in _CANDIDATE_PRIORITY),
+                     key=lambda lv: _CANDIDATE_PRIORITY[lv.name]):
+        c = price_cents(lv.price)
+        if c in by_cent:
+            by_cent[c]['aliases'].append(lv.name)
+            continue
+        by_cent[c] = {
+            'name': lv.name, 'price': float(lv.price), 'cents': c,
+            'level_type': lv.level_type, 'timeframe': lv.timeframe,
+            'period': lv.period_label, 'aliases': [],
+        }
+    return sorted(by_cent.values(), key=lambda d: d['cents'])
+
+
+def _rung(c: dict, ref: float) -> dict:
+    return {
+        'name': c['name'], 'price': c['price'], 'level_type': c['level_type'],
+        'timeframe': c['timeframe'], 'period': c['period'],
+        'aliases': list(c['aliases']),
+    }
+
+
+def _ladder_entry(c: dict, ref: float) -> dict:
+    p = c['cents'] / 100.0
+    return {
+        'price': p, 'name': c['name'], 'period': c['timeframe'],
+        'level_type': c['level_type'],
+        'distance_pct': round((p - ref) / ref * 100, 2),
+    }
+
+
+def _window_detail(params: Optional[LevelParams], side: str) -> Optional[dict]:
+    """The side's trigger-window parameter as recorded on the side."""
+    if params is None:
+        return None
+    key = trigger_window_key(side)
+    return {'key': key, 'ticker': params.ticker, **params.param(key).to_basis(),
+            'atr_basis': params.atr_basis}
+
+
+def _pick_side(side: str, candidates: list, ref: float, cleared: float,
+               atr: Optional[float], params: Optional[LevelParams]) -> SideLevels:
+    """One side rule, one broken rule, one window.
+
+    A candidate is on the long list when its cent is at or above the
+    cleared-above mark, max(reference, premarket high), and on the short list
+    when at or below the cleared-below mark, whatever kind of level it is.
+    A candidate between the reference and the mark was traded through by
+    premarket: it is listed as broken and is never a pick.
+
+    The side's own window parameter windows its trigger, targets and ladder;
+    the other side's windows its stop (the stop lies on the other side of the
+    reference). A window that is not ok gives no trigger, with its status as
+    the reason.
+    """
+    own = params.param(trigger_window_key(side)) if params is not None else None
+    opp_side = 'short' if side == 'long' else 'long'
+    opp = params.param(trigger_window_key(opp_side)) if params is not None else None
+    window = own.value if own is not None and own.ok else None
+    stop_window = opp.value if opp is not None and opp.ok else None
+    ref_c = price_cents(ref)
+    mark_c = price_cents(cleared)
+    if side == 'long':
+        on_side = [c for c in candidates if c['cents'] >= ref_c]
+        broken = lambda c: c['cents'] < mark_c
+        other = sorted((c for c in candidates if c['cents'] < ref_c), key=lambda c: -c['cents'])
+    else:
+        on_side = sorted((c for c in candidates if c['cents'] <= ref_c), key=lambda c: -c['cents'])
+        broken = lambda c: c['cents'] > mark_c
+        other = [c for c in candidates if c['cents'] > ref_c]
+    listed = []
+    for c in on_side:
+        listed.append({**_rung(c, ref), 'cents': c['cents'], 'broken': broken(c),
+                       'in_window': _within_staleness_window(c['price'], ref, atr, window),
+                       'distance_atr': (round(abs(c['price'] - ref) / atr, 3) if atr else None)})
+    out = SideLevels(side, candidates=listed, window=_window_detail(params, side))
+    if not candidates:
+        out.reason = 'no_levels'
+        return out
+    # No parameters at all (a level_basis written before they were
+    # recorded, rebuilt with none offered): the parameters also name the
+    # ATR basis, so without them the ATR is undefined too and the reason
+    # is the parameters, checked before the ATR.
+    if own is None:
+        out.reason = 'params_unavailable'
+        return out
+    if atr is None:
+        out.reason = 'atr_unavailable'
+        return out
+    if not own.ok:
+        out.reason = PARAM_ORB_ONLY_REASONS.get(own.status, 'params_unavailable')
+        return out
+    unbroken = [c for c in listed if not c['broken']]
+    rungs = [c for c in unbroken if c['in_window']]
+    if not rungs:
+        # The premarket extreme sits on the cleared mark and is never
+        # broken, so "all broken" means every STRUCTURAL candidate on the
+        # side was traded through and only the premarket extreme (outside
+        # the window) is left.
+        structural_unbroken = [c for c in unbroken
+                               if c['name'] not in (PREMARKET_HIGH, PREMARKET_LOW)]
+        if structural_unbroken:
+            out.reason = 'next_level_outside_window'
+        elif any(c['broken'] for c in listed):
+            out.reason = 'all_broken_by_premarket'
+        elif listed:
+            out.reason = 'next_level_outside_window'
+        else:
+            out.reason = 'no_levels'
+        return out
+    trig = rungs[0]
+    out.trigger = _rung(trig, ref)
+    out.regime = 'normal'
+    out.reason = None
+    out.targets = [_rung(c, ref) for c in rungs[1:4]]
+    stop = next((c for c in other if _within_staleness_window(c['price'], ref, atr, stop_window)), None)
+    out.stop = _rung(stop, ref) if stop else None
+    out.ladder = [_ladder_entry(c, ref) for c in rungs[:2]]
+    out.room_pct = round(abs(trig['price'] - ref) / ref * 100, 3)
+    out.distance_atr = round(abs(trig['price'] - ref) / atr, 3)
+    return out
+
+
+def _legacy_trigger_dict(s: SideLevels) -> Optional[dict]:
+    """A side pick in the {trigger_level, trigger_name, targets, stop, ...}
+    shape persisted to premarket_analysis and read by the formatter."""
+    if s.trigger is None:
+        return None
+    t = s.trigger
+    targets = [{'price': x['price'], 'name': x['name'], 'timeframe': x['timeframe']}
+               for x in s.targets]
+    room_t1 = (round(abs(targets[0]['price'] - t['price']) / t['price'] * 100, 3)
+               if targets else 0)
+    return {
+        'trigger_level': t['price'], 'trigger_name': t['name'],
+        'targets': targets,
+        'stop': s.stop['price'] if s.stop else None,
+        'stop_name': s.stop['name'] if s.stop else None,
+        'room_to_first_target': room_t1,
+        'reasoning': '',
+    }
+
+
+LIVE_LEVEL_BASIS_SQL = (
+    "SELECT ticker, level_basis FROM premarket_analysis "
+    "WHERE ticker = :ticker AND analysis_date = :d AND run_kind = 'live' "
+    "AND level_basis IS NOT NULL LIMIT 1"
+)
+
+
+def parse_level_basis(value) -> Optional[dict]:
+    """A level_basis cell (JSONB dict or its JSON text) as a dict, or None."""
+    import json as _json
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = _json.loads(value)
+        except ValueError:
+            return None
+    return value if isinstance(value, dict) else None
+
+
+def read_live_level_basis(query_fn, ticker: str, session_date) -> Optional[dict]:
+    """The session's level_basis from its LIVE premarket_analysis row.
+
+    `query_fn(sql, params)` returns a DataFrame. A replay row for the same
+    ticker and session is never read; a missing row or a missing column
+    (the schema not applied yet) gives None, and the caller builds with
+    build_session_levels instead. Any other failed query raises."""
+    try:
+        df = query_fn(LIVE_LEVEL_BASIS_SQL,
+                      {'ticker': str(ticker).upper(), 'd': str(_to_date(session_date))})
+    except Exception as exc:  # re-raised unless a missing column
+        if not _is_missing_schema_error(exc):
+            raise
+        return None
+    if df is None or getattr(df, 'empty', True) or 'level_basis' not in df.columns:
+        return None
+    return parse_level_basis(df.iloc[0]['level_basis'])
+
+
+def premarket_snapshot_from_daily(df: pd.DataFrame, session_date) -> Optional[dict]:
+    """The premarket snapshot dated `session_date` from a daily frame whose
+    rows carry pre_high / pre_low / pre_vwap / gap_pct (the session's own
+    row, written by fetch-premarket-refresh at 08:20 ET), or None when that
+    row is absent. A prior day's pre_* is never returned."""
+    if df is None or len(df) == 0:
+        return None
+    frame = _normalize_daily(df) if not isinstance(df.index, pd.DatetimeIndex) else df
+    idx = frame.index.tz_localize(None) if frame.index.tz is not None else frame.index  # tz-ok: session-date labels, wall date kept
+    session = _to_date(session_date)
+    rows = frame.loc[idx.normalize() == pd.Timestamp(session)]
+    if rows.empty:
+        return None
+    return premarket_snapshot_from_row(rows.iloc[-1], session)
+
+
+# ─── LevelMap compatibility wrapper ───────────────────────────────────────
 
 
 def build_level_map(
@@ -1213,70 +2440,27 @@ def build_level_map(
     current_price: float,
     daily_strat_class: str = '',
     combo: str = '',
-    atr: Optional[float] = None,
+    atr=None,
     analysis_date: Optional[date_type] = None,
+    *,
+    params: LevelParams,
 ) -> LevelMap:
-    """Build the complete level map for a ticker.
-
-    Top-level orchestrator called by the premarket brief and dashboard.
-
-    `atr` (atr_14 from the most-recent daily row) enables the
-    staleness filter inside `identify_triggers`. When None, only the
-    percent-distance axis is enforced — back-compat for callers that
-    haven't been updated to pass ATR.
-
-    `analysis_date` flows through to compute_previous_levels — see its
-    docstring. When the caller has already filtered df via
-    ``idx < analysis_date`` (e.g. the premarket brief), passing
-    analysis_date here yields PDH/PDL/PWH/etc. anchored to the period
-    BEFORE analysis_date, regardless of df's iloc layout.
-    """
-    prev_levels = compute_previous_levels(daily_df, analysis_date=analysis_date)
-    curr_levels = compute_current_levels(daily_df, current_price, analysis_date=analysis_date)
-    gap_levels = compute_gap_levels(daily_df, lookback=20)
-
-    # Trigger-eligible level set: prev + current periods. Gap levels
-    # are context (PMG clustering) and not first-class trigger
-    # candidates — they're typically the same horizontal lines that
-    # already show up as PDH/PWH/etc, just labeled by gap origin.
-    structural_dict = {**prev_levels, **curr_levels}
-    structural_list = list(structural_dict.values())
-    all_levels_list = structural_list + gap_levels
-
-    pmg_zones = detect_level_clusters(all_levels_list, tolerance_pct=0.15)
-
-    triggers = identify_triggers(
-        current_price, structural_dict, daily_strat_class, combo, atr=atr,
-    )
-
-    # Next two structural levels each way (nearest-first), for the brief's
-    # "Call levels / Put levels" display. Uses the same structural set as
-    # the triggers so the two are consistent.
-    nearest = select_nearest_levels(current_price, structural_dict, atr=atr, n=2)
-
-    # `room_to_run_*` must use the SAME level set as `identify_triggers`
-    # so the playbook's 'Room to trigger: X%' number is consistent
-    # with the actual trigger emitted. Previously this used
-    # `all_levels_list` (incl. gaps) while triggers used
-    # `structural_dict` (no gaps), so a gap level closer than the
-    # trigger could dominate the room number even though it never
-    # surfaced as a trigger candidate. (Commit 6 of the staleness fix.)
-    room_up = compute_room_to_run(current_price, structural_list, 'CALL')
-    room_down = compute_room_to_run(current_price, structural_list, 'PUT')
-
-    return LevelMap(
-        ticker=ticker,
-        as_of=pd.Timestamp.now(ET_NAME).isoformat(),
-        current_price=current_price,
-        levels=sorted(all_levels_list, key=lambda lv: lv.price),
-        pmg_zones=pmg_zones,
-        calls_trigger=triggers.get('calls'),
-        puts_trigger=triggers.get('puts'),
-        room_to_run_up=room_up['distance_pct'],
-        room_to_run_down=room_down['distance_pct'],
-        call_levels=nearest['calls'],
-        put_levels=nearest['puts'],
-    )
+    """Deprecated shim: build_session_levels with the caller's price as the
+    reference and no premarket snapshot, projected to a LevelMap. Consumers
+    call build_session_levels; this stays for read-only callers in tests and
+    notebooks and applies the same rules, with the caller's LevelParams and
+    ATR columns."""
+    if analysis_date is None:
+        df = _normalize_daily(daily_df)
+        if len(df):
+            analysis_date = (df.index[-1] + pd.Timedelta(days=1)).date()
+        else:
+            from lib.eastern_time import eastern_now
+            analysis_date = eastern_now().date()
+    sl = build_session_levels(ticker, analysis_date, daily_df, atr or {}, None, params,
+                              reference=current_price,
+                              daily_strat_class=daily_strat_class)
+    return sl.to_level_map()
 
 
 # ─── Brief formatter ─────────────────────────────────────────────────────
@@ -1306,6 +2490,12 @@ _GAP_NAME_RE = re.compile(
 )
 
 
+_DISPLAY_NAMES = {
+    PARENT_BAR_HIGH: 'Parent bar high',
+    PARENT_BAR_LOW: 'Parent bar low',
+}
+
+
 def _display_level_name(name: str) -> str:
     """Render a StratLevel.name in the brief-friendly form.
 
@@ -1315,6 +2505,8 @@ def _display_level_name(name: str) -> str:
     (likewise ``GAP_L_…`` → ``5/5 Gap Low``). Internal data is untouched;
     this only changes the Discord/playbook rendering.
     """
+    if name in _DISPLAY_NAMES:
+        return _DISPLAY_NAMES[name]
     m = _GAP_NAME_RE.match(name or '')
     if not m:
         return name
@@ -1334,272 +2526,77 @@ def format_levels_for_brief(
     regime_compute_error: Optional[str] = None,
     atr: Optional[float] = None,
 ) -> str:
-    """Format the level map into the playbook Discord format.
+    """Format a SessionLevels' LevelMap projection into the playbook block.
 
-    Output (normal regime):
-      IWM 215.42 — Daily 2U, Combo: 212_bull_reversal, FTFC +0.7 bullish
+    Output (a side with a trigger):
       CALLS above 215.85 (PDH)
         Stop: 213.20 (PDL)
-        T1: 217.10 (PWH) — 0.58% room
+        T1: 217.10 (PWH)
+        Room to trigger: 0.20%
 
-    Regime-aware variants (PR α):
-      * `orb_only`  — pre-market cleared every structural level in the
-                      trade direction. CALLS/PUTS triggers are
-                      suppressed (they'd be misleading on extreme gap
-                      days like AMD 4/24); the playbook emits only an
-                      ORB-wait banner.
-      * `extended`  — next unbroken level >= 3 ATR away. Standard
-                      CALLS/PUTS triggers render but a leading warning
-                      tells the trader to wait for 15-min ORB
-                      confirmation.
-      * `normal`    — original layout, no banners.
-
-    `regime_long` / `regime_short` are optional per-side overrides.
-    When passed, the CALLS block reflects regime_long and the PUTS
-    block reflects regime_short — so a bullish-bias ticker whose PUT
-    side is gap-extended shows the right warning for the bias-denial
-    setup. When omitted (legacy callers), `regime` applies to both.
-
-    `regime_compute_error` surfaces a regime-classifier failure as a
-    visible line in the playbook instead of silently rendering a stale
-    'normal' regime — the bug pattern from
-    gcp/premarket_brief.py:642-648 where exceptions were swallowed.
+    A side with no trigger renders the one orb_only line for its reason from
+    ORB_ONLY_COPY. The trigger, the targets and NEXT LEVELS are the same
+    ordered side list from build_session_levels, and Room to trigger is the
+    trigger's own distance from the reference.
     """
-    # Per-side regime fallback — when not explicitly passed, both
-    # sides use the legacy single-regime value.
     if regime_long is None:
-        regime_long = regime
+        regime_long = level_map.regime_long or regime
     if regime_short is None:
-        regime_short = regime
+        regime_short = level_map.regime_short or regime
 
     lines = []
+    if level_map.premarket_status == 'premarket_unavailable':
+        lines.append(f"  {PREMARKET_MISSING_NOTE}")
+        lines.append('')
+    elif level_map.premarket_status == 'premarket_unfiltered':
+        lines.append(f"  {PREMARKET_UNFILTERED_NOTE}")
+        lines.append('')
     if regime_compute_error:
         lines.append(
             f"  ⚠ regime classifier failed: {regime_compute_error} "
-            f"-- defaulting to 'normal'; treat with care"
+            f"-- no level-break trigger published; treat with care"
         )
 
-    # ── Regime banner ──────────────────────────────────────────────
-    # Per-side regimes: only emit the FULL "everything cleared"
-    # short-circuit when BOTH sides are orb_only (the gap-up extreme
-    # day case — AMD 4/24). Otherwise fall through and render per-side
-    # banners inline next to each CALLS / PUTS block, so a bullish
-    # ticker whose PUT side is gap-extended still shows a meaningful
-    # CALLS playbook rather than being suppressed entirely.
-    both_sides_orb_only = (
-        regime_long == 'orb_only' and regime_short == 'orb_only'
-    )
-    if both_sides_orb_only:
-        # Name the actual structural levels that pre-market price has
-        # already cleared, so the trader sees the LAST level passed
-        # (e.g. PWH $222 for a long bias, PQL $214 for a short bias).
-        # Without this the banner read "every structural level" which
-        # is technically true but useless — the trader still needs to
-        # know which level they're now above/below.
-        bias_l = (bias or '').lower()
-        spot = level_map.current_price
-        cleared_high = [
-            lv for lv in level_map.levels
-            if lv.level_type == 'high' and not lv.is_current
-            and lv.price < spot
-        ]
-        cleared_low = [
-            lv for lv in level_map.levels
-            if lv.level_type == 'low' and not lv.is_current
-            and lv.price > spot
-        ]
-        # Closest-to-spot first — that's the LAST level price passed.
-        cleared_high.sort(key=lambda lv: spot - lv.price)
-        cleared_low.sort(key=lambda lv: lv.price - spot)
-        if 'bear' in bias_l and cleared_low:
-            cleared = cleared_low[:4]
-            direction_word = 'bearish'
-        elif cleared_high:
-            cleared = cleared_high[:4]
-            direction_word = 'bullish'
-        elif cleared_low:
-            cleared = cleared_low[:4]
-            direction_word = 'bearish'
-        else:
-            cleared = []
-            direction_word = ''
-        lines.append(
-            "  ORB-only — pre-market cleared every structural "
-            "level in the trade direction. No level-break trigger; "
-            "wait for the 15-min opening range to establish before "
-            "entering."
-        )
-        if cleared:
-            lines.append('')
-            lines.append(
-                f"  Last {direction_word} level passed: "
-                f"{cleared[0].name} {cleared[0].price:.2f} "
-                f"(spot {spot:.2f})"
-            )
-            if len(cleared) > 1:
-                rest = ', '.join(
-                    f"{_display_level_name(lv.name)} {lv.price:.2f}"
-                    for lv in cleared[1:]
-                )
-                lines.append(f"  Other cleared: {rest}")
-        return '\n'.join(lines)
+    def _side_block(label: str, side: str, trig: Optional[dict], reason: Optional[str],
+                    room: Optional[float], denied_bias: str, side_regime: Optional[str],
+                    window: Optional[dict]) -> list:
+        # An orb_only side never prints a trigger block, even when a caller
+        # hands a LevelMap that still carries one (G.P1.7).
+        if not trig or side_regime == 'orb_only':
+            return [f"  {label}: " + orb_only_text(reason, side, window)]
+        word = 'above' if side == 'long' else 'below'
+        line = f"  {label} {word} {trig['trigger_level']:.2f} ({_display_level_name(trig['trigger_name'])})"
+        if bias == denied_bias:
+            line += ' -- only if bias denied'
+        out = [line]
+        if trig.get('stop') is not None:
+            out.append(f"    Stop: {trig['stop']:.2f} ({_display_level_name(trig['stop_name'])})")
+        for i, t in enumerate(trig.get('targets', []), 1):
+            out.append(f"    T{i}: {t['price']:.2f} ({_display_level_name(t['name'])})")
+        if room is not None:
+            out.append(f"    Room to trigger: {room:.2f}%")
+        return out
 
-    ct = level_map.calls_trigger
-    pt = level_map.puts_trigger
-    spot = level_map.current_price
+    lines.extend(_side_block('CALLS', 'long', level_map.calls_trigger,
+                             level_map.reason_long, level_map.room_to_run_up, 'bearish',
+                             regime_long, level_map.window_long))
+    lines.append('')
+    lines.extend(_side_block('PUTS', 'short', level_map.puts_trigger,
+                             level_map.reason_short, level_map.room_to_run_down, 'bullish',
+                             regime_short, level_map.window_short))
 
-    # Find the would-be trigger candidate that the staleness filter
-    # rejected — the trader needs to know WHICH level was too far so
-    # they can mentally place it on the chart. For PUTS, "next below"
-    # is the closest level under spot; for CALLS, the closest above.
-    def _stale_candidate(direction: str):
-        """Return (level, distance_pct, distance_atr) for the closest
-        filtered-out level on `direction`'s side. distance_atr is None
-        when atr was not provided."""
-        if direction == 'PUTS':
-            cands = sorted(
-                [lv for lv in level_map.levels if lv.price < spot],
-                key=lambda lv: -lv.price,
-            )
-        else:
-            cands = sorted(
-                [lv for lv in level_map.levels if lv.price > spot],
-                key=lambda lv: lv.price,
-            )
-        if not cands:
-            return None, None, None
-        nearest = cands[0]
-        dist = abs(nearest.price - spot)
-        dist_pct = dist / spot * 100
-        dist_atr = (dist / atr) if (atr and atr > 0) else None
-        return nearest, dist_pct, dist_atr
-
-    # Per-side banner construction. Each side independently shows the
-    # right warning for its own regime — so a bullish ticker whose
-    # CALLS regime is 'normal' but PUTS regime is 'extended' renders
-    # the CALLS playbook normally and warns ONLY on the PUT side.
-    def _side_banner(direction: str, side_regime: str,
-                     trigger_present: bool) -> Optional[str]:
-        if not trigger_present:
-            stale, dist_pct, dist_atr = _stale_candidate(direction)
-            if stale is None:
-                # No level on this side at all (young ticker, partial
-                # history). Fall back to the generic banner.
-                return (
-                    f"  {direction}: no near-term structural level "
-                    f"-- wait for ORB confirmation"
-                )
-            # Multi-line format mirrors the indentation of an active
-            # CALLS/PUTS block so the trader's eye lands on the same
-            # vertical rhythm — name on top, room/qualifiers indented,
-            # ORB callout on the trailing line.
-            direction_word = 'bearish' if direction == 'PUTS' else 'bullish'
-            if dist_atr is not None:
-                room_qual = f"({dist_atr:.1f}× ATR away, too far for intraday)"
-            else:
-                room_qual = "(too far for intraday)"
-            return (
-                f"  {direction}: no near-term structural level, "
-                f"next {direction_word} level is {stale.name} {stale.price:.2f}\n"
-                f"    Room to trigger: {dist_pct:.1f}% {room_qual}\n"
-                f"    -- wait for ORB confirmation"
-            )
-        if side_regime == 'orb_only':
-            return (
-                f"  {direction}: pre-market cleared every structural "
-                f"level on this side — wait for the 15-min ORB"
-            )
-        if side_regime == 'extended':
-            return (
-                f"  {direction}: extended gap — recommend 15-min ORB "
-                f"confirmation before entry"
-            )
-        return None
-
-    no_call_banner = _side_banner('CALLS', regime_long, ct is not None) if ct is None else None
-    no_put_banner = _side_banner('PUTS', regime_short, pt is not None) if pt is None else None
-    call_pre_banner = _side_banner('CALLS', regime_long, True) if ct is not None and regime_long != 'normal' else None
-    put_pre_banner = _side_banner('PUTS', regime_short, True) if pt is not None and regime_short != 'normal' else None
-
-    # Suppress the trigger block on any side whose regime is `orb_only`.
-    # The regime classifier (`lib.agents.trade_planner.select_trigger_and_regime`)
-    # marks `orb_only` when *pre-market* extremes have cleared every
-    # structural level on that side — `cleared_above = max(ref, pre_high)`
-    # for longs, `cleared_below = min(ref, pre_low)` for shorts. By the
-    # time the brief renders at 8:30 AM ET, `level_map.current_price`
-    # is yesterday's close (NOT the pre-market spike); so a check like
-    # `trigger_level < current_price` would miss the audit's actual
-    # case (IWM 5/7: yesterday's close 277.14 < trigger 278.24, but
-    # pre-market spiked to ~287). The earlier draft of this fix made
-    # exactly that mistake — Codex review on PR #307 caught it.
-    #
-    # The right policy is to trust the regime classifier's decision
-    # without second-guessing: if it says `orb_only`, the structural
-    # setup on that side has been compromised by pre-market action,
-    # and the trigger / stop / target / room block is noise relative
-    # to the banner. The banner ("pre-market cleared every structural
-    # level on this side — wait for the 15-min ORB") is the
-    # actionable signal.
-    #
-    # This mirrors the existing convention at line 988-989: the
-    # `call_pre_banner` already renders purely from `regime_long`, no
-    # spot check. We extend the same trust to the trigger-block
-    # suppression.
-    cleared_call = ct is not None and regime_long == 'orb_only'
-    cleared_put = pt is not None and regime_short == 'orb_only'
-
-    if ct:
-        if call_pre_banner:
-            lines.append(call_pre_banner)
-        if not cleared_call:
-            line = f"  CALLS above {ct['trigger_level']:.2f} ({_display_level_name(ct['trigger_name'])})"
-            if bias == 'bearish':
-                line += ' -- only if bias denied'
-            lines.append(line)
-            if ct.get('stop'):
-                lines.append(f"    Stop: {ct['stop']:.2f} ({_display_level_name(ct['stop_name'])})")
-            targets = ct.get('targets', [])
-            for i, t in enumerate(targets, 1):
-                lines.append(f"    T{i}: {t['price']:.2f} ({_display_level_name(t['name'])})")
-            # Label the room number by what's actually below it. The line
-            # printed here measures "current price -> trigger" (which
-            # `room_to_run_up` returns), not "trigger -> T1". Calling it
-            # "Room to T1" was a stale carryover from when triggers and T1
-            # were the same level.
-            if targets and level_map.room_to_run_up:
-                lines.append(f"    Room to trigger: {level_map.room_to_run_up:.2f}%")
-    elif no_call_banner:
-        lines.append(no_call_banner)
-
-    if (ct or no_call_banner) and (pt or no_put_banner):
-        lines.append('')
-
-    if pt:
-        if put_pre_banner:
-            lines.append(put_pre_banner)
-        if not cleared_put:
-            line = f"  PUTS below {pt['trigger_level']:.2f} ({_display_level_name(pt['trigger_name'])})"
-            if bias == 'bullish':
-                line += ' -- only if bias denied'
-            lines.append(line)
-            if pt.get('stop'):
-                lines.append(f"    Stop: {pt['stop']:.2f} ({_display_level_name(pt['stop_name'])})")
-            targets = pt.get('targets', [])
-            for i, t in enumerate(targets, 1):
-                lines.append(f"    T{i}: {t['price']:.2f} ({_display_level_name(t['name'])})")
-            if targets and level_map.room_to_run_down:
-                lines.append(f"    Room to trigger: {level_map.room_to_run_down:.2f}%")
-    elif no_put_banner:
-        lines.append(no_put_banner)
-
-    # Next two structural levels each way (always shown, regime-agnostic):
-    # the literal next lines price has to clear going up (CALLS) and break
-    # going down (PUTS), each tagged with its period.
     next_block = _format_next_levels(level_map)
     if next_block:
         lines.append('')
         lines.extend(next_block)
 
+    if level_map.pmg_status == 'atr_unavailable':
+        lines.append('')
+        lines.append("  PMG ZONES: none (ATR unavailable)")
+    elif level_map.pmg_status not in (None, 'ok'):
+        lines.append('')
+        lines.append(f"  PMG ZONES: none (the level-cluster tolerance is not calibrated: "
+                     f"{level_map.pmg_status})")
     if level_map.pmg_zones:
         lines.append('')
         lines.append('  PMG ZONES:')
@@ -1676,28 +2673,24 @@ def daily_data_freshness(
     against it are withheld on the same days (Codex P2 on #1030, round 6).
 
     Returns (is_stale, gap_days, status). gap_days is the calendar-day gap;
-    None input maps to -1 / 'unknown'. Fresh when the gap is <= 1 day, or on
-    the two weekend bridges where Friday's bar IS the market's most recent
-    close: a Monday session reading Friday (gap 3) and a Sunday weekly brief
-    reading Friday (gap 2). Anything else, including a Monday reading
-    Thursday (gap 4) and a Tuesday after a Monday holiday (gap 4), is
-    'STALE_DAILY_DATA': the deliberate bias is toward over-flagging on
-    holiday weeks, because under-flagging republished a frozen 2026-04-27 bar
-    four mornings running (Track B audit G.P0.4). Pure; no calendar library,
-    so it behaves identically in the API image, which does not ship
-    pandas-market-calendars.
+    None input maps to -1 / 'unknown'. Fresh when the gap is <= 1 day, or when
+    the last bar is on or after the last NYSE session strictly before
+    `analysis_date` (lib.eastern_time.previous_session): the market's most
+    recent close. That covers the weekend bridges (a Monday or a Sunday weekly
+    brief reading Friday) and every session after an NYSE holiday (the Tuesday
+    after Memorial Day reading Friday, the Friday after Thanksgiving reading
+    Wednesday). A frame missing a session, such as a Monday reading Thursday,
+    is 'STALE_DAILY_DATA' (under-flagging republished a frozen 2026-04-27 bar
+    four mornings running, Track B audit G.P0.4). The calendar is read only
+    when the gap is two days or more, and a calendar failure raises (Rule 3.7)
+    instead of answering fresh or stale (FEAT-DATA-001, 2026-11-11 spec).
     """
     if last_bar_date is None:
         return False, -1, 'unknown'
     gap = (analysis_date - last_bar_date).days
     if gap <= 1:
         return False, gap, 'fresh'
-    weekday = analysis_date.weekday()
-    weekend_exempt = (
-        (weekday == 0 and gap == 3)     # Monday → Friday
-        or (weekday == 6 and gap == 2)  # Sunday weekly brief → Friday
-    )
-    if weekend_exempt:
+    if last_bar_date >= eastern_time.previous_session(analysis_date):
         return False, gap, 'fresh'
     return True, gap, 'STALE_DAILY_DATA'
 

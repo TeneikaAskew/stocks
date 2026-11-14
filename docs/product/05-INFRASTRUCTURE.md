@@ -1,6 +1,6 @@
 # Infrastructure Plan
 
-**Last reviewed:** 2026-08-30 · **Last scanned:** 2026-10-20 · **Owner:** TBD
+**Last reviewed:** 2026-08-30 · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 **VERIFIED — CODE.** Parsed from `gcp/deploy.sh` at `d335f2f` by resolving each
 `deploy_*()` function body, so flags built into a `common_flags=( ... )` bash array are
@@ -38,19 +38,20 @@ these comparisons.
 ## Reference documents
 
 The long-form infrastructure references live in `infrastructure/` beside this
-plan. Four of them are written on the 1st of each month by
-[`refresh-architecture-docs.yml`](../../.github/workflows/refresh-architecture-docs.yml)
-and must not be hand-edited outside the rules in the Maintenance column:
-`05-a-ARCHITECTURE.md`, `05-c-DATA_DEPENDENCIES.md`, `05-d-COST_ANALYSIS.md`
-and `05-e-API.md`. Every other document here, `05-b-ERD.md` included, is
-hand-edited and the workflow never touches it.
+plan, and the Maintenance column says how each one is kept. In
+`05-a-ARCHITECTURE.md`, `05-c-DATA_DEPENDENCIES.md` and `05-e-API.md` the
+inventory blocks are rendered by `scripts/maintenance/doc_inventory.py`, and the
+pull request that changes what they cite carries the new render (REQ-GOV-004);
+the prose around them is edited by hand, never inside a block.
+`05-d-COST_ANALYSIS.md` is a dated record of billing data that ends on
+2026-09-02. Every other document here, `05-b-ERD.md` included, is hand-edited.
 
 | Document | Question answered | Maintenance |
 |---|---|---|
-| [05-a Architecture](infrastructure/05-a-ARCHITECTURE.md) | What is deployed, how does it fit together, and what runs when? | generated monthly (prose updated in place) |
+| [05-a Architecture](infrastructure/05-a-ARCHITECTURE.md) | What is deployed, how does it fit together, and what runs when? | inventory blocks rendered by `doc_inventory.py`; prose hand-edited |
 | [05-b ERD](infrastructure/05-b-ERD.md) | How do the Cloud SQL relations relate to each other? | hand-edited |
-| [05-c Data Dependencies](infrastructure/05-c-DATA_DEPENDENCIES.md) | If this job or table breaks, what else breaks with it? | generated monthly (prose updated in place) |
-| [05-d Cost Analysis](infrastructure/05-d-COST_ANALYSIS.md) | Where does the GCP spend go, and what would reduce it? | regenerated monthly from the billing digests |
+| [05-c Data Dependencies](infrastructure/05-c-DATA_DEPENDENCIES.md) | If this job or table breaks, what else breaks with it? | inventory blocks rendered by `doc_inventory.py`; prose hand-edited |
+| [05-d Cost Analysis](infrastructure/05-d-COST_ANALYSIS.md) | Where does the GCP spend go, and what would reduce it? | dated record of the billing data that ends on 2026-09-02 |
 | [05-e API](infrastructure/05-e-API.md) | Which HTTP routes exist, on which router, behind which auth? | rendered from the router files |
 | [05-f Pipeline](infrastructure/05-f-PIPELINE.md) | What is the end-to-end data pipeline and its schedule? | hand-edited |
 | [05-g Data Pipeline](infrastructure/05-g-DATA_PIPELINE.md) | How does a fetched row reach a rendered screen? | hand-edited |

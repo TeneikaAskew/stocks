@@ -46,6 +46,17 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
 
+class ErrorDetail(ApiModel):
+    """The body of a 404 or 503 from the bar and replay routes: one string.
+
+    The frontend tells the cases apart by how `detail` starts (`No 1-min
+    bars for `, `No daily bar for `, `Invalid date `, `Could not read `),
+    never by the status alone.
+    """
+
+    detail: str
+
+
 # ── live.py ──────────────────────────────────────────────────────────────
 
 
@@ -95,7 +106,29 @@ class LiveBar(ApiModel):
     volume: int
 
 
+class OpeningProjection(ApiModel):
+    status: str
+    reason: Optional[str] = None
+    ticker: str
+    session: Optional[str] = None
+    window_minutes: Optional[int] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    comparison_price: Optional[float] = None
+    comparison_as_of: Optional[str] = None
+    comparison_age_seconds: Optional[float] = None
+    price_basis: Optional[str] = None
+    source: Optional[str] = None
+    fetched_at: str
+    source_last_refreshed: Optional[str] = None
+    body_sha256: Optional[str] = None
+    calendar_version: Optional[str] = None
+
+
 class LiveHistoryResponse(ApiModel):
+    opening: Optional[OpeningProjection] = None
     ticker: str
     interval: str
     count: int
@@ -351,9 +384,9 @@ class ReferenceResponse(ApiModel):
     high: float
     low: float
     close: float
-    # Absent on the GCS branch; present on AlphaVantage and Cloud SQL.
+    # Always "cloud_sql" from the table; absent on the local-dev bucket branch.
     source: Optional[str] = None
-    # Present on the Cloud SQL branch only.
+    # Present from the table only; absent on the local-dev bucket branch.
     stale_days: Optional[int] = None
     week: Optional[WeekRange] = None
 
@@ -507,7 +540,7 @@ class ReachRate(ApiModel):
 
 
 class MovementLevel(ApiModel):
-    # select_nearest_levels emits all five keys; the endpoint passes the
+    # SessionLevels.to_level_map emits all five keys; the endpoint passes the
     # assembler's output through unchanged, so only what every producer
     # (the router tests' stub assembler included) guarantees is required.
     price: float
@@ -701,9 +734,21 @@ class SimilarStats(ApiModel):
     median_mfe_pct: Optional[float] = None
     p25_mfe_pct: Optional[float] = None
     p75_mfe_pct: Optional[float] = None
-    avg_return_5min: Optional[float] = None
-    avg_return_20min: Optional[float] = None
-    pct_profitable: Optional[float] = Field(default=None, description="Fraction 0..1, not a percent")
+    avg_return_5min: Optional[float] = Field(
+        default=None, description="Average best close within 5 bars (a favourable excursion), percent")
+    avg_return_20min: Optional[float] = Field(
+        default=None, description="Average best close within 20 bars (a favourable excursion), percent")
+    pct_profitable: Optional[float] = Field(
+        default=None,
+        description=("Realized win share, fraction 0..1, not a percent: realized_return_pct > 0 "
+                     "(rule next-open-20m-1c-v1) among matched rows with a realized value; null "
+                     "when none has one"))
+    realized_count: Optional[int] = Field(
+        default=None, description="Matched rows with a realized value, the pct_profitable denominator")
+    pct_moved_in_favor: Optional[float] = Field(
+        default=None,
+        description=("Fraction 0..1 of matched rows whose best close within 20 bars was better "
+                     "than the signal close (return_pct > 0); not a win rate"))
     earliest: Optional[str] = None
     latest: Optional[str] = None
 
@@ -1435,6 +1480,59 @@ class WatchlistRemoveResponse(ApiModel):
     ticker: str
     removed: bool
     watchlist: list[str]
+
+
+class WatchlistDefaultRow(ApiModel):
+    """One active row of the default watchlist with its surface flags.
+
+    ``added_at`` is the ISO instant of the TIMESTAMPTZ column, never a pandas
+    Timestamp repr (solyra types it as a string). ``source`` is nullable in
+    gcp/schema.sql; the three flags are NOT NULL there."""
+
+    ticker: str
+    in_brief: bool
+    in_insight: bool
+    signals: bool
+    source: Optional[str] = None
+    added_at: str
+
+
+class WatchlistDefaultResponse(ApiModel):
+    """GET /api/insights/watchlist/default (FEAT-INSIGHT-001 stage A).
+
+    Read-only: the owner is the literal 'default' for every caller, and the
+    rows are ordered by added_at, then ticker. An empty default list is a
+    200 with ``rows: []``; a failed Cloud SQL read is a 503, never an empty
+    list (CLAUDE.md 3.7)."""
+
+    as_of: str
+    owner: Literal["default"]
+    rows: list[WatchlistDefaultRow]
+
+
+class MeWatchlistAddRequest(ApiModel):
+    ticker: str
+    source: Literal["ui", "combobox-auto-add"]
+
+
+class MeWatchlistRow(ApiModel):
+    ticker: str
+    added_at: str
+    source: Optional[str] = None
+    name: Optional[str] = None
+    exchange: Optional[str] = None
+    asset_type: Optional[str] = None
+    last_daily_bar: Optional[str] = None
+
+
+class MeWatchlistResponse(ApiModel):
+    owner_email: str
+    as_of: str
+    tickers: list[MeWatchlistRow]
+
+
+class MeWatchlistRemoveResponse(MeWatchlistResponse):
+    removed: Literal[True]
 
 
 class InsightHistoryRow(ApiModel):

@@ -1,0 +1,90 @@
+[
+  {
+    "site": "timing",
+    "input_rows": 8,
+    "fixture_json_bytes": 2850,
+    "query_calls": 1,
+    "sql_bytes": 382,
+    "output_rows": 6
+  },
+  {
+    "site": "reaction_window",
+    "input_rows": 8,
+    "fixture_json_bytes": 2850,
+    "query_calls": 1,
+    "sql_bytes": 356,
+    "output_rows": 6
+  },
+  {
+    "site": "market_universe",
+    "input_rows": 8,
+    "fixture_json_bytes": 2850,
+    "query_calls": 1,
+    "sql_bytes": 1024,
+    "output_rows": 6
+  },
+  {
+    "site": "market_eligible",
+    "input_rows": 8,
+    "fixture_json_bytes": 2844,
+    "query_calls": 1,
+    "sql_bytes": 1077,
+    "output_rows": 6
+  },
+  {
+    "site": "history_universe",
+    "input_rows": 8,
+    "fixture_json_bytes": 2850,
+    "query_calls": 1,
+    "sql_bytes": 305,
+    "output_rows": 6
+  },
+  {
+    "site": "history_window",
+    "input_rows": 8,
+    "fixture_json_bytes": 2850,
+    "query_calls": 1,
+    "sql_bytes": 356,
+    "output_rows": 6
+  },
+  {
+    "site": "news",
+    "input_rows": 8,
+    "fixture_json_bytes": 2850,
+    "query_calls": 1,
+    "sql_bytes": 327,
+    "output_rows": 6
+  },
+  {
+    "site": "insider",
+    "input_rows": 8,
+    "fixture_json_bytes": 2850,
+    "query_calls": 1,
+    "sql_bytes": 327,
+    "output_rows": 6
+  },
+  {
+    "site": "sec",
+    "input_rows": 8,
+    "fixture_json_bytes": 2850,
+    "query_calls": 1,
+    "sql_bytes": 327,
+    "output_rows": 6
+  },
+  {
+    "site": "refresh_today",
+    "input_rows": 8,
+    "fixture_json_bytes": 2850,
+    "query_calls": 2,
+    "sql_bytes": 816,
+    "output_rows": 6
+  },
+  {
+    "site": "refresh_amc",
+    "input_rows": 8,
+    "fixture_json_bytes": 2850,
+    "query_calls": 2,
+    "sql_bytes": 816,
+    "output_rows": 6
+  }
+]

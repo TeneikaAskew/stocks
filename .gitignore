@@ -189,19 +189,9 @@ archive/**/.gcp-key.json
 # the ADC path every downstream step uses (gcloud, BigQuery, the Gemini CLI on
 # Vertex) points at this file, so it cannot be turned off — the action's own
 # docs say to ignore the pattern instead. Untracked and unignored, it was
-# picked up by the stray-write scan in refresh-architecture-docs.yml and failed
+# picked up by the stray-write scan in refresh-architecture-docs.yml.disabled (now retired) and failed
 # every run before verification. (Codex, PR #1009.)
 gha-creds-*.json
-
-# The monthly architecture refresh writes its GCP snapshots and digests here,
-# and Gemini's file tools respect .gitignore: an ignored input reads back as
-# "ignored by configured ignore patterns" and the model generates blind. The
-# broad `*.csv` rule above matched refresh-inputs/billing_by_sku.csv and
-# billing_by_month.csv, which are the ONLY inputs the cost prompt has — run 16
-# produced no COST_ANALYSIS.md at all as a result. The directory only ever
-# exists on the runner and is never staged (the PR step adds named docs only).
-!refresh-inputs/
-!refresh-inputs/**
 
 # Written into the Cloud Build context by gcp/deploy.sh _stamp_build_info;
 # never a tracked file (a checkout answers with git, an image with this).

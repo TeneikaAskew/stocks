@@ -1,6 +1,6 @@
 # Trading System Technical Architecture
 
-**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 > **Project:** adept-mountain-474619-d4
 > **Region:** us-east1
@@ -111,7 +111,7 @@ An event-driven options trading intelligence system that:
 | Backup Storage | Google Cloud Storage | Raw Parquet archives |
 | Scheduled Jobs | Cloud Run Jobs | All data fetching + analysis |
 | Real-time Monitor | Cloud Run Job | Intraday signal polling (scheduled 9:25 AM ET) |
-| Scheduling | Cloud Scheduler | 66 cron triggers |
+| Scheduling | Cloud Scheduler | 65 cron triggers |
 | Alerts | Discord Webhooks | Real-time trade alerts |
 | Secrets | Secret Manager | API keys, DB credentials, webhook URLs |
 | Container Build | Cloud Build | Docker image CI |

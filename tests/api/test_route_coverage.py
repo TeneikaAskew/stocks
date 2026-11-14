@@ -271,7 +271,10 @@ REQUESTS: list[Req] = [
     Req("POST", "/api/backtest/replay-trades", 422,
         json={"ticker": T, "trades": []},
         note="the handler's own check for trade_ids/session_id"),
-    Req("POST", "/api/style/mine-and-validate", 200, json={"ticker": T}),
+    Req("POST", "/api/style/mine-and-validate", 503, json={"ticker": T},
+        note="was 200 'need >= 10 closed trades, have 0': the journal read "
+             "went through the swallowing helper, so an outage read as an "
+             "empty journal (FEAT-REPLAY-001)"),
 
     # ── signals ─────────────────────────────────────────────────────────────
     Req("GET", f"/api/signals/{T}", 503,
@@ -290,6 +293,9 @@ REQUESTS: list[Req] = [
     Req("POST", "/api/insights/watchlist/add", 503, json={"ticker": T}),
     Req("DELETE", f"/api/insights/watchlist/{T}", 503),
     Req("GET", "/api/insights/watchlist", 200),
+    # Reads through the strict query helper: no backend is a 503 with the
+    # exception text, never an empty 200 (FEAT-INSIGHT-001 stage A).
+    Req("GET", "/api/insights/watchlist/default", 503),
     Req("GET", f"/api/insights/report/{T}", 503, note="was a bare 500"),
     Req("GET", f"/api/insights/report/{T}/history", 503, note="was a bare 500"),
     Req("GET", f"/api/insights/reports/{UUID0}", 503, note="was a bare 500"),
@@ -393,6 +399,12 @@ REQUESTS: list[Req] = [
         body_ran=False),
     Req("GET", "/api/me/profile", 503),
     Req("PUT", "/api/me/profile", 503, json={"display_name": "rc"}),
+    Req("GET", "/api/me/watchlist", 401,
+        note="open mode has no identity: 401 sign in required before any database call"),
+    Req("POST", "/api/me/watchlist", 401, json={"ticker": T, "source": "ui"},
+        note="open mode has no identity: 401 sign in required before any database call"),
+    Req("DELETE", f"/api/me/watchlist/{T}", 401,
+        note="open mode has no identity: 401 sign in required before any database call"),
 
     # ── market ──────────────────────────────────────────────────────────────
     # 503 for the same reason as the options twin above: #991 made a
@@ -400,8 +412,15 @@ REQUESTS: list[Req] = [
     # the GCS staging parquets with a 200, which had degraded the answer with
     # nothing visible to the user or the operator.
     Req("GET", f"/api/market/dates/{T}", 503),
-    Req("GET", f"/api/market/data/{T}/{D}", 404),
-    Req("GET", f"/api/market/reference/{T}/{D}", 404),
+    # 503 since FEAT-REPLAY-001: the bar loader reads the table through the
+    # raising helper and has no bucket fall-through, so an outage is no longer
+    # a 404. The date is sent compact because this route takes YYYYMMDD: the
+    # dashed form is a 404 `Invalid date` before any read.
+    Req("GET", f"/api/market/data/{T}/{D.replace('-', '')}", 503),
+    # 503 for the same reason: one market_data_daily query through the
+    # raising helper, no AlphaVantage call and no bucket listing after it.
+    # This route accepts the dashed date.
+    Req("GET", f"/api/market/reference/{T}/{D}", 503),
     Req("GET", f"/api/market/coverage?symbols={T}", 503),
     Req("GET", "/api/market/sectors", 503),
     Req("GET", "/api/market/most-active", 503),
@@ -667,13 +686,10 @@ def client(tmp_path_factory):
         # `fetch_with_retry`. The key is read into a module-level constant at
         # import time, so clearing the environment is not enough on an already
         # imported module -- blank the constants where they are looked up.
-        # `api.main` binds its own copy and `_fetch_av_daily_reference` opens
-        # an httpx connection with it; its failures are swallowed before the
-        # expected 404, so the sweep stayed green while making an external
-        # request and the pinned status varied with whether a key was
-        # configured (Codex, PR #999). Four modules, not three.
-        for mod_name, attr in (("api.main", "AV_API_KEY"),
-                               ("api.routers.live", "AV_API_KEY"),
+        # `api.main` used to bind its own copy for `_fetch_av_daily_reference`
+        # (Codex, PR #999); the reference route no longer calls AlphaVantage
+        # (FEAT-REPLAY-001), so that constant is gone. Three modules.
+        for mod_name, attr in (("api.routers.live", "AV_API_KEY"),
                                ("api.routers.grid", "_AV_API_KEY"),
                                ("api.routers.options", "_AV_API_KEY")):
             mod = sys.modules.get(mod_name)
