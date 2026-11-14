@@ -1738,3 +1738,44 @@ def test_a_failed_strip_read_raises_before_any_swap():
     with pytest.raises(RuntimeError, match="db down"):
         _replace(stored, feb, "SPY", 2018, 2, commit=True, world=world)
     world.swap.assert_not_called()
+
+
+# -- Design 6: the bound on what a month may leave uncounted ------------------
+
+
+def _doubly_stored(labelled: int, extra_true: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(stored, vendor month): 74 + *extra_true* bars at their true keys, and
+    the first *labelled* of the 04:00 bars again under the Eastern label. Each
+    label row loses its Eastern minute to the true row four hours later."""
+    minutes = list(range(240, 266)) + list(range(570, 600)) + list(range(961, 979 + extra_true))
+    v = _bars("2026-04-10", minutes)
+    labels = _label_rows(v[v["ts"].dt.hour == 4]).head(labelled)
+    return pd.concat([_true_rows(v), labels]).reset_index(drop=True), v
+
+
+def test_a_month_over_the_uncounted_bound_is_refused(tmp_path, monkeypatch, caplog):
+    """done_when[6]: more than a quarter of the window's rows deleted and
+    written back nowhere is not a month to replace unattended."""
+    assert fai.REPLACE_MAX_UNCOUNTED_SHARE == 0.25
+
+    stored, v = _doubly_stored(labelled=26)
+    assert len(stored) == 100
+    for commit in (False, True):
+        r, swap = _replace(stored, v, "IWM", 2026, 4, commit)
+        assert r["status"] == fai.REPLACE_UNCOUNTED_OVER == "uncounted_over_bound"
+        assert (r["uncounted"], r["rows"], r["label_dropped"], r["missing_sessions"]) == (26, 100, 26, 0)
+        swap.assert_not_called()
+        caplog.clear()
+        world = _World().store("IWM", stored).serve("IWM", 2026, 4, v)
+        assert _run_world(tmp_path, monkeypatch, world, [("IWM", 2026, 4)], commit) == 1
+        assert "RETRY IWM,2026-04" in caplog.text
+        world.swap.assert_not_called()
+
+    # Exactly a quarter is inside the bound.
+    stored, v = _doubly_stored(labelled=25, extra_true=1)
+    assert len(stored) == 100
+    r, swap = _replace(stored, v, "IWM", 2026, 4, commit=False)
+    assert (r["status"], r["uncounted"], r["rows"]) == (fai.REPLACE_DRY, 25, 100)
+    r, swap = _replace(stored, v, "IWM", 2026, 4, commit=True)
+    assert (r["status"], r["uncounted"], r["rows"]) == (fai.REPLACE_OK, 25, 100)
+    assert len(swap.call_args.args[0]) == 75

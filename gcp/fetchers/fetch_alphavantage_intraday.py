@@ -452,6 +452,9 @@ REPLACE_DRY = 'dry_run'
 REPLACE_INCOMPLETE = 'incomplete_refetch'   # vendor returned fewer sessions than we hold
 REPLACE_NOTHING_HELD = 'nothing_held'       # window holds no session; never delete blind
 REPLACE_CHANGED = 'changed_during_replace'  # a writer changed the month mid-replace; rolled back
+# More of the window than REPLACE_MAX_UNCOUNTED_SHARE would be deleted and
+# written back nowhere; nothing is handed to the swap.
+REPLACE_UNCOUNTED_OVER = 'uncounted_over_bound'
 # The month's window was replaced and committed; its late bars past the window
 # end were not written (their strip changed, or the second swap failed) and are
 # as they were before the run. A second run converges.
@@ -513,6 +516,15 @@ BAR_DERIVED_RESULTS = {
 # (rounded down, so a session under 50 bars must be complete) before the
 # month is refused as incomplete.
 REPLACE_SHORT_TOLERANCE = 0.02
+# The largest share of a window's stored rows that may be uncounted: label
+# rows that lost their Eastern minute plus discounted label copies, which the
+# swap deletes and writes back nowhere. Above it the month is refused, dry or
+# committed. A session with a bar on every minute stored in both conventions
+# gives 240 of 1,201 (19.98%), 300 of 1,261 (23.79%) in winter; the largest
+# measured for SPY, QQQ and IWM is an estimated 22.51% (IWM 2026-08). Set from
+# those three tickers: re-derive it before running the tool for another
+# (spec 2026-11-14-feat-data-001-replace-held-session-window, Design 6).
+REPLACE_MAX_UNCOUNTED_SHARE = 0.25
 
 
 def _held_session_dates(symbol: str, start: datetime, end: datetime, conn=None) -> dict:
@@ -825,6 +837,9 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
         out['status'] = REPLACE_INCOMPLETE
         out['missing'] = [f"{d.isoformat()} ({int(fetched.get(d, 0))}/{held[d]})"
                           for d in missing[:10]]
+        return out
+    if out['uncounted'] > REPLACE_MAX_UNCOUNTED_SHARE * c.rows:
+        out['status'] = REPLACE_UNCOUNTED_OVER
         return out
     df = df[session.isin(set(held))]
     if df.empty:
