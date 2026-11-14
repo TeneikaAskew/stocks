@@ -41,11 +41,6 @@
    "_load_realtime_chain::pd.to_datetime(df['ts'], utc=True)"
   ]
  },
- "gcp/discord_interactions/main.py": {
-  "host-today": [
-   "parse_date_arg::date.today()"
-  ]
- },
  "gcp/fetchers/backfill_daily_indicators.py": {
   "sql-utc-date": [
    "<module>::str#60fba3841c30"
