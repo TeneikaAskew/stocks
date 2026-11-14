@@ -2014,6 +2014,21 @@
         "title": "EquitySummary",
         "type": "object"
       },
+      "ErrorDetail": {
+        "additionalProperties": true,
+        "description": "The body of a 404 or 503 from the bar and replay routes: one string.\n\nThe frontend tells the cases apart by how `detail` starts (`No 1-min\nbars for `, `No daily bar for `, `Invalid date `, `Could not read `),\nnever by the status alone.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorDetail",
+        "type": "object"
+      },
       "ExpectedMove": {
         "additionalProperties": true,
         "properties": {
@@ -11757,6 +11772,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Replay Trades"
@@ -14121,6 +14146,16 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -14130,6 +14165,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Get Market Data"
@@ -14229,6 +14274,16 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -14238,6 +14293,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Get Reference Levels"
@@ -15517,6 +15582,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Mine And Validate"

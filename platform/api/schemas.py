@@ -46,6 +46,17 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
 
+class ErrorDetail(ApiModel):
+    """The body of a 404 or 503 from the bar and replay routes: one string.
+
+    The frontend tells the cases apart by how `detail` starts (`No 1-min
+    bars for `, `No daily bar for `, `Invalid date `, `Could not read `),
+    never by the status alone.
+    """
+
+    detail: str
+
+
 # ── live.py ──────────────────────────────────────────────────────────────
 
 

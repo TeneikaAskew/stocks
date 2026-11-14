@@ -84,6 +84,7 @@ from api.schemas import (
     BacktestAllResponse,
     BacktestEquityResponse,
     BacktestResultsResponse,
+    ErrorDetail,
     MineStyleResponse,
     ReplayTradesResponse,
 )
@@ -513,7 +514,8 @@ def _normalize_bars_for_replay(df: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
-@router.post("/api/backtest/replay-trades", response_model=ReplayTradesResponse, response_model_exclude_unset=True)
+@router.post("/api/backtest/replay-trades", response_model=ReplayTradesResponse, response_model_exclude_unset=True,
+             responses={503: {"model": ErrorDetail}})
 def replay_trades(body: ReplayTradesRequest, request: Request):
     """Score the signed-in user's labeled journal trades against actual bars
     and benchmark them against the system (Task 3.2). 422 if neither
@@ -700,7 +702,8 @@ def _walk_forward_metrics_to_percent(agg: dict) -> dict:
     return out
 
 
-@router.post("/api/style/mine-and-validate", response_model=MineStyleResponse, response_model_exclude_unset=True)
+@router.post("/api/style/mine-and-validate", response_model=MineStyleResponse, response_model_exclude_unset=True,
+             responses={503: {"model": ErrorDetail}})
 def mine_and_validate(body: MineAndValidateRequest, request: Request):
     """Mine the caller's closed journal trades into a condition profile,
     walk-forward validate the top one, and stage the result (Task 4.3).

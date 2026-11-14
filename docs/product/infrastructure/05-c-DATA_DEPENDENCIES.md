@@ -374,7 +374,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/analysis/phase6_playbook.py`](../../../scripts/analysis/phase6_playbook.py) — line [990](../../../scripts/analysis/phase6_playbook.py#L990)
 
 ### `playbook_cards_staging`
-- [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [897](../../../platform/api/routers/backtest.py#L897)
+- [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [900](../../../platform/api/routers/backtest.py#L900)
 
 ### `premarket_analysis`
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3212](../../../gcp/premarket_brief.py#L3212), [3239](../../../gcp/premarket_brief.py#L3239)
@@ -445,7 +445,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/admin.py`](../../../platform/api/routers/admin.py) — line [1111](../../../platform/api/routers/admin.py#L1111), [1124](../../../platform/api/routers/admin.py#L1124)
 
 ### `user_style_results`
-- [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [867](../../../platform/api/routers/backtest.py#L867)
+- [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [870](../../../platform/api/routers/backtest.py#L870)
 
 ### `v_etf_options_node`
 - _no writer found in gcp/, lib/, scripts/, platform/api_
@@ -665,7 +665,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `journal_entries`
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1992](../../../lib/agents/summarizers.py#L1992)
-- [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [551](../../../platform/api/routers/backtest.py#L551), [732](../../../platform/api/routers/backtest.py#L732)
+- [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [553](../../../platform/api/routers/backtest.py#L553), [735](../../../platform/api/routers/backtest.py#L735)
 - [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [862](../../../platform/api/routers/journal.py#L862), [899](../../../platform/api/routers/journal.py#L899), [994](../../../platform/api/routers/journal.py#L994), [1182](../../../platform/api/routers/journal.py#L1182)
 - [`scripts/backfill_journal_embeddings.py`](../../../scripts/backfill_journal_embeddings.py) — line [59](../../../scripts/backfill_journal_embeddings.py#L59)
 
@@ -699,7 +699,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/features/experimental/cross_asset.py`](../../../lib/features/experimental/cross_asset.py) — line [45](../../../lib/features/experimental/cross_asset.py#L45)
 - [`lib/features/experimental/vol_regime.py`](../../../lib/features/experimental/vol_regime.py) — line [52](../../../lib/features/experimental/vol_regime.py#L52)
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1816](../../../lib/strat_levels.py#L1816)
-- [`platform/api/main.py`](../../../platform/api/main.py) — line [1116](../../../platform/api/main.py#L1116), [1282](../../../platform/api/main.py#L1282), [1452](../../../platform/api/main.py#L1452), [1454](../../../platform/api/main.py#L1454)
+- [`platform/api/main.py`](../../../platform/api/main.py) — line [1119](../../../platform/api/main.py#L1119), [1285](../../../platform/api/main.py#L1285), [1455](../../../platform/api/main.py#L1455), [1457](../../../platform/api/main.py#L1457)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [786](../../../platform/api/routers/catalysts.py#L786)
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [150](../../../platform/api/routers/dashboard.py#L150), [285](../../../platform/api/routers/dashboard.py#L285)
 - [`platform/api/routers/live.py`](../../../platform/api/routers/live.py) — line [546](../../../platform/api/routers/live.py#L546)
@@ -724,7 +724,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [457](../../../lib/data_loader.py#L457)
 - [`lib/features/intraday_flow.py`](../../../lib/features/intraday_flow.py) — line [125](../../../lib/features/intraday_flow.py#L125)
 - [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [599](../../../lib/options_intraday.py#L599)
-- [`platform/api/main.py`](../../../platform/api/main.py) — line [624](../../../platform/api/main.py#L624), [760](../../../platform/api/main.py#L760), [1286](../../../platform/api/main.py#L1286), [1697](../../../platform/api/main.py#L1697)
+- [`platform/api/main.py`](../../../platform/api/main.py) — line [625](../../../platform/api/main.py#L625), [761](../../../platform/api/main.py#L761), [1289](../../../platform/api/main.py#L1289), [1700](../../../platform/api/main.py#L1700)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [208](../../../scripts/analysis/per_ticker_calibration.py#L208), [205](../../../scripts/analysis/per_ticker_calibration.py#L205)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [647](../../../scripts/audit_data_freshness.py#L647), [648](../../../scripts/audit_data_freshness.py#L648), [807](../../../scripts/audit_data_freshness.py#L807)
 - [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [133](../../../scripts/backfill_and_replay.py#L133)
@@ -861,7 +861,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [496](../../../lib/agents/ranker/signals.py#L496)
 
 ### `top_movers_intraday`
-- [`platform/api/main.py`](../../../platform/api/main.py) — line [1564](../../../platform/api/main.py#L1564), [1565](../../../platform/api/main.py#L1565)
+- [`platform/api/main.py`](../../../platform/api/main.py) — line [1567](../../../platform/api/main.py#L1567), [1568](../../../platform/api/main.py#L1568)
 
 ### `trades`
 - [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [176](../../../gcp/trade_logger.py#L176), [212](../../../gcp/trade_logger.py#L212), [243](../../../gcp/trade_logger.py#L243)

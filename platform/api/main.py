@@ -49,6 +49,7 @@ from api.auth import (
 )
 from api.schemas import (
     CoverageResponse,
+    ErrorDetail,
     HealthResponse,
     MarketDataResponse,
     MarketDatesResponse,
@@ -904,7 +905,8 @@ def get_available_dates(ticker: str):
     return payload
 
 
-@app.get("/api/market/data/{ticker}/{date}", response_model=MarketDataResponse, response_model_exclude_unset=True)
+@app.get("/api/market/data/{ticker}/{date}", response_model=MarketDataResponse, response_model_exclude_unset=True,
+         responses={404: {"model": ErrorDetail}, 503: {"model": ErrorDetail}})
 def get_market_data(
     ticker: str,
     date: str,
@@ -1084,7 +1086,8 @@ def _week_from_daily_rows(df: pd.DataFrame) -> Optional[dict]:
     }
 
 
-@app.get("/api/market/reference/{ticker}/{date}", response_model=ReferenceResponse, response_model_exclude_unset=True)
+@app.get("/api/market/reference/{ticker}/{date}", response_model=ReferenceResponse, response_model_exclude_unset=True,
+         responses={404: {"model": ErrorDetail}, 503: {"model": ErrorDetail}})
 def get_reference_levels(ticker: str, date: str):
     """Get previous day OHLC reference levels for support/resistance.
 

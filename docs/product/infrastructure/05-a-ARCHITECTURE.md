@@ -490,10 +490,10 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `PUT` | `/api/admin/users/{uid}/status` | [`platform/api/routers/admin.py:1137`](../../../platform/api/routers/admin.py#L1137) | Enable or disable a Firebase account. |
 | `GET` | `/api/analytics/summary/{ticker}` | [`platform/api/routers/analytics.py:131`](../../../platform/api/routers/analytics.py#L131) | Summarize rows from the ``trades`` table for a ticker. |
 | `POST` | `/api/analytics/trade-stats` | [`platform/api/routers/analytics.py:123`](../../../platform/api/routers/analytics.py#L123) |  |
-| `GET` | `/api/backtest/all/{ticker}` | [`platform/api/routers/backtest.py:355`](../../../platform/api/routers/backtest.py#L355) | List all backtest runs for a ticker, sorted by timestamp descending. |
-| `GET` | `/api/backtest/equity/{ticker}` | [`platform/api/routers/backtest.py:257`](../../../platform/api/routers/backtest.py#L257) | Return equity curve from the most recent equity CSV for the given ticker, |
-| `POST` | `/api/backtest/replay-trades` | [`platform/api/routers/backtest.py:516`](../../../platform/api/routers/backtest.py#L516) | Score the signed-in user's labeled journal trades against actual bars |
-| `GET` | `/api/backtest/results/{ticker}` | [`platform/api/routers/backtest.py:188`](../../../platform/api/routers/backtest.py#L188) | Return trades from the most recent backtest CSV for the given ticker, |
+| `GET` | `/api/backtest/all/{ticker}` | [`platform/api/routers/backtest.py:356`](../../../platform/api/routers/backtest.py#L356) | List all backtest runs for a ticker, sorted by timestamp descending. |
+| `GET` | `/api/backtest/equity/{ticker}` | [`platform/api/routers/backtest.py:258`](../../../platform/api/routers/backtest.py#L258) | Return equity curve from the most recent equity CSV for the given ticker, |
+| `POST` | `/api/backtest/replay-trades` | [`platform/api/routers/backtest.py:517`](../../../platform/api/routers/backtest.py#L517) | Score the signed-in user's labeled journal trades against actual bars |
+| `GET` | `/api/backtest/results/{ticker}` | [`platform/api/routers/backtest.py:189`](../../../platform/api/routers/backtest.py#L189) | Return trades from the most recent backtest CSV for the given ticker, |
 | `GET` | `/api/catalysts/asof/{ticker}` | [`platform/api/routers/catalysts.py:650`](../../../platform/api/routers/catalysts.py#L650) | Unified point-in-time catalyst view for a ticker. |
 | `GET` | `/api/catalysts/events` | [`platform/api/routers/catalysts.py:162`](../../../platform/api/routers/catalysts.py#L162) | Get catalyst events grouped by date. |
 | `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:651`](../../../platform/api/routers/catalysts.py#L651) | Unified point-in-time catalyst view for a ticker. |
@@ -513,7 +513,7 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/earnings/ticker/{ticker}/lean` | [`platform/api/routers/earnings.py:251`](../../../platform/api/routers/earnings.py#L251) | Lean stats for one ticker. |
 | `GET` | `/api/earnings/upcoming` | [`platform/api/routers/earnings.py:111`](../../../platform/api/routers/earnings.py#L111) | Next N days of earnings reporters, decorated with full history. |
 | `GET` | `/api/glossary/gamma` | [`platform/api/routers/glossary.py:30`](../../../platform/api/routers/glossary.py#L30) | Return the UI-safe gamma term dictionary. |
-| `GET` | `/api/health` | [`platform/api/main.py:272`](../../../platform/api/main.py#L272) | Liveness probe: reports the service version and its configured backends. |
+| `GET` | `/api/health` | [`platform/api/main.py:273`](../../../platform/api/main.py#L273) | Liveness probe: reports the service version and its configured backends. |
 | `GET` | `/api/health/freshness` | [`platform/api/routers/health.py:158`](../../../platform/api/routers/health.py#L158) | Return the cached freshness report (see freshness_report_dict). |
 | `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1062`](../../../platform/api/routers/insights.py#L1062) | Stream a Gemini response for the given mode and message. |
 | `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:764`](../../../platform/api/routers/insights.py#L764) | Return the most recent InsightReport for the ticker. |
@@ -545,13 +545,13 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/live/status` | [`platform/api/routers/live.py:172`](../../../platform/api/routers/live.py#L172) | Return current market open/closed status based on Eastern Time. |
 | `GET` | `/api/magnitude/{ticker}/{tf}/at/{ts}` | [`platform/api/routers/magnitude.py:183`](../../../platform/api/routers/magnitude.py#L183) | Return the prediction for exactly this (ticker, tf, ts). |
 | `GET` | `/api/magnitude/{ticker}/{tf}/latest` | [`platform/api/routers/magnitude.py:129`](../../../platform/api/routers/magnitude.py#L129) | Return the most-recent prediction for this (ticker, tf). |
-| `GET` | `/api/market/coverage` | [`platform/api/main.py:1262`](../../../platform/api/main.py#L1262) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
-| `GET` | `/api/market/data/{ticker}/{date}` | [`platform/api/main.py:907`](../../../platform/api/main.py#L907) | Load intraday OHLCV data for a specific ticker and date. |
-| `GET` | `/api/market/dates/{ticker}` | [`platform/api/main.py:609`](../../../platform/api/main.py#L609) | List available trading dates for a ticker (Cloud SQL → local fallback). |
-| `GET` | `/api/market/most-active` | [`platform/api/main.py:1541`](../../../platform/api/main.py#L1541) | Most-active tickers snapshot, with per-ticker snapshot sparklines. |
-| `GET` | `/api/market/reference/{ticker}/{date}` | [`platform/api/main.py:1087`](../../../platform/api/main.py#L1087) | Get previous day OHLC reference levels for support/resistance. |
-| `GET` | `/api/market/sectors` | [`platform/api/main.py:1433`](../../../platform/api/main.py#L1433) | Sector rotation snapshot computed from SPDR sector ETF daily closes. |
-| `GET` | `/api/me` | [`platform/api/main.py:284`](../../../platform/api/main.py#L284) | Return the authenticated identity + role flags. |
+| `GET` | `/api/market/coverage` | [`platform/api/main.py:1265`](../../../platform/api/main.py#L1265) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
+| `GET` | `/api/market/data/{ticker}/{date}` | [`platform/api/main.py:908`](../../../platform/api/main.py#L908) | Load intraday OHLCV data for a specific ticker and date. |
+| `GET` | `/api/market/dates/{ticker}` | [`platform/api/main.py:610`](../../../platform/api/main.py#L610) | List available trading dates for a ticker (Cloud SQL → local fallback). |
+| `GET` | `/api/market/most-active` | [`platform/api/main.py:1544`](../../../platform/api/main.py#L1544) | Most-active tickers snapshot, with per-ticker snapshot sparklines. |
+| `GET` | `/api/market/reference/{ticker}/{date}` | [`platform/api/main.py:1089`](../../../platform/api/main.py#L1089) | Get previous day OHLC reference levels for support/resistance. |
+| `GET` | `/api/market/sectors` | [`platform/api/main.py:1436`](../../../platform/api/main.py#L1436) | Sector rotation snapshot computed from SPDR sector ETF daily closes. |
+| `GET` | `/api/me` | [`platform/api/main.py:285`](../../../platform/api/main.py#L285) | Return the authenticated identity + role flags. |
 | `GET` | `/api/me/preferences` | [`platform/api/routers/preferences.py:132`](../../../platform/api/routers/preferences.py#L132) |  |
 | `PUT` | `/api/me/preferences` | [`platform/api/routers/preferences.py:149`](../../../platform/api/routers/preferences.py#L149) | Upsert the provided subset of fields and return the full stored row. |
 | `GET` | `/api/me/profile` | [`platform/api/routers/profile.py:145`](../../../platform/api/routers/profile.py#L145) |  |
@@ -573,9 +573,9 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/reports/{ticker}/{phase}` | [`platform/api/routers/playbook.py:446`](../../../platform/api/routers/playbook.py#L446) | Return the raw markdown text of a specific phase report for a ticker from GCS. |
 | `GET` | `/api/signals/{ticker}` | [`platform/api/routers/signals.py:394`](../../../platform/api/routers/signals.py#L394) | Return historical signals for a ticker. |
 | `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:509`](../../../platform/api/routers/signals.py#L509) | Return historical signals similar to the supplied bar's conditions. |
-| `POST` | `/api/style/mine-and-validate` | [`platform/api/routers/backtest.py:703`](../../../platform/api/routers/backtest.py#L703) | Mine the caller's closed journal trades into a condition profile, |
+| `POST` | `/api/style/mine-and-validate` | [`platform/api/routers/backtest.py:705`](../../../platform/api/routers/backtest.py#L705) | Mine the caller's closed journal trades into a condition profile, |
 | `POST` | `/api/waitlist` | [`platform/api/routers/waitlist.py:84`](../../../platform/api/routers/waitlist.py#L84) |  |
-| `GET` | `/dev` | [`platform/api/main.py:435`](../../../platform/api/main.py#L435) |  |
+| `GET` | `/dev` | [`platform/api/main.py:436`](../../../platform/api/main.py#L436) |  |
 <!-- inventory:routes:end -->
 
 ### 7.4 `discord-interactions`
