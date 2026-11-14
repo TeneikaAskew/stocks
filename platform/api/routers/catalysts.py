@@ -17,7 +17,7 @@ import logging
 import math
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +30,7 @@ from api.schemas import (
 )
 
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+from lib.eastern_time import market_today
 from lib.single_flight import SingleFlight
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -172,7 +173,7 @@ def get_catalyst_events(
     Returns events from local cache by default. Pass refresh=true to fetch live
     from Benzinga API (requires BENZINGA_API_KEY).
     """
-    today = datetime.now()
+    today = market_today()
     d_from = date_from or (today - timedelta(days=3)).strftime("%Y-%m-%d")
     d_to = date_to or (today + timedelta(days=14)).strftime("%Y-%m-%d")
     ticker_list = [t.strip().upper() for t in tickers.split(",")] if tickers else None
@@ -618,7 +619,7 @@ def get_catalysts_for_ticker(
 ):
     """Get all catalyst events for a specific ticker."""
     ticker_upper = ticker.upper()
-    today = datetime.now()
+    today = market_today()
     d_from = (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
     d_to = (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
@@ -682,7 +683,7 @@ def get_catalyst_snapshot(
 
     tk = ticker.upper()
     try:
-        cutoff = _date.fromisoformat(as_of) if as_of else _date.today()
+        cutoff = _date.fromisoformat(as_of) if as_of else market_today()
     except ValueError:
         raise HTTPException(status_code=400, detail="as_of must be YYYY-MM-DD")
     window_start = cutoff - timedelta(days=window_days)

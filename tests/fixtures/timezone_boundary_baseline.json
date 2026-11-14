@@ -294,9 +294,6 @@
   ]
  },
  "gcp/research/strat_engine/strat_pred_serve.py": {
-  "host-today": [
-   "predict_one::pd.Timestamp.utcnow()"
-  ],
   "utc-parse": [
    "predict_one::pd.to_datetime(as_of, utc=True)",
    "predict_one::pd.to_datetime(df['ts'], utc=True)",
@@ -482,9 +479,6 @@
   ]
  },
  "platform/api/main.py": {
-  "host-today": [
-   "get_reference_levels::datetime.now()"
-  ],
   "tz-localize-none": [
    "_reference_from_gcs_local_dev::df.index.tz_localize(None)",
    "get_market_data::df.index.tz_localize(None)"
@@ -496,19 +490,11 @@
   ]
  },
  "platform/api/routers/catalysts.py": {
-  "host-today": [
-   "get_catalyst_events::datetime.now()",
-   "get_catalyst_snapshot::_date.today()",
-   "get_catalysts_for_ticker::datetime.now()"
-  ],
   "sql-utc-date": [
    "_news_sql::str#b68870b10be5"
   ]
  },
  "platform/api/routers/dashboard.py": {
-  "host-today": [
-   "_apply_live_overlay::datetime.now()"
-  ],
   "tz-localize-none": [
    "_build_movement_level_map::ts_col.dt.tz_localize(None)"
   ]
@@ -516,12 +502,6 @@
  "platform/api/routers/earnings.py": {
   "sql-utc-date": [
    "upcoming::fstr#9dbb3d5e81df"
-  ]
- },
- "platform/api/routers/grid.py": {
-  "host-today": [
-   "_load_chain_for_live::date_type.today()",
-   "get_grid_timeseries::date_type.today()"
   ]
  },
  "platform/api/routers/options.py": {
