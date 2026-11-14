@@ -2,7 +2,7 @@
 feat_id: FEAT-PLAYBOOK-001
 spec: docs/superpowers/specs/2026-11-14-feat-playbook-001-brief-market-date.md
 branch: fix/feat-playbook-001-brief-market-date
-pr: null
+pr: 1941
 status: ready
 ---
 
