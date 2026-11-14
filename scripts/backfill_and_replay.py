@@ -293,6 +293,13 @@ def main():
 
     conn = db_connect()
     try:
+        # Read-only connection, held from the probes to the report with
+        # minutes of job runs in between. psycopg2 opens a transaction on
+        # the first statement and keeps it until commit or rollback, so
+        # without this the probes' transaction would sit idle across every
+        # job. In autocommit each read is its own transaction.
+        conn.autocommit = True
+
         # 1. Coverage check. A replay reads bars only from the tables, so a
         #    date they lack is refused here, before any job. Runs with
         #    --skip-replay too: the report would compare against nothing.

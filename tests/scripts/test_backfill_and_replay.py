@@ -85,6 +85,10 @@ class _Conn:
         self.queries: list = []
         self.closed = False
         self._row = None
+        # psycopg2's default: the first statement opens a transaction that
+        # stays open until commit or rollback.
+        self.autocommit = False
+        self.autocommit_at_query: list = []
 
     def cursor(self, *_args, **_kwargs):
         return self
@@ -97,6 +101,7 @@ class _Conn:
 
     def execute(self, sql, params=None):
         self.queries.append((sql, params))
+        self.autocommit_at_query.append(self.autocommit)
         self._row = self.answer(sql, params)
 
     def fetchone(self):
@@ -284,3 +289,31 @@ def test_missing_replay_dates_probes_each_distinct_date_once_in_order():
     # one 1-min probe per distinct date; a miss there skips the daily probe
     assert len(conn.queries) == 2
     assert all("market_data_intraday" in sql for sql, _params in conn.queries)
+
+
+def test_main_holds_no_transaction_open_across_the_jobs(monkeypatch):
+    """The probes run on the connection the report reads later, and the
+    jobs between them take minutes. With psycopg2's default the probes'
+    transaction would sit idle that whole time. main puts the connection in
+    autocommit before the first statement, so no read leaves one open."""
+    import importlib
+    import sys
+    mod = importlib.import_module("scripts.backfill_and_replay")
+    conn = _Conn(lambda sql, params: (1,))
+    seen: list = []
+    monkeypatch.setattr(mod, "db_connect", lambda: conn)
+    monkeypatch.setattr(
+        mod, "_execute_job",
+        lambda job, env, wait=True: seen.append((job, conn.autocommit)) or True)
+    monkeypatch.setattr(
+        mod, "report_comparison",
+        lambda c, ticker, dates: seen.append(("report", c.autocommit)))
+    monkeypatch.setattr(sys, "argv", [
+        "backfill_and_replay.py", "--ticker", "AMD", "--dates", "2026-04-24"])
+
+    mod.main()
+
+    assert conn.autocommit_at_query and all(conn.autocommit_at_query), (
+        "a probe ran before the connection was put in autocommit")
+    assert seen == [("insight-pipeline", True), ("insight-discord-push", True), ("report", True)]
+    assert conn.closed
