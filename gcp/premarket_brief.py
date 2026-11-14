@@ -3562,6 +3562,15 @@ def main(argv: Optional[list[str]] = None):
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(2)
+    if run_slot == 'late':
+        # The operator's overwrite and the late slot's overwrite have
+        # different rules; a run that claimed both would have neither's.
+        if args.update or os.environ.get('BRIEF_UPDATE') == 'true':
+            print("ERROR: BRIEF_RUN_SLOT=late cannot be combined with --update "
+                  "or BRIEF_UPDATE=true", file=sys.stderr)
+            sys.exit(2)
+        if _as_of_override() is not None:
+            logger.info("BRIEF_RUN_SLOT=late has no effect on a BRIEF_AS_OF replay")
 
     allow_update, run_kind = _resolve_run_kind_and_update(args.update)
     triggered_by = (
