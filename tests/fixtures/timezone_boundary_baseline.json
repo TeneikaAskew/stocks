@@ -83,11 +83,6 @@
    "main::date.today()"
   ]
  },
- "gcp/fetchers/compute_earnings_reactions.py": {
-  "host-today": [
-   "_resolve_scope::_dt.now()"
-  ]
- },
  "gcp/fetchers/evaluate_ew_strikes.py": {
   "tz-localize-none": [
    "scoring_session::row['market_close'].tz_convert(ET_NAME).tz_localize(None)",
@@ -112,14 +107,6 @@
  "gcp/fetchers/fetch_av_indicators.py": {
   "utc-parse": [
    "fetch_indicator::pd.to_datetime(df['ts'], utc=True)"
-  ]
- },
- "gcp/fetchers/fetch_earnings_history.py": {
-  "host-today": [
-   "_resolve_scope::_dt.now()"
-  ],
-  "sql-utc-date": [
-   "_earnings_calendar_tickers::fstr#266f9c5482ea"
   ]
  },
  "gcp/fetchers/fetch_economic_events.py": {
@@ -798,26 +785,16 @@
  },
  "scripts/fetch_catalyst_calendar.py": {
   "host-today": [
-   "_save_catalysts_locked::datetime.now()",
-   "main::datetime.now()"
+   "_save_catalysts_locked::datetime.now()"
   ]
  },
  "scripts/fetch_earnings_calendar.py": {
   "host-today": [
    "EarningsCalendarFetcher.fetch_unusual_whales_earnings::datetime.now()",
-   "EarningsCalendarFetcher.fetch_unusual_whales_earnings::datetime.now()",
-   "EarningsCalendarFetcher.print_summary::datetime.now()",
    "_fetch_yahoo_bulk::datetime.now()",
    "_fetch_yahoo_one::datetime.now()",
    "_fetch_yahoo_one::datetime.now()",
-   "_resolve_scope::datetime.now()",
-   "_resolve_target_dates_for_av_options::datetime.now()",
-   "fetch_alphavantage_earnings::datetime.now()",
-   "main::datetime.now()",
-   "main::datetime.now()",
-   "main::datetime.now()",
-   "main::datetime.now()",
-   "main::datetime.now()"
+   "fetch_alphavantage_earnings::datetime.now()"
   ]
  },
  "scripts/fetch_market_data.py": {
