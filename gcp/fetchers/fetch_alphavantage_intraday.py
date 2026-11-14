@@ -466,10 +466,18 @@ REPLACE_MAX_DELETE_RATIO = 3.0
 # rebuilds (Codex P1 on #1185). Each builder recomputes a range:
 #   build-intraday-flow --backfill, build-intraday-gex --backfill,
 #   build-realtime-gex, strat_data_builder --rebuild.
+# The six levels tables are one step further down: computed from the feature
+# tables, not from the bars (strat_enrich_levels.backfill_one reads
+# strat_features_{tf}), and keyed by (ticker, ts) like them. Left out, a
+# replaced month's level rows would sit at keys no feature row has. That
+# module rebuilds them, after the feature tables are rebuilt.
 DERIVED_TS_TABLES = (
     "intraday_flow_15m", "intraday_gex_15m", "realtime_gex_15m",
     "strat_features_1m", "strat_features_5m", "strat_features_15m",
     "strat_features_30m", "strat_features_60m", "strat_features_4h",
+    "strat_features_levels_1m", "strat_features_levels_5m",
+    "strat_features_levels_15m", "strat_features_levels_30m",
+    "strat_features_levels_60m", "strat_features_levels_4h",
 )
 
 # Result tables computed FROM the bars that the migration does NOT touch:
