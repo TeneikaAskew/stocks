@@ -24,6 +24,7 @@ done_when:
   - "docs/plans/MORNING_RUN_PROTECTION_PLAN.md gains a section that names the late slot as the one scheduled path that replaces a live canonical row, with its four conditions (an NYSE session, every brief ticker's snapshot fetched at or after 09:20:00 America/New_York with its prints filtered, the write check before 09:29:30, the rows unchanged since the run read them), and the docstrings of persist_to_cloud_sql and of the module say the same"
   - "Source identity (DASHBOARD-01): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-PLAYBOOK-001, DASHBOARD-01) note row carries that source_identity_sha256"
   - "The FEAT-PLAYBOOK-001 catalog record (Status, Last reviewed) and the PR traceability entry are updated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
+  - "tests/api/test_movement_statement_late_slot.py::test_the_ladder_follows_the_late_write passes: with MOVEMENT_STATEMENT_ENABLED on, the exchange clock frozen, and one in-memory premarket_analysis table that takes the brief's canonical writes (gcp.database.upsert_dataframe and the late slot's rewrite) and answers the route's read of the live level_basis (lib.strat_levels.read_live_level_basis through the route's own query function), a scheduled early run at 08:30 America/New_York is followed by GET /api/movement-statement for SPY through TestClient, whose levels block carries the early row's trigger as rung one and the early row's side lists as its ladder; a late-slot run at 09:21:30 on a premarket snapshot stamped 09:20:40 whose high is above the early snapshot's then applies, and the same request returns the late row's trigger and side lists and no longer returns the early trigger; ::test_a_late_run_that_does_not_apply_leaves_the_ladder passes: the same sequence with the late run started at 09:35:00 leaves the response equal, field for field, to the one before it. The first test fails on origin/main, where BRIEF_RUN_SLOT is not read, the 09:21:30 run rewrites no canonical row and the route still answers with the early trigger"
 status: draft
 supersedes: null
 ---
@@ -99,7 +100,7 @@ Decided on 2026-11-14 for #1929, and binding here:
 
 New decisions this design needs. Each has a recommendation, written into the design below.
 
-**A. Decision 7: in this spec or its own? Recommended: its own spec.** This spec's plan is about 13
+**A. Decision 7: in this spec or its own? Recommended: its own spec.** This spec's plan is about 14
 tasks. The replay cut adds about 7 (see "Implementation plan: size"), which passes the 15 task limit
 of the product-delivery skill. It is also a different problem: a replay would have to rebuild the
 snapshot from stored one-minute bars, and the stored bars are not what the live run read. On
@@ -489,10 +490,15 @@ adds. #1929 declares the same element for the schedule. DASHBOARD-21 (the moveme
 the same row and is named in the note's prose, not declared: one note carries the identity.
 
 No route, response schema or frontend file changes. For a given stored row every API answer is what
-it is on main; what changes is when the row changes. So this PR carries no new API test of a changed
-response, and the existing test of the ladder's source stays the proof that the route follows the
-live `level_basis` (`tests/api/test_movement_statement_router.py`). The check against the deployed
-site after the first late run is a close-out step (AGENTS.md, "Browser proof").
+it is on main; what changes is when the row changes. That is still a change a user can see: from the
+next request after the late write, `GET /api/movement-statement` returns a different ladder. So the
+implementation PR carries an API test of the changed response, as AGENTS.md asks of a stocks change
+("Browser proof"): the last `done_when` item runs the early write, the late write and the route
+against one in-memory table and reads the ladder through `TestClient` before and after, and its
+second test holds the answer still when the late run does not apply. The existing tests of the
+ladder's source (`tests/api/test_movement_statement_router.py`) do not exercise a late write and are
+not that proof. The runs against the deployed site, before the merge and after the first late run,
+stay the owner's close-out steps with screenshots (Close-out, step 4).
 
 ## Capacity
 
@@ -528,7 +534,7 @@ One more run of an existing job on each session, with a wait in front of the bui
 
 ## Implementation plan: size
 
-About 13 tasks, one branch (`feature/feat-playbook-001-brief-late-slot`), one PR:
+About 14 tasks, one branch (`feature/feat-playbook-001-brief-late-slot`), one PR:
 
 1. The slot: `RUN_SLOTS`, `_resolve_run_slot`, `_late_slot_clock`, the combinations table.
 2. The session gate.
@@ -541,9 +547,11 @@ About 13 tasks, one branch (`feature/feat-playbook-001-brief-late-slot`), one PR
 8. The note formatter.
 9. `main()`: the late flow, exit codes, the log record, the failure line.
 10. The early slot's regression test and the existing suites.
-11. The refresh's log record.
-12. The protection plan document and the docstrings.
-13. The SITE note, the sidecar, the catalog record and the traceability entry.
+11. The API test of the changed ladder (`tests/api/test_movement_statement_late_slot.py`): the early
+    write, the late write and the route against one in-memory table.
+12. The refresh's log record.
+13. The protection plan document and the docstrings.
+14. The SITE note, the sidecar, the catalog record and the traceability entry.
 
 Decision 7, the replay cut, is about 7 more: a reader of the session's stored one-minute premarket
 bars up to a cut; the snapshot rebuilt from them with the print filter, the prior session's ATR and
