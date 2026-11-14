@@ -57,6 +57,11 @@ LEGACY_1753_VALUES = {
     # the spacing passes its own value. The gap-fill flag is the policy seed.
     "target_min_spacing_atr": 0.0,
     "gap_fill_flag_atr": 0.5,
+    # ATR levels (2026-11-11). #1753 had no ATR rungs; they are display
+    # only, so these values change no pick. The policy seeds.
+    "atr_rung_step_atr": 0.5,
+    "atr_rung_max_atr": 2.0,
+    "atr_rung_stretch_atr": 1.5,
 }
 
 
