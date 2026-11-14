@@ -2,7 +2,7 @@
 feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-11-14-feat-deploy-001-watched-tickers-deploy.md
 branch: feature/feat-deploy-001-watched-tickers-deploy
-pr: null
+pr: 1940
 status: ready
 ---
 
