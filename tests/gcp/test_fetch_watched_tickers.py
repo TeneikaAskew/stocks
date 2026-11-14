@@ -620,7 +620,7 @@ class _FakeDB:
         if sql == fwt.COVERAGE_SQL:
             rows = []
             for t in kept:
-                rs = self.bars.get(t)
+                rs = self._counted(t, sql)
                 if rs:
                     rows.append((t, len(rs), max(rs),
                                  any(r.get('data_source') == WATCHED for r in rs.values())))
@@ -631,13 +631,23 @@ class _FakeDB:
                                             if self._close(t, d) is not None]})
         if sql == fwt.VERIFY_BARS_SQL:
             d = params['fetch_date']
-            rows = [(t, self._close(t, d), self.bars[t][d].get('atr_14'), len(self.bars[t]))
-                    for t in kept if d in self.bars.get(t, {})]
+            rows = [(t, self._close(t, d), self.bars[t][d].get('atr_14'),
+                     len(self._counted(t, sql)))
+                    for t in kept if d in self.bars.get(t, {}) and self._counted(t, sql)]
             return pd.DataFrame(rows, columns=['ticker', 'close', 'atr_14', 'bar_count'])
         if sql == fwt.VERIFY_INFO_SQL:
             rows = [(t, pd.Timestamp(self.info[t])) for t in kept if t in self.info]
             return pd.DataFrame(rows, columns=['ticker', 'updated_at'])
         raise AssertionError(f'unexpected strict query: {sql}')
+
+    def _counted(self, t, sql):
+        """The ticker's rows an aggregate in ``sql`` sees: every row, or only
+        real bars when the SQL itself says ``close IS NOT NULL`` (the fake
+        follows the query text, it does not assume the filter)."""
+        rs = self.bars.get(t, {})
+        if 'close IS NOT NULL' in sql:
+            rs = {d: r for d, r in rs.items() if self._close(t, d) is not None}
+        return rs
 
     def _close(self, t, d):
         r = self.bars.get(t, {}).get(d)
@@ -650,6 +660,13 @@ class _FakeDB:
             self.bars.setdefault(ticker, {})[d] = {
                 'open': 1.0, 'high': 1.0, 'low': 1.0, 'close': 1.0,
                 'volume': 100, 'data_source': source}
+
+    def seed_placeholders(self, ticker, n, end=_SESSION):
+        """Indicator-only rows: indicators but no bar (close NULL, no source)."""
+        for d in pd.bdate_range(end=end, periods=n).date:
+            self.bars.setdefault(ticker, {})[d] = {
+                'open': None, 'high': None, 'low': None, 'close': None,
+                'volume': None, 'atr_14': 1.0, 'data_source': None}
 
     # upsert_dataframe(df, table, keys): merge on (ticker, date)
     def upsert(self, df, table, keys):
@@ -1033,3 +1050,59 @@ def test_main_runs_with_market_today_and_started(monkeypatch):
     assert fwt.main() == 0
     cfg, today, now = seen[0]
     assert cfg == fwt.Config(50) and today == _SESSION and now.tzinfo is not None
+
+
+# ---------------------------------------------------------------------------
+# Codex round 1, finding 1: an indicator-only row (close NULL) is not a bar
+# ---------------------------------------------------------------------------
+
+def test_coverage_session_placeholder_only_is_no_bars_and_pulled_full():
+    db = _FakeDB()
+    db.seed_placeholders('PH', 1)               # the session's date, close NULL
+    cov = fwt.read_coverage(['PH'], query=db)['PH']
+    assert cov == fwt.Coverage('PH', 0, None, False)
+    assert fwt.plan_pulls({'PH': cov}, _SESSION) == {('full', WATCHED): ['PH']}
+
+
+def test_coverage_older_placeholders_only_is_not_another_writers_ticker():
+    db = _FakeDB()
+    db.seed_placeholders('OLD', 5, end=date(2026, 10, 30))
+    cov = fwt.read_coverage(['OLD'], query=db)['OLD']
+    assert cov == fwt.Coverage('OLD', 0, None, False)
+    assert fwt.stamp_for(cov) == WATCHED
+
+
+def test_coverage_counts_real_bars_beside_a_session_placeholder():
+    db = _FakeDB()
+    db.seed('MIX', 300, end=date(2026, 11, 12), source=WATCHED)
+    db.seed_placeholders('MIX', 1)              # session row holds indicators only
+    cov = fwt.read_coverage(['MIX'], query=db)['MIX']
+    assert cov == fwt.Coverage('MIX', 300, date(2026, 11, 12), True)
+    assert fwt.plan_pulls({'MIX': cov}, _SESSION) == {('compact', WATCHED): ['MIX']}
+
+
+def test_run_session_placeholder_only_ticker_is_fetched_with_the_watched_stamp(job):
+    job.db.seed_placeholders('PH', 1)
+    assert _run(job, ['PH']) == 0
+    assert job.av_calls == [('PH', 'full')]
+    assert job.db.bars['PH'][_SESSION]['close'] is not None
+    assert job.db.bars['PH'][_SESSION]['data_source'] == WATCHED
+
+
+def test_verify_placeholders_do_not_lift_a_short_ticker_to_failed_indicators():
+    """20 indicator-only rows and 10 real bars (the session's among them,
+    atr_14 NULL): 10 real bars cannot yield an ATR(14), so too_short."""
+    db = _FakeDB()
+    db.seed_placeholders('SHORT', 20, end=date(2026, 10, 16))
+    db.seed('SHORT', 10)
+    db.info['SHORT'] = _RUN_NOW
+    v = fwt.verify_tickers(['SHORT'], _SESSION, _RUN_NOW, query=db)
+    assert v.failed == {} and v.too_short == ['SHORT']
+
+
+def test_verify_placeholder_only_ticker_fails_bars():
+    db = _FakeDB()
+    db.seed_placeholders('PH', 20)
+    db.info['PH'] = _RUN_NOW
+    v = fwt.verify_tickers(['PH'], _SESSION, _RUN_NOW, query=db)
+    assert v.failed == {'PH': 'bars'}

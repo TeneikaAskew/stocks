@@ -144,10 +144,14 @@ def resolve_session(today: date) -> date | None:
 # for an existing orphan.
 _OTHER_WRITER_SOURCE = 'av_daily_backfill'
 
+# Coverage counts real bars only: an indicator-only row (close NULL) holds
+# indicators but no bar, so it neither adds to the count nor makes a date
+# current nor marks the ticker as another writer's.
 COVERAGE_SQL = (
     "SELECT ticker, COUNT(*) AS bar_count, MAX(date) AS max_date, "
     "bool_or(data_source = 'av_watched_backfill') AS bootstrapped "
-    "FROM market_data_daily WHERE ticker = ANY(:kept) GROUP BY ticker"
+    "FROM market_data_daily WHERE ticker = ANY(:kept) AND close IS NOT NULL "
+    "GROUP BY ticker"
 )
 
 
@@ -171,8 +175,9 @@ def _as_date(v) -> date | None:
 def read_coverage(kept: list[str], query: Query | None = None) -> dict[str, Coverage]:
     """Stored coverage per kept ticker, in ``kept`` order.
 
-    Strict read: a failure raises (Rule 3.7). A ticker with no rows is the
-    explicit ``Coverage(t, 0, None, False)``, a true "no rows" state.
+    Strict read: a failure raises (Rule 3.7). A ticker with no real bars
+    (no rows, or only indicator-only rows) is the explicit
+    ``Coverage(t, 0, None, False)``, a true "no bars" state.
     """
     if query is None:
         from gcp.database import query_to_dataframe_strict as query
@@ -279,12 +284,13 @@ def refresh_ticker_info(tickers: list[str]) -> None:
 
 
 # Per-ticker verification. The bars read pairs the session row with the
-# ticker's stored bar count; the info read returns when each ticker_info row
-# was last refreshed.
+# ticker's stored count of real bars (close NOT NULL; an indicator-only row
+# cannot lift a short series over the indicator minimum); the info read
+# returns when each ticker_info row was last refreshed.
 VERIFY_BARS_SQL = (
     "SELECT m.ticker, m.close, m.atr_14, c.bar_count FROM market_data_daily m "
     "JOIN (SELECT ticker, COUNT(*) AS bar_count FROM market_data_daily "
-    "WHERE ticker = ANY(:kept) GROUP BY ticker) c USING (ticker) "
+    "WHERE ticker = ANY(:kept) AND close IS NOT NULL GROUP BY ticker) c USING (ticker) "
     "WHERE m.date = :fetch_date AND m.ticker = ANY(:kept)"
 )
 VERIFY_INFO_SQL = "SELECT ticker, updated_at FROM ticker_info WHERE ticker = ANY(:kept)"
