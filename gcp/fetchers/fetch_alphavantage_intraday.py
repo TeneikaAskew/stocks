@@ -699,7 +699,11 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     """
     start, end = month_replace_window(year, month)
     out = {'symbol': symbol, 'month': f"{year}-{month:02d}", 'deleted': 0,
-           'inserted': 0, 'held_sessions': None, 'missing_sessions': 0}
+           'inserted': 0, 'held_sessions': None, 'missing_sessions': 0,
+           # What the window holds that is not counted as held. None until the
+           # refetch is in: they are decided from it (classify_stored_rows).
+           'rows': None, 'uncounted': None, 'label_dropped': None,
+           'label_copies': None, 'by_utc_hour': None, 'carry_in': None}
     # Snapshot BEFORE the refetch: a writer that commits while the request is
     # in flight then differs from this snapshot, and the locked re-check in
     # verify() below refuses the month. Snapshotting after the fetch let such
@@ -709,9 +713,9 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     # The window's bars as _held_session_dates places them; verify() re-reads
     # exactly this under the lock.
     placed = _placed_session_counts(stored)
-    held = placed
-    out['held_sessions'] = len(held)
-    if not held:
+    out['rows'] = len(stored)
+    out['held_sessions'] = len(placed)
+    if not placed:
         # Nothing to re-frame: deleting would only remove rows (code review
         # H2), and there is no reason to spend a vendor call finding that out.
         out['status'] = REPLACE_NOTHING_HELD
@@ -723,8 +727,25 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     if df is None or df.empty or reason != FETCH_OK:
         out['status'] = reason if reason != FETCH_OK else FETCH_NO_TIMESERIES
         return out
+    # The vendor's naive Eastern stamp stays beside the UTC key: the label-copy
+    # test compares it with the stored rows' UTC clock readings.
+    df['ts_et'] = df['ts']
     df['ts'] = eastern_index_to_utc(df['ts'])
     df = df.drop_duplicates(subset=['ticker', 'interval', 'ts'])
+    # What must come back is decided from the refetch: the previous month's
+    # late bars and Eastern-label copies of returned bars are not bars this
+    # refetch can be short of. Every other row counts exactly as before.
+    c = classify_stored_rows(stored, df, year, month)
+    held = c.held
+    out.update(held_sessions=len(held), label_dropped=c.label_dropped,
+               label_copies=c.label_copies, uncounted=c.label_dropped + c.label_copies,
+               by_utc_hour=c.by_utc_hour, carry_in=len(c.carry_in_keys))
+    if not held:
+        # Only uncounted rows: there is no session to hold the refetch to, so
+        # nothing is deleted (code review H2).
+        out['status'] = REPLACE_NOTHING_HELD
+        return out
+    df = df.drop(columns='ts_et')
     session = utc_to_eastern_naive(df['ts']).dt.date
     # Both sides of the guard are counted over the window and nothing else:
     # ``held`` comes from the window's stored rows, so a refetched bar counts

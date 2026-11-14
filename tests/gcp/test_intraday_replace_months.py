@@ -1303,3 +1303,107 @@ def test_an_empty_window_classifies_as_nothing():
     v = _iwm_session()
     c = fai.classify_stored_rows(_true_rows(v).head(0), _refetch(v), 2026, 4)
     assert c == fai.StoredClassification({}, 0, 0, 0, {}, [])
+
+
+# -- Design 3 in replace_month: label copies are not bars to return ----------
+
+
+def test_label_copies_at_true_keys_do_not_make_a_refetch_short():
+    """done_when[0]. On main these rows are incomplete_refetch with missing
+    ['2026-04-10 (842/876)']: the 34 copies read as 34 more bars of the day."""
+    v = _iwm_session()
+    stored = _iwm_stored(v)
+
+    r, swap = _replace(stored, v, "IWM", 2026, 4, commit=False)
+    assert r["status"] == fai.REPLACE_DRY
+    assert r["inserted"] == 842
+    swap.assert_not_called()
+
+    r2, swap = _replace(stored, v, "IWM", 2026, 4, commit=True)
+    assert r2["status"] == fai.REPLACE_OK
+    assert swap.call_count == 1
+    frame = swap.call_args.args[0]
+    assert sorted(frame["ts"]) == sorted(_true_rows(v)["ts"]) and len(frame) == 842
+    assert "ts_et" not in frame.columns
+    assert swap.call_args.kwargs["max_delete_ratio"] == fai.REPLACE_MAX_DELETE_RATIO == 3.0
+    assert (r2["deleted"], r2["inserted"]) == (1082, 842)
+
+    for out in (r, r2):
+        assert (out["label_copies"], out["label_dropped"]) == (34, 206)
+        assert (out["rows"], out["uncounted"]) == (1082, 240)
+        assert out["by_utc_hour"] == {4: 57, 5: 43, 6: 46, 7: 60, 8: 3, 9: 17, 10: 14}
+        assert (out["held_sessions"], out["missing_sessions"]) == (1, 0)
+
+
+def test_label_region_rows_alone_never_made_a_refetch_short():
+    """The 206 label rows of UTC 04:00-07:59 each lose their Eastern minute to
+    the true row four hours later, before and after this change: dry_run."""
+    v = _iwm_session()
+    r, swap = _replace(_iwm_stored(v, copies=False), v, "IWM", 2026, 4, commit=False)
+    assert r["status"] == fai.REPLACE_DRY
+    assert (r["label_copies"], r["label_dropped"], r["rows"]) == (0, 206, 1048)
+    swap.assert_not_called()
+
+
+def _without_five_and_six(v: pd.DataFrame) -> pd.DataFrame:
+    """The vendor month without its bars of 05:00 to 06:59 Eastern (89 of 842)."""
+    hour = v["ts"].dt.hour
+    short = v[(hour < 5) | (hour >= 7)]
+    assert len(v) - len(short) == 43 + 46
+    return short
+
+
+@pytest.mark.parametrize("commit", [False, True])
+def test_a_short_refetch_is_still_refused_on_a_clean_month(commit):
+    """done_when[2]: a real bar the refetch lacks is not a label copy. Each of
+    the 89 true rows is judged alone against the refetched bar four hours
+    later, and none equals it."""
+    v = _iwm_session()
+    r, swap = _replace(_true_rows(v), _without_five_and_six(v), "IWM", 2026, 4, commit)
+    assert r["status"] == fai.REPLACE_INCOMPLETE
+    assert r["missing"] == ["2026-04-10 (753/842)"]
+    assert (r["label_copies"], r["label_dropped"]) == (0, 0)
+    swap.assert_not_called()
+
+
+@pytest.mark.parametrize("commit", [False, True])
+def test_a_short_refetch_is_still_refused_beside_label_copies(commit):
+    """The same refetch against the measured shape: the 34 copies are
+    discounted and the 89 bars the refetch lacks still refuse the month."""
+    v = _iwm_session()
+    r, swap = _replace(_iwm_stored(v), _without_five_and_six(v), "IWM", 2026, 4, commit)
+    assert r["status"] == fai.REPLACE_INCOMPLETE
+    assert r["missing"] == ["2026-04-10 (753/842)"]
+    assert r["label_copies"] == 34
+    swap.assert_not_called()
+
+
+def test_a_month_held_only_under_the_eastern_label_keeps_todays_floor():
+    """961 Eastern-labelled rows and no true-UTC row. Read as true instants
+    only 721 of them fall inside 04:00-20:00 Eastern; the placed count, 961,
+    is the floor, as today (Problem 3)."""
+    v = _bars("2026-04-10", range(240, 1201))
+    stored = _label_rows(v)
+    assert len(stored) == 961
+
+    r, swap = _replace(stored, v, "IWM", 2026, 4, commit=True)
+    assert r["status"] == fai.REPLACE_OK
+    assert (r["label_copies"], r["label_dropped"], r["uncounted"]) == (0, 0, 0)
+    assert len(swap.call_args.args[0]) == 961
+
+    for commit in (False, True):
+        r, swap = _replace(stored, v[v["ts"].dt.hour >= 8], "IWM", 2026, 4, commit)
+        assert r["status"] == fai.REPLACE_INCOMPLETE
+        assert r["missing"] == ["2026-04-10 (721/961)"]
+        swap.assert_not_called()
+
+
+def test_a_window_holding_only_the_previous_months_late_bars_is_left_alone():
+    """March's window holds February's three late bars and nothing of March.
+    Nothing is held once the refetch is read, so nothing is handed to the swap
+    and nothing is deleted (code review H2 on #1185)."""
+    stored, march = _feb_late_and_march()
+    r, swap = _replace(stored[stored["ts"].isin(FEB_LATE)], march, "SPY", 2018, 3, commit=True)
+    assert r["status"] == fai.REPLACE_NOTHING_HELD
+    assert (r["carry_in"], r["held_sessions"], r["rows"]) == (3, 0, 3)
+    swap.assert_not_called()
