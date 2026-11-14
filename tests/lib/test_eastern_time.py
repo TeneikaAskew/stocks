@@ -33,6 +33,7 @@ from lib.eastern_time import (
     market_date_sql,
     market_today,
     market_today_sql,
+    replay_probe_window,
     require_aware,
     utc_to_eastern_naive,
     verify_eastern_is_dst_correct,
@@ -205,3 +206,23 @@ def test_market_today_sql_is_eastern_not_current_date():
     sql = market_today_sql()
     assert "CURRENT_DATE" not in sql
     assert sql == "(now() AT TIME ZONE 'America/New_York')::date"
+
+
+# -- the coverage window of a replay -----------------------------------------
+
+
+def test_replay_probe_window_is_the_seven_utc_days_before_the_date():
+    assert replay_probe_window(date(2026, 4, 24)) == (
+        datetime(2026, 4, 17, tzinfo=timezone.utc),
+        datetime(2026, 4, 24, tzinfo=timezone.utc),
+    )
+    # across a year boundary
+    assert replay_probe_window(date(2026, 1, 3))[0] == datetime(2025, 12, 27, tzinfo=timezone.utc)
+    # across the spring clock change: raw UTC bounds, so the span never bends
+    lo, hi = replay_probe_window(date(2026, 3, 10))
+    assert hi - lo == timedelta(days=7)
+    assert lo.utcoffset() == timedelta(0) and hi.utcoffset() == timedelta(0)
+    # only the calendar date of the argument counts
+    want = replay_probe_window(date(2026, 4, 24))
+    assert replay_probe_window(datetime(2026, 4, 24, 15, 30)) == want
+    assert replay_probe_window(pd.Timestamp("2026-04-24 15:30")) == want

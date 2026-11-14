@@ -272,45 +272,6 @@ def execute_cloud_run_job(job_name: str, env_overrides: dict[str, str]) -> bool:
         return False
 
 
-def execute_cloud_run_job_blocking(job_name: str,
-                                   env_overrides: dict[str, str],
-                                   timeout_sec: int = 540) -> bool:
-    """Trigger a Cloud Run Job and BLOCK until it completes.
-
-    Used by /replay's auto-backfill path so brief + insight don't fire
-    against an empty database. Returns True on success, False on
-    failure or timeout. The 540s timeout sits comfortably under
-    Discord's 15-min followup-token TTL.
-    """
-    try:
-        from google.cloud import run_v2
-        client = run_v2.JobsClient()
-        parent = f"projects/{_gcp_project()}/locations/{_gcp_region()}"
-        job_path = f"{parent}/jobs/{job_name}"
-        env_vars = [run_v2.types.EnvVar(name=k, value=v)
-                    for k, v in env_overrides.items()]
-        overrides = run_v2.types.RunJobRequest.Overrides(
-            container_overrides=[
-                run_v2.types.RunJobRequest.Overrides.ContainerOverride(env=env_vars),
-            ],
-        )
-        op = client.run_job(request=run_v2.RunJobRequest(
-            name=job_path, overrides=overrides,
-        ))
-        # Block until execution completes (or timeout). Failures raise.
-        result = op.result(timeout=timeout_sec)
-        if hasattr(result, "succeeded_count") and result.succeeded_count > 0:
-            logger.info("blocking %s succeeded", job_name)
-            return True
-        # Some SDK versions don't surface counts on the operation result —
-        # treat absence of an exception as success.
-        logger.info("blocking %s completed (no count surfaced)", job_name)
-        return True
-    except Exception as exc:
-        logger.exception("blocking dispatch %s failed: %s", job_name, exc)
-        return False
-
-
 # ──────────────────────────────────────────────────────────────────────
 # Command handlers
 # ──────────────────────────────────────────────────────────────────────
@@ -319,23 +280,72 @@ def _options_to_dict(options: list[dict]) -> dict[str, Any]:
     return {opt["name"]: opt.get("value") for opt in (options or [])}
 
 
-def ticker_has_daily_data(ticker: str) -> bool:
-    """Quick existence check — does the ticker have ANY daily rows in
-    market_data_daily? When False, /replay must dispatch the
-    backfill-ticker job first (otherwise brief + insight have nothing
-    to read and silently emit empty embeds)."""
-    try:
-        from gcp.database import is_cloud_sql_configured, query_to_dataframe
-        if not is_cloud_sql_configured():
-            return True  # can't verify locally; assume yes (avoids false negatives)
-        df = query_to_dataframe(
-            "SELECT 1 FROM market_data_daily WHERE ticker = :t LIMIT 1",
-            {"t": ticker.upper()},
-        )
-        return not df.empty
-    except Exception as exc:
-        logger.warning("ticker_has_daily_data: %s — assuming True", exc)
-        return True
+def replay_bars_in_table(ticker: str, d: date) -> bool:
+    """Does market_data_intraday hold a 1-min bar for the ticker in the 7
+    days before ``d``?
+
+    The coverage gate of /replay: is this ticker, around this day, something
+    the nightly pull holds. A replay never fetches bars, so a False here ends
+    the command. One single-row probe, bounded at 10 s. Raises when Cloud SQL
+    is not configured and lets a query error propagate: "could not read" must
+    never read as "no bars".
+    """
+    from gcp.database import is_cloud_sql_configured, query_to_dataframe_strict
+    from lib.eastern_time import replay_probe_window
+    if not is_cloud_sql_configured():
+        raise RuntimeError("Cloud SQL is not configured; market_data_intraday cannot be read")
+    lo, hi = replay_probe_window(d)
+    df = query_to_dataframe_strict(
+        "SELECT 1 FROM market_data_intraday WHERE ticker = :t AND interval = '1min' "
+        "AND ts >= :lo AND ts < :hi LIMIT 1",
+        {"t": ticker.upper(), "lo": lo, "hi": hi},
+        timeout_s=10,
+    )
+    return not df.empty
+
+
+def replay_daily_in_table(ticker: str, d: date) -> bool:
+    """Does market_data_daily hold a daily bar for the ticker before ``d``?
+
+    The input check of /replay: the brief and the insight replay the morning
+    of ``d`` from daily data before it. Same contract as
+    ``replay_bars_in_table``: one probe, 10 s, raises instead of guessing.
+    """
+    from gcp.database import is_cloud_sql_configured, query_to_dataframe_strict
+    if not is_cloud_sql_configured():
+        raise RuntimeError("Cloud SQL is not configured; market_data_daily cannot be read")
+    df = query_to_dataframe_strict(
+        "SELECT 1 FROM market_data_daily WHERE ticker = :t AND date < :d LIMIT 1",
+        {"t": ticker.upper(), "d": d},
+        timeout_s=10,
+    )
+    return not df.empty
+
+
+def _replay_refusal(ticker_u: str, d: date) -> Optional[str]:
+    """The reply that ends a /replay the tables cannot serve, or None.
+
+    Runs the 1-min probe, then the daily probe. The daily probe does not run
+    after a miss or an error on the first.
+    """
+    day = d.isoformat()
+    probes = (
+        ("market_data_intraday", replay_bars_in_table,
+         f"market_data_intraday has no 1-min bars for {ticker_u} in the 7 days before {day}"),
+        ("market_data_daily", replay_daily_in_table,
+         f"market_data_daily has no daily bar for {ticker_u} before {day}"),
+    )
+    for table, probe, lacks in probes:
+        try:
+            found = probe(ticker_u, d)
+        except Exception:
+            logger.exception("replay probe on %s failed for %s %s", table, ticker_u, day)
+            return (f"Could not read {table} for {ticker_u}: the database did not answer. "
+                    f"No job was started. Try again in a minute.")
+        if not found:
+            return (f"No replay for {ticker_u} on {day}: {lacks}. "
+                    f"Nothing was fetched and no job was started.")
+    return None
 
 
 def _brief_row_exists(ticker: str, analysis_date) -> bool:
@@ -391,6 +401,13 @@ def handle_replay(ticker: str, date_arg: str,
                   refresh: bool = False, user_id: str = "") -> str:
     """Background handler for /replay. Returns the followup-message text.
 
+    A replay reads bars only from the tables and fetches nothing. Before
+    either path, two single-row probes check that market_data_intraday
+    holds 1-min bars for the ticker in the 7 days before the date and that
+    market_data_daily holds a daily bar before it. A miss, or a probe that
+    cannot be read, ends the command with a reply that says which, and no
+    job is started.
+
     Two paths:
 
     1. CACHE HIT (refresh=False AND both brief + insight rows already
@@ -399,10 +416,9 @@ def handle_replay(ticker: str, date_arg: str,
        Cloud SQL and post fresh Discord embeds without recomputing.
        Logs an `insight_runs` row with trigger='cache_hit' for audit.
 
-    2. REFRESH (refresh=True OR cache miss): existing path — auto-
-       backfill if needed, then dispatch the full brief + insight
-       Cloud Run Jobs with BRIEF_UPDATE/INSIGHT_UPDATE env vars so
-       the new persistence path UPSERTs the canonical row.
+    2. REFRESH (refresh=True OR cache miss): dispatch the full brief +
+       insight Cloud Run Jobs with BRIEF_UPDATE/INSIGHT_UPDATE env vars
+       so the new persistence path UPSERTs the canonical row.
     """
     try:
         d = parse_date_arg(date_arg)
@@ -410,6 +426,10 @@ def handle_replay(ticker: str, date_arg: str,
         return f"❌ {exc}"
 
     ticker_u = ticker.upper().strip()
+
+    refusal = _replay_refusal(ticker_u, d)
+    if refusal is not None:
+        return refusal
 
     # Canonical insight as_of slot (9:15 EDT = 13:15 UTC during DST).
     canonical_as_of = datetime(d.year, d.month, d.day, 13, 15,
@@ -451,26 +471,6 @@ def handle_replay(ticker: str, date_arg: str,
             )
 
     # ── Path 2: refresh OR cache miss ────────────────────────────
-    # Pre-flight: if the ticker has zero data, run the backfill first.
-    backfill_msg = ""
-    if not ticker_has_daily_data(ticker_u):
-        logger.info("auto-backfill: %s has no daily data; dispatching", ticker_u)
-        edit_deferred_reply(
-            application_id, interaction_token,
-            f"🔄 **{ticker_u}** has no data yet — backfilling now "
-            f"(daily history + intraday + news; ~1-2 min). I'll re-edit "
-            f"this message when the brief and insight are queued.",
-        )
-        backfill_ok = execute_cloud_run_job_blocking("backfill-ticker", {
-            "BACKFILL_TICKER": ticker_u,
-            "BACKFILL_DATES":  d.isoformat(),
-            "BACKFILL_INCLUDE_NEWS": "true",
-        }, timeout_sec=540)
-        if not backfill_ok:
-            return (f"❌ Backfill failed for {ticker_u}. Check the "
-                    f"backfill-ticker Cloud Run Job logs in GCP.")
-        backfill_msg = f"✅ Backfill complete for **{ticker_u}**. "
-
     triggered_by = f"discord:replay:{user_id}" if user_id else "discord:replay"
     # Brief: BRIEF_AS_OF + BRIEF_TICKERS. BRIEF_UPDATE=true so the new
     # persistence path UPSERTs the row instead of skipping it.
@@ -497,17 +497,17 @@ def handle_replay(ticker: str, date_arg: str,
     insight_ok = execute_cloud_run_job("insight-pipeline", insight_env)
 
     if not brief_ok and not insight_ok:
-        return (f"{backfill_msg}❌ Both jobs failed to dispatch for "
+        return (f"❌ Both jobs failed to dispatch for "
                 f"{ticker_u} {d.isoformat()}. Check Cloud Logging.")
     if not brief_ok:
-        return (f"{backfill_msg}⚠️ Brief failed; insight dispatched for "
+        return (f"⚠️ Brief failed; insight dispatched for "
                 f"{ticker_u} {d.isoformat()}.")
     if not insight_ok:
-        return (f"{backfill_msg}⚠️ Insight failed; brief dispatched for "
+        return (f"⚠️ Insight failed; brief dispatched for "
                 f"{ticker_u} {d.isoformat()}.")
     refresh_tag = " (refresh)" if refresh else ""
     return (
-        f"{backfill_msg}✅ Replay queued{refresh_tag} for **{ticker_u}** as of "
+        f"✅ Replay queued{refresh_tag} for **{ticker_u}** as of "
         f"**{d.isoformat()}** — brief and insight will post here when "
         f"complete (~90s)."
     )
