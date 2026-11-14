@@ -9,6 +9,7 @@ an empty set. An empty frame from a read that ran is a legitimate zero.
 """
 from __future__ import annotations
 
+import logging
 import numbers
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -16,11 +17,14 @@ from typing import Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
 
+from gcp.fetchers import fetch_market_data
 from gcp.fetchers.fetch_market_data import (
     BACKFILL_DEPTH_THRESHOLD_BARS,
     _pick_backfill_outputsize,
 )
 from lib.eastern_time import is_session
+
+log = logging.getLogger(__name__)
 
 JOB_NAME = 'fetch-watched-tickers'
 WATCHED_DATA_SOURCE = 'av_watched_backfill'
@@ -208,3 +212,51 @@ def plan_pulls(coverages: dict[str, Coverage],
             continue
         plan.setdefault((size, stamp_for(cov)), []).append(t)
     return plan
+
+
+# A ticker whose fetch returned nothing has no bar for the session, so its
+# indicators are not computed (they would run on a stale series).
+SESSION_BAR_SQL = (
+    "SELECT ticker FROM market_data_daily WHERE date = :fetch_date "
+    "AND ticker = ANY(:kept) AND close IS NOT NULL"
+)
+
+
+def tickers_with_session_bar(kept: list[str], fetch_date: date,
+                             query: Query | None = None) -> list[str]:
+    """The ``kept`` tickers that have a close for ``fetch_date``, in ``kept``
+    order. Strict read: a failure raises (Rule 3.7)."""
+    if query is None:
+        from gcp.database import query_to_dataframe_strict as query
+    df = query(SESSION_BAR_SQL, {'fetch_date': fetch_date, 'kept': list(kept)},
+               timeout_s=_SET_QUERY_TIMEOUT_S)
+    have = set(df['ticker']) if len(df) else set()
+    return [t for t in kept if t in have]
+
+
+def compute_indicators(tickers: list[str], fetch_date: date) -> None:
+    """Indicators for the tickers that have the session bar, in order. Level
+    parameters are read once for the batch; a read failure raises."""
+    with_bar = tickers_with_session_bar(tickers, fetch_date)
+    skipped = [t for t in tickers if t not in set(with_bar)]
+    if skipped:
+        log.info("no session bar for %s on %s, indicators skipped", skipped, fetch_date)
+    if not with_bar:
+        return
+    date_str = fetch_date.isoformat()
+    params = fetch_market_data.read_level_params_for_run(with_bar, date_str)
+    for t in with_bar:
+        fetch_market_data.compute_and_upsert_daily_indicators(
+            t, date_str, level_params=params.get(t.upper()))
+
+
+def refresh_ticker_info(tickers: list[str]) -> None:
+    """Refresh ticker info (cached up to 30 days) per ticker. One ticker's
+    failure is logged and does not stop the rest; the run's verification counts
+    a missing or stale row per ticker."""
+    from lib.ticker_info import get_ticker_info
+    for t in tickers:
+        try:
+            get_ticker_info(t, max_age_days=30)
+        except Exception as e:  # logged per ticker, verified afterwards
+            log.error("ticker_info refresh failed for %s: %s", t, e)

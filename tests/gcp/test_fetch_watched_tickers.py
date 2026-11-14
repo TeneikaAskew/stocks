@@ -289,3 +289,52 @@ def test_read_coverage_default_reader_is_the_strict_one(monkeypatch):
 def test_read_coverage_failure_propagates():
     with pytest.raises(RuntimeError):
         fwt.read_coverage(['A'], query=_Query(exc=RuntimeError('db down')))
+
+
+# ---------------------------------------------------------------------------
+# Task 6: indicators where the session bar exists, then ticker info
+# ---------------------------------------------------------------------------
+
+def test_tickers_with_session_bar_strict_query_and_order():
+    q = _Query(pd.DataFrame({'ticker': ['CCC', 'AAA']}))
+    out = fwt.tickers_with_session_bar(['AAA', 'BBB', 'CCC'], date(2026, 11, 13), query=q)
+    assert q.calls == [(fwt.SESSION_BAR_SQL,
+                        {'fetch_date': date(2026, 11, 13), 'kept': ['AAA', 'BBB', 'CCC']},
+                        fwt._SET_QUERY_TIMEOUT_S)]
+    assert out == ['AAA', 'CCC']
+
+
+def test_tickers_with_session_bar_failure_propagates():
+    with pytest.raises(RuntimeError):
+        fwt.tickers_with_session_bar(['A'], date(2026, 11, 13),
+                                     query=_Query(exc=RuntimeError('db down')))
+
+
+def test_compute_indicators_skips_ticker_without_session_bar(monkeypatch):
+    calls, lp_calls = [], []
+    monkeypatch.setattr(fmd_mod := fwt.fetch_market_data, 'read_level_params_for_run',
+                        lambda tickers, d: lp_calls.append((list(tickers), d))
+                        or {'AAA': 'LP_A', 'CCC': 'LP_C'})
+    monkeypatch.setattr(fmd_mod, 'compute_and_upsert_daily_indicators',
+                        lambda t, d, *, level_params: calls.append((t, d, level_params)))
+    monkeypatch.setattr(fwt, 'tickers_with_session_bar',
+                        lambda kept, d: [t for t in kept if t != 'BBB'])
+    fwt.compute_indicators(['AAA', 'BBB', 'CCC'], date(2026, 11, 13))
+    assert [c[0] for c in calls] == ['AAA', 'CCC']
+    assert calls == [('AAA', '2026-11-13', 'LP_A'), ('CCC', '2026-11-13', 'LP_C')]
+    assert lp_calls == [(['AAA', 'CCC'], '2026-11-13')]
+
+
+def test_refresh_ticker_info_logs_and_continues(monkeypatch, caplog):
+    seen = []
+
+    def fake(t, max_age_days):
+        seen.append((t, max_age_days))
+        if t == 'BBB':
+            raise RuntimeError('av down')
+
+    monkeypatch.setattr('lib.ticker_info.get_ticker_info', fake)
+    with caplog.at_level('WARNING'):
+        fwt.refresh_ticker_info(['AAA', 'BBB', 'CCC'])
+    assert seen == [('AAA', 30), ('BBB', 30), ('CCC', 30)]
+    assert 'BBB' in caplog.text and 'av down' in caplog.text
