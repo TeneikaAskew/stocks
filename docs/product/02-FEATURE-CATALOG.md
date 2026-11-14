@@ -283,14 +283,14 @@ EW brief retirement Draft [#1837](https://github.com/TeneikaAskew/stocks/pull/18
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Experimental; EW reader retirement source and local tests in Draft [#1800](https://github.com/TeneikaAskew/stocks/pull/1800) under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending |
+| Status | Experimental; default watchlist lock stage A in [#1892](https://github.com/TeneikaAskew/stocks/pull/1892): read-only `GET /api/insights/watchlist/default`, every reader pinned to owner `'default'`, backfill and replay fixes (approved 2026-11-13 stage A spec); stage B (410 on the web write routes) follows the live-site check; EW reader retirement source and local tests in Draft [#1800](https://github.com/TeneikaAskew/stocks/pull/1800) under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending |
 | Priority | P2 |
 | Target phase | Phase 4 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-11 |
+| Last reviewed | 2026-11-14 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/insights` |
-| Backend | `/api/insights` (13) |
+| Backend | `/api/insights` (14) |
 | Data | `insight_reports`, `insight_runs`, `model_routing` |
 | Models | 14 LLM nodes — see [08](08-AI-AGENT-ARCHITECTURE.md) |
 | Code | `lib/agents/`, `platform/api/routers/insights.py`, `gcp/insight_pipeline_job.py` |

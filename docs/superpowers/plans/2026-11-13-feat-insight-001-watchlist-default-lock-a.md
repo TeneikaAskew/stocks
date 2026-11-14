@@ -2,7 +2,7 @@
 feat_id: FEAT-INSIGHT-001
 spec: docs/superpowers/specs/2026-11-13-feat-insight-001-watchlist-default-lock-a.md
 branch: feature/feat-insight-001-watchlist-default-lock
-pr: null
+pr: 1892
 status: ready
 ---
 
