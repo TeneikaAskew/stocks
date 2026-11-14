@@ -1,0 +1,5800 @@
+{
+ "atr_24_windows_1.6": {
+  "columns": {
+   "calls_plan_t1_price": 275.0,
+   "calls_plan_t2_price": 285.0,
+   "calls_plan_t3_price": null,
+   "calls_stop_name": "PMK_L",
+   "calls_stop_price": 248.2,
+   "calls_t1_price": 253.0,
+   "calls_t2_price": 275.0,
+   "calls_t3_price": 280.0,
+   "calls_trigger_name": "PMK_H",
+   "calls_trigger_price": 252.1,
+   "puts_plan_t1_price": 225.0,
+   "puts_plan_t2_price": 215.0,
+   "puts_plan_t3_price": null,
+   "puts_stop_name": "PMK_H",
+   "puts_stop_price": 252.1,
+   "puts_t1_price": 247.5,
+   "puts_t2_price": 247.0,
+   "puts_t3_price": 225.0,
+   "puts_trigger_name": "PMK_L",
+   "puts_trigger_price": 248.2
+  },
+  "level_map": {
+   "call_levels": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "calls_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 6.0
+    },
+    "plan_targets": [
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PYH",
+      "price": 285.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.357,
+    "skipped": [
+     {
+      "name": "PDH",
+      "price": 253.0
+     },
+     {
+      "name": "PQH",
+      "price": 280.0
+     }
+    ],
+    "stop": 248.2,
+    "stop_name": "PMK_L",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDH",
+      "price": 253.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     }
+    ],
+    "trigger_level": 252.1,
+    "trigger_name": "PMK_H"
+   },
+   "levels": [
+    [
+     "PYL",
+     215.0
+    ],
+    [
+     "PQL",
+     220.0
+    ],
+    [
+     "PML",
+     225.0
+    ],
+    [
+     "PDC",
+     247.0
+    ],
+    [
+     "PDL",
+     247.5
+    ],
+    [
+     "PMK_L",
+     248.2
+    ],
+    [
+     "PMK_H",
+     252.1
+    ],
+    [
+     "PDH",
+     253.0
+    ],
+    [
+     "PMH",
+     275.0
+    ],
+    [
+     "PQH",
+     280.0
+    ],
+    [
+     "PYH",
+     285.0
+    ]
+   ],
+   "put_levels": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "puts_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 6.0
+    },
+    "plan_targets": [
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PYL",
+      "price": 215.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.282,
+    "skipped": [
+     {
+      "name": "PDL",
+      "price": 247.5
+     },
+     {
+      "name": "PDC",
+      "price": 247.0
+     },
+     {
+      "name": "PQL",
+      "price": 220.0
+     }
+    ],
+    "stop": 252.1,
+    "stop_name": "PMK_H",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDL",
+      "price": 247.5,
+      "timeframe": "day"
+     },
+     {
+      "name": "PDC",
+      "price": 247.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     }
+    ],
+    "trigger_level": 248.2,
+    "trigger_name": "PMK_L"
+   },
+   "reason_long": null,
+   "reason_short": null,
+   "regime_long": "normal",
+   "regime_short": "normal",
+   "room_to_run_down": 0.72,
+   "room_to_run_up": 0.84
+  },
+  "levels": [
+   [
+    "PDH",
+    253.0,
+    "day",
+    "high"
+   ],
+   [
+    "PMH",
+    275.0,
+    "month",
+    "high"
+   ],
+   [
+    "PQH",
+    280.0,
+    "quarter",
+    "high"
+   ],
+   [
+    "PYH",
+    285.0,
+    "year",
+    "high"
+   ],
+   [
+    "PDL",
+    247.5,
+    "day",
+    "low"
+   ],
+   [
+    "PDC",
+    247.0,
+    "day",
+    "close"
+   ],
+   [
+    "PML",
+    225.0,
+    "month",
+    "low"
+   ],
+   [
+    "PQL",
+    220.0,
+    "quarter",
+    "low"
+   ],
+   [
+    "PYL",
+    215.0,
+    "year",
+    "low"
+   ],
+   [
+    "PMK_H",
+    252.1,
+    "intraday",
+    "high"
+   ],
+   [
+    "PMK_L",
+    248.2,
+    "intraday",
+    "low"
+   ]
+  ],
+  "long": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25210,
+     "distance_atr": 0.087,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 252.1,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25300,
+     "distance_atr": 0.125,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 27500,
+     "distance_atr": 1.042,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28000,
+     "distance_atr": 1.25,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28500,
+     "distance_atr": 1.458,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.087,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 6.0
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.84,
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.037,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "distance_atr": 0.208,
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    }
+   ],
+   "stop": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   }
+  },
+  "pmg_zones": [],
+  "premarket_status": "ok",
+  "reference": 250.0,
+  "short": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24820,
+     "distance_atr": 0.075,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 248.2,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24750,
+     "distance_atr": 0.104,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24700,
+     "distance_atr": 0.125,
+     "in_window": true,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22500,
+     "distance_atr": 1.042,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22000,
+     "distance_atr": 1.25,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 21500,
+     "distance_atr": 1.458,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.075,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 6.0
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.72,
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.029,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "distance_atr": 0.05,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "distance_atr": 0.208,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    }
+   ],
+   "stop": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   }
+  }
+ },
+ "atr_rung_anchors_not_ok": {
+  "columns": {
+   "calls_plan_t1_price": 275.0,
+   "calls_plan_t2_price": 280.0,
+   "calls_plan_t3_price": 285.0,
+   "calls_stop_name": "PMK_L",
+   "calls_stop_price": 248.2,
+   "calls_t1_price": 253.0,
+   "calls_t2_price": 275.0,
+   "calls_t3_price": 280.0,
+   "calls_trigger_name": "PMK_H",
+   "calls_trigger_price": 252.1,
+   "puts_plan_t1_price": 225.0,
+   "puts_plan_t2_price": 220.0,
+   "puts_plan_t3_price": 215.0,
+   "puts_stop_name": "PMK_H",
+   "puts_stop_price": 252.1,
+   "puts_t1_price": 247.5,
+   "puts_t2_price": 247.0,
+   "puts_t3_price": 225.0,
+   "puts_trigger_name": "PMK_L",
+   "puts_trigger_price": 248.2
+  },
+  "level_map": {
+   "call_levels": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "calls_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 3.5
+    },
+    "plan_targets": [
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     },
+     {
+      "name": "PYH",
+      "price": 285.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.357,
+    "skipped": [
+     {
+      "name": "PDH",
+      "price": 253.0
+     }
+    ],
+    "stop": 248.2,
+    "stop_name": "PMK_L",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDH",
+      "price": 253.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     }
+    ],
+    "trigger_level": 252.1,
+    "trigger_name": "PMK_H"
+   },
+   "levels": [
+    [
+     "PYL",
+     215.0
+    ],
+    [
+     "PQL",
+     220.0
+    ],
+    [
+     "PML",
+     225.0
+    ],
+    [
+     "PDC",
+     247.0
+    ],
+    [
+     "PDL",
+     247.5
+    ],
+    [
+     "PMK_L",
+     248.2
+    ],
+    [
+     "PMK_H",
+     252.1
+    ],
+    [
+     "PDH",
+     253.0
+    ],
+    [
+     "PMH",
+     275.0
+    ],
+    [
+     "PQH",
+     280.0
+    ],
+    [
+     "PYH",
+     285.0
+    ]
+   ],
+   "put_levels": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "puts_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 3.5
+    },
+    "plan_targets": [
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQL",
+      "price": 220.0,
+      "timeframe": "quarter"
+     },
+     {
+      "name": "PYL",
+      "price": 215.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.282,
+    "skipped": [
+     {
+      "name": "PDL",
+      "price": 247.5
+     },
+     {
+      "name": "PDC",
+      "price": 247.0
+     }
+    ],
+    "stop": 252.1,
+    "stop_name": "PMK_H",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDL",
+      "price": 247.5,
+      "timeframe": "day"
+     },
+     {
+      "name": "PDC",
+      "price": 247.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     }
+    ],
+    "trigger_level": 248.2,
+    "trigger_name": "PMK_L"
+   },
+   "reason_long": null,
+   "reason_short": null,
+   "regime_long": "normal",
+   "regime_short": "normal",
+   "room_to_run_down": 0.72,
+   "room_to_run_up": 0.84
+  },
+  "levels": [
+   [
+    "PDH",
+    253.0,
+    "day",
+    "high"
+   ],
+   [
+    "PMH",
+    275.0,
+    "month",
+    "high"
+   ],
+   [
+    "PQH",
+    280.0,
+    "quarter",
+    "high"
+   ],
+   [
+    "PYH",
+    285.0,
+    "year",
+    "high"
+   ],
+   [
+    "PDL",
+    247.5,
+    "day",
+    "low"
+   ],
+   [
+    "PDC",
+    247.0,
+    "day",
+    "close"
+   ],
+   [
+    "PML",
+    225.0,
+    "month",
+    "low"
+   ],
+   [
+    "PQL",
+    220.0,
+    "quarter",
+    "low"
+   ],
+   [
+    "PYL",
+    215.0,
+    "year",
+    "low"
+   ],
+   [
+    "PMK_H",
+    252.1,
+    "intraday",
+    "high"
+   ],
+   [
+    "PMK_L",
+    248.2,
+    "intraday",
+    "low"
+   ]
+  ],
+  "long": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25210,
+     "distance_atr": 0.15,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 252.1,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25300,
+     "distance_atr": 0.214,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 27500,
+     "distance_atr": 1.786,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28000,
+     "distance_atr": 2.143,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28500,
+     "distance_atr": 2.5,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.15,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 3.5
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.84,
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.064,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    }
+   ],
+   "stop": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   }
+  },
+  "pmg_zones": [],
+  "premarket_status": "ok",
+  "reference": 250.0,
+  "short": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24820,
+     "distance_atr": 0.129,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 248.2,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24750,
+     "distance_atr": 0.179,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24700,
+     "distance_atr": 0.214,
+     "in_window": true,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22500,
+     "distance_atr": 1.786,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22000,
+     "distance_atr": 2.143,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 21500,
+     "distance_atr": 2.5,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.129,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 3.5
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.72,
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.05,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "distance_atr": 0.086,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    }
+   ],
+   "stop": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   }
+  }
+ },
+ "atr_rung_max_atr_not_ok": {
+  "columns": {
+   "calls_plan_t1_price": 275.0,
+   "calls_plan_t2_price": 280.0,
+   "calls_plan_t3_price": 285.0,
+   "calls_stop_name": "PMK_L",
+   "calls_stop_price": 248.2,
+   "calls_t1_price": 253.0,
+   "calls_t2_price": 275.0,
+   "calls_t3_price": 280.0,
+   "calls_trigger_name": "PMK_H",
+   "calls_trigger_price": 252.1,
+   "puts_plan_t1_price": 225.0,
+   "puts_plan_t2_price": 220.0,
+   "puts_plan_t3_price": 215.0,
+   "puts_stop_name": "PMK_H",
+   "puts_stop_price": 252.1,
+   "puts_t1_price": 247.5,
+   "puts_t2_price": 247.0,
+   "puts_t3_price": 225.0,
+   "puts_trigger_name": "PMK_L",
+   "puts_trigger_price": 248.2
+  },
+  "level_map": {
+   "call_levels": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "calls_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 3.5
+    },
+    "plan_targets": [
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     },
+     {
+      "name": "PYH",
+      "price": 285.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.357,
+    "skipped": [
+     {
+      "name": "PDH",
+      "price": 253.0
+     }
+    ],
+    "stop": 248.2,
+    "stop_name": "PMK_L",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDH",
+      "price": 253.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     }
+    ],
+    "trigger_level": 252.1,
+    "trigger_name": "PMK_H"
+   },
+   "levels": [
+    [
+     "PYL",
+     215.0
+    ],
+    [
+     "PQL",
+     220.0
+    ],
+    [
+     "PML",
+     225.0
+    ],
+    [
+     "PDC",
+     247.0
+    ],
+    [
+     "PDL",
+     247.5
+    ],
+    [
+     "PMK_L",
+     248.2
+    ],
+    [
+     "PMK_H",
+     252.1
+    ],
+    [
+     "PDH",
+     253.0
+    ],
+    [
+     "PMH",
+     275.0
+    ],
+    [
+     "PQH",
+     280.0
+    ],
+    [
+     "PYH",
+     285.0
+    ]
+   ],
+   "put_levels": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "puts_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 3.5
+    },
+    "plan_targets": [
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQL",
+      "price": 220.0,
+      "timeframe": "quarter"
+     },
+     {
+      "name": "PYL",
+      "price": 215.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.282,
+    "skipped": [
+     {
+      "name": "PDL",
+      "price": 247.5
+     },
+     {
+      "name": "PDC",
+      "price": 247.0
+     }
+    ],
+    "stop": 252.1,
+    "stop_name": "PMK_H",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDL",
+      "price": 247.5,
+      "timeframe": "day"
+     },
+     {
+      "name": "PDC",
+      "price": 247.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     }
+    ],
+    "trigger_level": 248.2,
+    "trigger_name": "PMK_L"
+   },
+   "reason_long": null,
+   "reason_short": null,
+   "regime_long": "normal",
+   "regime_short": "normal",
+   "room_to_run_down": 0.72,
+   "room_to_run_up": 0.84
+  },
+  "levels": [
+   [
+    "PDH",
+    253.0,
+    "day",
+    "high"
+   ],
+   [
+    "PMH",
+    275.0,
+    "month",
+    "high"
+   ],
+   [
+    "PQH",
+    280.0,
+    "quarter",
+    "high"
+   ],
+   [
+    "PYH",
+    285.0,
+    "year",
+    "high"
+   ],
+   [
+    "PDL",
+    247.5,
+    "day",
+    "low"
+   ],
+   [
+    "PDC",
+    247.0,
+    "day",
+    "close"
+   ],
+   [
+    "PML",
+    225.0,
+    "month",
+    "low"
+   ],
+   [
+    "PQL",
+    220.0,
+    "quarter",
+    "low"
+   ],
+   [
+    "PYL",
+    215.0,
+    "year",
+    "low"
+   ],
+   [
+    "PMK_H",
+    252.1,
+    "intraday",
+    "high"
+   ],
+   [
+    "PMK_L",
+    248.2,
+    "intraday",
+    "low"
+   ]
+  ],
+  "long": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25210,
+     "distance_atr": 0.15,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 252.1,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25300,
+     "distance_atr": 0.214,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 27500,
+     "distance_atr": 1.786,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28000,
+     "distance_atr": 2.143,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28500,
+     "distance_atr": 2.5,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.15,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 3.5
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.84,
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.064,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    }
+   ],
+   "stop": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   }
+  },
+  "pmg_zones": [],
+  "premarket_status": "ok",
+  "reference": 250.0,
+  "short": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24820,
+     "distance_atr": 0.129,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 248.2,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24750,
+     "distance_atr": 0.179,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24700,
+     "distance_atr": 0.214,
+     "in_window": true,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22500,
+     "distance_atr": 1.786,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22000,
+     "distance_atr": 2.143,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 21500,
+     "distance_atr": 2.5,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.129,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 3.5
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.72,
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.05,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "distance_atr": 0.086,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    }
+   ],
+   "stop": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   }
+  }
+ },
+ "atr_rung_step_atr_not_ok": {
+  "columns": {
+   "calls_plan_t1_price": 275.0,
+   "calls_plan_t2_price": 280.0,
+   "calls_plan_t3_price": 285.0,
+   "calls_stop_name": "PMK_L",
+   "calls_stop_price": 248.2,
+   "calls_t1_price": 253.0,
+   "calls_t2_price": 275.0,
+   "calls_t3_price": 280.0,
+   "calls_trigger_name": "PMK_H",
+   "calls_trigger_price": 252.1,
+   "puts_plan_t1_price": 225.0,
+   "puts_plan_t2_price": 220.0,
+   "puts_plan_t3_price": 215.0,
+   "puts_stop_name": "PMK_H",
+   "puts_stop_price": 252.1,
+   "puts_t1_price": 247.5,
+   "puts_t2_price": 247.0,
+   "puts_t3_price": 225.0,
+   "puts_trigger_name": "PMK_L",
+   "puts_trigger_price": 248.2
+  },
+  "level_map": {
+   "call_levels": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "calls_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 3.5
+    },
+    "plan_targets": [
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     },
+     {
+      "name": "PYH",
+      "price": 285.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.357,
+    "skipped": [
+     {
+      "name": "PDH",
+      "price": 253.0
+     }
+    ],
+    "stop": 248.2,
+    "stop_name": "PMK_L",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDH",
+      "price": 253.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     }
+    ],
+    "trigger_level": 252.1,
+    "trigger_name": "PMK_H"
+   },
+   "levels": [
+    [
+     "PYL",
+     215.0
+    ],
+    [
+     "PQL",
+     220.0
+    ],
+    [
+     "PML",
+     225.0
+    ],
+    [
+     "PDC",
+     247.0
+    ],
+    [
+     "PDL",
+     247.5
+    ],
+    [
+     "PMK_L",
+     248.2
+    ],
+    [
+     "PMK_H",
+     252.1
+    ],
+    [
+     "PDH",
+     253.0
+    ],
+    [
+     "PMH",
+     275.0
+    ],
+    [
+     "PQH",
+     280.0
+    ],
+    [
+     "PYH",
+     285.0
+    ]
+   ],
+   "put_levels": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "puts_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 3.5
+    },
+    "plan_targets": [
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQL",
+      "price": 220.0,
+      "timeframe": "quarter"
+     },
+     {
+      "name": "PYL",
+      "price": 215.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.282,
+    "skipped": [
+     {
+      "name": "PDL",
+      "price": 247.5
+     },
+     {
+      "name": "PDC",
+      "price": 247.0
+     }
+    ],
+    "stop": 252.1,
+    "stop_name": "PMK_H",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDL",
+      "price": 247.5,
+      "timeframe": "day"
+     },
+     {
+      "name": "PDC",
+      "price": 247.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     }
+    ],
+    "trigger_level": 248.2,
+    "trigger_name": "PMK_L"
+   },
+   "reason_long": null,
+   "reason_short": null,
+   "regime_long": "normal",
+   "regime_short": "normal",
+   "room_to_run_down": 0.72,
+   "room_to_run_up": 0.84
+  },
+  "levels": [
+   [
+    "PDH",
+    253.0,
+    "day",
+    "high"
+   ],
+   [
+    "PMH",
+    275.0,
+    "month",
+    "high"
+   ],
+   [
+    "PQH",
+    280.0,
+    "quarter",
+    "high"
+   ],
+   [
+    "PYH",
+    285.0,
+    "year",
+    "high"
+   ],
+   [
+    "PDL",
+    247.5,
+    "day",
+    "low"
+   ],
+   [
+    "PDC",
+    247.0,
+    "day",
+    "close"
+   ],
+   [
+    "PML",
+    225.0,
+    "month",
+    "low"
+   ],
+   [
+    "PQL",
+    220.0,
+    "quarter",
+    "low"
+   ],
+   [
+    "PYL",
+    215.0,
+    "year",
+    "low"
+   ],
+   [
+    "PMK_H",
+    252.1,
+    "intraday",
+    "high"
+   ],
+   [
+    "PMK_L",
+    248.2,
+    "intraday",
+    "low"
+   ]
+  ],
+  "long": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25210,
+     "distance_atr": 0.15,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 252.1,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25300,
+     "distance_atr": 0.214,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 27500,
+     "distance_atr": 1.786,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28000,
+     "distance_atr": 2.143,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28500,
+     "distance_atr": 2.5,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.15,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 3.5
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.84,
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.064,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    }
+   ],
+   "stop": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   }
+  },
+  "pmg_zones": [],
+  "premarket_status": "ok",
+  "reference": 250.0,
+  "short": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24820,
+     "distance_atr": 0.129,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 248.2,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24750,
+     "distance_atr": 0.179,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24700,
+     "distance_atr": 0.214,
+     "in_window": true,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22500,
+     "distance_atr": 1.786,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22000,
+     "distance_atr": 2.143,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 21500,
+     "distance_atr": 2.5,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.129,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 3.5
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.72,
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.05,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "distance_atr": 0.086,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    }
+   ],
+   "stop": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   }
+  }
+ },
+ "atr_rung_stretch_atr_not_ok": {
+  "columns": {
+   "calls_plan_t1_price": 275.0,
+   "calls_plan_t2_price": 280.0,
+   "calls_plan_t3_price": 285.0,
+   "calls_stop_name": "PMK_L",
+   "calls_stop_price": 248.2,
+   "calls_t1_price": 253.0,
+   "calls_t2_price": 275.0,
+   "calls_t3_price": 280.0,
+   "calls_trigger_name": "PMK_H",
+   "calls_trigger_price": 252.1,
+   "puts_plan_t1_price": 225.0,
+   "puts_plan_t2_price": 220.0,
+   "puts_plan_t3_price": 215.0,
+   "puts_stop_name": "PMK_H",
+   "puts_stop_price": 252.1,
+   "puts_t1_price": 247.5,
+   "puts_t2_price": 247.0,
+   "puts_t3_price": 225.0,
+   "puts_trigger_name": "PMK_L",
+   "puts_trigger_price": 248.2
+  },
+  "level_map": {
+   "call_levels": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "calls_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 3.5
+    },
+    "plan_targets": [
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     },
+     {
+      "name": "PYH",
+      "price": 285.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.357,
+    "skipped": [
+     {
+      "name": "PDH",
+      "price": 253.0
+     }
+    ],
+    "stop": 248.2,
+    "stop_name": "PMK_L",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDH",
+      "price": 253.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     }
+    ],
+    "trigger_level": 252.1,
+    "trigger_name": "PMK_H"
+   },
+   "levels": [
+    [
+     "PYL",
+     215.0
+    ],
+    [
+     "PQL",
+     220.0
+    ],
+    [
+     "PML",
+     225.0
+    ],
+    [
+     "PDC",
+     247.0
+    ],
+    [
+     "PDL",
+     247.5
+    ],
+    [
+     "PMK_L",
+     248.2
+    ],
+    [
+     "PMK_H",
+     252.1
+    ],
+    [
+     "PDH",
+     253.0
+    ],
+    [
+     "PMH",
+     275.0
+    ],
+    [
+     "PQH",
+     280.0
+    ],
+    [
+     "PYH",
+     285.0
+    ]
+   ],
+   "put_levels": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "puts_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 3.5
+    },
+    "plan_targets": [
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQL",
+      "price": 220.0,
+      "timeframe": "quarter"
+     },
+     {
+      "name": "PYL",
+      "price": 215.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.282,
+    "skipped": [
+     {
+      "name": "PDL",
+      "price": 247.5
+     },
+     {
+      "name": "PDC",
+      "price": 247.0
+     }
+    ],
+    "stop": 252.1,
+    "stop_name": "PMK_H",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDL",
+      "price": 247.5,
+      "timeframe": "day"
+     },
+     {
+      "name": "PDC",
+      "price": 247.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     }
+    ],
+    "trigger_level": 248.2,
+    "trigger_name": "PMK_L"
+   },
+   "reason_long": null,
+   "reason_short": null,
+   "regime_long": "normal",
+   "regime_short": "normal",
+   "room_to_run_down": 0.72,
+   "room_to_run_up": 0.84
+  },
+  "levels": [
+   [
+    "PDH",
+    253.0,
+    "day",
+    "high"
+   ],
+   [
+    "PMH",
+    275.0,
+    "month",
+    "high"
+   ],
+   [
+    "PQH",
+    280.0,
+    "quarter",
+    "high"
+   ],
+   [
+    "PYH",
+    285.0,
+    "year",
+    "high"
+   ],
+   [
+    "PDL",
+    247.5,
+    "day",
+    "low"
+   ],
+   [
+    "PDC",
+    247.0,
+    "day",
+    "close"
+   ],
+   [
+    "PML",
+    225.0,
+    "month",
+    "low"
+   ],
+   [
+    "PQL",
+    220.0,
+    "quarter",
+    "low"
+   ],
+   [
+    "PYL",
+    215.0,
+    "year",
+    "low"
+   ],
+   [
+    "PMK_H",
+    252.1,
+    "intraday",
+    "high"
+   ],
+   [
+    "PMK_L",
+    248.2,
+    "intraday",
+    "low"
+   ]
+  ],
+  "long": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25210,
+     "distance_atr": 0.15,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 252.1,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25300,
+     "distance_atr": 0.214,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 27500,
+     "distance_atr": 1.786,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28000,
+     "distance_atr": 2.143,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28500,
+     "distance_atr": 2.5,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.15,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 3.5
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.84,
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.064,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    }
+   ],
+   "stop": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   }
+  },
+  "pmg_zones": [],
+  "premarket_status": "ok",
+  "reference": 250.0,
+  "short": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24820,
+     "distance_atr": 0.129,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 248.2,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24750,
+     "distance_atr": 0.179,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24700,
+     "distance_atr": 0.214,
+     "in_window": true,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22500,
+     "distance_atr": 1.786,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22000,
+     "distance_atr": 2.143,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 21500,
+     "distance_atr": 2.5,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.129,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 3.5
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.72,
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.05,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "distance_atr": 0.086,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    }
+   ],
+   "stop": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   }
+  }
+ },
+ "build_session_levels": {
+  "columns": {
+   "calls_plan_t1_price": null,
+   "calls_plan_t2_price": null,
+   "calls_plan_t3_price": null,
+   "calls_stop_name": "PDC",
+   "calls_stop_price": 215.02000885122945,
+   "calls_t1_price": null,
+   "calls_t2_price": null,
+   "calls_t3_price": null,
+   "calls_trigger_name": "PMK_H",
+   "calls_trigger_price": 215.88,
+   "puts_plan_t1_price": 212.8685796031988,
+   "puts_plan_t2_price": null,
+   "puts_plan_t3_price": null,
+   "puts_stop_name": "PDH",
+   "puts_stop_price": 215.26867421823573,
+   "puts_t1_price": 212.8685796031988,
+   "puts_t2_price": null,
+   "puts_t3_price": null,
+   "puts_trigger_name": "PMK_L",
+   "puts_trigger_price": 214.37
+  },
+  "level_map": {
+   "call_levels": [
+    {
+     "distance_pct": 0.3,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 215.88
+    }
+   ],
+   "calls_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 0.36
+    },
+    "plan_targets": [],
+    "reasoning": "",
+    "room_to_first_target": 0,
+    "skipped": [],
+    "stop": 215.02000885122945,
+    "stop_name": "PDC",
+    "target_status": "ok",
+    "targets": [],
+    "trigger_level": 215.88,
+    "trigger_name": "PMK_H"
+   },
+   "levels": [
+    [
+     "PML",
+     204.6287055968912
+    ],
+    [
+     "GAP_L_2026-03-12",
+     204.98180562790407
+    ],
+    [
+     "PMC",
+     207.07843004704628
+    ],
+    [
+     "CMO",
+     207.07843004704628
+    ],
+    [
+     "PWL",
+     208.07353671403558
+    ],
+    [
+     "GAP_H_2026-03-12",
+     209.6500267293057
+    ],
+    [
+     "PWC",
+     211.5302472462821
+    ],
+    [
+     "CWO",
+     211.5302472462821
+    ],
+    [
+     "GAP_L_2026-03-24",
+     211.6909893579028
+    ],
+    [
+     "GAP_H_2026-03-24",
+     212.412363810203
+    ],
+    [
+     "PWH",
+     212.8685796031988
+    ],
+    [
+     "GAP_L_2026-03-25",
+     214.1574085667589
+    ],
+    [
+     "PMK_L",
+     214.37
+    ],
+    [
+     "PDL",
+     214.97641513373284
+    ],
+    [
+     "PDC",
+     215.02000885122945
+    ],
+    [
+     "PDH",
+     215.26867421823573
+    ],
+    [
+     "GAP_L_2026-03-26",
+     215.26867421823573
+    ],
+    [
+     "PMK_H",
+     215.88
+    ],
+    [
+     "GAP_H_2026-03-25",
+     216.39110028734882
+    ],
+    [
+     "GAP_H_2026-03-26",
+     216.39110028734882
+    ],
+    [
+     "PDO",
+     216.7704664086858
+    ],
+    [
+     "PMH",
+     226.42648696584982
+    ]
+   ],
+   "put_levels": [
+    {
+     "distance_pct": -0.4,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 214.37
+    },
+    {
+     "distance_pct": -1.1,
+     "level_type": "high",
+     "name": "PWH",
+     "period": "week",
+     "price": 212.87
+    }
+   ],
+   "puts_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 0.36
+    },
+    "plan_targets": [
+     {
+      "name": "PWH",
+      "price": 212.8685796031988,
+      "timeframe": "week"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.7,
+    "skipped": [],
+    "stop": 215.26867421823573,
+    "stop_name": "PDH",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PWH",
+      "price": 212.8685796031988,
+      "timeframe": "week"
+     }
+    ],
+    "trigger_level": 214.37,
+    "trigger_name": "PMK_L"
+   },
+   "reason_long": null,
+   "reason_short": null,
+   "regime_long": "normal",
+   "regime_short": "normal",
+   "room_to_run_down": 0.404,
+   "room_to_run_up": 0.297
+  },
+  "levels": [
+   [
+    "PDH",
+    215.26867421823573,
+    "day",
+    "high"
+   ],
+   [
+    "PDL",
+    214.97641513373284,
+    "day",
+    "low"
+   ],
+   [
+    "PDC",
+    215.02000885122945,
+    "day",
+    "close"
+   ],
+   [
+    "PWH",
+    212.8685796031988,
+    "week",
+    "high"
+   ],
+   [
+    "PWL",
+    208.07353671403558,
+    "week",
+    "low"
+   ],
+   [
+    "PWC",
+    211.5302472462821,
+    "week",
+    "close"
+   ],
+   [
+    "PMH",
+    226.42648696584982,
+    "month",
+    "high"
+   ],
+   [
+    "PML",
+    204.6287055968912,
+    "month",
+    "low"
+   ],
+   [
+    "PMC",
+    207.07843004704628,
+    "month",
+    "close"
+   ],
+   [
+    "PDO",
+    216.7704664086858,
+    "day",
+    "open"
+   ],
+   [
+    "CWO",
+    211.5302472462821,
+    "week",
+    "open"
+   ],
+   [
+    "CMO",
+    207.07843004704628,
+    "month",
+    "open"
+   ],
+   [
+    "GAP_H_2026-03-12",
+    209.6500267293057,
+    "day",
+    "gap_high"
+   ],
+   [
+    "GAP_L_2026-03-12",
+    204.98180562790407,
+    "day",
+    "gap_low"
+   ],
+   [
+    "GAP_H_2026-03-24",
+    212.412363810203,
+    "day",
+    "gap_high"
+   ],
+   [
+    "GAP_L_2026-03-24",
+    211.6909893579028,
+    "day",
+    "gap_low"
+   ],
+   [
+    "GAP_H_2026-03-25",
+    216.39110028734882,
+    "day",
+    "gap_high"
+   ],
+   [
+    "GAP_L_2026-03-25",
+    214.1574085667589,
+    "day",
+    "gap_low"
+   ],
+   [
+    "GAP_H_2026-03-26",
+    216.39110028734882,
+    "day",
+    "gap_high"
+   ],
+   [
+    "GAP_L_2026-03-26",
+    215.26867421823573,
+    "day",
+    "gap_low"
+   ],
+   [
+    "parent_bar_high",
+    215.26867421823573,
+    "day",
+    "high"
+   ],
+   [
+    "parent_bar_low",
+    214.97641513373284,
+    "day",
+    "low"
+   ],
+   [
+    "PMK_H",
+    215.88,
+    "intraday",
+    "high"
+   ],
+   [
+    "PMK_L",
+    214.37,
+    "intraday",
+    "low"
+   ]
+  ],
+  "long": {
+   "candidates": [
+    {
+     "aliases": [
+      "parent_bar_high"
+     ],
+     "broken": true,
+     "cents": 21527,
+     "distance_atr": 0.02,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "2026-03-26",
+     "price": 215.26867421823573,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 21588,
+     "distance_atr": 0.45,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 215.88,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22643,
+     "distance_atr": 7.874,
+     "in_window": false,
+     "level_type": "high",
+     "name": "PMH",
+     "period": "2026-02",
+     "price": 226.42648696584982,
+     "timeframe": "month"
+    }
+   ],
+   "distance_atr": 0.45,
+   "gate_targets": [],
+   "ladder": [
+    {
+     "distance_pct": 0.3,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 215.88
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 0.36
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.297,
+   "skipped": [],
+   "stop": {
+    "aliases": [],
+    "level_type": "close",
+    "name": "PDC",
+    "period": "2026-03-26",
+    "price": 215.02000885122945,
+    "timeframe": "day"
+   },
+   "target_status": "ok",
+   "targets": [],
+   "trigger": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 215.88,
+    "timeframe": "intraday"
+   }
+  },
+  "pmg_zones": [
+   {
+    "center_price": 211.58,
+    "count": 3,
+    "level_names": [
+     "PWC",
+     "CWO",
+     "GAP_L_2026-03-24"
+    ],
+    "strength": 3.5,
+    "timeframes": [
+     "day",
+     "week"
+    ]
+   },
+   {
+    "center_price": 207.08,
+    "count": 2,
+    "level_names": [
+     "PMC",
+     "CMO"
+    ],
+    "strength": 2.0,
+    "timeframes": [
+     "month"
+    ]
+   },
+   {
+    "center_price": 215.0,
+    "count": 2,
+    "level_names": [
+     "PDL",
+     "PDC"
+    ],
+    "strength": 2.0,
+    "timeframes": [
+     "day"
+    ]
+   },
+   {
+    "center_price": 215.27,
+    "count": 2,
+    "level_names": [
+     "PDH",
+     "GAP_L_2026-03-26"
+    ],
+    "strength": 2.0,
+    "timeframes": [
+     "day"
+    ]
+   },
+   {
+    "center_price": 216.39,
+    "count": 2,
+    "level_names": [
+     "GAP_H_2026-03-25",
+     "GAP_H_2026-03-26"
+    ],
+    "strength": 2.0,
+    "timeframes": [
+     "day"
+    ]
+   }
+  ],
+  "premarket_status": "ok",
+  "reference": 215.24,
+  "short": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": true,
+     "cents": 21502,
+     "distance_atr": 0.155,
+     "in_window": true,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "2026-03-26",
+     "price": 215.02000885122945,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [
+      "parent_bar_low"
+     ],
+     "broken": true,
+     "cents": 21498,
+     "distance_atr": 0.186,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "2026-03-26",
+     "price": 214.97641513373284,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 21437,
+     "distance_atr": 0.612,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 214.37,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 21287,
+     "distance_atr": 1.669,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PWH",
+     "period": "2026-03-16/2026-03-22",
+     "price": 212.8685796031988,
+     "timeframe": "week"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 21153,
+     "distance_atr": 2.611,
+     "in_window": false,
+     "level_type": "close",
+     "name": "PWC",
+     "period": "2026-03-16/2026-03-22",
+     "price": 211.5302472462821,
+     "timeframe": "week"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 20807,
+     "distance_atr": 5.044,
+     "in_window": false,
+     "level_type": "low",
+     "name": "PWL",
+     "period": "2026-03-16/2026-03-22",
+     "price": 208.07353671403558,
+     "timeframe": "week"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 20708,
+     "distance_atr": 5.745,
+     "in_window": false,
+     "level_type": "close",
+     "name": "PMC",
+     "period": "2026-02",
+     "price": 207.07843004704628,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 20463,
+     "distance_atr": 7.469,
+     "in_window": false,
+     "level_type": "low",
+     "name": "PML",
+     "period": "2026-02",
+     "price": 204.6287055968912,
+     "timeframe": "month"
+    }
+   ],
+   "distance_atr": 0.612,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PWH",
+     "period": "2026-03-16/2026-03-22",
+     "price": 212.8685796031988,
+     "timeframe": "week"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": -0.4,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 214.37
+    },
+    {
+     "distance_pct": -1.1,
+     "level_type": "high",
+     "name": "PWH",
+     "period": "week",
+     "price": 212.87
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 0.36
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.404,
+   "skipped": [],
+   "stop": {
+    "aliases": [
+     "parent_bar_high"
+    ],
+    "level_type": "high",
+    "name": "PDH",
+    "period": "2026-03-26",
+    "price": 215.26867421823573,
+    "timeframe": "day"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PWH",
+     "period": "2026-03-16/2026-03-22",
+     "price": 212.8685796031988,
+     "timeframe": "week"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 214.37,
+    "timeframe": "intraday"
+   }
+  }
+ },
+ "design_8": {
+  "columns": {
+   "calls_plan_t1_price": 275.0,
+   "calls_plan_t2_price": 280.0,
+   "calls_plan_t3_price": 285.0,
+   "calls_stop_name": "PMK_L",
+   "calls_stop_price": 248.2,
+   "calls_t1_price": 253.0,
+   "calls_t2_price": 275.0,
+   "calls_t3_price": 280.0,
+   "calls_trigger_name": "PMK_H",
+   "calls_trigger_price": 252.1,
+   "puts_plan_t1_price": 225.0,
+   "puts_plan_t2_price": 220.0,
+   "puts_plan_t3_price": 215.0,
+   "puts_stop_name": "PMK_H",
+   "puts_stop_price": 252.1,
+   "puts_t1_price": 247.5,
+   "puts_t2_price": 247.0,
+   "puts_t3_price": 225.0,
+   "puts_trigger_name": "PMK_L",
+   "puts_trigger_price": 248.2
+  },
+  "level_map": {
+   "call_levels": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "calls_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 3.5
+    },
+    "plan_targets": [
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     },
+     {
+      "name": "PYH",
+      "price": 285.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.357,
+    "skipped": [
+     {
+      "name": "PDH",
+      "price": 253.0
+     }
+    ],
+    "stop": 248.2,
+    "stop_name": "PMK_L",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDH",
+      "price": 253.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     }
+    ],
+    "trigger_level": 252.1,
+    "trigger_name": "PMK_H"
+   },
+   "levels": [
+    [
+     "PYL",
+     215.0
+    ],
+    [
+     "PQL",
+     220.0
+    ],
+    [
+     "PML",
+     225.0
+    ],
+    [
+     "PDC",
+     247.0
+    ],
+    [
+     "PDL",
+     247.5
+    ],
+    [
+     "PMK_L",
+     248.2
+    ],
+    [
+     "PMK_H",
+     252.1
+    ],
+    [
+     "PDH",
+     253.0
+    ],
+    [
+     "PMH",
+     275.0
+    ],
+    [
+     "PQH",
+     280.0
+    ],
+    [
+     "PYH",
+     285.0
+    ]
+   ],
+   "put_levels": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "puts_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 3.5
+    },
+    "plan_targets": [
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQL",
+      "price": 220.0,
+      "timeframe": "quarter"
+     },
+     {
+      "name": "PYL",
+      "price": 215.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 0.282,
+    "skipped": [
+     {
+      "name": "PDL",
+      "price": 247.5
+     },
+     {
+      "name": "PDC",
+      "price": 247.0
+     }
+    ],
+    "stop": 252.1,
+    "stop_name": "PMK_H",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDL",
+      "price": 247.5,
+      "timeframe": "day"
+     },
+     {
+      "name": "PDC",
+      "price": 247.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     }
+    ],
+    "trigger_level": 248.2,
+    "trigger_name": "PMK_L"
+   },
+   "reason_long": null,
+   "reason_short": null,
+   "regime_long": "normal",
+   "regime_short": "normal",
+   "room_to_run_down": 0.72,
+   "room_to_run_up": 0.84
+  },
+  "levels": [
+   [
+    "PDH",
+    253.0,
+    "day",
+    "high"
+   ],
+   [
+    "PMH",
+    275.0,
+    "month",
+    "high"
+   ],
+   [
+    "PQH",
+    280.0,
+    "quarter",
+    "high"
+   ],
+   [
+    "PYH",
+    285.0,
+    "year",
+    "high"
+   ],
+   [
+    "PDL",
+    247.5,
+    "day",
+    "low"
+   ],
+   [
+    "PDC",
+    247.0,
+    "day",
+    "close"
+   ],
+   [
+    "PML",
+    225.0,
+    "month",
+    "low"
+   ],
+   [
+    "PQL",
+    220.0,
+    "quarter",
+    "low"
+   ],
+   [
+    "PYL",
+    215.0,
+    "year",
+    "low"
+   ],
+   [
+    "PMK_H",
+    252.1,
+    "intraday",
+    "high"
+   ],
+   [
+    "PMK_L",
+    248.2,
+    "intraday",
+    "low"
+   ]
+  ],
+  "long": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25210,
+     "distance_atr": 0.15,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 252.1,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25300,
+     "distance_atr": 0.214,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 27500,
+     "distance_atr": 1.786,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28000,
+     "distance_atr": 2.143,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28500,
+     "distance_atr": 2.5,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.15,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 3.5
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.84,
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.064,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    }
+   ],
+   "stop": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   }
+  },
+  "pmg_zones": [],
+  "premarket_status": "ok",
+  "reference": 250.0,
+  "short": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24820,
+     "distance_atr": 0.129,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 248.2,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24750,
+     "distance_atr": 0.179,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24700,
+     "distance_atr": 0.214,
+     "in_window": true,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22500,
+     "distance_atr": 1.786,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22000,
+     "distance_atr": 2.143,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 21500,
+     "distance_atr": 2.5,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.129,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 3.5
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.72,
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.05,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "distance_atr": 0.086,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    }
+   ],
+   "stop": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   }
+  }
+ },
+ "no_premarket": {
+  "columns": {
+   "calls_plan_t1_price": 253.0,
+   "calls_plan_t2_price": 275.0,
+   "calls_plan_t3_price": 280.0,
+   "calls_stop_name": "PML",
+   "calls_stop_price": 225.0,
+   "calls_t1_price": 253.0,
+   "calls_t2_price": 275.0,
+   "calls_t3_price": 280.0,
+   "calls_trigger_name": "PDL",
+   "calls_trigger_price": 247.5,
+   "puts_plan_t1_price": 220.0,
+   "puts_plan_t2_price": 215.0,
+   "puts_plan_t3_price": null,
+   "puts_stop_name": "PDL",
+   "puts_stop_price": 247.5,
+   "puts_t1_price": 220.0,
+   "puts_t2_price": 215.0,
+   "puts_t3_price": null,
+   "puts_trigger_name": "PML",
+   "puts_trigger_price": 225.0
+  },
+  "level_map": {
+   "call_levels": [
+    {
+     "distance_pct": 0.2,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    },
+    {
+     "distance_pct": 2.43,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "calls_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 3.5
+    },
+    "plan_targets": [
+     {
+      "name": "PDH",
+      "price": 253.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 2.222,
+    "skipped": [],
+    "stop": 225.0,
+    "stop_name": "PML",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PDH",
+      "price": 253.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     }
+    ],
+    "trigger_level": 247.5,
+    "trigger_name": "PDL"
+   },
+   "levels": [
+    [
+     "PYL",
+     215.0
+    ],
+    [
+     "PQL",
+     220.0
+    ],
+    [
+     "PML",
+     225.0
+    ],
+    [
+     "PDC",
+     247.0
+    ],
+    [
+     "PDL",
+     247.5
+    ],
+    [
+     "PDH",
+     253.0
+    ],
+    [
+     "PMH",
+     275.0
+    ],
+    [
+     "PQH",
+     280.0
+    ],
+    [
+     "PYH",
+     285.0
+    ]
+   ],
+   "put_levels": [
+    {
+     "distance_pct": -8.91,
+     "level_type": "low",
+     "name": "PML",
+     "period": "month",
+     "price": 225.0
+    },
+    {
+     "distance_pct": -10.93,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "quarter",
+     "price": 220.0
+    }
+   ],
+   "puts_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": 0.25,
+     "spacing_price": 3.5
+    },
+    "plan_targets": [
+     {
+      "name": "PQL",
+      "price": 220.0,
+      "timeframe": "quarter"
+     },
+     {
+      "name": "PYL",
+      "price": 215.0,
+      "timeframe": "year"
+     }
+    ],
+    "reasoning": "",
+    "room_to_first_target": 2.222,
+    "skipped": [],
+    "stop": 247.5,
+    "stop_name": "PDL",
+    "target_status": "ok",
+    "targets": [
+     {
+      "name": "PQL",
+      "price": 220.0,
+      "timeframe": "quarter"
+     },
+     {
+      "name": "PYL",
+      "price": 215.0,
+      "timeframe": "year"
+     }
+    ],
+    "trigger_level": 225.0,
+    "trigger_name": "PML"
+   },
+   "reason_long": null,
+   "reason_short": null,
+   "regime_long": "normal",
+   "regime_short": "normal",
+   "room_to_run_down": 8.907,
+   "room_to_run_up": 0.202
+  },
+  "levels": [
+   [
+    "PDH",
+    253.0,
+    "day",
+    "high"
+   ],
+   [
+    "PMH",
+    275.0,
+    "month",
+    "high"
+   ],
+   [
+    "PQH",
+    280.0,
+    "quarter",
+    "high"
+   ],
+   [
+    "PYH",
+    285.0,
+    "year",
+    "high"
+   ],
+   [
+    "PDL",
+    247.5,
+    "day",
+    "low"
+   ],
+   [
+    "PDC",
+    247.0,
+    "day",
+    "close"
+   ],
+   [
+    "PML",
+    225.0,
+    "month",
+    "low"
+   ],
+   [
+    "PQL",
+    220.0,
+    "quarter",
+    "low"
+   ],
+   [
+    "PYL",
+    215.0,
+    "year",
+    "low"
+   ]
+  ],
+  "long": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24750,
+     "distance_atr": 0.036,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25300,
+     "distance_atr": 0.429,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 27500,
+     "distance_atr": 2.0,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28000,
+     "distance_atr": 2.357,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28500,
+     "distance_atr": 2.714,
+     "in_window": false,
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.036,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": 0.2,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    },
+    {
+     "distance_pct": 2.43,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 3.5
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.202,
+   "skipped": [],
+   "stop": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PML",
+    "period": "",
+    "price": 225.0,
+    "timeframe": "month"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PDL",
+    "period": "",
+    "price": 247.5,
+    "timeframe": "day"
+   }
+  },
+  "pmg_zones": [],
+  "premarket_status": "premarket_unavailable",
+  "reference": 247.0,
+  "short": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22500,
+     "distance_atr": 1.571,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22000,
+     "distance_atr": 1.929,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 21500,
+     "distance_atr": 2.286,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 1.571,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": -8.91,
+     "level_type": "low",
+     "name": "PML",
+     "period": "month",
+     "price": 225.0
+    },
+    {
+     "distance_pct": -10.93,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "quarter",
+     "price": 220.0
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 3.5
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 8.907,
+   "skipped": [],
+   "stop": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PDL",
+    "period": "",
+    "price": 247.5,
+    "timeframe": "day"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PML",
+    "period": "",
+    "price": 225.0,
+    "timeframe": "month"
+   }
+  }
+ },
+ "spacing_not_ok": {
+  "columns": {
+   "calls_plan_t1_price": null,
+   "calls_plan_t2_price": null,
+   "calls_plan_t3_price": null,
+   "calls_stop_name": "PMK_L",
+   "calls_stop_price": 248.2,
+   "calls_t1_price": 253.0,
+   "calls_t2_price": 275.0,
+   "calls_t3_price": 280.0,
+   "calls_trigger_name": "PMK_H",
+   "calls_trigger_price": 252.1,
+   "puts_plan_t1_price": null,
+   "puts_plan_t2_price": null,
+   "puts_plan_t3_price": null,
+   "puts_stop_name": "PMK_H",
+   "puts_stop_price": 252.1,
+   "puts_t1_price": 247.5,
+   "puts_t2_price": 247.0,
+   "puts_t3_price": 225.0,
+   "puts_trigger_name": "PMK_L",
+   "puts_trigger_price": 248.2
+  },
+  "level_map": {
+   "call_levels": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "calls_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": null,
+     "spacing_price": null
+    },
+    "plan_targets": [],
+    "reasoning": "",
+    "room_to_first_target": 0.357,
+    "skipped": [],
+    "stop": 248.2,
+    "stop_name": "PMK_L",
+    "target_status": "insufficient_history",
+    "targets": [
+     {
+      "name": "PDH",
+      "price": 253.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PMH",
+      "price": 275.0,
+      "timeframe": "month"
+     },
+     {
+      "name": "PQH",
+      "price": 280.0,
+      "timeframe": "quarter"
+     }
+    ],
+    "trigger_level": 252.1,
+    "trigger_name": "PMK_H"
+   },
+   "levels": [
+    [
+     "PYL",
+     215.0
+    ],
+    [
+     "PQL",
+     220.0
+    ],
+    [
+     "PML",
+     225.0
+    ],
+    [
+     "PDC",
+     247.0
+    ],
+    [
+     "PDL",
+     247.5
+    ],
+    [
+     "PMK_L",
+     248.2
+    ],
+    [
+     "PMK_H",
+     252.1
+    ],
+    [
+     "PDH",
+     253.0
+    ],
+    [
+     "PMH",
+     275.0
+    ],
+    [
+     "PQH",
+     280.0
+    ],
+    [
+     "PYH",
+     285.0
+    ]
+   ],
+   "put_levels": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "puts_trigger": {
+    "plan": {
+     "atr_basis": "atr_14",
+     "entry_cutoff_et": "10:00",
+     "entry_cutoff_status": "ok",
+     "gap_fill_flag_atr": 0.5,
+     "gap_fill_flag_status": "ok",
+     "legs": 3,
+     "spacing_atr": null,
+     "spacing_price": null
+    },
+    "plan_targets": [],
+    "reasoning": "",
+    "room_to_first_target": 0.282,
+    "skipped": [],
+    "stop": 252.1,
+    "stop_name": "PMK_H",
+    "target_status": "insufficient_history",
+    "targets": [
+     {
+      "name": "PDL",
+      "price": 247.5,
+      "timeframe": "day"
+     },
+     {
+      "name": "PDC",
+      "price": 247.0,
+      "timeframe": "day"
+     },
+     {
+      "name": "PML",
+      "price": 225.0,
+      "timeframe": "month"
+     }
+    ],
+    "trigger_level": 248.2,
+    "trigger_name": "PMK_L"
+   },
+   "reason_long": null,
+   "reason_short": null,
+   "regime_long": "normal",
+   "regime_short": "normal",
+   "room_to_run_down": 0.72,
+   "room_to_run_up": 0.84
+  },
+  "levels": [
+   [
+    "PDH",
+    253.0,
+    "day",
+    "high"
+   ],
+   [
+    "PMH",
+    275.0,
+    "month",
+    "high"
+   ],
+   [
+    "PQH",
+    280.0,
+    "quarter",
+    "high"
+   ],
+   [
+    "PYH",
+    285.0,
+    "year",
+    "high"
+   ],
+   [
+    "PDL",
+    247.5,
+    "day",
+    "low"
+   ],
+   [
+    "PDC",
+    247.0,
+    "day",
+    "close"
+   ],
+   [
+    "PML",
+    225.0,
+    "month",
+    "low"
+   ],
+   [
+    "PQL",
+    220.0,
+    "quarter",
+    "low"
+   ],
+   [
+    "PYL",
+    215.0,
+    "year",
+    "low"
+   ],
+   [
+    "PMK_H",
+    252.1,
+    "intraday",
+    "high"
+   ],
+   [
+    "PMK_L",
+    248.2,
+    "intraday",
+    "low"
+   ]
+  ],
+  "long": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25210,
+     "distance_atr": 0.15,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 252.1,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 25300,
+     "distance_atr": 0.214,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 27500,
+     "distance_atr": 1.786,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28000,
+     "distance_atr": 2.143,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 28500,
+     "distance_atr": 2.5,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PYH",
+     "period": "",
+     "price": 285.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.15,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PDH",
+     "period": "",
+     "price": 253.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PMH",
+     "period": "",
+     "price": 275.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PQH",
+     "period": "",
+     "price": 280.0,
+     "timeframe": "quarter"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": 0.84,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 252.1
+    },
+    {
+     "distance_pct": 1.2,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "day",
+     "price": 253.0
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": null,
+    "spacing_price": null
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.84,
+   "skipped": [],
+   "stop": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   },
+   "target_status": "insufficient_history",
+   "targets": [],
+   "trigger": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   }
+  },
+  "pmg_zones": [],
+  "premarket_status": "ok",
+  "reference": 250.0,
+  "short": {
+   "candidates": [
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24820,
+     "distance_atr": 0.129,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 248.2,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24750,
+     "distance_atr": 0.179,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 24700,
+     "distance_atr": 0.214,
+     "in_window": true,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22500,
+     "distance_atr": 1.786,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 22000,
+     "distance_atr": 2.143,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "",
+     "price": 220.0,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 21500,
+     "distance_atr": 2.5,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PYL",
+     "period": "",
+     "price": 215.0,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.129,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PDL",
+     "period": "",
+     "price": 247.5,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "close",
+     "name": "PDC",
+     "period": "",
+     "price": 247.0,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "",
+     "price": 225.0,
+     "timeframe": "month"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": -0.72,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 248.2
+    },
+    {
+     "distance_pct": -1.0,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "day",
+     "price": 247.5
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "10:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": null,
+    "spacing_price": null
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.72,
+   "skipped": [],
+   "stop": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 252.1,
+    "timeframe": "intraday"
+   },
+   "target_status": "insufficient_history",
+   "targets": [],
+   "trigger": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 248.2,
+    "timeframe": "intraday"
+   }
+  }
+ }
+}
