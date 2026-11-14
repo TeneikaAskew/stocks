@@ -356,11 +356,11 @@ EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), f
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | **Invalidated** |
+| Status | **Invalidated**; replays on Discord and the API read 1-min bars only from `market_data_intraday` or say they cannot, and start no fetch: `/replay` and `scripts/backfill_and_replay.py` probe `market_data_intraday` and `market_data_daily` and no longer run `backfill-ticker`, the market data and reference routes answer 404 for a day the table lacks and 503 for a database outage, and a guard test holds the registered replay paths to the table ([#1891](https://github.com/TeneikaAskew/stocks/pull/1891); implementation under review, not deployed, rollout pending) |
 | Priority | P0 |
 | Target phase | Phase 2 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-11-14 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/reports` |
 | Backend | `/api/backtest/replay-trades` |

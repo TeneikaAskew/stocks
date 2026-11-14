@@ -3,7 +3,7 @@ feat_id: FEAT-INSIGHT-001
 spec: docs/superpowers/specs/2026-11-14-feat-insight-001-watchlist-default-lock-a-r2.md
 branch: feature/feat-insight-001-watchlist-lock-a-r2
 pr: 1910
-status: ready
+status: done
 ---
 
 # Default watchlist lock, stage A, implementation plan (r2: site source notes)
