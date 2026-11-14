@@ -81,7 +81,7 @@ DAILY_SQL = (
 )
 
 MINUTES_SQL = (
-    "SELECT ts, open, high, low, close, volume FROM market_data_intraday "
+    "SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday "
     "WHERE ticker = :ticker AND interval = '1min' AND ts >= :start AND ts < :end ORDER BY ts"
 )
 
@@ -249,10 +249,15 @@ def read_daily(query: QueryFn, ticker: str, start, before) -> pd.DataFrame:
 
 def read_minutes(query: QueryFn, ticker: str, start, before) -> pd.DataFrame:
     """One-minute bars from `start` to before `before` (Eastern dates),
-    converted with lib.eastern_time.stored_intraday_to_eastern (the
-    table's mixed timestamp conventions, CLAUDE.md 3.9). The UTC bounds are
-    widened by a day each side and the Eastern dates cut after conversion."""
-    from lib.eastern_time import stored_intraday_to_eastern  # noqa: PLC0415
+    each placed with lib.eastern_time.place_stored_rows (the table's mixed
+    timestamp conventions, CLAUDE.md 3.9): a row proven a true UTC instant,
+    by its date or its `inserted_at`, is read where it is stored, and any
+    other row is placed by the resolver (FEAT-DATA-001, Design H).
+    `timestamp` is the placed instant as naive Eastern. The UTC bounds are
+    widened by a day each side and the Eastern dates cut after conversion.
+    Rows that come back without `inserted_at` raise KeyError: there is no
+    fallback to the resolver alone."""
+    from lib.eastern_time import place_stored_rows, utc_to_eastern_naive  # noqa: PLC0415
 
     lo = pd.Timestamp(start).tz_localize('UTC') - pd.Timedelta(days=1)
     hi = pd.Timestamp(before).tz_localize('UTC') + pd.Timedelta(days=1)
@@ -261,9 +266,9 @@ def read_minutes(query: QueryFn, ticker: str, start, before) -> pd.DataFrame:
         raise RuntimeError(f"{ticker}: one-minute read returned nothing")
     if df.empty:
         return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    idx, keep = stored_intraday_to_eastern(df['ts'], df['volume'])
+    instants, keep, _proven = place_stored_rows(df['ts'], df['volume'], df['inserted_at'])
     out = df.loc[keep].copy()
-    out['timestamp'] = pd.DatetimeIndex(idx[keep])
+    out['timestamp'] = utc_to_eastern_naive(instants[keep])
     day = out['timestamp'].dt.normalize()
     out = out[(day >= pd.Timestamp(start)) & (day < pd.Timestamp(before))]
     return out[['timestamp', 'open', 'high', 'low', 'close', 'volume']].reset_index(drop=True)
