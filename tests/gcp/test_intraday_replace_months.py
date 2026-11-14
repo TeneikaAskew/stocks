@@ -262,7 +262,8 @@ def test_commit_run_fails_and_lists_retries_when_any_month_is_skipped(tmp_path, 
     import logging
     caplog.set_level(logging.ERROR)
     assert _run(tmp_path, monkeypatch, [fai.REPLACE_OK, bad]) == 1
-    assert "RETRY T1,2026-09" in caplog.text
+    guidance = "RETRY" if bad == fai.FETCH_RATE_LIMIT else "REVIEW"
+    assert f"{guidance} T1,2026-09" in caplog.text
     assert "RETRY T0" not in caplog.text
 
 
@@ -270,7 +271,8 @@ def test_commit_run_fails_on_a_raised_month(tmp_path, monkeypatch, caplog):
     import logging
     caplog.set_level(logging.ERROR)
     assert _run(tmp_path, monkeypatch, [RuntimeError("db down")]) == 1
-    assert "RETRY T0,2026-09" in caplog.text
+    assert "REVIEW T0,2026-09" in caplog.text
+    assert "RETRY T0" not in caplog.text
 
 
 def test_dry_run_expects_dry_run_status(tmp_path, monkeypatch):
