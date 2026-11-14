@@ -1336,14 +1336,45 @@ def test_the_only_replay_exemption_is_the_style_history_loader():
 # The scan reads source as a syntax tree, not as raw text: the 300-character
 # window of _ROW_WRITE above hides a table name behind a long argument, and
 # it does not see MERGE, DELETE, UPDATE, TRUNCATE, a quoted identifier or a
-# keyword argument.
+# keyword argument. It reads a write as
 #
-# What the scan does not see: a table name held in a variable and passed in
-# from another file (test_the_yahoo_archive_is_the_one_named_deleter pins
-# the one known case), a partition name built in an f-string field, a
-# reflected sa.Table, DDL (DROP, DETACH), SQL an operator runs by hand, a
-# write helper that is not in INTRADAY_WRITE_HELPERS, and anything outside
-# SCAN_ROOTS.
+# - a statement (INSERT INTO, MERGE INTO, DELETE FROM, UPDATE, TRUNCATE,
+#   COPY ... FROM) on the table or a partition, in one literal or put
+#   together at run time (see _folded below);
+# - a call of a write helper (INTRADAY_WRITE_HELPERS), under its own name,
+#   an import alias, a name the file assigned it, getattr(x, "<name>") or
+#   functools.partial, with the table's name anywhere in its arguments;
+# - a SQLAlchemy insert / update / delete on a table(...) or Table(...) of
+#   that name.
+#
+# What it flags that may not be a write: any string that puts a write verb
+# directly before the table's name, help and log text included. There is no
+# opt-out comment and no exemption for prose, on purpose: a rule that guessed
+# which strings are executed is the first thing a real write would hide
+# behind. Reword the text, or have a spec list the file.
+#
+# What it still does not see (stated, not solved):
+#
+# - a table name that does not come from a plain `NAME = "..."` assignment in
+#   the same file: a dict value or key, a loop variable, a function's return
+#   value or parameter, an import from another file, the environment
+#   (test_the_yahoo_archive_is_the_one_named_deleter pins the one known file
+#   of that shape, and only when the statement and the name share a file);
+# - a write helper that is not in INTRADAY_WRITE_HELPERS: a new function in
+#   gcp/database.py, or a wrapper defined anywhere (write_frame(df,
+#   "market_data_intraday") is not flagged), and a helper handed over as an
+#   argument before it is called;
+# - an ORM class (__tablename__), a table object built in another file, and
+#   SQLAlchemy constructs other than insert / update / delete;
+# - a statement in which run-time text stands between the verb and the name
+#   other than as its schema, a `--` SQL comment between them, and a name of
+#   which the literal text holds less than the whole table name
+#   (f"market_data_{kind}");
+# - an expression with more than _FOLD_READINGS readings (a name the file
+#   assigns more strings than that);
+# - DDL (DROP, ALTER ... DETACH PARTITION) and maintenance (VACUUM, REINDEX);
+# - SQL an operator runs by hand, .sql and .sh files, and anything outside
+#   SCAN_ROOTS.
 
 INTRADAY_TABLE = "market_data_intraday"
 # gcp/schema.sql: the table's five list partitions.
@@ -1354,65 +1385,315 @@ SANCTIONED_INTRADAY_WRITERS = {
     "gcp/fetchers/fetch_market_data.py",             # the daily fetcher, write_intraday_to_sql
 }
 
-# The five write helpers of gcp/database.py, and pandas' own.
+# The five write helpers of gcp/database.py, pandas' own, and the driver's
+# COPY methods (psycopg2 cursor.copy_from / copy_expert).
 INTRADAY_WRITE_HELPERS = (
     "upsert_dataframe", "bulk_insert_dataframe", "bulk_copy_upsert",
     "bulk_copy_update", "replace_rows_in_window", "to_sql",
+    "copy_from", "copy_expert",
 )
 
-# The table or one of its partitions, with an optional `public.` and optional
-# double quotes around either name. market_data_intraday_flow_15m and
+# ── strings put together at run time ──
+#
+# A table, a job or a module can be named without its name in one literal.
+# _folded reads a string expression as its parts in order, as _string_parts
+# above does for + and f-strings, and goes further: a name the file gives a
+# string constant by a plain assignment stands for that string; `%`,
+# `.format`, `sep.join([...])`, `os.path.join(...)`, `Path(...) / ...` and a
+# bytes literal are read too. A part only known at run time is None. A name
+# the file assigns several strings gives one reading per string.
+
+_UNKNOWN = "\x00"          # stands in for a None part when a reading is matched as text
+_FOLD_READINGS = 8         # the most readings kept of one expression
+_PERCENT_FIELD = re.compile(
+    r"%(?:\((\w+)\))?[#0\- +]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[hlL]?([diouxXeEfFgGcrsa%])")
+_PATH_CLASSES = ("Path", "PurePath", "PurePosixPath")
+
+
+def _string_bindings(tree: ast.AST) -> dict[str, set[str]]:
+    """name -> every string constant a plain assignment gives it, anywhere in
+    the file. Scope is ignored on purpose: a guard that asked which function
+    it was in would be passed by moving the constant."""
+    out: dict[str, set[str]] = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign):
+            targets, value = n.targets, n.value
+        elif isinstance(n, ast.AnnAssign) and n.value is not None:
+            targets, value = [n.target], n.value
+        else:
+            continue
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            for t in targets:
+                if isinstance(t, ast.Name):
+                    out.setdefault(t.id, set()).add(value.value)
+    return out
+
+
+def _readings(pieces: list[list[tuple]]) -> list[tuple]:
+    """Each way of taking one reading from every piece, in order, joined."""
+    out: list[tuple] = [()]
+    for alternatives in pieces:
+        out = [done + alt for done in out for alt in alternatives][:_FOLD_READINGS]
+    return out
+
+
+def _folded(node: ast.AST, bindings: dict[str, set[str]]) -> list[tuple]:
+    """The readings of a string expression, each a tuple of literal text and
+    None; [] when the node is not a string built from at least one literal."""
+    unknown = [(None,)]
+
+    def part(n: ast.AST) -> list[tuple]:
+        return _folded(n, bindings) or unknown
+
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str):
+            return [(node.value,)]
+        if isinstance(node.value, bytes):
+            return [(node.value.decode("latin-1"),)]
+        return []
+    if isinstance(node, ast.Name):
+        return [(v,) for v in sorted(bindings.get(node.id, ()))][:_FOLD_READINGS]
+    if isinstance(node, ast.JoinedStr):
+        return _readings([
+            part(v.value) if isinstance(v, ast.FormattedValue) and v.conversion == -1
+            and v.format_spec is None else part(v) if isinstance(v, ast.Constant) else unknown
+            for v in node.values])
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
+        left, right = _folded(node.left, bindings), _folded(node.right, bindings)
+        if not left and not right:
+            return []
+        between = [[("/",)]] if isinstance(node.op, ast.Div) else []
+        return _readings([left or unknown] + between + [right or unknown])
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        if isinstance(node.right, ast.Dict):
+            named = {k.value: v for k, v in zip(node.right.keys, node.right.values)
+                     if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+            positional: list[ast.AST] = []
+        else:
+            named = {}
+            positional = list(node.right.elts) if isinstance(node.right, ast.Tuple) else [node.right]
+        out: list[tuple] = []
+        for base in _folded(node.left, bindings):
+            pieces, used = [], 0
+            for text in base:
+                if text is None:
+                    pieces.append(unknown)
+                    continue
+                at = 0
+                for m in _PERCENT_FIELD.finditer(text):
+                    pieces.append([(text[at:m.start()],)])
+                    at = m.end()
+                    if m.group(2) == "%":
+                        pieces.append([("%",)])
+                        continue
+                    arg = named.get(m.group(1)) if m.group(1) else (
+                        positional[used] if used < len(positional) else None)
+                    used += 0 if m.group(1) else 1
+                    pieces.append(part(arg) if arg is not None and m.group(2) in "sr" else unknown)
+                pieces.append([(text[at:],)])
+            out += _readings(pieces)
+        return out[:_FOLD_READINGS]
+    if isinstance(node, ast.Call):
+        f = node.func
+        if isinstance(f, ast.Attribute) and f.attr == "format":
+            import string
+            named = {k.arg: k.value for k in node.keywords if k.arg}
+            out = []
+            for base in _folded(f.value, bindings):
+                pieces, auto = [], 0
+                for text in base:
+                    if text is None:
+                        pieces.append(unknown)
+                        continue
+                    try:
+                        fields = list(string.Formatter().parse(text))
+                    except ValueError:
+                        pieces += [[(text,)], unknown]
+                        continue
+                    for literal, field, spec, conversion in fields:
+                        pieces.append([(literal,)])
+                        if field is None:
+                            continue
+                        if field == "":
+                            arg = node.args[auto] if auto < len(node.args) else None
+                            auto += 1
+                        elif field.isdigit():
+                            arg = node.args[int(field)] if int(field) < len(node.args) else None
+                        else:
+                            arg = named.get(field)
+                        plain = arg is not None and not spec and not conversion
+                        pieces.append(part(arg) if plain else unknown)
+                out += _readings(pieces)
+            return out[:_FOLD_READINGS]
+        if isinstance(f, ast.Attribute) and f.attr == "join":
+            owner = _dotted_name(f.value)
+            if owner is not None and owner.split(".")[-1] == "path":      # os.path.join
+                items, separators = list(node.args), [("/",)]
+            elif len(node.args) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)):
+                items, separators = list(node.args[0].elts), _folded(f.value, bindings)
+            else:
+                return []
+            if not items or not separators:
+                return []
+            pieces = []
+            for i, item in enumerate(items):
+                pieces += ([separators] if i else []) + [part(item)]
+            return _readings(pieces)
+        if _call_name(node) in _PATH_CLASSES and node.args:               # Path("gcp", "x.py")
+            pieces = []
+            for i, item in enumerate(node.args):
+                pieces += ([[("/",)]] if i else []) + [part(item)]
+            return _readings(pieces)
+    return []
+
+
+def _as_text(reading: tuple) -> str:
+    return "".join(_UNKNOWN if p is None else p for p in reading)
+
+
+_STRING_EXPRESSION = (ast.Constant, ast.JoinedStr, ast.BinOp, ast.Call)
+
+
+def _strings_matching(tree: ast.AST, matches) -> list[ast.AST]:
+    """The outermost string expressions outside docstrings of which
+    `matches(reading)` holds for some reading. What a matching expression is
+    put together from is not reported again."""
+    bindings = _string_bindings(tree)
+    docstrings = _docstring_nodes(tree)
+    found: list[ast.AST] = []
+
+    def visit(node: ast.AST) -> None:
+        if id(node) in docstrings:
+            return
+        if isinstance(node, _STRING_EXPRESSION) and any(
+                matches(r) for r in _folded(node, bindings)):
+            found.append(node)
+            return
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(tree)
+    return found
+
+
+def _half(name: str) -> int:
+    """How much of a name literal text has to supply before a string put
+    together at run time counts as naming it: half, rounded up. A formatted
+    value alone could spell anything (BACKFILL_LITERAL_FLOOR above is the
+    same rule for the backfill job: 8 of 15)."""
+    return (len(name) + 1) // 2
+
+
+# ── the scan ──
+#
+# The table or one of its partitions, with optional double quotes around
+# either name and an optional schema: `public.`, or a formatted field
+# (f"{schema}.market_data_intraday"). A formatted field may also end the
+# name (f"market_data_intraday_{part}"). market_data_intraday_flow_15m and
 # archive_yahoo_market_data_intraday are other tables: the name may not run
 # on into a word character, and a statement needs whitespace before it.
 _INTRADAY_NAME = (
-    r'(?:"?public"?\.)?"?' + INTRADAY_TABLE
-    + r"(?:" + "|".join(INTRADAY_PARTITION_SUFFIXES) + r')?(?!\w)"?'
+    r'(?:"?public"?\.|' + _UNKNOWN + r'\.)?"?' + INTRADAY_TABLE
+    + r"(?:" + "|".join(INTRADAY_PARTITION_SUFFIXES) + r"|_?" + _UNKNOWN + r')?(?!\w)"?'
 )
 _INTRADAY_ARGUMENT = re.compile(_INTRADAY_NAME, re.I)
+# COPY <table> TO is a read; COPY <table> FROM is the write.
 _INTRADAY_STATEMENT = re.compile(
-    r"\b(?:INSERT\s+INTO|MERGE\s+INTO|COPY|DELETE\s+FROM|UPDATE|TRUNCATE(?:\s+TABLE)?)\s+"
-    + _INTRADAY_NAME,
+    r"\b(?:(?:INSERT\s+INTO|MERGE\s+INTO|DELETE\s+FROM|UPDATE|TRUNCATE(?:\s+TABLE)?)\s+(?:ONLY\s+)?"
+    + _INTRADAY_NAME
+    + r"|COPY\s+" + _INTRADAY_NAME + r"(?!\s*(?:\([^)]*\)\s*)?TO\b))",
     re.I,
 )
+_SQL_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+_TABLE_FACTORIES = ("table", "Table")              # sqlalchemy.table(...), sqlalchemy.Table(...)
+_TABLE_OBJECT_WRITES = ("insert", "update", "delete")
 
 
-def _code_strings(tree: ast.AST):
-    """(node, text) of every string the code holds: each string constant that
-    is neither a docstring nor a part of an f-string, and each f-string as the
-    join of its literal parts. Adjacent literals are one constant already."""
-    docstrings = _docstring_nodes(tree)
-    in_fstring: set[int] = set()
-    for n in ast.walk(tree):
-        if isinstance(n, ast.JoinedStr):
-            in_fstring.update(id(v) for v in n.values)
-    for n in ast.walk(tree):
-        if isinstance(n, ast.JoinedStr):
-            yield n, "".join(v.value for v in n.values
-                             if isinstance(v, ast.Constant) and isinstance(v.value, str))
-        elif (isinstance(n, ast.Constant) and isinstance(n.value, str)
-              and id(n) not in docstrings and id(n) not in in_fstring):
-            yield n, n.value
+def _is_intraday_statement(reading: tuple) -> bool:
+    return bool(_INTRADAY_STATEMENT.search(_SQL_BLOCK_COMMENT.sub(" ", _as_text(reading))))
+
+
+def _write_helper(func: ast.AST, aliases: dict[str, str], bindings: dict[str, set[str]]) -> str | None:
+    """The write helper an expression stands for, when it is one: its name,
+    a name the file bound to it, an attribute of that name, or
+    getattr(x, "<its name>")."""
+    if isinstance(func, ast.Name):
+        return func.id if func.id in INTRADAY_WRITE_HELPERS else aliases.get(func.id)
+    if isinstance(func, ast.Attribute):
+        return func.attr if func.attr in INTRADAY_WRITE_HELPERS else None
+    if (isinstance(func, ast.Call) and _call_name(func) == "getattr" and len(func.args) >= 2):
+        for reading in _folded(func.args[1], bindings):
+            if _as_text(reading) in INTRADAY_WRITE_HELPERS:
+                return _as_text(reading)
+    return None
+
+
+def _bound_names(tree: ast.AST, stands_for) -> dict[str, object]:
+    """name -> what `stands_for(value, names so far)` returns for the value a
+    plain assignment gives it, followed until nothing is added."""
+    names: dict[str, object] = {}
+    grew = True
+    while grew:
+        grew = False
+        for n in ast.walk(tree):
+            if not (isinstance(n, ast.Assign) and len(n.targets) == 1
+                    and isinstance(n.targets[0], ast.Name)) or n.targets[0].id in names:
+                continue
+            what = stands_for(n.value, names)
+            if what:
+                names[n.targets[0].id] = what
+                grew = True
+    return names
 
 
 def intraday_write_sites(src: str) -> list[tuple[int, str]]:
     """Every write of the 1-minute bar table in a source text, sorted, as
-    (line, what): "sql" for a statement, at the first line of its string, or
-    the helper's name, at the line of its call. Raises SyntaxError on text
-    that does not parse."""
+    (line, what): "sql" for a statement, at the first line of its string
+    expression, or the name of the helper or construct, at the line of its
+    call. Raises SyntaxError on text that does not parse."""
     tree = _replay_tree(src)
-    sites: list[tuple[int, str]] = []
-    for node, text in _code_strings(tree):
-        if _INTRADAY_STATEMENT.search(text):
-            sites.append((node.lineno, "sql"))
+    bindings = _string_bindings(tree)
+    sites = [(n.lineno, "sql") for n in _strings_matching(tree, _is_intraday_statement)]
+
+    def names_the_table(node: ast.AST) -> bool:
+        return isinstance(node, (ast.Name, *_STRING_EXPRESSION)) and any(
+            _INTRADAY_ARGUMENT.fullmatch(_as_text(r)) for r in _folded(node, bindings))
+
+    def table_inside(nodes) -> bool:
+        return any(names_the_table(c) for a in nodes for c in ast.walk(a))
+
+    # a write helper, under its own name or one the file gave it
+    aliases: dict[str, str] = {
+        a.asname: a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+        for a in n.names if a.asname and a.name in INTRADAY_WRITE_HELPERS}
+    aliases.update(_bound_names(
+        tree, lambda value, seen: _write_helper(value, {**aliases, **seen}, bindings)))
+
+    # a SQLAlchemy table object of that name, and the names bound to one
+    def table_call(node: ast.AST) -> bool:
+        return (isinstance(node, ast.Call) and _call_name(node) in _TABLE_FACTORIES
+                and table_inside(list(node.args) + [k.value for k in node.keywords]))
+
+    table_names = _bound_names(
+        tree, lambda value, seen: table_call(value) or (isinstance(value, ast.Name) and value.id in seen))
+
+    def table_object(node: ast.AST) -> bool:
+        return table_call(node) or (isinstance(node, ast.Name) and node.id in table_names)
+
     for n in ast.walk(tree):
-        if not (isinstance(n, ast.Call) and _call_name(n) in INTRADAY_WRITE_HELPERS):
+        if not isinstance(n, ast.Call):
             continue
         arguments = list(n.args) + [k.value for k in n.keywords]
-        if any(isinstance(c, ast.Constant) and isinstance(c.value, str)
-               and _INTRADAY_ARGUMENT.fullmatch(c.value)
-               for a in arguments for c in ast.walk(a)):
+        helper = _write_helper(n.func, aliases, bindings)
+        if helper is None and _call_name(n) == "partial" and n.args:      # functools.partial(helper, ...)
+            helper, arguments = _write_helper(n.args[0], aliases, bindings), arguments[1:]
+        if helper is not None and table_inside(arguments):
+            sites.append((n.lineno, helper))
+        elif _call_name(n) in _TABLE_OBJECT_WRITES and (
+                any(table_object(c) for a in arguments for c in ast.walk(a))
+                or (isinstance(n.func, ast.Attribute) and table_object(n.func.value))):
             sites.append((n.lineno, _call_name(n)))
-    return sorted(sites)
+    return sorted(set(sites))
 
 
 _INTRADAY_MUST_CATCH = [
@@ -1448,6 +1729,53 @@ _INTRADAY_MUST_IGNORE = [
     "x = 1  # UPDATE market_data_intraday by hand",
 ]
 
+# Rewrites an independent review walked past the first form of the scan
+# (2026-11-14), each run against it and seen to return no site, and the
+# reads and other tables the closing rules must not start to flag.
+_INTRADAY_REVIEW_MUST_CATCH = [
+    # the table's name held in a constant of the file
+    'T = "market_data_intraday"\nupsert_dataframe(df, T, ["ticker", "interval", "ts"])',
+    'name = "market_data_intraday"\ndf.to_sql(name, engine)',
+    'T = "market_data_intraday"\nexecute_sql(f"DELETE FROM {T} WHERE ticker = :t")',
+    'def f():\n    t = "market_data_daily"\ndef g():\n    t = "market_data_intraday"\n    upsert_dataframe(df, t, ["ticker"])',
+    # a write helper under another name
+    'from gcp.database import upsert_dataframe as up\nup(df, "market_data_intraday", ["ticker", "interval", "ts"])',
+    'import gcp.database as db\ngetattr(db, "upsert_dataframe")(df, "market_data_intraday", ["t"])',
+    'import gcp.database as db\nwrite = db.bulk_insert_dataframe\nwrite(df, "market_data_intraday")',
+    'write = functools.partial(upsert_dataframe, table="market_data_intraday")',
+    # a statement put together at run time
+    'execute_sql("INSERT INTO " + "market_data_intraday" + " (ticker) VALUES (:t)")',
+    'execute_sql("INSERT INTO {} (ticker) VALUES (:t)".format("market_data_intraday"))',
+    'execute_sql("DELETE FROM %s WHERE ticker = :t" % "market_data_intraday")',
+    'execute_sql(" ".join(["DELETE FROM", "market_data_intraday", "WHERE ticker = :t"]))',
+    'execute_sql(f"INSERT INTO {schema}.market_data_intraday (ticker) VALUES (:t)")',
+    'execute_sql(f"DELETE FROM market_data_intraday_{part} WHERE ts < :c")',
+    'cur.execute(b"DELETE FROM market_data_intraday")',
+    'execute_sql("DELETE /* all of it */ FROM market_data_intraday")',
+    # the driver's own COPY, and SQLAlchemy's constructs on a table of that name
+    'cur.copy_from(f, "market_data_intraday", columns=("ticker",))',
+    'cur.copy_expert(sql.SQL("COPY {} FROM STDIN").format(sql.Identifier("market_data_intraday")), f)',
+    'import sqlalchemy as sa\nt = sa.table("market_data_intraday", sa.column("ticker"))\nconn.execute(sa.insert(t).values(ticker="X"))',
+    'from sqlalchemy.dialects.postgresql import insert\nconn.execute(insert(Table("market_data_intraday", md)).values(x=1))',
+    't = sa.Table("market_data_intraday", md, autoload_with=engine)\nconn.execute(t.delete())',
+    # Flagged on purpose: help or log text that puts a write verb before the
+    # table reads exactly like a statement, and a rule that guessed which one
+    # it is would be the first thing a real write hid behind.
+    'p.add_argument("--purge", help="DELETE FROM market_data_intraday rows before N")',
+]
+_INTRADAY_REVIEW_MUST_IGNORE = [
+    'cur.execute("COPY market_data_intraday TO STDOUT WITH CSV")',
+    'cur.execute("COPY market_data_intraday (ticker, ts) TO STDOUT")',
+    'T = "market_data_daily"\nupsert_dataframe(df, T, ["ticker", "date"])',
+    'T = "market_data_intraday"\nquery_to_dataframe(f"SELECT ts FROM {T} WHERE ticker = :t")',
+    'from gcp.database import query_to_dataframe as up\nup("SELECT ts FROM market_data_intraday")',
+    'execute_sql("INSERT INTO {} (ticker) VALUES (:t)".format("market_data_daily"))',
+    'execute_sql(f"DELETE FROM {schema}.market_data_daily WHERE ticker = :t")',
+    'import sqlalchemy as sa\nt = sa.table("market_data_intraday", sa.column("ts"))\nrows = conn.execute(sa.select(t))',
+    # a table known only at run time is the variable-table test's, below
+    'execute_sql(f"DELETE FROM {table} WHERE ticker = :t")',
+]
+
 
 def test_the_intraday_writer_scan_catches_the_obvious_rewrites():
     """The scan is the whole allowlist: a write it walks past is a third
@@ -1462,6 +1790,12 @@ def test_the_intraday_writer_scan_catches_the_obvious_rewrites():
     missed = [s for s in _INTRADAY_MUST_CATCH if not intraday_write_sites(s)]
     assert missed == [], missed
     caught = [s for s in _INTRADAY_MUST_IGNORE if intraday_write_sites(s)]
+    assert caught == [], caught
+
+    # the review's rows (not among the spec's 20 and 8)
+    missed = [s for s in _INTRADAY_REVIEW_MUST_CATCH if not intraday_write_sites(s)]
+    assert missed == [], missed
+    caught = [s for s in _INTRADAY_REVIEW_MUST_IGNORE if intraday_write_sites(s)]
     assert caught == [], caught
 
     # the long-argument row really is past the old raw-text window
@@ -1515,11 +1849,30 @@ def test_sanctioned_intraday_writers_still_write():
 # replay, and no replay starts one. A new entry point is added here by the
 # spec that adds it.
 #
-# What these checks do not see: a writer function reached without an import
-# they can read (a module name built from parts, getattr, a module object
-# passed as a value), a job run by hand or from the console, a scheduler
-# made outside gcp/deploy.sh, and shell or workflow files other than
-# gcp/deploy.sh.
+# Check (c) lists every file that names a writer job, and does not try to
+# tell a label from a dispatch. The one real dispatcher among the three
+# (platform/api/routers/admin.py) holds the name as a value of a dict and
+# dispatches whatever that dict holds, so a rule that waved a "label"
+# through would wave through the next dispatcher written the same way.
+#
+# Check (a) also refuses a writer module used as a value (passed, stored,
+# returned), because what is then called on it cannot be read.
+#
+# What these checks still do not see (stated, not solved):
+#
+# - a module or job name read from the environment, a config file or the
+#   database, and one put together at run time with less than half of it
+#   from literal text (importlib.import_module("gcp.fetchers." + name));
+# - a writer function reached through an object the check cannot follow: a
+#   module returned by a function, taken out of sys.modules by a built key,
+#   or bound by anything other than an import or a plain assignment;
+# - in gcp/deploy.sh: a job or module name put together from parts held in
+#   anything but a variable the same function assigns one literal (a
+#   variable assigned twice, a global, an array, $(...), eval). A command
+#   that holds a whole job name is read whatever starts it;
+# - shell and workflow files other than gcp/deploy.sh;
+# - a job run by hand or from the console, and a scheduler made outside
+#   gcp/deploy.sh.
 
 INTRADAY_WRITER_MODULES = {
     "gcp/fetchers/fetch_alphavantage_intraday.py": "gcp.fetchers.fetch_alphavantage_intraday",
@@ -1600,9 +1953,17 @@ def _imported_module(rel: str, node: ast.ImportFrom) -> str:
 
 
 def writer_import_offenders(rel: str, src: str, closures: dict[str, set[str]]) -> list[str]:
-    """Check (a) on one file: each place it imports a closure name from its
-    module (`from module import name`, or `*`), or names one through the
-    module (`alias.name`, `gcp.fetchers.module.name`), as '{line}: {what}'.
+    """Check (a) on one file, as '{line}: {what}': each place it
+
+    - imports a closure name from its module (`from module import name`, or `*`),
+    - names one through the module (`alias.name`, `gcp.fetchers.module.name`),
+      the module under any name the file bound it to, by an import or by a
+      plain assignment (`run = fetch_market_data`),
+    - reaches into the module with getattr, for a closure name or for a name
+      the check cannot read,
+    - uses the module object as a value (passes it, stores it), since what is
+      then called on it cannot be read.
+
     `closures` is keyed by dotted module name. An import anywhere in the
     file binds its name for the whole file."""
     tree = _replay_tree(src)
@@ -1625,16 +1986,46 @@ def writer_import_offenders(rel: str, src: str, closures: dict[str, set[str]]) -
                 else:
                     head = a.name.split(".")[0]
                     bound[head] = head
+
+    def path_of(node: ast.AST, names: dict) -> str | None:
+        """The dotted path a chain of names and attributes stands for."""
+        dotted = _dotted_name(node)
+        if dotted is None:
+            return None
+        head, _, rest = dotted.partition(".")
+        if head not in bound and head not in names:
+            return None
+        base = bound.get(head) or names[head]
+        return f"{base}.{rest}" if rest else base
+
+    # `run = fetch_market_data`, `mod = gcp.fetchers.fetch_market_data`
+    bound.update(_bound_names(tree, path_of))
+
     targets = {f"{module}.{name}": (module, name)
                for module, names in closures.items() for name in names}
+    bindings = _string_bindings(tree)
+    attribute_objects = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    getattr_objects: set[int] = set()
     for n in ast.walk(tree):
-        dotted = _dotted_name(n) if isinstance(n, ast.Attribute) else None
-        if dotted is None:
-            continue
-        head, _, rest = dotted.partition(".")
-        if head in bound and f"{bound[head]}.{rest}" in targets:
-            module, name = targets[f"{bound[head]}.{rest}"]
-            found.add((n.lineno, f"names {name} of {module} as {dotted}"))
+        if isinstance(n, ast.Call) and _call_name(n) == "getattr" and len(n.args) >= 2:
+            module = path_of(n.args[0], {})
+            if module in closures:
+                getattr_objects.add(id(n.args[0]))
+                names = {_as_text(r) for r in _folded(n.args[1], bindings)}
+                if not names:
+                    found.add((n.lineno, f"reaches into {module} with getattr and a name that is not a literal"))
+                for name in sorted(names & closures[module]):
+                    found.add((n.lineno, f"names {name} of {module} through getattr"))
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Attribute):
+            path = path_of(n, {})
+            if path in targets:
+                module, name = targets[path]
+                found.add((n.lineno, f"names {name} of {module} as {_dotted_name(n)}"))
+        if (isinstance(n, (ast.Name, ast.Attribute)) and isinstance(n.ctx, ast.Load)
+                and id(n) not in attribute_objects and id(n) not in getattr_objects
+                and path_of(n, {}) in closures):
+            found.add((n.lineno, f"uses the module {path_of(n, {})} as a value"))
     return [f"{line}: {what}" for line, what in sorted(found)]
 
 
@@ -1642,69 +2033,144 @@ _WRITER_MODULE_NAMES = tuple(sorted(
     set(INTRADAY_WRITER_MODULES) | set(INTRADAY_WRITER_MODULES.values())))
 _WRITER_JOB_NAME = re.compile(
     r"(?<![\w-])(?:" + "|".join(re.escape(j) for j in INTRADAY_WRITER_JOBS) + r")(?![\w-])")
+_WRITER_JOB_ANYWHERE = re.compile("|".join(re.escape(j) for j in INTRADAY_WRITER_JOBS))
+
+
+def _names_a_writer_module(reading: tuple) -> bool:
+    """A writer module's dotted name or path, in one literal or put together
+    at run time with literal text supplying at least half of it."""
+    return any(_literal_cover(list(reading), name) >= _half(name) for name in _WRITER_MODULE_NAMES)
+
+
+def _names_a_writer_job(reading: tuple) -> bool:
+    """A writer job's name as a whole name (fetch-market-data-daily is a
+    scheduler, not the job), in one literal, next to a formatted value, or
+    put together at run time with literal text supplying at least half."""
+    if _WRITER_JOB_NAME.search(_as_text(reading)):
+        return True
+    if None not in reading:
+        return False
+    # What is left are the names a formatted value completes. A literal that
+    # holds a job's name inside a longer name is not one of them.
+    rest = [None if p is None else _WRITER_JOB_ANYWHERE.sub(lambda m: m.group(0)[:-1] + "\x01", p)
+            for p in reading]
+    return any(_literal_cover(rest, job) >= _half(job) for job in INTRADAY_WRITER_JOBS)
 
 
 def writer_module_strings(src: str) -> list[int]:
-    """Check (b): the lines of the strings outside docstrings that hold a
-    writer module's dotted name or its path."""
-    return sorted(node.lineno for node, text in _code_strings(_replay_tree(src))
-                  if any(name in text for name in _WRITER_MODULE_NAMES))
+    """Check (b): the lines of the string expressions outside docstrings
+    that name a writer module, by dotted name or by path."""
+    return sorted(n.lineno for n in _strings_matching(_replay_tree(src), _names_a_writer_module))
 
 
 def writer_job_strings(src: str) -> list[int]:
-    """Check (c): the lines of the strings outside docstrings that hold a
-    writer job's name as a whole name. fetch-market-data-daily is a
-    scheduler, not the job."""
-    return sorted(node.lineno for node, text in _code_strings(_replay_tree(src))
-                  if _WRITER_JOB_NAME.search(text))
+    """Check (c): the lines of the string expressions outside docstrings
+    that name a writer job."""
+    return sorted(n.lineno for n in _strings_matching(_replay_tree(src), _names_a_writer_job))
 
 
 _SHELL_FUNCTION = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{")
-_JOB_CREATED = re.compile(r"gcloud\s+run\s+jobs\s+create\s+([A-Za-z0-9_-]+)")
-_SHELL_QUOTED = re.compile(r'"([^"]*)"' + r"|'([^']*)'")
+_SHELL_ASSIGNMENT = re.compile(
+    r"""(?:^|[\s;])(?:(?:local|readonly|export|declare)\s+(?:-\w+\s+)*)?([A-Za-z_]\w*)="""
+    r"""(?:"([^"]*)"|'([^']*)'|([^\s;"']*))""")
+_JOB_CREATED = re.compile(r"""gcloud\s+run\s+jobs\s+create\s+["']?([A-Za-z0-9_-]+)""")
+_DEPLOY_CASE_ARM = re.compile(r"^([A-Za-z0-9_-]+)\)\s+_run\s+build_image((?:\s+deploy_\w+)+)\s*;;$")
+
+
+def _shell_words(command: str) -> list[str]:
+    import shlex
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return [w.strip("\"'") for w in re.findall(r'"[^"]*"|\'[^\']*\'|\S+', command)]
+
+
+def _deploy_commands(text: str) -> list[tuple[str | None, str]]:
+    """gcp/deploy.sh as (function, command): comment lines dropped, a line
+    continued with a backslash joined to the next, and inside each function
+    (`name() {` at column 0, up to the next one) a variable that the function
+    assigns exactly one literal replaced by it, so a name put together from
+    a local variable is read as the shell would run it."""
+    blocks: list[tuple[str | None, list[str]]] = [(None, [])]
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        start = _SHELL_FUNCTION.match(line)
+        if start:
+            blocks.append((start.group(1), []))
+        else:
+            blocks[-1][1].append(line)
+    out: list[tuple[str | None, str]] = []
+    for name, lines in blocks:
+        body = re.sub(r"\\\n", " ", "\n".join(lines))
+        values: dict[str, set[str]] = {}
+        for m in _SHELL_ASSIGNMENT.finditer(body):
+            values.setdefault(m.group(1), set()).add(next(g for g in m.groups()[1:] if g is not None))
+        single = {var: next(iter(v)) for var, v in values.items() if len(v) == 1}
+        for _ in range(3):
+            body = re.sub(
+                r"\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)",
+                lambda m: single.get(m.group(1) or m.group(2), m.group(0)), body)
+        out += [(name, " ".join(c.split())) for c in body.splitlines() if c.strip()]
+    return out
 
 
 def deploy_writer_entry_points(text: str) -> tuple[set[str], set[str], set[str]]:
-    """Check (d) on the text of gcp/deploy.sh, comment lines dropped:
+    """Check (d) on the text of gcp/deploy.sh, read through _deploy_commands:
 
-    - the shell functions (`name() {` at column 0, up to the next one) whose
-      body holds a writer module's dotted name,
+    - the shell functions whose body holds a writer module's dotted name,
     - the job names those functions pass to `gcloud run jobs create`,
-    - the first quoted argument (the scheduler's name) of every command
-      whose first word starts with `_schedule` and that has a writer job as
-      a quoted argument. A command continued with a backslash is one line.
+    - the scheduler's name (the first argument) of every command whose first
+      word starts with `_schedule` and that has a writer job among its
+      arguments, quoted or not.
     """
-    lines = [l for l in text.splitlines() if not l.lstrip().startswith("#")]
     modules = tuple(INTRADAY_WRITER_MODULES.values())
-
-    functions: set[str] = set()
-    jobs: set[str] = set()
-    name, body = None, []
-
-    def close() -> None:
-        joined = "\n".join(body)
-        if name is not None and any(m in joined for m in modules):
-            functions.add(name)
-            jobs.update(_JOB_CREATED.findall(joined))
-
-    for line in lines:
-        start = _SHELL_FUNCTION.match(line)
-        if start:
-            close()
-            name, body = start.group(1), []
-        else:
-            body.append(line)
-    close()
-
+    commands = _deploy_commands(text)
+    functions = {fn for fn, command in commands if fn and any(m in command for m in modules)}
+    jobs = {job for fn, command in commands if fn in functions for job in _JOB_CREATED.findall(command)}
     schedulers: set[str] = set()
-    for command in re.sub(r"\\\n", " ", "\n".join(lines)).splitlines():
-        words = command.split()
-        if not (words and words[0].startswith("_schedule")):
-            continue
-        quoted = [a or b for a, b in _SHELL_QUOTED.findall(command)]
-        if quoted and any(q in INTRADAY_WRITER_JOBS for q in quoted):
-            schedulers.add(quoted[0])
+    for _fn, command in commands:
+        words = _shell_words(command)
+        if (len(words) > 1 and words[0].startswith("_schedule") and not words[0].endswith("()")
+                and any(w in INTRADAY_WRITER_JOBS for w in words[1:])):
+            schedulers.add(words[1])
     return functions, jobs, schedulers
+
+
+def deploy_unlisted_writer_commands(text: str) -> list[str]:
+    """Check (d), the other way round: every command of gcp/deploy.sh that
+    holds a writer job's name as a whole name, and is none of
+
+    - an `echo` that only prints,
+    - `gcloud run jobs create|update <job>` inside a listed deploy function,
+      with nothing in it that executes a job or makes a scheduler,
+    - a `_schedule*` call for a listed scheduler,
+    - the CLI's case arm `<job>) _run build_image deploy_...` for listed
+      functions,
+
+    as '{function}: {command}'. A shell variable assigned a job's name holds
+    the name on its own line, so it is one of these."""
+    out: list[str] = []
+    for fn, command in _deploy_commands(text):
+        if not _WRITER_JOB_NAME.search(command):
+            continue
+        words = _shell_words(command)
+        arm = _DEPLOY_CASE_ARM.match(command)
+        if words[0] == "echo" and not re.search(r"[|>`]|\$\(", command):
+            continue
+        if (words[:3] == ["gcloud", "run", "jobs"] and len(words) > 4
+                and words[3] in ("create", "update") and words[4] in INTRADAY_WRITER_JOBS
+                and fn in INTRADAY_WRITER_DEPLOY_FUNCTIONS
+                and not re.search(r"\bjobs\s+execute\b|\bscheduler\b", command)):
+            continue
+        if (words[0].startswith("_schedule") and len(words) > 1
+                and words[1] in INTRADAY_WRITER_SCHEDULERS):
+            continue
+        if arm and arm.group(1) in INTRADAY_WRITER_JOBS and set(
+                arm.group(2).split()) <= INTRADAY_WRITER_DEPLOY_FUNCTIONS:
+            continue
+        out.append(f"{fn or '<top level>'}: {command[:160]}")
+    return out
 
 
 _ENTRY_MUST_REJECT = [
@@ -1723,6 +2189,55 @@ _ENTRY_MUST_ACCEPT = [
     'from gcp.fetchers import fetch_market_data as fmd\nTICKERS = fmd.TICKERS\nrows = fmd.fetch_minute_data("SPY", "2026-11-13", "k")',
     'names = ["fetch-market-data-daily", "av-intraday-nightly", "av-intraday-monthly"]',
     '"""Runs after gcp.fetchers.fetch_market_data and the fetch-market-data job."""\nx = 1',
+]
+
+# The review's rows for checks (a), (b) and (c), 2026-11-14: each of the
+# first list walked past the first form of the checks.
+_ENTRY_REVIEW_MUST_REJECT = [
+    # (a) the module object under another name, or its function through getattr
+    'import gcp.fetchers.fetch_market_data as fmd\ngetattr(fmd, "main")()',
+    'from gcp.fetchers import fetch_market_data\nrun = fetch_market_data\nrun.main()',
+    'from gcp.fetchers import fetch_alphavantage_intraday as fai\nstart(fai)',
+    'import gcp.fetchers.fetch_market_data as fmd\ngetattr(fmd, name)()',
+    # (b) a module name or path put together at run time
+    'subprocess.run(["python", "-m", "gcp.fetchers." + "fetch_market_data"])',
+    'subprocess.run(["python", os.path.join("gcp", "fetchers", "fetch_market_data.py")])',
+    'subprocess.run(["python", str(Path("gcp") / "fetchers" / "fetch_alphavantage_intraday.py")])',
+    'subprocess.run(["python", "-m", f"gcp.fetchers.fetch_{kind}_intraday"])',
+    # (c) a job name put together at run time
+    'execute_cloud_run_job("fetch-" + "market-data", {})',
+    'J = "intraday-bulk"\nexecute_cloud_run_job(f"{J}-backfill", {})',
+    'execute_cloud_run_job("{}-backfill".format("intraday-bulk"), {})',
+    'execute_cloud_run_job(f"fetch-market-{what}", {})',
+    'execute_cloud_run_job(f"fetch-market-data{suffix}", {})',
+]
+_ENTRY_REVIEW_MUST_ACCEPT = [
+    'from gcp.fetchers import fetch_market_data as fmd\nhelper = fmd.fetch_minute_data\nhelper("SPY", "2026-11-13", "k")',
+    'label = f"fetch-market-data-daily ran at {when}"',
+    # less than half of a name from literal text: a formatted value alone could spell anything
+    'execute_cloud_run_job(f"fetch-{name}", {})',
+    'log.info(f"{job}-backfill done")',
+    'mod = importlib.import_module("gcp.fetchers." + name)',
+]
+
+# gcp/deploy.sh text added to the real file's, and what check (d) must then
+# report: a function, a scheduler, or a command that holds a writer job's
+# name and is none of the listed shapes.
+_DEPLOY_REVIEW_MUST_FLAG = [
+    'foo() {\n    local J="fetch-market-data"\n    _schedule "fmd-extra" "0 1 * * *" "$J"\n}',
+    'foo() {\n    _schedule fmd-extra "0 1 * * *" fetch-market-data\n}',
+    'foo() {\n    gcloud scheduler jobs create http fmd-extra --schedule="0 1 * * *" '
+    '--uri="https://run.googleapis.com/v2/projects/p/locations/r/jobs/fetch-market-data:run"\n}',
+    'deploy_x() {\n    local MOD="gcp.fetchers.fetch_"\n    gcloud run jobs create x-job --command "python,-m,${MOD}market_data"\n}',
+    'deploy_y() {\n    gcloud run jobs create y-job --command "python" --args="-m,gcp.fetchers.fetch_market_data"\n}',
+    'foo() {\n    gcloud run jobs execute fetch-market-data --region r\n}',
+    'foo() {\n    _schedule_verified "bars-hourly" "0 * * * *" \\\n        "intraday-bulk-backfill"\n}',
+    'foo() {\n    gcloud run jobs update fetch-alphavantage-intraday --args="--symbol=ALL"\n}',
+]
+_DEPLOY_REVIEW_MUST_ACCEPT = [
+    'foo() {\n    echo "fetch-market-data runs at 23:00 ET"\n}',
+    'foo() {\n    # _schedule "commented" "0 * * * *" "fetch-market-data"\n    :\n}',
+    'foo() {\n    _schedule "fred-rates-daily" "30 6 * * *" "fetch-fred-rates"\n}',
 ]
 
 
@@ -1770,8 +2285,11 @@ def test_only_named_entry_points_reach_the_intraday_writers():
     assert set(module_files) == INTRADAY_WRITER_MODULE_STARTERS, module_files
     assert set(job_files) == INTRADAY_WRITER_JOB_NAME_FILES, job_files
     # (d)
-    assert deploy_writer_entry_points((REPO / "gcp/deploy.sh").read_text()) == (
+    deploy_text = (REPO / "gcp/deploy.sh").read_text()
+    assert deploy_writer_entry_points(deploy_text) == (
         INTRADAY_WRITER_DEPLOY_FUNCTIONS, set(INTRADAY_WRITER_JOBS), INTRADAY_WRITER_SCHEDULERS)
+    # every other command that holds a writer job's name is an unlisted starter
+    assert deploy_unlisted_writer_commands(deploy_text) == []
 
     assert len(_ENTRY_MUST_REJECT) == 9
     assert len(_ENTRY_MUST_ACCEPT) == 4
@@ -1779,6 +2297,35 @@ def test_only_named_entry_points_reach_the_intraday_writers():
     assert passed == [], passed
     refused = {s: _entry_point_offenders("gcp/new_job.py", s, closures) for s in _ENTRY_MUST_ACCEPT}
     assert {s: o for s, o in refused.items() if o} == {}
+
+    # the review's rows (not among the spec's 9 and 4)
+    passed = [s for s in _ENTRY_REVIEW_MUST_REJECT
+              if not _entry_point_offenders("gcp/new_job.py", s, closures)]
+    assert passed == [], passed
+    refused = {s: _entry_point_offenders("gcp/new_job.py", s, closures) for s in _ENTRY_REVIEW_MUST_ACCEPT}
+    assert {s: o for s, o in refused.items() if o} == {}
+
+
+def test_the_deploy_script_check_reads_what_a_scheduler_or_a_job_can_hide_behind():
+    """Check (d) on text added to the real gcp/deploy.sh: a scheduler whose
+    job is a shell variable or an unquoted word, a scheduler made with
+    gcloud directly, a job whose command is put together from a variable,
+    and a command that executes or re-points a writer job, each change what
+    the check reports. An echo, a comment and a scheduler of another job do
+    not."""
+    text = (REPO / "gcp/deploy.sh").read_text()
+    listed = (INTRADAY_WRITER_DEPLOY_FUNCTIONS, set(INTRADAY_WRITER_JOBS), INTRADAY_WRITER_SCHEDULERS)
+    assert deploy_writer_entry_points(text) == listed
+    assert deploy_unlisted_writer_commands(text) == []
+
+    def reads(extra):
+        both = text + "\n" + extra + "\n"
+        return deploy_writer_entry_points(both), deploy_unlisted_writer_commands(both)
+
+    missed = [extra for extra in _DEPLOY_REVIEW_MUST_FLAG if reads(extra) == (listed, [])]
+    assert missed == [], missed
+    refused = {extra: reads(extra) for extra in _DEPLOY_REVIEW_MUST_ACCEPT}
+    assert {e: r for e, r in refused.items() if r != (listed, [])} == {}
 
 
 def test_the_entry_point_checks_read_relative_imports_and_importlib():
@@ -1804,8 +2351,16 @@ def test_the_entry_point_checks_read_relative_imports_and_importlib():
 # to an archive table and, with --delete, deletes them from the table; it
 # creates no row there. Neither writer module stamps such a row.
 #
-# What this does not see: a table name passed in from another file, a
-# partition name built in an f-string field, and a reflected sa.Table.
+# What the variable-table check still does not see: the statement in one
+# file and the table's name in another, a name that is not a whole string
+# constant (a partition name put together at run time), and a write through
+# a helper or a table object that takes the name from a variable.
+#
+# What the dispatch scan still does not see: a job name read from the
+# environment or a config file, one put together with fewer than
+# BACKFILL_LITERAL_FLOOR of its characters from literal text, the module
+# reached through importlib with a built name, shell and workflow files
+# (gcp/deploy.sh still deploys the job), and a run started by hand.
 
 VARIABLE_TABLE_WRITERS = {
     "gcp/database.py",                 # the write helpers; the name is the key of the UTC check
@@ -1814,45 +2369,73 @@ VARIABLE_TABLE_WRITERS = {
 
 
 _VERB_BEFORE_A_FIELD = re.compile(
-    r"\b(?:INSERT\s+INTO|MERGE\s+INTO|DELETE\s+FROM|UPDATE|TRUNCATE(?:\s+TABLE)?|COPY)\s*$", re.I)
+    r"\b(?:INSERT\s+INTO|MERGE\s+INTO|DELETE\s+FROM|UPDATE|TRUNCATE(?:\s+TABLE)?|COPY)\s+(?:ONLY\s+)?"
+    + '"?' + _UNKNOWN, re.I)
 _INTRADAY_TABLE_NAMES = frozenset(
     [INTRADAY_TABLE] + [INTRADAY_TABLE + suffix for suffix in INTRADAY_PARTITION_SUFFIXES])
 
 
 def holds_variable_table_write(src: str) -> bool:
-    """True when a source text holds both an f-string that puts a write verb
-    directly before a field (`f"DELETE FROM {table} ..."`) and, as a whole
-    string constant outside docstrings, the name of the 1-minute bar table or
-    of one of its partitions: the two halves of a write the scan cannot
-    read."""
+    """True when a source text holds both a statement that puts a write verb
+    directly before text only known at run time (`f"DELETE FROM {table} ..."`,
+    or the same with .format, % or +) and, as a whole string constant outside
+    docstrings, the name of the 1-minute bar table or of one of its
+    partitions: the two halves of a write the scan cannot read."""
     tree = _replay_tree(src)
     docstrings = _docstring_nodes(tree)
-    verb_then_field = any(
-        isinstance(part, ast.Constant) and isinstance(part.value, str)
-        and isinstance(following, ast.FormattedValue)
-        and _VERB_BEFORE_A_FIELD.search(part.value)
-        for n in ast.walk(tree) if isinstance(n, ast.JoinedStr)
-        for part, following in zip(n.values, n.values[1:])
-    )
     names_the_table = any(
         isinstance(n, ast.Constant) and isinstance(n.value, str)
         and n.value in _INTRADAY_TABLE_NAMES and id(n) not in docstrings
         for n in ast.walk(tree)
     )
-    return verb_then_field and names_the_table
+    return names_the_table and bool(_strings_matching(
+        tree, lambda r: _VERB_BEFORE_A_FIELD.search(_SQL_BLOCK_COMMENT.sub(" ", _as_text(r)))))
 
 
-def backfill_dispatch_lines(src: str) -> list[int]:
-    """The lines of the string constants outside docstrings that contain the
-    backfill-ticker job's name. The literal parts of an f-string are string
-    constants, so a URL built around the name is read; a comment is not in
-    the tree."""
+BACKFILL_MODULE = "gcp.backfill_ticker"
+BACKFILL_MODULE_PATH = "gcp/backfill_ticker.py"
+
+
+def backfill_dispatch_lines(src: str, rel: str = "") -> list[int]:
+    """The lines of a source text, checked as the file `rel`, that could
+    start the backfill-ticker job:
+
+    - a string constant outside docstrings that contains the job's name (the
+      literal parts of an f-string are string constants; a comment is not in
+      the tree),
+    - a string put together at run time (+, an f-string, .format, %, join, a
+      name the file gives a constant) that can spell the name with at least
+      BACKFILL_LITERAL_FLOOR of its characters from literal text, as the
+      replay scan above reads it,
+    - a string that names the job's module, by dotted name or by path,
+    - an import of the module (a relative one resolved against `rel`).
+    """
     tree = _replay_tree(src)
     docstrings = _docstring_nodes(tree)
-    return sorted(
-        n.lineno for n in ast.walk(tree)
-        if isinstance(n, ast.Constant) and isinstance(n.value, str)
-        and BACKFILL_JOB in n.value and id(n) not in docstrings)
+
+    def holds_the_name(node: ast.AST) -> bool:
+        return any(isinstance(c, ast.Constant) and isinstance(c.value, str) and BACKFILL_JOB in c.value
+                   for c in ast.walk(node))
+
+    lines = {n.lineno for n in ast.walk(tree)
+             if isinstance(n, ast.Constant) and id(n) not in docstrings and holds_the_name(n)}
+    lines |= {
+        n.lineno for n in _strings_matching(
+            tree, lambda r: _literal_cover(list(r), BACKFILL_JOB) >= BACKFILL_LITERAL_FLOOR)
+        if not holds_the_name(n)}
+    lines |= {
+        n.lineno for n in _strings_matching(
+            tree, lambda r: BACKFILL_MODULE in _as_text(r) or BACKFILL_MODULE_PATH in _as_text(r))}
+    package, _, leaf = BACKFILL_MODULE.rpartition(".")
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            if any(a.name == BACKFILL_MODULE or a.name.startswith(BACKFILL_MODULE + ".") for a in n.names):
+                lines.add(n.lineno)
+        elif isinstance(n, ast.ImportFrom):
+            module = _imported_module(rel, n)
+            if module == BACKFILL_MODULE or (module == package and any(a.name == leaf for a in n.names)):
+                lines.add(n.lineno)
+    return sorted(lines)
 
 
 def test_the_yahoo_archive_is_the_one_named_deleter():
@@ -1862,6 +2445,16 @@ def test_the_yahoo_archive_is_the_one_named_deleter():
     found = {_rel(p) for p in _py_files(SCAN_ROOTS)
              if holds_variable_table_write(p.read_text(errors="ignore"))}
     assert found == VARIABLE_TABLE_WRITERS, sorted(found ^ VARIABLE_TABLE_WRITERS)
+
+    # the same shape with the statement put together another way (review, 2026-11-14)
+    names = 'TABLES = {"market_data_intraday": "archive"}\nfor t in TABLES:\n    '
+    for statement in ('execute_sql(f"DELETE FROM {t} WHERE x = 1")',
+                      'execute_sql("DELETE FROM {} WHERE x = 1".format(t))',
+                      'execute_sql("DELETE FROM %s WHERE x = 1" % t)',
+                      'execute_sql("TRUNCATE TABLE " + t)'):
+        assert holds_variable_table_write(names + statement), statement
+    assert not holds_variable_table_write(names + 'query(f"SELECT count(*) FROM {t}")')
+    assert not holds_variable_table_write('for t in TABLES:\n    execute_sql(f"DELETE FROM {t}")')
 
     import scripts.archive_yahoo_data as a
 
@@ -1903,7 +2496,7 @@ def test_no_code_dispatches_backfill_ticker():
     own = "gcp/backfill_ticker.py"
     offenders = {}
     for p in _py_files(SCAN_ROOTS):
-        lines = backfill_dispatch_lines(p.read_text(errors="ignore"))
+        lines = backfill_dispatch_lines(p.read_text(errors="ignore"), _rel(p))
         if lines and _rel(p) != own:
             offenders[_rel(p)] = lines
     assert offenders == {}, f"the backfill-ticker job is named in a string, as file: [lines]: {offenders}"
@@ -1920,3 +2513,42 @@ def test_the_dispatch_scan_reads_f_strings_and_skips_docstrings():
         '    """Does not start backfill-ticker."""\n'
         "    # backfill-ticker is run by hand\n"
         "    return 0\n") == []
+
+
+# The review's rows for the dispatch scan, 2026-11-14: (source, the file it
+# is checked as). Each of the first list returned no line from the first
+# form of the scan.
+_DISPATCH_REVIEW_MUST_FLAG = [
+    ('execute_cloud_run_job("backfill" + "-ticker", {})', "gcp/new_job.py"),
+    ('execute_cloud_run_job("{}-ticker".format("backfill"), {})', "gcp/new_job.py"),
+    ('k = "ticker"\nexecute_cloud_run_job(f"backfill-{k}", {})', "gcp/new_job.py"),
+    ('execute_cloud_run_job(f"backfill-{kind}", {})', "gcp/new_job.py"),
+    ('subprocess.run(["python", "-m", "gcp.backfill_ticker"])', "scripts/new_script.py"),
+    ('subprocess.run(["python", "gcp/backfill_ticker.py"])', "scripts/new_script.py"),
+    ('subprocess.run(["python", os.path.join("gcp", "backfill_ticker.py")])', "scripts/new_script.py"),
+    ("from gcp.backfill_ticker import run\nrun()", "scripts/new_script.py"),
+    ("import gcp.backfill_ticker as bt\nbt.main()", "scripts/new_script.py"),
+    ("from gcp import backfill_ticker\nbackfill_ticker.run()", "scripts/new_script.py"),
+    ("from . import backfill_ticker\nbackfill_ticker.run()", "gcp/new_job.py"),
+    ("from .backfill_ticker import run\nrun()", "gcp/new_job.py"),
+]
+_DISPATCH_REVIEW_MUST_IGNORE = [
+    # another module's function of the same name, and another script
+    ("from gcp.fetchers.backfill_daily_indicators import backfill_ticker", "gcp/new_job.py"),
+    ('subprocess.run(["python", "-m", "scripts.deep_backfill_ticker", t])', "scripts/new_script.py"),
+    ("from .backfill_ticker import run\nrun()", "scripts/new_script.py"),
+    ("log = logging.getLogger('backfill_and_replay')", "scripts/backfill_and_replay.py"),
+    ('log.info(f"{job} finished for {d}")', "scripts/new_script.py"),
+    ('execute_cloud_run_job("backfill-daily-indicators", {})', "gcp/new_job.py"),
+]
+
+
+def test_the_dispatch_scan_reads_built_names_and_the_module_itself():
+    """The job can be started without its name in one literal: the name put
+    together with +, .format or an f-string, the module run with -m or by
+    its path, and the module imported and run in process."""
+    missed = [(src, rel) for src, rel in _DISPATCH_REVIEW_MUST_FLAG
+              if not backfill_dispatch_lines(src, rel)]
+    assert missed == [], missed
+    caught = {(src, rel): backfill_dispatch_lines(src, rel) for src, rel in _DISPATCH_REVIEW_MUST_IGNORE}
+    assert {k: v for k, v in caught.items() if v} == {}
