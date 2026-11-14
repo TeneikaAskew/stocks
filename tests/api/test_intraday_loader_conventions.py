@@ -117,7 +117,7 @@ def test_chart_endpoint_opens_at_0930_for_both_conventions(client, monkeypatch, 
         return rows[(rows["ts"] >= lo) & (rows["ts"] < hi)].reset_index(drop=True)
 
     monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
-    monkeypatch.setattr(main_module, "query_to_dataframe", fake_query)
+    monkeypatch.setattr(main_module, "_bars_query", fake_query)
     r = client.get("/api/market/data/SPY/20260924", params={"end_time": "09:30"})
     assert r.status_code == 200, r.text
     last = r.json()["candlestick"][-1]["time"]
@@ -210,7 +210,7 @@ def test_a_month_load_excludes_the_prior_months_spill(client, monkeypatch):
         return rows[(rows["ts"] >= lo) & (rows["ts"] < hi)].reset_index(drop=True)
 
     monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
-    monkeypatch.setattr(main_module, "query_to_dataframe", fake_query)
+    monkeypatch.setattr(main_module, "_bars_query", fake_query)
     df = main_module._load_date_data("spy", "202609")
     assert df.index.min() == pd.Timestamp("2026-09-01 04:00")
     assert (df.index.month == 9).all()
@@ -283,7 +283,7 @@ def test_a_single_date_load_excludes_the_prior_sessions_spill(monkeypatch):
         return rows[(rows["ts"] >= lo) & (rows["ts"] < hi)].reset_index(drop=True)
 
     monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
-    monkeypatch.setattr(main_module, "query_to_dataframe", fake_query)
+    monkeypatch.setattr(main_module, "_bars_query", fake_query)
     df = main_module._load_date_data("spy", "20260115")
     assert df.index.min() == pd.Timestamp("2026-01-15 04:00")
     assert df.index.max() == pd.Timestamp("2026-01-15 20:00")
