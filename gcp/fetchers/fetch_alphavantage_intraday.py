@@ -626,7 +626,14 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     df['ts'] = eastern_index_to_utc(df['ts'])
     df = df.drop_duplicates(subset=['ticker', 'interval', 'ts'])
     session = utc_to_eastern_naive(df['ts']).dt.date
-    fetched = session.value_counts()
+    # Both sides of the guard are counted over the window and nothing else:
+    # ``held`` comes from the window's stored rows, so a refetched bar counts
+    # for its session only if its key is inside the window. A session's late
+    # bars past the window end are stored outside the snapshot; counted for the
+    # refetch alone they would stand in for a window bar the refetch lacks, and
+    # the swap would delete that bar.
+    in_window = (df['ts'] >= start) & (df['ts'] < end)
+    fetched = session[in_window].value_counts()
     # A held session is missing if the refetch lacks it, or returns fewer
     # bars than the distinct bars already held (a partial vendor month that
     # still touches every day, Codex P1 on #1185). REPLACE_SHORT_TOLERANCE

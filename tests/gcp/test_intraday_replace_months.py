@@ -991,6 +991,65 @@ def test_the_swap_spares_the_listed_keys():
     assert "w_spare" not in lock_p and "w_spare" not in del_p
 
 
+# -- written-out rows: a vendor month, and how the table holds it ------------
+
+FIELDS = ["open", "high", "low", "close", "volume"]
+
+
+def _bars(day: str, minutes, sym: str = "IWM") -> pd.DataFrame:
+    """fetch_month's shape for the listed Eastern minutes of *day* (minutes
+    since midnight; past 1439 is not used). Every bar's five fields differ from
+    every other bar's, and 09:30-09:59 carries the opening volume."""
+    minutes = list(minutes)
+    o = [200 + m / 100.0 for m in minutes]
+    return pd.DataFrame({
+        "ts": [pd.Timestamp(day) + pd.Timedelta(minutes=m) for m in minutes],
+        "open": o, "high": [x + 0.05 for x in o], "low": [x - 0.05 for x in o],
+        "close": [x + 0.01 for x in o],
+        "volume": [50000 + (m * 7919) % 9000 if 570 <= m < 600 else 100 + (m * 7919) % 900
+                   for m in minutes],
+        "ticker": sym, "interval": "1min", "data_source": "alphavantage",
+    })
+
+
+def _true_rows(v: pd.DataFrame) -> pd.DataFrame:
+    """The bars as a converting writer stores them: at their UTC instants."""
+    return v.assign(ts=v["ts"].dt.tz_localize("America/New_York").dt.tz_convert("UTC"))[["ts"] + FIELDS]
+
+
+def _label_rows(v: pd.DataFrame, lo_hour: int = 0, hi_hour: int = 24) -> pd.DataFrame:
+    """The bars of Eastern hours [lo, hi) as the legacy writers stored them:
+    the Eastern clock stamped as UTC."""
+    hour = v["ts"].dt.hour
+    w = v[(hour >= lo_hour) & (hour < hi_hour)]
+    return w.assign(ts=w["ts"].dt.tz_localize("UTC"))[["ts"] + FIELDS]
+
+
+def _replace(stored: pd.DataFrame, vendor: pd.DataFrame, sym: str, y: int, m: int,
+             commit: bool, swap=None):
+    """replace_month over written-out rows. *stored* is the table (any range);
+    the snapshot and the re-read under the lock see its rows of the month's
+    window. Returns (result, the swap mock). The default swap runs verify()
+    as the real one does and reports every unspared window row deleted."""
+    start, end = fai.month_replace_window(y, m)
+    stored = stored.sort_values("ts").reset_index(drop=True)
+    window = stored[(stored["ts"] >= start) & (stored["ts"] < end)].reset_index(drop=True)
+
+    def default_swap(df, table, key, ts_col, w_start, w_end, **kw):
+        if kw.get("verify"):
+            kw["verify"](object())
+        held_back = set(kw.get("spare_ts") or ())
+        in_range = stored[(stored["ts"] >= w_start) & (stored["ts"] < w_end)]
+        return int((~in_range["ts"].isin(held_back)).sum()), len(df)
+
+    with patch.object(fai, "_stored_window_rows", return_value=window.copy()), \
+         patch.object(fai, "_held_session_dates",
+                      side_effect=lambda *a, **k: fai._placed_session_counts(window)), \
+         patch.object(fai, "fetch_month", return_value=(vendor.copy(), fai.FETCH_OK)), \
+         patch.object(fai, "replace_rows_in_window", side_effect=swap or default_swap) as rep:
+        return fai.replace_month(sym, y, m, "k", commit=commit), rep
+
+
 # -- Design 2: the snapshot is one strict read of the window's rows ----------
 
 
@@ -1038,3 +1097,23 @@ def test_held_session_dates_is_unchanged():
     with patch.object(fai, "query_to_dataframe_strict", side_effect=read):
         assert fai._held_session_dates("SPY", start, end) == {date(2026, 9, 22): 961}
     assert len(reads) == 1 and reads[0].startswith("SELECT ts, volume FROM market_data_intraday")
+
+
+# -- Design 3: both sides are counted over the window and nothing else -------
+
+
+@pytest.mark.parametrize("commit", [False, True])
+def test_a_returned_late_bar_does_not_stand_in_for_a_missing_window_bar(commit):
+    """2018-02-28 holds 09:30, 20:59 and 21:04 Eastern. The first two lie in
+    February's window; 21:04 is 2018-03-01 02:04Z, past its end. A refetch with
+    20:59 and 21:04 but no 09:30 holds one bar of the window's two. Counting
+    the late bar for the session read two against two, and the swap deleted
+    09:30."""
+    v = _bars("2018-02-28", [570, 20 * 60 + 59, 21 * 60 + 4], "SPY")
+    stored = _true_rows(v)
+    start, end = fai.month_replace_window(2018, 2)
+    assert list(stored["ts"] < end) == [True, True, False]
+    r, swap = _replace(stored, v[v["ts"].dt.hour >= 20], "SPY", 2018, 2, commit)
+    assert r["status"] == fai.REPLACE_INCOMPLETE
+    assert r["missing"] == ["2018-02-28 (1/2)"]
+    swap.assert_not_called()
