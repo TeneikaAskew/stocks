@@ -46,6 +46,17 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
 
+class ErrorDetail(ApiModel):
+    """The body of a 404 or 503 from the bar and replay routes: one string.
+
+    The frontend tells the cases apart by how `detail` starts (`No 1-min
+    bars for `, `No daily bar for `, `Invalid date `, `Could not read `),
+    never by the status alone.
+    """
+
+    detail: str
+
+
 # ── live.py ──────────────────────────────────────────────────────────────
 
 
@@ -373,9 +384,9 @@ class ReferenceResponse(ApiModel):
     high: float
     low: float
     close: float
-    # Absent on the GCS branch; present on AlphaVantage and Cloud SQL.
+    # Always "cloud_sql" from the table; absent on the local-dev bucket branch.
     source: Optional[str] = None
-    # Present on the Cloud SQL branch only.
+    # Present from the table only; absent on the local-dev bucket branch.
     stale_days: Optional[int] = None
     week: Optional[WeekRange] = None
 
