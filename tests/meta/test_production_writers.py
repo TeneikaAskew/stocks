@@ -1004,3 +1004,77 @@ def test_every_replay_entry_point_is_registered():
         "premarket-brief", "insight-pipeline", "insight-discord-push",
         "signal-replay", "validate-brief", "backtest",
     }
+
+
+# The three tests that hold today's tree to the rule.
+
+def test_replay_paths_reach_no_vendor_or_bucket_bar_fetch():
+    """From every registered replay entry point, nothing reachable inside
+    its file holds an AlphaVantage TIME_SERIES request, calls a function
+    that holds one, reads the bucket outside the two local-dev functions,
+    names the backfill-ticker job in a string, or (under platform/api) uses
+    DataLoader outside REPLAY_EXEMPT.
+
+    Before FEAT-REPLAY-001 this failed at eleven places: Discord /replay and
+    scripts/backfill_and_replay.py dispatched backfill-ticker, the reference
+    route called AlphaVantage and listed the bucket, and the bar loader fell
+    through to bucket parquet."""
+    sources = _replay_sources()
+    holders = vendor_holders(sources)
+    offenders = [
+        o for rel, entries in REPLAY_PATH.items()
+        for o in replay_reach_offenders(rel, sources[rel], entries, holders, REPLAY_EXEMPT)
+    ]
+    assert offenders == [], (
+        "a replay path fetches bars, or can start the job that does:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_local_dev_bucket_reads_sit_behind_the_unconfigured_check():
+    """The bucket is read for bars only when Cloud SQL is known to be not
+    configured. The API tests prove the same at run time."""
+    sources = _replay_sources()
+    api_files = {rel: src for rel, src in sources.items() if rel.startswith("platform/api/")}
+    offenders = [o for rel, src in api_files.items() for o in local_dev_offenders(rel, src)]
+    assert offenders == [], "\n  ".join(offenders)
+
+    # A tree without the two functions, or without a call of them, must not pass.
+    called = {
+        _call_name(n)
+        for src in api_files.values()
+        for n in ast.walk(_replay_tree(src))
+        if isinstance(n, ast.Call)
+    }
+    assert set(LOCAL_DEV_FUNCS) <= called, sorted(set(LOCAL_DEV_FUNCS) - called)
+    defined = _defined_functions(sources["platform/api/main.py"])
+    assert set(LOCAL_DEV_FUNCS) <= defined, sorted(set(LOCAL_DEV_FUNCS) - defined)
+
+
+def test_the_only_replay_exemption_is_the_style_history_loader():
+    """One exemption, pinned from every side, so it cannot grow and cannot
+    outlive the call it is for: the second spec (the strict bar loader) has
+    to delete the entry when it changes `_style_history_bar_loader`."""
+    rel, fn = "platform/api/routers/backtest.py", "_style_history_bar_loader"
+    assert list(REPLAY_EXEMPT) == [(rel, fn)]
+
+    sources = _replay_sources()
+    src = sources[rel]
+    tree = _replay_tree(src)
+    nodes = _functions_by_name(tree).get(fn)
+    assert nodes, f"{rel} no longer defines {fn}: delete the exemption"
+
+    # reached from mine_and_validate, and from no other registered entry
+    assert fn in _reached(tree, ("mine_and_validate",))
+    others = tuple(e for e in REPLAY_PATH[rel] if e != "mine_and_validate")
+    assert others, "the file's other registered entries"
+    assert fn not in _reached(tree, others)
+
+    # it still holds the call the exemption is for
+    assert any(isinstance(n, ast.Call) and _call_name(n) == "DataLoader"
+               for nd in nodes for n in ast.walk(nd)), (
+        f"{fn} no longer calls DataLoader: delete the exemption")
+
+    # and with the exemption emptied the reach test fails, naming it alone
+    exposed = replay_reach_offenders(rel, src, REPLAY_PATH[rel], vendor_holders(sources), {})
+    assert exposed, "emptying REPLAY_EXEMPT changes nothing: the exemption is dead"
+    assert all(f" in {fn}: " in o for o in exposed), exposed
