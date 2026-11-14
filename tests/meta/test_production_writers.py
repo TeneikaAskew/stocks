@@ -1478,3 +1478,29 @@ def test_the_intraday_writer_scan_reads_partitions_and_refuses_unparseable_text(
         'upsert_dataframe(df, "public.market_data_intraday", ["ticker", "interval", "ts"])')
     with pytest.raises(SyntaxError):
         intraday_write_sites("def (:")
+
+
+def test_only_the_two_fetchers_write_one_minute_bars():
+    """Before FEAT-DATA-001 this failed at gcp/backfill_ticker.py (the
+    backfill-ticker job upserted whole months it fetched itself) and at
+    gcp/migrate_to_gcp.py (a DELETE and a bulk insert from a local parquet,
+    not one transaction). A third writer is listed here by a spec, with what
+    starts it, or it is not written."""
+    offenders = {}
+    for p in _py_files(SCAN_ROOTS):
+        sites = intraday_write_sites(p.read_text(errors="ignore"))
+        if sites and _rel(p) not in SANCTIONED_INTRADAY_WRITERS:
+            offenders[_rel(p)] = sites
+    assert offenders == {}, (
+        "writes of market_data_intraday outside the two fetcher modules, as "
+        f"file: [(line, what)]: {offenders}")
+
+
+def test_sanctioned_intraday_writers_still_write():
+    """Keep the list honest from the other side: a file that moved, or that
+    stopped writing the table, is taken off the list, not left covering for
+    whatever is added to it next."""
+    for rel in sorted(SANCTIONED_INTRADAY_WRITERS):
+        assert (REPO / rel).exists(), rel
+        assert intraday_write_sites((REPO / rel).read_text(errors="ignore")), (
+            f"{rel} is a sanctioned writer of market_data_intraday and holds no write of it")
