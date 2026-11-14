@@ -18,8 +18,9 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import NamedTuple, Optional, Sequence, Tuple
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -559,6 +560,105 @@ def _stored_window_rows(symbol: str, start: datetime, end: datetime) -> pd.DataF
           FROM market_data_intraday
          WHERE ticker = :t AND interval = '1min' AND ts >= :s AND ts < :e
         """, {'t': symbol, 's': start, 'e': end}, timeout_s=120)
+
+
+def _eastern_midnight_utc(year: int, month: int) -> pd.Timestamp:
+    """(year, month)-01 00:00 Eastern, as a UTC instant."""
+    return eastern_index_to_utc(pd.DatetimeIndex([pd.Timestamp(year=year, month=month, day=1)]))[0]
+
+
+_BAR_FIELDS = ('open', 'high', 'low', 'close', 'volume')
+
+
+class StoredClassification(NamedTuple):
+    """What a month's window holds, judged against its refetch."""
+
+    held: dict            # {Eastern session date: bars the refetch must return}, weekdays only
+    rows: int             # stored rows of the window
+    label_dropped: int    # rows read as Eastern labels that lost their Eastern minute
+    label_copies: int     # label copies not counted as held
+    by_utc_hour: dict     # {UTC hour of the key: label_dropped + label_copies rows}
+    carry_in_keys: list   # keys of the previous month's late bars, ascending
+
+
+def classify_stored_rows(stored: pd.DataFrame, refetch: pd.DataFrame,
+                         year: int, month: int) -> StoredClassification:
+    """Which stored rows of month (year, month)'s window the refetch must
+    return, decided from the refetch itself. Pure: nothing is read.
+
+    *stored* is the window's rows (``ts``, ``open``, ``high``, ``low``,
+    ``close``, ``volume``); *refetch* is the vendor month with its naive
+    Eastern stamp in ``ts_et`` beside the UTC key in ``ts``.
+
+    A **label copy** is a stored row for which the refetch holds a bar whose
+    naive Eastern time is the row's UTC clock reading and whose five fields all
+    equal the row's. The comparison is exact and a missing field never equals.
+
+    Rows are placed once over the whole window by stored_intraday_to_eastern,
+    as _held_session_dates places them, one row kept per Eastern minute. Each
+    row then takes the first class that applies:
+
+      1. **carry-in**: before the month's Eastern midnight and not a label
+         copy. Read as a true instant it is a late bar of the previous month's
+         last session. Not counted here, and the swap spares it.
+      2. **lost its Eastern minute** to another row. Counted as
+         ``label_dropped`` if it was read as an Eastern label; a true-read
+         duplicate is in neither count (the swap re-inserts a returned bar at
+         that key).
+      3. **discounted label copy**: read as a true instant, at a key no
+         refetched bar has, and a label copy. Its five fields are those of a
+         bar the refetch returns, which the swap inserts at its true key.
+      4. **held**: counted toward its Eastern date.
+
+    A row read as an Eastern label that kept its minute is always held, so a
+    month stored only under the label keeps the floor it has today.
+    """
+    inst = pd.DatetimeIndex(pd.to_datetime(stored['ts']))
+    if inst.tz is None:
+        inst = inst.tz_localize('UTC')   # pg8000 TIMESTAMPTZ read in a UTC session
+    inst = inst.tz_convert('UTC')
+    order = np.argsort(inst.asi8, kind='stable')
+    inst = inst[order]
+    rows = stored.iloc[order].reset_index(drop=True)
+    if not len(rows):
+        return StoredClassification({}, 0, 0, 0, {}, [])
+
+    idx, keep = stored_intraday_to_eastern(inst, rows['volume'])
+    keep = np.asarray(keep, dtype=bool)
+    as_true = np.asarray(idx == utc_to_eastern_naive(inst))
+
+    # The key each refetched bar would have under the Eastern label: its
+    # Eastern clock stamped as UTC, which is what the legacy writers stored.
+    # Rebuilt here on purpose, to find their rows; it is never written.
+    label_key = pd.DatetimeIndex(refetch['ts_et']).tz_localize('UTC')
+    by_label = pd.DataFrame({f: pd.to_numeric(refetch[f]).to_numpy(dtype='float64')
+                             for f in _BAR_FIELDS}, index=label_key)
+    if by_label.index.has_duplicates:
+        raise ValueError("classify_stored_rows: the refetch holds one Eastern minute twice")
+    twin = by_label.reindex(inst)
+    copy = np.ones(len(rows), dtype=bool)
+    for f in _BAR_FIELDS:
+        own = pd.to_numeric(rows[f]).to_numpy(dtype='float64')
+        # NaN == NaN is False: a missing field, or no bar at that minute, never equals.
+        copy &= own == twin[f].to_numpy()
+
+    returned = np.asarray(inst.isin(pd.DatetimeIndex(refetch['ts'])))
+    carry = np.asarray(inst < _eastern_midnight_utc(year, month)) & ~copy
+    label_dropped = ~keep & ~carry & ~as_true
+    discounted = keep & ~carry & as_true & ~returned & copy
+    counted = keep & ~carry & ~discounted
+
+    days = pd.Series(idx[counted].date).value_counts()
+    uncounted = label_dropped | discounted
+    hours = pd.Series(inst.hour[uncounted]).value_counts().sort_index()
+    return StoredClassification(
+        held={d: int(n) for d, n in days.items() if d.weekday() < 5},
+        rows=len(rows),
+        label_dropped=int(label_dropped.sum()),
+        label_copies=int(discounted.sum()),
+        by_utc_hour={int(h): int(n) for h, n in hours.items()},
+        carry_in_keys=list(inst[carry]),
+    )
 
 
 def _held_digest(symbol: str, start: datetime, end: datetime, conn=None) -> str:

@@ -1025,6 +1025,42 @@ def _label_rows(v: pd.DataFrame, lo_hour: int = 0, hi_hour: int = 24) -> pd.Data
     return w.assign(ts=w["ts"].dt.tz_localize("UTC"))[["ts"] + FIELDS]
 
 
+def _refetch(v: pd.DataFrame) -> pd.DataFrame:
+    """The refetch as replace_month hands it to classify_stored_rows: the
+    vendor's naive Eastern stamp kept as ``ts_et`` beside the UTC key."""
+    return v.assign(ts_et=v["ts"], ts=fai.eastern_index_to_utc(v["ts"]))
+
+
+def _iwm_session() -> pd.DataFrame:
+    """One vendor session shaped like IWM 2026-04-10 (spec, Problem 1): 842
+    bars, a thin premarket (57, 43, 46 and 60 bars in the hours 04 to 07),
+    every minute from 08:00 to 16:00, then 16:01 to 18:35."""
+    minutes = (list(range(240, 240 + 57)) + list(range(300, 300 + 43))
+               + list(range(360, 360 + 46)) + list(range(420, 480))
+               + list(range(480, 961)) + list(range(961, 961 + 155)))
+    assert len(minutes) == 842
+    return _bars("2026-04-10", minutes)
+
+
+def _iwm_stored(v: pd.DataFrame, copies: bool = True) -> pd.DataFrame:
+    """How the table holds that session after both writers: the 842 bars at
+    their true keys; the 206 premarket bars again under the Eastern label, at
+    UTC 04:00-07:59; and, with *copies*, the Eastern-labelled rows of the
+    08:00-10:59 bars that the true-UTC rewrite never overwrote, because no
+    true bar uses their key (34 of them)."""
+    true = _true_rows(v)
+    parts = [true, _label_rows(v, 4, 8)]
+    if copies:
+        later = _label_rows(v, 8, 11)
+        parts.append(later[~later["ts"].isin(true["ts"])])
+    out = pd.concat(parts)
+    assert not out["ts"].duplicated().any()
+    return out.sort_values("ts").reset_index(drop=True)
+
+
+IWM_DAY = date(2026, 4, 10)
+
+
 def _replace(stored: pd.DataFrame, vendor: pd.DataFrame, sym: str, y: int, m: int,
              commit: bool, swap=None):
     """replace_month over written-out rows. *stored* is the table (any range);
@@ -1117,3 +1153,153 @@ def test_a_returned_late_bar_does_not_stand_in_for_a_missing_window_bar(commit):
     assert r["status"] == fai.REPLACE_INCOMPLETE
     assert r["missing"] == ["2018-02-28 (1/2)"]
     swap.assert_not_called()
+
+
+# -- Design 1 and 3: which stored rows count, decided from the refetch -------
+
+
+def test_classify_counts_the_measured_iwm_shape():
+    v = _iwm_session()
+    stored = _iwm_stored(v)
+    assert len(stored) == 842 + 206 + 34
+    c = fai.classify_stored_rows(stored, _refetch(v), 2026, 4)
+    assert c.held == {IWM_DAY: 842}
+    assert c.rows == 1082
+    assert c.label_dropped == 206
+    assert c.label_copies == 34
+    assert c.by_utc_hour == {4: 57, 5: 43, 6: 46, 7: 60, 8: 3, 9: 17, 10: 14}
+    assert c.carry_in_keys == []
+
+
+def _one_copy(stored: pd.DataFrame, v: pd.DataFrame) -> pd.Timestamp:
+    """The key of one of the 34 label copies: the first stored row of UTC
+    08:00-10:59 that is not at a refetched bar's true key."""
+    true_keys = set(_true_rows(v)["ts"])
+    hour = stored["ts"].dt.hour
+    return next(k for k in stored["ts"][(hour >= 8) & (hour < 11)] if k not in true_keys)
+
+
+@pytest.mark.parametrize("field", FIELDS)
+def test_a_row_equal_in_four_fields_of_five_is_counted(field):
+    """The comparison is exact and takes all five fields: the smallest change
+    to any one of them makes the row a bar of its own, which the refetch must
+    then return."""
+    v = _iwm_session()
+    stored = _iwm_stored(v)
+    at = stored["ts"] == _one_copy(stored, v)
+    stored.loc[at, field] = stored.loc[at, field] + (1 if field == "volume" else 0.0001)
+    c = fai.classify_stored_rows(stored, _refetch(v), 2026, 4)
+    assert c.label_copies == 33
+    assert c.held == {IWM_DAY: 843}
+
+
+@pytest.mark.parametrize("field", FIELDS)
+def test_a_null_field_never_equals(field):
+    """NULL in the stored row and in the refetched bar is not a match."""
+    v = _iwm_session()
+    stored = _iwm_stored(v).astype({f: "float64" for f in FIELDS})
+    key = _one_copy(stored, v)
+    stored.loc[stored["ts"] == key, field] = float("nan")
+    ref = _refetch(v).astype({f: "float64" for f in FIELDS})
+    ref.loc[ref["ts_et"] == key.tz_localize(None), field] = float("nan")
+    assert ref[field].isna().sum() == 1
+    c = fai.classify_stored_rows(stored, ref, 2026, 4)
+    assert c.label_copies == 33
+    assert c.held == {IWM_DAY: 843}
+
+
+def test_fields_stored_as_decimal_compare_as_numbers():
+    """A driver that hands the prices over as Decimal must not turn every
+    copy into a bar of its own (Decimal('205.1') != 205.1 in Python)."""
+    from decimal import Decimal
+    v = _iwm_session()
+    stored = _iwm_stored(v).astype({f: "object" for f in FIELDS})
+    for f in ("open", "high", "low", "close"):
+        stored[f] = [Decimal(repr(float(x))) for x in stored[f]]
+    stored["volume"] = [None if x is None else int(x) for x in stored["volume"]]
+    c = fai.classify_stored_rows(stored, _refetch(v), 2026, 4)
+    assert (c.label_copies, c.label_dropped, c.held) == (34, 206, {IWM_DAY: 842})
+
+
+def test_a_naive_stored_frame_classifies_like_an_aware_one():
+    """pg8000 can hand TIMESTAMPTZ back without a zone in a UTC session; the
+    resolver reads that as UTC and so does the classifier."""
+    v = _iwm_session()
+    stored = _iwm_stored(v)
+    naive = stored.assign(ts=stored["ts"].dt.tz_localize(None))
+    assert (fai.classify_stored_rows(naive, _refetch(v), 2026, 4)
+            == fai.classify_stored_rows(stored, _refetch(v), 2026, 4))
+
+
+def test_a_copy_at_a_key_the_refetch_returns_is_counted():
+    """The label row of the 08:00 bar sits at 08:00Z, the true key of the
+    04:00 bar, which the refetch returns. It is a label copy, but its key gets
+    a bar from the swap, so it stays counted: the minute is held and fetched."""
+    v = _iwm_session()
+    stored = _iwm_stored(v)
+    key = pd.Timestamp("2026-04-10 08:00", tz="UTC")
+    eight = _label_rows(v, 8, 9).iloc[0]
+    assert eight["ts"] == key and key in set(_true_rows(v)["ts"])
+    for f in FIELDS:
+        stored.loc[stored["ts"] == key, f] = eight[f]
+    # Without the 04:00Z label row no other stored row shares its Eastern minute.
+    stored = stored[stored["ts"] != pd.Timestamp("2026-04-10 04:00", tz="UTC")]
+    c = fai.classify_stored_rows(stored, _refetch(v), 2026, 4)
+    assert c.label_copies == 34
+    assert c.label_dropped == 205
+    assert c.held == {IWM_DAY: 842}
+
+
+def test_label_read_rows_count_as_today():
+    """A month held only under the Eastern label: every row is, by the
+    definition, a label copy, and every one counts (Design 3, Problem 3)."""
+    v = _bars("2026-04-10", range(240, 1201))
+    c = fai.classify_stored_rows(_label_rows(v), _refetch(v), 2026, 4)
+    assert c.held == {IWM_DAY: 961}
+    assert (c.rows, c.label_copies, c.label_dropped, c.by_utc_hour, c.carry_in_keys) == (961, 0, 0, {}, [])
+
+
+FEB_LATE = [pd.Timestamp("2018-03-01 02:04", tz="UTC"), pd.Timestamp("2018-03-01 03:10", tz="UTC"),
+            pd.Timestamp("2018-03-01 04:37", tz="UTC")]
+
+
+def _feb_late_and_march() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(stored, March's vendor month): February's bars of 21:04, 22:10 and
+    23:37 Eastern on the 28th, stored at their true keys, which lie in March's
+    window; and a full first session of March."""
+    late = _bars("2018-02-28", [21 * 60 + 4, 22 * 60 + 10, 23 * 60 + 37], "SPY")
+    march = _bars("2018-03-01", range(240, 1201), "SPY")
+    stored = pd.concat([_true_rows(late), _true_rows(march)]).reset_index(drop=True)
+    assert list(stored["ts"][:3]) == FEB_LATE
+    return stored, march
+
+
+def test_rows_before_the_months_eastern_midnight_are_carry_ins():
+    """March's carry strip is [03-01 02:00Z, 03-01 05:00Z). February's late
+    bars in it are not counted for March and are not uncounted either: the
+    04:37Z one loses its Eastern minute as a label of March 1 (how the dry run
+    came to print 0/2 and not 0/3) and is still a carry-in."""
+    stored, march = _feb_late_and_march()
+    c = fai.classify_stored_rows(stored, _refetch(march), 2018, 3)
+    assert c.carry_in_keys == FEB_LATE
+    assert c.held == {date(2018, 3, 1): 961}
+    assert (c.rows, c.label_dropped, c.label_copies, c.by_utc_hour) == (964, 0, 0, {})
+
+
+def test_a_true_read_row_that_lost_its_minute_is_not_uncounted():
+    """A label-verdict session plus the true-UTC 20:00 bar at 00:00Z the next
+    day: the label row keeps the minute. The true row is re-inserted at its
+    own key by the swap, so it is neither counted twice nor reported as a row
+    written back nowhere."""
+    v = _bars("2026-04-10", range(240, 1201))
+    spill = _true_rows(v[v["ts"] == pd.Timestamp("2026-04-10 20:00")])
+    assert list(spill["ts"]) == [pd.Timestamp("2026-04-11 00:00", tz="UTC")]
+    c = fai.classify_stored_rows(pd.concat([_label_rows(v), spill]), _refetch(v), 2026, 4)
+    assert c.held == {IWM_DAY: 961}
+    assert (c.rows, c.label_dropped, c.label_copies, c.by_utc_hour) == (962, 0, 0, {})
+
+
+def test_an_empty_window_classifies_as_nothing():
+    v = _iwm_session()
+    c = fai.classify_stored_rows(_true_rows(v).head(0), _refetch(v), 2026, 4)
+    assert c == fai.StoredClassification({}, 0, 0, 0, {}, [])
