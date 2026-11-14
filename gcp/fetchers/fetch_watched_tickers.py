@@ -65,9 +65,14 @@ class Config:
         if raw is None:
             return cls()
         try:
-            return cls(max_tickers=int(raw))
+            n = int(raw)
         except ValueError as e:
             raise ValueError(f'WATCHED_TICKERS_MAX must be an integer, got {raw!r}') from e
+        if n < 1:
+            # 0 would serve nothing yet never learn the eligible count, so
+            # the overflow of unserved tickers would go unreported.
+            raise ValueError(f'WATCHED_TICKERS_MAX must be at least 1, got {raw!r}')
+        return cls(max_tickers=n)
 
 
 # The strict reader's shape: query(sql, params, timeout_s=...)
@@ -175,8 +180,11 @@ def read_coverage(kept: list[str], query: Query | None = None) -> dict[str, Cove
     found: dict[str, Coverage] = {}
     for _, r in df.iterrows():
         t = r['ticker']
+        # bool_or over all-NULL data_source is NULL (None or NaN here); it
+        # reads False, never bool(nan), which is True.
+        flag = r['bootstrapped']
         found[t] = Coverage(t, int(r['bar_count']), _as_date(r['max_date']),
-                            bool(r['bootstrapped']))
+                            bool(pd.notna(flag) and flag))
     return {t: found.get(t, Coverage(t, 0, None, False)) for t in kept}
 
 
@@ -239,15 +247,10 @@ def tickers_with_session_bar(kept: list[str], fetch_date: date,
     return [t for t in kept if t in have]
 
 
-def compute_indicators(tickers: list[str], fetch_date: date) -> None:
-    """Indicators for the tickers that have the session bar, in order. Level
-    parameters are read once for the batch; a read failure raises."""
-    upsert_indicators(tickers, tickers_with_session_bar(tickers, fetch_date), fetch_date)
-
-
 def upsert_indicators(tickers: list[str], with_bar: list[str], fetch_date: date) -> None:
     """Indicators for ``with_bar`` (the ``tickers`` holding the session bar),
-    in order; ``run`` reads ``with_bar`` itself so each step names its phase."""
+    in order; ``run`` reads ``with_bar`` itself so each step names its phase.
+    Level parameters are read once for the batch; a read failure raises."""
     have = set(with_bar)
     skipped = [t for t in tickers if t not in have]
     if skipped:
@@ -378,7 +381,8 @@ def run(cfg: Config, *, today: date, now: datetime,
     set read failed, or any later phase raised (``session``, ``coverage``,
     ``backfill``, ``session_bars``, ``indicators``, ``ticker_info``,
     ``verify``): that is logged at ERROR and recorded as ``'error'`` with the
-    phase in the note. Examples of a phase failure: ``_run_backfill``'s
+    phase (and ``overflow=<n>`` when above zero) in the note and the rows the
+    backfill wrote before the failure in ``rows_written``. Examples of a phase failure: ``_run_backfill``'s
     RuntimeError for a missing Alpha Vantage key or an unconfigured Cloud SQL,
     ``LevelParamsUnavailable``, a failed strict read.
 
@@ -399,11 +403,6 @@ def run(cfg: Config, *, today: date, now: datetime,
         _record(started, 'success', items_total=0, note='non_session')
         return 0
 
-    if cfg.max_tickers == 0:
-        log.info("WATCHED_TICKERS_MAX=0; nothing to do")
-        _record(started, 'success', items_total=0, note='max=0')
-        return 0
-
     try:
         ws = read_watched_set(query, fetch_market_data.TICKERS, cfg.max_tickers)
     except SetReadError as e:
@@ -421,6 +420,7 @@ def run(cfg: Config, *, today: date, now: datetime,
         return 0
 
     n = len(kept)
+    rows_written = 0   # visible to the error branch: what was written before a failure
     try:
         coverages = _phase('coverage', read_coverage, kept, query=query)
         plan = _phase('coverage', plan_pulls, coverages, fetch_date)
@@ -430,7 +430,6 @@ def run(cfg: Config, *, today: date, now: datetime,
             if t not in planned:
                 done += 1
                 log.info("ticker=%s step=%s processed=%d/%d", t, 'bars_current', done, n)
-        rows_written = 0
         for (size, source), group in plan.items():
             rows_written += _phase('backfill', fetch_market_data._run_backfill,
                                    group, outputsize=size, data_source=source)
@@ -444,7 +443,8 @@ def run(cfg: Config, *, today: date, now: datetime,
         verdict = _phase('verify', verify_tickers, kept, fetch_date, now, query=query)
     except _PhaseError as e:
         log.exception("fetch-watched-tickers failed in phase %s", e.phase)
-        _record(started, 'error', items_total=n, note=str(e))
+        _record(started, 'error', items_total=n, rows_written=rows_written,
+                note=_note(str(e), overflow))
         return 2
 
     failed = verdict.failed

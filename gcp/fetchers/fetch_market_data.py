@@ -992,10 +992,17 @@ def _run_backfill(tickers: list | None = None, *,
 
     `outputsize` ('compact' | 'full'), with explicit `tickers`, plans every
     ticker at that size instead of consulting `_pick_backfill_outputsize`.
-    `data_source` is the label written on every upserted row.
+    `data_source` is the label written on every upserted row. Either one
+    without `tickers` (None or empty) raises ValueError: it would otherwise
+    apply to the whole earnings universe.
 
     Returns the number of rows passed to `upsert_dataframe` (conflict
     updates included); 0 when nothing was written."""
+    if not tickers and (outputsize is not None or data_source != 'av_daily_backfill'):
+        raise ValueError(
+            f"_run_backfill: outputsize={outputsize!r} and data_source={data_source!r} "
+            "need explicit tickers; without them they would apply to every backfill target")
+
     now_et = datetime.now(ET)
     today_et = now_et.date()
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')

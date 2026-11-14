@@ -79,6 +79,31 @@ def test_run_backfill_returns_zero_when_no_ticker_returns_data(av_stub):
     assert av_stub.frames == []
 
 
+@pytest.mark.parametrize('tickers', [None, []])
+@pytest.mark.parametrize('kwargs', [
+    {'data_source': 'av_watched_backfill'},
+    {'outputsize': 'compact'},
+    {'outputsize': 'full', 'data_source': 'av_watched_backfill'},
+])
+def test_run_backfill_keywords_without_tickers_raise(av_stub, monkeypatch, tickers, kwargs):
+    """Without explicit tickers the keywords would apply to the whole earnings
+    universe: refused before any target read or vendor call."""
+    def no_targets():
+        raise AssertionError('_backfill_targets must not be read')
+
+    monkeypatch.setattr(fmd, '_backfill_targets', no_targets)
+    with pytest.raises(ValueError, match='tickers'):
+        fmd._run_backfill(tickers, **kwargs)
+    assert av_stub.av_calls == [] and av_stub.frames == []
+
+
+def test_run_backfill_defaults_without_tickers_still_read_targets(av_stub, monkeypatch):
+    monkeypatch.setattr(fmd, '_backfill_targets', lambda: [('AAA', 0, None)])
+    assert fmd._run_backfill() == 3
+    assert fmd._run_backfill([], data_source='av_daily_backfill') == 3
+    assert av_stub.av_calls == [('AAA', 'full'), ('AAA', 'full')]
+
+
 # ---------------------------------------------------------------------------
 # Task 3: config, the set read with its exact overflow, the second-guard dedup
 # ---------------------------------------------------------------------------
@@ -116,6 +141,16 @@ def test_config_default_and_env_override():
 def test_config_non_integer_raises():
     with pytest.raises(ValueError):
         fwt.Config.from_env({'WATCHED_TICKERS_MAX': 'x'})
+
+
+@pytest.mark.parametrize('raw', ['0', '-3'])
+def test_config_below_one_raises_naming_the_variable(raw):
+    with pytest.raises(ValueError, match='WATCHED_TICKERS_MAX'):
+        fwt.Config.from_env({'WATCHED_TICKERS_MAX': raw})
+
+
+def test_config_one_is_valid():
+    assert fwt.Config.from_env({'WATCHED_TICKERS_MAX': '1'}).max_tickers == 1
 
 
 def test_set_read_passes_sql_params_and_timeout():
@@ -166,19 +201,111 @@ def test_set_read_malformed_frame_is_set_read_error(frame):
         fwt.read_watched_set(_Query(frame), [], 50)
 
 
+def test_set_read_differing_eligible_totals_is_set_read_error():
+    frame = pd.DataFrame({'ticker': ['AAA', 'BBB'], 'eligible_total': [2, 3]})
+    with pytest.raises(fwt.SetReadError, match='differs between rows'):
+        fwt.read_watched_set(_Query(frame), [], 50)
+
+
+@pytest.mark.parametrize('blank', ['', '   '])
+def test_set_read_empty_string_ticker_is_set_read_error(blank):
+    frame = pd.DataFrame({'ticker': ['AAA', blank], 'eligible_total': [2, 2]})
+    with pytest.raises(fwt.SetReadError, match='null or non-string ticker'):
+        fwt.read_watched_set(_Query(frame), [], 50)
+
+
+def test_set_read_bool_eligible_total_is_set_read_error():
+    frame = pd.DataFrame({'ticker': ['AAA'],
+                          'eligible_total': pd.Series([True], dtype=object)})
+    with pytest.raises(fwt.SetReadError, match='not an integer'):
+        fwt.read_watched_set(_Query(frame), [], 50)
+
+
 def test_dedup_second_guard_order_preserving():
     assert fwt.dedup(['aapl ', 'AAPL', 'SPY'], fmd.TICKERS) == ['AAPL']
     assert fwt.dedup(['B', 'A', 'B'], []) == ['B', 'A']
 
 
+# done_when item 6: identifiers that would let a per-user row reach the job.
+_FORBIDDEN_IDENTIFIERS = ('watchlists', 'watchlist_history', 'owner_uid',
+                          'owner_email', 'user_id', 'email')
+
+
+def _strip_comments(src: str) -> str:
+    """``src`` with every ``#`` comment removed; strings and docstrings stay."""
+    import io
+    import tokenize
+    toks = [t for t in tokenize.generate_tokens(io.StringIO(src).readline)
+            if t.type != tokenize.COMMENT]
+    return tokenize.untokenize(toks)
+
+
+def _select_list(sql: str) -> str:
+    """The outer SELECT list of ``sql``, up to ``FROM watched_tickers``."""
+    m = re.match(r'\s*SELECT\s+(.*?)\s+FROM\s+watched_tickers\b', sql, re.S | re.I)
+    assert m, f'set SQL does not select from watched_tickers: {sql}'
+    return m.group(1)
+
+
+def _privacy_scan(src: str, sql: str) -> list[str]:
+    """Every way ``src`` (the module text) and ``sql`` (its set query) break
+    done_when item 6; an empty list means the module passes."""
+    code = _strip_comments(src)
+    out = [f'identifier {name!r} appears'
+           for name in _FORBIDDEN_IDENTIFIERS
+           if re.search(rf'\b{name}\b', code)]
+    n = len(re.findall(r'\buser_watchlists\b', code))
+    if n != 1:
+        out.append(f'user_watchlists appears {n} times outside comments, not once')
+    exists = re.search(r'EXISTS \(SELECT 1 FROM user_watchlists u WHERE [^()]*\)', sql)
+    if sql.count('user_watchlists') != 1 or not exists:
+        out.append('the set SQL names user_watchlists outside its EXISTS predicate')
+    if n == 1 and exists and exists.group(0) not in code:
+        out.append('the one user_watchlists outside comments is not the set SQL predicate')
+    if len(re.findall(r'\bwatched_tickers\b', code)) != 1:
+        out.append('watched_tickers is read outside the set SQL')
+    items = [i.strip() for i in _select_list(sql).split(',')]
+    for item in items:
+        if item == 'w.ticker' or re.fullmatch(r'COUNT\(\*\) OVER \(\) AS eligible_total', item):
+            continue
+        out.append(f'the set SQL selects {item!r} from watched_tickers')
+    return out
+
+
 def test_set_sql_source_scan():
     sql = fwt.WATCHED_SET_SQL
     assert fwt.WATCHED_DATA_SOURCE == 'av_watched_backfill'
-    assert sql.count('user_watchlists') == 1
-    assert re.search(r'EXISTS \(SELECT 1 FROM user_watchlists[^)]*\)', sql)
-    assert not re.search(r'owner|uid|email', sql, re.I)
     assert sql.index('<> ALL(:exclude)') < sql.index('LIMIT')
-    assert not re.search(r'\bwatchlists\b', _MODULE_SRC.read_text())
+    assert _privacy_scan(_MODULE_SRC.read_text(), sql) == []
+
+
+@pytest.mark.parametrize('extra', [
+    'OWNER_SQL = "SELECT owner_uid FROM user_watchlists WHERE ticker = :t"',
+    'EMAILS = "SELECT email FROM users"',
+    'HIST = "SELECT ticker FROM watchlist_history"',
+    'X = "SELECT user_id FROM watchlists"',
+    'OWNER = "SELECT owner_email FROM accounts"',
+    'MORE = "SELECT w.ticker, w.created_at FROM watched_tickers w"',
+])
+def test_set_sql_source_scan_catches_a_later_owner_read(extra):
+    """The scan fails when a read of per-user data is added anywhere."""
+    src = _MODULE_SRC.read_text() + '\n' + extra + '\n'
+    assert _privacy_scan(src, fwt.WATCHED_SET_SQL) != []
+
+
+@pytest.mark.parametrize('sql', [
+    fwt.WATCHED_SET_SQL.replace('SELECT w.ticker,', 'SELECT w.ticker, w.created_at,'),
+    fwt.WATCHED_SET_SQL.replace('AND w.ticker <> ALL',
+                                'AND w.ticker IN (SELECT ticker FROM user_watchlists) '
+                                'AND w.ticker <> ALL'),
+])
+def test_set_sql_source_scan_catches_a_widened_set_query(sql):
+    assert _privacy_scan(_MODULE_SRC.read_text(), sql) != []
+
+
+def test_set_sql_source_scan_ignores_comments():
+    src = _MODULE_SRC.read_text() + '\n# owner_uid and email from user_watchlists\n'
+    assert _privacy_scan(src, fwt.WATCHED_SET_SQL) == []
 
 
 def test_resolve_session_holiday_is_none():
@@ -273,6 +400,29 @@ def test_read_coverage_builds_strict_query_and_fills_absent_tickers():
     assert list(out) == ['AAA', 'ZZZ']
 
 
+@pytest.mark.parametrize('flag', [None, float('nan')])
+def test_read_coverage_null_bootstrapped_is_false(flag):
+    """bool_or over rows whose data_source is all NULL is NULL; pandas may
+    hand it over as None or NaN, and either reads as not bootstrapped, so a
+    legacy null-sourced orphan keeps the other writer's stamp."""
+    frame = pd.DataFrame({'ticker': ['ORPH'], 'bar_count': [300],
+                          'max_date': [date(2026, 11, 12)],
+                          'bootstrapped': pd.Series([flag], dtype=object)})
+    cov = fwt.read_coverage(['ORPH'], query=_Query(frame))['ORPH']
+    assert cov.bootstrapped is False
+    assert fwt.stamp_for(cov) == 'av_daily_backfill'
+
+
+def test_read_coverage_float_column_with_nan_is_false():
+    """A mixed column (one True, one NULL) arrives as object or float: the
+    NULL row still reads False and the True row True."""
+    frame = pd.DataFrame({'ticker': ['A', 'B'], 'bar_count': [300, 300],
+                          'max_date': [date(2026, 11, 12)] * 2,
+                          'bootstrapped': [1.0, float('nan')]})
+    out = fwt.read_coverage(['A', 'B'], query=_Query(frame))
+    assert out['A'].bootstrapped is True and out['B'].bootstrapped is False
+
+
 def test_read_coverage_default_reader_is_the_strict_one(monkeypatch):
     seen = []
 
@@ -310,16 +460,14 @@ def test_tickers_with_session_bar_failure_propagates():
                                      query=_Query(exc=RuntimeError('db down')))
 
 
-def test_compute_indicators_skips_ticker_without_session_bar(monkeypatch):
+def test_upsert_indicators_skips_ticker_without_session_bar(monkeypatch):
     calls, lp_calls = [], []
     monkeypatch.setattr(fmd_mod := fwt.fetch_market_data, 'read_level_params_for_run',
                         lambda tickers, d: lp_calls.append((list(tickers), d))
                         or {'AAA': 'LP_A', 'CCC': 'LP_C'})
     monkeypatch.setattr(fmd_mod, 'compute_and_upsert_daily_indicators',
                         lambda t, d, *, level_params: calls.append((t, d, level_params)))
-    monkeypatch.setattr(fwt, 'tickers_with_session_bar',
-                        lambda kept, d: [t for t in kept if t != 'BBB'])
-    fwt.compute_indicators(['AAA', 'BBB', 'CCC'], date(2026, 11, 13))
+    fwt.upsert_indicators(['AAA', 'BBB', 'CCC'], ['AAA', 'CCC'], date(2026, 11, 13))
     assert [c[0] for c in calls] == ['AAA', 'CCC']
     assert calls == [('AAA', '2026-11-13', 'LP_A'), ('CCC', '2026-11-13', 'LP_C')]
     assert lp_calls == [(['AAA', 'CCC'], '2026-11-13')]
@@ -424,15 +572,6 @@ def test_verify_failed_read_propagates(which):
     q = _verify_query([], [], exc_on=sql)
     with pytest.raises(RuntimeError):
         fwt.verify_tickers(['A'], _FETCH, _NOW, query=q)
-
-
-def test_verify_never_calls_post_fetch_rows_check(monkeypatch):
-    def boom(*a, **k):
-        raise AssertionError('_verify_post_fetch_rows must not be called')
-
-    monkeypatch.setattr(fwt.fetch_market_data, '_verify_post_fetch_rows', boom)
-    q = _verify_query([('A', 1.0, 1.0, 300)], [('A', pd.Timestamp(_NOW))])
-    assert fwt.verify_tickers(['A'], _FETCH, _NOW, query=q).failed == {}
 
 
 # ---------------------------------------------------------------------------
@@ -637,14 +776,6 @@ def test_run_empty_set_is_success_with_zero_items(job):
     assert job.db.calls == [fwt.WATCHED_SET_SQL]   # no ANY(:kept) read on []
 
 
-def test_run_max_zero_keeps_nothing(job):
-    rc = _run(job, [], max_tickers=0)
-    assert rc == 0
-    r = _only_run(job)
-    assert r['status'] == 'success' and r['items_total'] == 0 and r['note'] == 'max=0'
-    assert job.av_calls == [] and job.upserts == 0
-
-
 def test_run_fifty_of_sixty_records_overflow_and_processes_fifty(job, caplog):
     names = [f'W{i:02d}' for i in range(50)]
     with caplog.at_level(logging.INFO):
@@ -692,13 +823,18 @@ def test_run_two_groups_sum_rows_written(job, monkeypatch):
 
     def fake_backfill(tickers, *, outputsize, data_source):
         calls.append((list(tickers), outputsize, data_source))
-        return {'full': 12, 'compact': 3}[outputsize]
+        n = {'full': 12, 'compact': 3}[outputsize]
+        for t in tickers:   # the pull lands the session's bars
+            job.db.seed(t, n, source=data_source)
+        return n
 
     monkeypatch.setattr(fmd, '_run_backfill', fake_backfill)
-    _run(job, ['NEW', 'BOOT'])
+    rc = _run(job, ['NEW', 'BOOT'])
     r = _only_run(job)
     assert sorted(calls) == sorted([(['NEW'], 'full', WATCHED), (['BOOT'], 'compact', WATCHED)])
     assert r['rows_written'] == 15
+    assert rc == 0
+    assert r['status'] == 'success' and r['items_failed'] == 0
 
 
 @pytest.mark.parametrize('day', [date(2026, 11, 26), date(2026, 11, 14)])  # Thanksgiving, Saturday
@@ -766,6 +902,36 @@ def test_run_failure_after_the_set_read_records_the_phase(job, monkeypatch, capl
     assert any(rr.levelno == logging.ERROR for rr in caplog.records)
 
 
+def test_run_phase_error_keeps_overflow_and_rows_written(job, monkeypatch):
+    """An indicators failure after the bars were written, with 60 of 61
+    eligible tickers served: the error row says overflow=1 and counts the
+    rows the backfill already wrote."""
+    def boom(*a, **k):
+        raise RuntimeError('levels unavailable')
+
+    monkeypatch.setattr(fmd, 'read_level_params_for_run', boom)
+    names = [f'W{i:02d}' for i in range(60)]
+    rc = _run(job, names, eligible_total=61, max_tickers=60)
+    assert rc == 2
+    r = _only_run(job)
+    assert r['status'] == 'error' and r['items_total'] == 60
+    assert r['note'].startswith('indicators: ')
+    assert 'overflow=1' in r['note'].split('; ')
+    assert r['rows_written'] == 60 * 30
+    assert job.upserts == 60
+
+
+def test_run_phase_error_before_any_write_records_zero_rows_and_no_overflow(job, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError('coverage read broke')
+
+    monkeypatch.setattr(fwt, 'read_coverage', boom)
+    assert _run(job, ['AAA']) == 2
+    r = _only_run(job)
+    assert r['rows_written'] == 0
+    assert r['note'] == 'coverage: coverage read broke'
+
+
 def test_run_record_failure_logs_error_and_keeps_exit_code(job, caplog):
     job.record_result = False
     with caplog.at_level(logging.ERROR):
@@ -776,6 +942,17 @@ def test_run_record_failure_logs_error_and_keeps_exit_code(job, caplog):
     job.av_raise = {'AAA'}
     with caplog.at_level(logging.ERROR):
         assert _run(job, ['AAA']) == 1
+
+
+def test_run_never_calls_post_fetch_rows_check(job, monkeypatch):
+    """The job verifies every ticker itself; the default list's row check
+    (which returns unchecked without SPY, IWM or QQQ) is never called."""
+    calls = []
+    monkeypatch.setattr(fmd, '_verify_post_fetch_rows',
+                        lambda *a, **k: calls.append((a, k)))
+    assert _run(job, ['AAA', 'BBB']) == 0
+    assert _only_run(job)['status'] == 'success'
+    assert calls == []
 
 
 def test_run_dedup_second_guard_drops_static_ticker(job):
@@ -806,6 +983,35 @@ def test_main_non_integer_ceiling_records_config_error(monkeypatch):
     assert job_name == 'fetch-watched-tickers' and status == 'error'
     assert kw['items_total'] == 0 and kw['note'].startswith('config:')
     assert av == []
+
+
+@pytest.mark.parametrize('raw', ['0', '-3'])
+def test_main_ceiling_below_one_records_config_error(monkeypatch, raw):
+    runs, av, set_reads = [], [], []
+    monkeypatch.setenv('WATCHED_TICKERS_MAX', raw)
+    monkeypatch.setattr(fwt, 'record_job_run',
+                        lambda *a, **k: runs.append((a, k)) or True)
+    monkeypatch.setattr(fwt, 'read_watched_set',
+                        lambda *a, **k: set_reads.append(a) or fwt.WatchedSet([], 0, 0))
+    monkeypatch.setattr(fmd, '_av_get_full_daily_series',
+                        lambda *a, **k: av.append(a) or pd.DataFrame())
+    monkeypatch.setattr(fwt, 'market_today', lambda: _SESSION)
+    assert fwt.main() == 2
+    assert len(runs) == 1
+    (job_name, _started, status), kw = runs[0]
+    assert job_name == 'fetch-watched-tickers' and status == 'error'
+    assert kw['items_total'] == 0
+    assert kw['note'].startswith('config:') and 'WATCHED_TICKERS_MAX' in kw['note']
+    assert set_reads == [] and av == []
+
+
+def test_main_ceiling_of_one_runs(monkeypatch):
+    seen = []
+    monkeypatch.setenv('WATCHED_TICKERS_MAX', '1')
+    monkeypatch.setattr(fwt, 'market_today', lambda: _SESSION)
+    monkeypatch.setattr(fwt, 'run', lambda cfg, *, today, now: seen.append(cfg) or 0)
+    assert fwt.main() == 0
+    assert seen == [fwt.Config(1)]
 
 
 def test_main_runs_with_market_today_and_started(monkeypatch):
