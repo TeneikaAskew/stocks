@@ -1124,7 +1124,23 @@ def is_process_file(path: str, trees=()) -> bool:
             or path in SOURCE_REVIEW_INPUTS or source_import_shadow(path, trees=trees)
             or path in RENDERER_FILES or path == "tests/scripts/measure_inventory_render.py"
             or path.startswith(LOCAL_SKILLS) or path.startswith((".claude/", ".githooks/"))
-            or path.rsplit("/", 1)[-1] in ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md"))
+            or path.rsplit("/", 1)[-1] in ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md") or is_pytest_config(path)
+            or is_suite_path_input(path))
+# pytest takes its options (`addopts = --co` runs nothing and passes) from the first of these files in the
+# gate suites' directory or a parent up to the checkout (FEAT-CICD-001 Part A pin prerequisite)
+PYTEST_CONFIG_NAMES = ("pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg", "pyproject.toml")
+
+
+def is_pytest_config(path: str) -> bool:
+    return any(path == folder + name for folder in ("", "tests/", "tests/scripts/") for name in PYTEST_CONFIG_NAMES)
+
+
+def is_suite_path_input(path: str) -> bool:
+    """pytest reads the worker count of `-n 4` as a path when it locates its config, so anything at `4` (a folder
+    holding a config file, or a link to one) sets the four-worker suite's options; a root `__init__.py` makes the
+    checkout a package that both suites import (FEAT-CICD-001 Part A prerequisite, revision 2)."""
+    worker_path = SUITE_WORKERS[1]
+    return path in ("__init__.py", worker_path) or path.startswith(worker_path + "/")
 # The files the gate runs from: no change may delete one, whatever its branch, or the
 # base's copy judges the deletion green and every later PR runs without a gate.
 SUITE = "tests/scripts/test_spec_gate.py"
@@ -1143,6 +1159,9 @@ SOURCE_IMPORT_NAMES = frozenset(sys.stdlib_module_names) | {
     "sitecustomize", "usercustomize", "yaml", "_yaml", "pytest", "_pytest",
     "pluggy", "iniconfig", "py", "pygments", "packaging", "exceptiongroup",
     "tomli", "colorama", "_distutils_hack", "cython_runtime", "conftest",
+    # pytest-xdist and what it imports when found (worker titles, CPU count), shadowed from the root
+    # even on a serial run once the plugin is installed (FEAT-CICD-001 Part A pin prerequisite)
+    "xdist", "execnet", "setproctitle", "psutil",
 }
 SOURCE_IMPORT_SUFFIXES = tuple(dict.fromkeys((".py", ".pyc", ".pyw", ".so", ".pyd",
                                              *importlib.machinery.EXTENSION_SUFFIXES)))
