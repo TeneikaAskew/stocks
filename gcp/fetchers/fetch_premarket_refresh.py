@@ -43,6 +43,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+from lib.eastern_time import market_today
 
 log = logging.getLogger(__name__)
 
@@ -384,7 +385,7 @@ def main():
     args = parser.parse_args()
 
     target = (datetime.strptime(args.date, '%Y-%m-%d').date()
-              if args.date else date.today())
+              if args.date else market_today())
 
     api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     if not api_key:

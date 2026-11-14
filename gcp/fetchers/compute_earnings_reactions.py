@@ -36,6 +36,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+from lib.eastern_time import market_today
 from gcp.database import upsert_dataframe, query_to_dataframe, is_cloud_sql_configured
 from lib.logging_config import setup_logging
 
@@ -943,8 +944,7 @@ def _resolve_scope(cli_scope=None) -> str:
     env = _os.environ.get('PIPELINE_SCOPE', '').strip().lower()
     if env in ('daily', 'weekly'):
         return env
-    from datetime import datetime as _dt
-    return 'weekly' if _dt.now().weekday() == 6 else 'daily'
+    return 'weekly' if market_today().weekday() == 6 else 'daily'
 
 
 def _filter_already_have_reactions(
