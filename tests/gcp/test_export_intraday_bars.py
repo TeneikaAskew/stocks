@@ -1405,3 +1405,191 @@ def test_the_export_runs_when_a_ticker_failed(monkeypatch, caplog):
     assert len(calls) == 1
     assert code == 1
     assert [m for m in _messages(caplog) if m.startswith("bars export:")]
+
+
+# -- Task 7: --export-bars-from -------------------------------------------------
+
+
+def history(monkeypatch, argv, *, configured=True, bucket="b", export=None, env=None):
+    """Run fai.main() with --export-bars-from arguments: (exit code, the
+    export_window calls). Asking for an API key or fetching fails the test."""
+    def no_fetch(*_args, **_kwargs):
+        pytest.fail("--export-bars-from fetches nothing")
+
+    code, calls = None, None
+    monkeypatch.setattr(fai, "get_api_keys", no_fetch)
+    if bucket is None:
+        monkeypatch.delenv("GCS_BUCKET", raising=False)
+    else:
+        monkeypatch.setenv("GCS_BUCKET", bucket)
+
+    recorded: list = []
+
+    def recorder(tickers, months, **kwargs):
+        assert kwargs == {}
+        recorded.append((tickers, months))
+        if isinstance(export, BaseException):
+            raise export
+        return {"months": len(tickers) * len(months), "rows": 1000, "seconds": 1.5}
+
+    monkeypatch.setattr(fai, "resolve_all_symbols", no_fetch)
+    monkeypatch.setattr(fai, "process_symbol", no_fetch)
+    monkeypatch.setattr(fai, "is_cloud_sql_configured", lambda: configured)
+    monkeypatch.setattr(fai, "market_today", lambda: date(2026, 10, 31))
+    monkeypatch.setattr(xb, "export_window", recorder)
+    for name in ("CLOUD_RUN_TASK_COUNT", "CLOUD_RUN_TASK_INDEX", "INTRADAY_BARS_EXPORT"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in (env or {}).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(sys, "argv", ["fetch_alphavantage_intraday", *argv])
+    with pytest.raises(SystemExit) as stop:      # every list mode ends in sys.exit
+        fai.main()
+    return stop.value.code, recorded
+
+
+@pytest.mark.parametrize("extra,tickers", [
+    ([], ("SPY", "QQQ", "IWM")),
+    (["--symbol=ALL"], ("SPY", "QQQ", "IWM")),
+    (["--symbol", "SPY"], ("SPY",)),
+    (["--symbol", "spy"], ("SPY",)),
+    (["--symbol", " iwm "], ("IWM",)),
+])
+def test_export_bars_from_writes_every_month_to_the_current_one(
+        monkeypatch, caplog, extra, tickers):
+    with caplog.at_level(logging.INFO):
+        code, calls = history(monkeypatch, ["--export-bars-from", "2026-08", *extra])
+    assert code == 0
+    assert len(calls) == 1
+    assert tuple(calls[0][0]) == tickers
+    assert calls[0][1] == [(2026, 8), (2026, 9), (2026, 10)]
+    assert len([m for m in _messages(caplog) if m.startswith("bars export:")]) == 1
+
+
+def test_export_bars_from_the_current_month_alone(monkeypatch):
+    code, calls = history(monkeypatch, ["--export-bars-from=2026-10", "--symbol=SPY"])
+    assert code == 0 and calls == [(("SPY",), [(2026, 10)])]
+
+
+@pytest.mark.parametrize("symbol", ["AMD", "SPY,QQQ", "SPY QQQ"])
+def test_another_ticker_exits_1_before_any_query(monkeypatch, symbol):
+    _refuse_queries(monkeypatch)
+    code, calls = history(monkeypatch, ["--export-bars-from", "2026-08", "--symbol", symbol])
+    assert code == 1 and calls == []
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"configured": False}, {"bucket": None}, {"bucket": ""}, {"bucket": "  "}])
+def test_not_configured_exits_1(monkeypatch, kwargs):
+    _refuse_queries(monkeypatch)
+    code, calls = history(monkeypatch, ["--export-bars-from", "2026-08"], **kwargs)
+    assert code == 1 and calls == []
+
+
+def test_more_than_one_task_exits_1(monkeypatch):
+    # N tasks would each export the same months at once.
+    _refuse_queries(monkeypatch)
+    code, calls = history(monkeypatch, ["--export-bars-from", "2026-08"],
+                          env={"CLOUD_RUN_TASK_COUNT": "4"})
+    assert code == 1 and calls == []
+
+
+@pytest.mark.parametrize("argv", [
+    ["--export-bars-from", "2026-08", "--replace-months", "x"],
+    ["--export-bars-from", "2026-08", "--verify-months", "x"],
+    ["--export-bars-from", "2026-08", "--verify-basis", "x"],
+    ["--export-bars-from", "2026-08", "--symbols-file", "f"],
+    ["--export-bars-from", "2026-08", "--start-date", "2026-10-01"],
+    ["--export-bars-from", "2026-08", "--end-date", "2026-10-31"],
+    ["--export-bars-from", "2026-13"],
+    ["--export-bars-from", "2026-00"],
+    ["--export-bars-from", "2026-1"],
+    ["--export-bars-from", "202601"],
+    ["--export-bars-from", "2026-10-01"],
+    ["--export-bars-from", "2026-11"],            # after the current Eastern month
+    ["--export-bars-from", "2027-01"],
+])
+def test_export_bars_from_usage_errors(monkeypatch, capsys, argv):
+    _refuse_queries(monkeypatch)
+    monkeypatch.setattr(fai, "run_replace_months", lambda *a: pytest.fail("ran a list mode"))
+    monkeypatch.setattr(fai, "run_verify_months", lambda *a: pytest.fail("ran a list mode"))
+    monkeypatch.setattr(fai, "run_verify_basis", lambda *a: pytest.fail("ran a list mode"))
+    code, calls = history(monkeypatch, argv)
+    assert code == 2 and calls == []
+    assert "--export-bars-from" in capsys.readouterr().err
+
+
+def test_a_failed_history_export_exits_1(monkeypatch, caplog):
+    with caplog.at_level(logging.INFO):
+        code, calls = history(monkeypatch, ["--export-bars-from", "2026-08"],
+                              export=ConnectionError("connection refused"))
+    assert code == 1 and len(calls) == 1
+    assert [m for m in _messages(caplog) if m.startswith("bars export failed (outage)")]
+
+
+def test_run_export_bars_from_refuses_a_month_after_the_current_one(monkeypatch):
+    # main() refuses it as a usage error; called directly it still does not
+    # end quietly having written nothing.
+    monkeypatch.setenv("GCS_BUCKET", "b")
+    monkeypatch.delenv("CLOUD_RUN_TASK_COUNT", raising=False)
+    monkeypatch.setattr(fai, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(fai, "market_today", lambda: date(2026, 10, 31))
+    monkeypatch.setattr(xb, "export_window", lambda *a, **k: pytest.fail("exported"))
+    assert fai.run_export_bars_from((2026, 11), "SPY") == 1
+
+
+_AS_MAIN = """
+import runpy, sys
+from datetime import date
+
+import pandas as pd
+
+import gcp.database as database
+import lib.eastern_time as eastern_time
+from gcp.fetchers import export_intraday_bars
+from tests.fixtures.intraday_bars_bucket import MemoryBucket
+from tests.fixtures.intraday_checks import NEW, session_bars, stored
+
+bars = stored(session_bars("2026-10-01"), inserted=NEW).assign(
+    open=595.0, close=595.0, data_source="alphavantage")
+daily = pd.DataFrame([{"date": date(2026, 10, 1), "high": 600.0, "low": 590.0,
+                       "data_source": "alphavantage_daily"}])
+asked = []
+
+
+def strict(sql, params=None, timeout_s=None):
+    asked.append("daily" if "market_data_daily" in sql else "bars")
+    return daily if "market_data_daily" in sql else bars
+
+
+bucket = MemoryBucket()
+database.is_cloud_sql_configured = lambda: True
+database.query_to_dataframe_strict = strict
+export_intraday_bars.bucket_from_env = lambda: bucket
+eastern_time.market_today = lambda: date(2026, 10, 31)
+sys.argv = ["fetch_alphavantage_intraday", "--export-bars-from=2026-10", "--symbol=SPY"]
+try:
+    runpy.run_module("gcp.fetchers.fetch_alphavantage_intraday", run_name="__main__")
+    code = "returned"
+except SystemExit as stop:
+    code = stop.code
+print("RESULT", code, sorted(bucket.objects), asked)
+"""
+
+
+def test_the_module_run_as_main_exports_end_to_end(tmp_path):
+    # The job starts as `python -m gcp.fetchers.fetch_alphavantage_intraday`, so
+    # the export's own import of the fetch module loads it a second time under
+    # its package name. One file and the manifest are written, exit 0.
+    import os
+
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("CLOUD_RUN_TASK_COUNT", "CLOUD_RUN_TASK_INDEX", "INTRADAY_BARS_EXPORT")}
+    env["GCS_BUCKET"] = "b"
+    done = subprocess.run([sys.executable, "-c", _AS_MAIN], cwd=REPO, env=env,
+                          capture_output=True, text=True, timeout=180)
+    assert done.returncode == 0, done.stderr
+    result = [line for line in done.stdout.splitlines() if line.startswith("RESULT")]
+    assert result == [
+        "RESULT 0 ['intraday-bars/v1/1min/SPY/2026-10.parquet', "
+        "'intraday-bars/v1/1min/SPY/manifest.json'] ['daily', 'bars']"]
+    assert "bars export: 1 months, 961 rows" in done.stdout + done.stderr

@@ -13,6 +13,7 @@ Usage:
 import argparse
 import logging
 import os
+import re
 import sys
 import time
 from datetime import date, datetime, timedelta
@@ -1147,6 +1148,52 @@ def _run_bars_export(tickers: Sequence[str], months: Sequence[tuple[int, int]]) 
     return True
 
 
+def run_export_bars_from(first: tuple[int, int], symbol: str) -> int:
+    """Write every month from *first* (year, month) to the current Eastern
+    month to the bucket, for SPY, QQQ and IWM (*symbol* ``ALL``) or the one of
+    them *symbol* names. Fetches nothing and needs no API key. Returns the
+    exit code.
+
+    An explicit export never ends quietly: more than one Cloud Run task (each
+    would write the same months at once), a ticker other than the three, the
+    database not configured, ``GCS_BUCKET`` unset, or no month to write all
+    return 1, each before any query. The manifest is written after each
+    month, so a run that stops keeps what it wrote and a rerun converges.
+    """
+    from gcp.fetchers.export_intraday_bars import (  # noqa: PLC0415
+        EXPORT_TICKERS,
+        months_between,
+    )
+
+    task_cnt = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1'))
+    if task_cnt > 1:
+        log.error("export-bars-from: %d Cloud Run tasks would each write the same "
+                  "months; run it as one task. Nothing was read.", task_cnt)
+        return 1
+    name = symbol.strip().upper()
+    if name == 'ALL':
+        tickers = tuple(EXPORT_TICKERS)
+    elif name in EXPORT_TICKERS:
+        tickers = (name,)
+    else:
+        log.error("export-bars-from: --symbol %r; only ALL or one of %s is exported. "
+                  "Nothing was read.", symbol, ", ".join(EXPORT_TICKERS))
+        return 1
+    if not is_cloud_sql_configured():
+        log.error("export-bars-from: the database is not configured. Nothing was read.")
+        return 1
+    if not os.environ.get('GCS_BUCKET', '').strip():
+        log.error("export-bars-from: GCS_BUCKET is not set. Nothing was read.")
+        return 1
+    today = market_today()
+    months = months_between(tuple(first), (today.year, today.month))
+    if not months:
+        log.error("export-bars-from: %d-%02d is after the current Eastern month "
+                  "%d-%02d. Nothing was read.", first[0], first[1], today.year, today.month)
+        return 1
+    return 0 if _run_bars_export(tickers, months) else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
@@ -1187,14 +1234,36 @@ def main():
                              'intraday-lists/<name>.csv. Exits 1 on a BASIS-FAIL or EMPTY '
                              'line, 3 when a line rests on a row that is not proven a '
                              'true instant, else 0.')
+    parser.add_argument('--export-bars-from', default=None, metavar='YYYY-MM',
+                        help='Fetches nothing: writes every month from the one given '
+                             'to the current Eastern month of the stored 1-min bars '
+                             'to the bucket, one file per ticker-month and a manifest, '
+                             'for SPY, QQQ and IWM or the one of them named by '
+                             '--symbol. One task. Run per ticker, e.g. '
+                             '--args="--export-bars-from=2015-01,--symbol=SPY".')
     args = parser.parse_args()
 
     list_modes = [flag for flag, value in (
         ('--replace-months', args.replace_months),
         ('--verify-months', args.verify_months),
-        ('--verify-basis', args.verify_basis)) if value]
+        ('--verify-basis', args.verify_basis),
+        ('--export-bars-from', args.export_bars_from)) if value]
     if len(list_modes) > 1:
         parser.error(f"{' and '.join(list_modes)} are separate runs")
+    if args.export_bars_from:
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", args.export_bars_from):
+            parser.error(f"--export-bars-from takes a month as YYYY-MM, "
+                         f"not {args.export_bars_from!r}")
+        export_first = (int(args.export_bars_from[:4]), int(args.export_bars_from[5:]))
+        export_today = market_today()
+        if export_first > (export_today.year, export_today.month):
+            parser.error(f"--export-bars-from {args.export_bars_from} is after the "
+                         f"current Eastern month "
+                         f"{export_today.year}-{export_today.month:02d}")
+        if args.symbols_file or args.start_date or args.end_date:
+            parser.error("--export-bars-from fetches nothing: it takes --symbol and "
+                         "no --symbols-file, --start-date or --end-date")
+        sys.exit(run_export_bars_from(export_first, args.symbol))
     if args.replace_months:
         sys.exit(run_replace_months(args.replace_months, args.commit, args.limit))
     if args.verify_months:
