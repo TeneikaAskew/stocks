@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from lib.eastern_time import (
     eastern_index_to_utc,
     intraday_month_window,
+    place_stored_rows,
+    session_minute_readings,
     stored_intraday_to_eastern,
     utc_to_eastern_naive,
 )
@@ -833,6 +835,130 @@ def run_verify_months(path: str, limit: Optional[int]) -> int:
                   len(failed), len(items))
         return 1
     return 0
+
+
+# -- Basis check (FEAT-DATA-001, Design C) ------------------------------------
+#
+# Until 2026-11-13 the 1-min requests returned split- and dividend-adjusted
+# prices, adjusted as of the call, so every stored bar sits at the basis of its
+# last fetch. A session's basis is read off the daily table: its regular-hours
+# high and low against the daily high and low, which are as traded. Read-only.
+
+# market_data_daily.data_source values whose high and low came from the daily
+# endpoint (TIME_SERIES_DAILY_ADJUSTED's "2. high" / "3. low", as traded). A
+# row stamped alphavantage_1min was built from the session's own 1-min bars, so
+# those bars read 1.0 against it whatever basis they are on; a row with any
+# other stamp, or none, has an origin the row cannot tell. Neither is ever a
+# measure. A new daily writer is measured only once its stamp is added here.
+TRUE_DAILY_SOURCES = ("alphavantage_daily", "av_daily_backfill", "av_watched_backfill")
+_DAILY_FROM_INTRADAY = "alphavantage_1min"
+
+# The as-traded band, in units of 0.00001 of the ratio: 0.99970 to 1.00030.
+_BASIS_UNIT = 100_000
+_BASIS_LOW, _BASIS_HIGH = 99_970, 100_030
+
+
+def session_basis_verdicts(rows: pd.DataFrame, daily: pd.DataFrame,
+                           schedule: pd.DataFrame) -> list[dict]:
+    """One record per session of *schedule*, in its order: is the session's
+    stored 1-min data as traded?
+
+    *rows* is a month window of market_data_intraday (``ts``, ``high``,
+    ``low``, ``volume``, ``inserted_at``); *daily* is market_data_daily for the
+    ticker (``date``, ``high``, ``low``, ``data_source``); *schedule* is the
+    frame lib.eastern_time.session_schedule returns. Nothing is read here.
+
+    Each record has ``session``, ``status`` and ``exact`` (the session's
+    reading, lib.eastern_time.session_minute_readings), ``verdict``,
+    ``reason``, ``f_high``, ``f_low`` and ``factor``.
+
+    ``verdict``:
+      INCOMPLETE  the session is not OK (missing, thin, or its count depends
+                  on the timestamp convention): never measured, so thinness
+                  cannot read as a basis.
+      UNMEASURED  no measurable daily row or no regular-hours high and low;
+                  ``reason`` is the first that applies of ``no_daily_row``,
+                  ``daily_from_intraday``, ``daily_source_unknown``,
+                  ``daily_not_positive``, ``no_rth_high_low``.
+      AS-TRADED   f_high and f_low both from 0.99970 to 1.00030, and every row
+                  the reading counts is proven a true instant.
+      INFERRED    the same ratios, resting on a row that is not proven: never
+                  a pass.
+      ADJUSTED    both ratios below 0.99970, or both above 1.00030.
+      ODD         anything else. Missing minutes can only lower the high and
+                  raise the low, moving the ratios apart; an adjustment moves
+                  both the same way.
+
+    ``f_high`` is the highest regular-hours 1-min high over the daily high and
+    ``f_low`` the lowest low over the daily low, each rounded to 5 decimals;
+    ``factor`` is their mean, rounded to 5 decimals. All three are None unless
+    the session was measured.
+    """
+    readings = session_minute_readings(rows["ts"], rows["inserted_at"], schedule)
+
+    daily_by_date: dict = {}
+    for day, high, low, source in zip(
+            daily["date"], daily["high"], daily["low"], daily["data_source"]):
+        # A DATE column comes back as Timestamps (datetime subclasses); a bare
+        # date never equals one, so normalise before keying.
+        key = day.date() if isinstance(day, datetime) else day
+        if key in daily_by_date:
+            raise ValueError(f"market_data_daily frame holds {key} twice")
+        daily_by_date[key] = (high, low, source)
+
+    placed = None
+    out = []
+    for reading, opened, closed in zip(
+            readings, schedule["market_open"], schedule["market_close"]):
+        record = {"session": reading.session, "status": reading.status,
+                  "exact": reading.exact, "verdict": "INCOMPLETE", "reason": None,
+                  "f_high": None, "f_low": None, "factor": None}
+        out.append(record)
+        if reading.status != "OK":
+            continue
+
+        record["verdict"] = "UNMEASURED"
+        if reading.session not in daily_by_date:
+            record["reason"] = "no_daily_row"
+            continue
+        day_high, day_low, source = daily_by_date[reading.session]
+        if source == _DAILY_FROM_INTRADAY:
+            record["reason"] = "daily_from_intraday"
+            continue
+        if source not in TRUE_DAILY_SOURCES:
+            record["reason"] = "daily_source_unknown"
+            continue
+        if pd.isna(day_high) or pd.isna(day_low) or day_high <= 0 or day_low <= 0:
+            record["reason"] = "daily_not_positive"
+            continue
+
+        if placed is None:
+            # Once, over the whole window: the resolver must see each date entire.
+            placed = place_stored_rows(rows["ts"], rows["volume"], rows["inserted_at"])
+        instants, keep, _proven = placed
+        rth = keep & ((instants >= opened) & (instants < closed))
+        highs = pd.to_numeric(rows["high"][rth], errors="raise").dropna()
+        lows = pd.to_numeric(rows["low"][rth], errors="raise").dropna()
+        if highs.empty or lows.empty:
+            record["reason"] = "no_rth_high_low"
+            continue
+
+        high_units = round(float(highs.max()) / float(day_high) * _BASIS_UNIT)
+        low_units = round(float(lows.min()) / float(day_low) * _BASIS_UNIT)
+        record["reason"] = None
+        record["f_high"] = high_units / _BASIS_UNIT
+        record["f_low"] = low_units / _BASIS_UNIT
+        record["factor"] = round((record["f_high"] + record["f_low"]) / 2, 5)
+        high_in = _BASIS_LOW <= high_units <= _BASIS_HIGH
+        low_in = _BASIS_LOW <= low_units <= _BASIS_HIGH
+        if high_in and low_in:
+            record["verdict"] = "AS-TRADED" if reading.exact else "INFERRED"
+        elif (high_units < _BASIS_LOW and low_units < _BASIS_LOW) or (
+                high_units > _BASIS_HIGH and low_units > _BASIS_HIGH):
+            record["verdict"] = "ADJUSTED"
+        else:
+            record["verdict"] = "ODD"
+    return out
 
 
 def main():
