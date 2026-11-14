@@ -661,3 +661,12 @@ def test_current_user_email_unchanged(monkeypatch):
     with pytest.raises(a.UnverifiedEmailError):
         a._verify_bearer_email(req("unverified"))
     assert a._verify_bearer_email(req("good")) == "alice@example.com"
+
+
+def test_identity_none_and_warns_when_decoder_raises(monkeypatch, caplog):
+    c, a = _identity_app(monkeypatch, "firebase")
+    with caplog.at_level("WARNING", logger=a.logger.name):
+        body = c.get("/who", headers={"authorization": "Bearer bad"}).json()
+    assert body["ident"] is None
+    msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("current_user_identity" in m and "ValueError" in m for m in msgs)

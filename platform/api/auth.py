@@ -212,7 +212,10 @@ def current_user_identity(request: Request) -> Optional[UserIdentity]:
     if AUTH_MODE == "firebase":
         try:
             return _verify_bearer_identity(request)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "current_user_identity failed: %s: %s", type(exc).__name__, exc
+            )
             return None
     return None
 
