@@ -369,14 +369,20 @@ def test_every_insight_reports_upsert_carries_run_kind_through_the_conflict():
 #
 # What it does not see: a fetch reached through another file by a name it
 # cannot resolve, a helper in another file that calls a holder without
-# holding the request itself, a request built without a dict literal, the
-# parquet and daily-bar fallbacks inside DataLoader for the jobs that read
-# through it, a replay CLI whose only date flags are --start and --end, and
-# a job started by hand.
+# holding the request itself, a holder imported under another name, the
+# backfill module imported and run in process (gcp.backfill_ticker.main()), a
+# request built without a dict literal, a new platform/api route that reads
+# the bucket with no bar-loader call and no replay-shaped flag, a job name
+# put together by `join`, `%` or `.format`, a dispatcher under
+# gcp/discord_interactions/ that calls `execute_cloud_run_job` under another
+# name, the parquet and daily-bar fallbacks inside DataLoader for the jobs
+# that read through it, a replay CLI whose only date flags are --start and
+# --end, and a job started by hand.
 
 REPLAY_ROOTS = ("gcp", "lib", "scripts", "platform/api")
 _REPLAY_SKIP_DIRS = {"_archive", "archive", "node_modules", "__pycache__"}
 DISCORD_MODULE = "gcp/discord_interactions/main.py"
+DISCORD_PACKAGE = "gcp/discord_interactions/"
 
 # file -> the functions a replay enters it through; ("*",) is the whole file.
 REPLAY_PATH: dict[str, tuple[str, ...]] = {
@@ -432,6 +438,13 @@ LOCAL_DEV_FUNCS = ("_bars_from_gcs_local_dev", "_reference_from_gcs_local_dev")
 BAR_LOADERS = ("_load_date_data", "_replay_bar_loader", "_style_history_bar_loader")
 REPLAY_FLAG = re.compile(
     r"REPLAY|AS_OF|--as-of|--replay|BACKTEST_|VALIDATE_(?:TICKER|DATE)|PLAYBOOK_RESOLVE_DATE")
+
+# The job a replay must never start, and how much of its name has to come
+# from literal text before a string put together at run time counts as
+# naming it: the eight characters of "backfill". A formatted value alone
+# could spell anything, so it cannot be the whole match.
+BACKFILL_JOB = "backfill-ticker"
+BACKFILL_LITERAL_FLOOR = len("backfill")
 
 _FUNC = (ast.FunctionDef, ast.AsyncFunctionDef)
 
@@ -566,6 +579,107 @@ def _reached(tree: ast.AST, entries: tuple[str, ...]) -> set[str]:
     return seen
 
 
+def _import_bindings(tree: ast.AST) -> tuple[set[str], set[str], set[str]]:
+    """The names this file binds, by any import anywhere in it, to
+
+    - the bucket reader module (`gcs_reader` itself, `from api import
+      gcs_reader as gr`, `import api.gcs_reader as gr`),
+    - a function of that module (`from api.gcs_reader import download_parquet`,
+      with or without `as`),
+    - the bar loader (`DataLoader`, the module-level `data_loader`, `from
+      lib.data_loader import DataLoader as DL`, `import lib.data_loader as dl`).
+
+    A rule that knows only the usual name is passed by importing under
+    another one.
+    """
+    bucket_modules = {"gcs_reader"}
+    bucket_functions: set[str] = set()
+    loaders = {"DataLoader", "data_loader"}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom):
+            from_bucket = (n.module or "").split(".")[-1] == "gcs_reader"
+            for a in n.names:
+                bound = a.asname or a.name
+                if a.name == "gcs_reader":
+                    bucket_modules.add(bound)
+                elif from_bucket:
+                    bucket_functions.add(bound)
+                if a.name in ("DataLoader", "data_loader"):
+                    loaders.add(bound)
+        elif isinstance(n, ast.Import):
+            for a in n.names:
+                last = a.name.split(".")[-1]
+                if a.asname and last == "gcs_reader":
+                    bucket_modules.add(a.asname)
+                if a.asname and last == "data_loader":
+                    loaders.add(a.asname)
+    return bucket_modules, bucket_functions, loaders
+
+
+def _string_parts(node: ast.AST) -> list | None:
+    """A string expression as its parts in order: literal text, and None for
+    text only known at run time (a formatted value of an f-string, a
+    non-literal operand of `+`). None when the node is not a string built
+    from at least one literal."""
+    if isinstance(node, ast.Constant):
+        return [node.value] if isinstance(node.value, str) else None
+    if isinstance(node, ast.JoinedStr):
+        return [v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else None
+                for v in node.values]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _string_parts(node.left), _string_parts(node.right)
+        if left is None and right is None:
+            return None
+        return ([None] if left is None else left) + ([None] if right is None else right)
+    return None
+
+
+def _literal_cover(parts: list, target: str) -> int:
+    """The most characters of `target` that literal text can supply when the
+    parts, with every None read as any text, spell a string containing
+    `target`. -1 when they cannot spell it at all."""
+    segs: list = []
+    for part in parts:
+        if part is None:
+            if not segs or segs[-1] is not None:
+                segs.append(None)
+        elif part:
+            if segs and segs[-1] is not None:
+                segs[-1] += part
+            else:
+                segs.append(part)
+    n = len(target)
+
+    def rest(e: int, t: int, lit: int) -> int:
+        """Best literal count finishing `target` from element e with t matched."""
+        if t == n:
+            return lit
+        if e == len(segs):
+            return -1
+        seg = segs[e]
+        if seg is None:
+            return max(rest(e + 1, t + k, lit) for k in range(n - t + 1))
+        remaining = target[t:]
+        if seg.startswith(remaining):
+            return lit + len(remaining)
+        if remaining.startswith(seg):
+            return rest(e + 1, t + len(seg), lit + len(seg))
+        return -1
+
+    best = -1
+    for e, seg in enumerate(segs):
+        if seg is None:
+            best = max(best, max(rest(e + 1, k, 0) for k in range(n + 1)))
+            continue
+        for offset in range(len(seg)):
+            tail = seg[offset:]
+            if tail.startswith(target):
+                return n
+            if target.startswith(tail):
+                best = max(best, rest(e + 1, len(tail), len(tail)))
+    return best
+
+
 def replay_reach_offenders(rel: str, src: str, entries: tuple[str, ...],
                            holders: set[str], exempt: dict) -> list[str]:
     """What the replay path of one file must not hold, as
@@ -577,6 +691,16 @@ def replay_reach_offenders(rel: str, src: str, entries: tuple[str, ...],
     in_local_dev = _lexically_inside(tree, LOCAL_DEV_FUNCS)
     in_exempt = _lexically_inside(tree, {fn for (f, fn) in exempt if f == rel})
     under_api = rel.startswith("platform/api/")
+    bucket_modules, bucket_functions, loaders = _import_bindings(tree)
+    # A name that is the object of an attribute access is reported with the
+    # attribute (gcs_reader.blob_exists); any other use of it is reported bare.
+    attribute_objects = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    # The parts of a larger string expression are judged with the whole.
+    string_operands = {
+        id(part) for n in ast.walk(tree)
+        if (isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add))
+        for part in (n.left, n.right)
+    }
 
     found: dict[tuple[int, str], str] = {}
 
@@ -594,14 +718,30 @@ def replay_reach_offenders(rel: str, src: str, entries: tuple[str, ...],
         for n in ast.walk(scope):
             if isinstance(n, ast.Call) and _call_name(n) in holders:
                 flag(n, f"calls {_call_name(n)}, a function that holds an AlphaVantage TIME_SERIES request")
-            if (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
-                    and n.value.id == "gcs_reader" and id(n) not in in_local_dev):
-                flag(n, f"reads the bucket through gcs_reader.{n.attr} outside the local-dev functions")
+            if id(n) not in in_local_dev:
+                if (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                        and n.value.id in bucket_modules):
+                    flag(n, f"reads the bucket through gcs_reader.{n.attr} outside the local-dev functions")
+                elif ((isinstance(n, ast.Name) and n.id in bucket_modules
+                       and id(n) not in attribute_objects)
+                      or (isinstance(n, ast.Attribute) and n.attr == "gcs_reader")):
+                    # getattr(gcs_reader, ...), `reader = gcs_reader`, api.gcs_reader
+                    flag(n, "uses the bucket reader module gcs_reader outside the local-dev functions")
+                elif isinstance(n, ast.Name) and n.id in bucket_functions:
+                    flag(n, f"reads the bucket through {n.id}, a name imported from gcs_reader, "
+                            f"outside the local-dev functions")
             if (isinstance(n, ast.Constant) and isinstance(n.value, str)
-                    and "backfill-ticker" in n.value and id(n) not in docstrings):
+                    and BACKFILL_JOB in n.value and id(n) not in docstrings):
                 flag(n, "names the backfill-ticker job in a string")
+            elif (isinstance(n, (ast.BinOp, ast.JoinedStr)) and id(n) not in string_operands
+                  and not any(isinstance(c, ast.Constant) and isinstance(c.value, str)
+                              and BACKFILL_JOB in c.value for c in ast.walk(n))):
+                # No single literal names the job; can the parts spell it?
+                parts = _string_parts(n)
+                if parts is not None and _literal_cover(parts, BACKFILL_JOB) >= BACKFILL_LITERAL_FLOOR:
+                    flag(n, "builds the backfill-ticker job name from string parts")
             if under_api and id(n) not in in_exempt and (
-                    (isinstance(n, ast.Name) and n.id in ("DataLoader", "data_loader"))
+                    (isinstance(n, ast.Name) and n.id in loaders)
                     or (isinstance(n, ast.Attribute) and n.attr == "DataLoader")):
                 flag(n, "uses DataLoader outside REPLAY_EXEMPT")
 
@@ -668,17 +808,22 @@ def registration_offenders(sources: dict[str, str], replay_path: dict, discord_j
     """Replay entry points that nobody registered."""
     out: set[str] = set()
 
-    # 1. who dispatches a job from Discord, and which job
+    # 1. who dispatches a job from Discord, and which job: every file of the
+    #    package, so a dispatcher cannot move next door to main.py
     if DISCORD_MODULE not in sources:
         out.add(f"{DISCORD_MODULE}: the Discord module is not among the sources")
-    else:
-        tree = _replay_tree(sources[DISCORD_MODULE])
+    for rel in sorted(r for r in sources if r.startswith(DISCORD_PACKAGE)):
+        try:
+            tree = _replay_tree(sources[rel])
+        except SyntaxError:
+            out.add(f"{rel}: could not be parsed, so its dispatches cannot be read")
+            continue
         owner = _outermost_function(tree)
-        handlers = set(replay_path.get(DISCORD_MODULE, ()))
+        handlers = set(replay_path.get(rel, ()))
         for n in ast.walk(tree):
             if not (isinstance(n, ast.Call) and _call_name(n) == "execute_cloud_run_job"):
                 continue
-            where = f"{DISCORD_MODULE}:{n.lineno} in {owner.get(id(n), '<module>')}"
+            where = f"{rel}:{n.lineno} in {owner.get(id(n), '<module>')}"
             if owner.get(id(n), "<module>") not in handlers:
                 out.add(f"{where}: dispatches a job and is not a registered entry of REPLAY_PATH")
             job = n.args[0] if n.args else None
@@ -800,6 +945,15 @@ _REPLAY_REWRITES = [
      True, "<module>"),
     ("discord: a dispatch from a nested function of a handler",
      lambda: _reg(discord=_DISCORD_NESTED), False, None),
+    ("discord: a dispatcher in another file of the package",
+     lambda: _reg({"gcp/discord_interactions/replay_cmd.py": '''
+from gcp.discord_interactions.main import execute_cloud_run_job
+def handle_replay2(t, d): execute_cloud_run_job("premarket-brief", {})
+'''}), True, "gcp/discord_interactions/replay_cmd.py"),
+    ("discord: another file of the package that dispatches nothing",
+     lambda: _reg({"gcp/discord_interactions/embeds.py": '''
+def replay_embed(t, d): return {"title": f"Replay {t} {d}"}
+'''}), False, None),
     # registration: a replay-shaped env var or flag in a file nobody listed
     ("new file: env MY_REPLAY_DAY", _new_job('x = os.environ.get("MY_REPLAY_DAY")'), True, "gcp/new_job.py"),
     ("new file: env NEWJOB_AS_OF", _new_job('x = os.getenv("NEWJOB_AS_OF")'), True, "gcp/new_job.py"),
@@ -925,6 +1079,97 @@ def main():
     """Does not start backfill-ticker."""
     # backfill-ticker is gone
     return 0
+''', ("*",)), False, None),
+    # reach: the same reads and the same job under another name (review of
+    # #1891: each of these walked past the first version of the guard)
+    ("reach: gcs_reader imported under an alias",
+     lambda: _reach(_API_MAIN, '''
+def _load_date_data(t, d):
+    from api import gcs_reader as gr
+    return gr.download_parquet(d)
+''', ("_load_date_data",)), True, "gcs_reader.download_parquet"),
+    ("reach: api.gcs_reader imported as a module under an alias",
+     lambda: _reach(_API_MAIN, '''
+import api.gcs_reader as bucket
+def _load_date_data(t, d): return bucket.download_parquet(d)
+''', ("_load_date_data",)), True, "gcs_reader.download_parquet"),
+    ("reach: a function imported from api.gcs_reader",
+     lambda: _reach(_API_MAIN, '''
+def _load_date_data(t, d):
+    from api.gcs_reader import download_parquet
+    return download_parquet(d)
+''', ("_load_date_data",)), True, "download_parquet"),
+    ("reach: a function imported from api.gcs_reader under an alias",
+     lambda: _reach(_API_MAIN, '''
+from api.gcs_reader import download_parquet as fetch
+def _load_date_data(t, d): return fetch(d)
+''', ("_load_date_data",)), True, "fetch"),
+    ("reach: getattr on gcs_reader",
+     lambda: _reach(_API_MAIN, '''
+def _load_date_data(t, d):
+    from api import gcs_reader
+    return getattr(gcs_reader, "download_parquet")(d)
+''', ("_load_date_data",)), True, "gcs_reader"),
+    ("reach: gcs_reader under an alias inside a local-dev function",
+     lambda: _reach(_API_MAIN, '''
+def _load_date_data(t, d):
+    if _CLOUD_SQL_UNCONFIGURED:
+        return _bars_from_gcs_local_dev(t, d)
+def _bars_from_gcs_local_dev(t, d):
+    from api import gcs_reader as gr
+    from api.gcs_reader import blob_exists
+    return gr.download_parquet(d) if blob_exists(d) else None
+''', ("_load_date_data",)), False, None),
+    ("reach: DataLoader imported under an alias",
+     lambda: _reach(_API_MAIN, '''
+def get_market_data(t, d):
+    from lib.data_loader import DataLoader as DL
+    return DL().load_intraday(t)
+''', ("get_market_data",)), True, "DataLoader"),
+    ("reach: getattr on the data_loader module under an alias",
+     lambda: _reach(_API_MAIN, '''
+import lib.data_loader as dl
+def get_market_data(t, d): return getattr(dl, "DataLoader")().load_intraday(t)
+''', ("get_market_data",)), True, "DataLoader"),
+    ("reach: DataLoader under an alias inside the exempt function only",
+     lambda: _reach(_API_BACKTEST, '''
+def mine_and_validate(b): return _style_history_bar_loader("SPY")
+def _style_history_bar_loader(t):
+    from lib.data_loader import DataLoader as DL
+    return DL().load_best_available(t, "a", "b")
+''', ("mine_and_validate",)), False, None),
+    ("reach: the backfill job name built with +",
+     lambda: _reach("scripts/backfill_and_replay.py", '''
+def main(): _execute_job('backfill' + '-ticker', {})
+''', ("*",)), True, "backfill-ticker"),
+    ("reach: the backfill job name built in an f-string",
+     lambda: _reach("scripts/backfill_and_replay.py", '''
+def main(kind="ticker"): _execute_job(f'backfill-{kind}', {})
+''', ("*",)), True, "backfill-ticker"),
+    ("reach: the backfill job name built from a literal and a variable",
+     lambda: _reach("scripts/backfill_and_replay.py", '''
+def main(kind="-ticker"): _execute_job('backfill' + kind, {})
+''', ("*",)), True, "backfill-ticker"),
+    # ... and what the string rule must NOT flag. A rule on the bare word
+    # `backfill` was measured on this tree and flagged five legitimate
+    # strings; these two keep the rule from drifting back to that form.
+    ("reach: the script's own logger name",
+     lambda: _reach("scripts/backfill_and_replay.py", '''
+import logging
+log = logging.getLogger('backfill_and_replay')
+''', ("*",)), False, None),
+    ("reach: a help text that mentions backfills",
+     lambda: _reach("gcp/premarket_brief.py", '''
+def main(parser):
+    parser.add_argument(
+        '--no-discord', action='store_true',
+        help="Skip the Discord webhook POST at the end of the run. "
+             "Brief still persists to premarket_analysis. Used by backfills and "
+             f"replays of {parser.prog}.")
+''', ("*",)), False, None),
+    ("reach: an f-string no literal part of which names the job",
+     lambda: _reach("scripts/backfill_and_replay.py", '''
+def main(job, d): log.info(f"{job} finished for {d}")
 ''', ("*",)), False, None),
     ("reach: an entry the file does not define",
      lambda: _reach(_API_MAIN, "def other(): pass\n", ("get_market_data",)), True, "get_market_data"),
