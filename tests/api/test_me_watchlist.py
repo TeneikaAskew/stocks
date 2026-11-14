@@ -245,6 +245,17 @@ def test_post_requires_identity_before_any_statement(client, monkeypatch):
     assert eng.log == [] and eng.state["begins"] == 0
 
 
+def test_delete_requires_identity_before_any_statement(client, monkeypatch):
+    from api.routers import me_watchlist as mw
+
+    monkeypatch.setattr(mw, "current_user_identity", lambda req: None)
+    eng = _engine(monkeypatch, mw)
+    r = client.delete("/api/me/watchlist/IWM")
+    assert r.status_code == 401
+    assert r.json()["detail"] == "sign in required"
+    assert eng.log == [] and eng.state["begins"] == 0
+
+
 @pytest.mark.parametrize(
     "body",
     [

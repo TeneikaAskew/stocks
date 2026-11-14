@@ -109,6 +109,25 @@ def test_readd_keeps_added_at(wl):
     assert row.source == "combobox-auto-add"
 
 
+def test_duplicate_add_keeps_added_at(wl):
+    with wl.begin() as conn:
+        _add(conn, "u1", "NVDA", source="ui")
+    with wl.connect() as conn:
+        first = conn.execute(
+            _t("SELECT added_at FROM user_watchlists WHERE owner_uid='u1' AND ticker='NVDA'")
+        ).scalar()
+    with wl.begin() as conn:
+        _add(conn, "u1", "NVDA", source="combobox-auto-add")
+    with wl.connect() as conn:
+        row = conn.execute(
+            _t("SELECT added_at, removed_at, source FROM user_watchlists "
+               "WHERE owner_uid='u1' AND ticker='NVDA'")
+        ).one()
+    assert row.added_at == first
+    assert row.removed_at is None
+    assert row.source == "combobox-auto-add"
+
+
 def test_remove_leaves_other_membership_and_ticker_row(wl):
     with wl.begin() as conn:
         _add(conn, "u1", "NVDA")
