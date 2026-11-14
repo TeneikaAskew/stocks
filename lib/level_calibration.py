@@ -56,8 +56,8 @@ import numpy as np
 import pandas as pd
 
 from lib.strat_levels import (
-    LEVEL_CLUSTER_KEY, MIN_STOP_KEY, PARAM_OK, PM_SPIKE_KEY, PM_STALE_PRINT_KEY, LevelParam,
-    LevelParams, build_session_levels, entry_buffer_key, persona_stop_price, policy_atr_basis,
+    LEVEL_CLUSTER_KEY, MIN_STOP_KEY, PARAM_OK, PM_SPIKE_KEY, PM_STALE_PRINT_KEY,
+    POLICY_SEEDED_KEYS, LevelParam, LevelParams, LevelParamsUnavailable, build_session_levels, entry_buffer_key, persona_stop_price, policy_atr_basis,
     price_cents, stop_key, target_key, trigger_window_key,
 )
 
@@ -1024,6 +1024,25 @@ def break_lookback(policy: Dict[str, dict]) -> int:
     return max(int(_policy(policy, k)['lookback_sessions'] or 0) for k in _break_keys(policy))
 
 
+def policy_seeds(policy: Dict[str, dict]) -> Dict[str, Calibrated]:
+    """The policy_seed keys (exits in thirds spec, Design 1 and 5): each
+    ticker's value is the seed of the policy row in force, status ok, until a
+    per-ticker method replaces the row. A policy in force without one of
+    these rows, or whose row holds no numeric seed, cannot calibrate."""
+    out: Dict[str, Calibrated] = {}
+    for key in POLICY_SEEDED_KEYS:
+        row = policy.get(key)
+        if row is None:
+            raise LevelParamsUnavailable(f"level_param_policy has no row in force for {key}")
+        seed = (row.get('extra') or {}).get('seed')
+        if isinstance(seed, bool) or not isinstance(seed, (int, float)) or not math.isfinite(seed):
+            raise LevelParamsUnavailable(
+                f"level_param_policy {key} (effective {row.get('effective_from')}) holds no numeric seed")
+        out[key] = Calibrated(key=key, status=PARAM_OK, value=float(seed), sample_n=0,
+                              method_id=row.get('method_id'))
+    return out
+
+
 def calibrate(ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame],
               policy: Dict[str, dict], as_of,
               window_policy_at: Optional[Callable[[pd.Timestamp], Dict[str, dict]]] = None
@@ -1038,9 +1057,10 @@ def calibrate(ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame],
     one pass over the bars."""
     as_of = pd.Timestamp(as_of).normalize()
     atr_basis = policy_atr_basis(policy)
+    seeds = policy_seeds(policy)
     d = normalize_daily(daily, atr_basis, as_of)
     m = normalize_minutes(minutes, as_of)
-    out: Dict[str, Calibrated] = {}
+    out: Dict[str, Calibrated] = dict(seeds)
     for side in SIDES:
         out[trigger_window_key(side)] = trigger_window(d, policy, side)
     spike = pm_spike(d, m, policy)
@@ -1210,9 +1230,10 @@ class HistoryCalibrator:
             raise ValueError(f"{as_of.date()} is after the bars this calibrator read "
                              f"(before {self.before.date()})")
         atr_basis = policy_atr_basis(policy)
+        seeds = policy_seeds(policy)
         d_full = self.daily_frame(atr_basis)
         d = self._cut(d_full, as_of)
-        out: Dict[str, Calibrated] = {}
+        out: Dict[str, Calibrated] = dict(seeds)
         for side in SIDES:
             out[trigger_window_key(side)] = trigger_window(d, policy, side)
         spike = self._pm_spike(d, policy)

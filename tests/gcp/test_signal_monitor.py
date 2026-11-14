@@ -384,3 +384,66 @@ class TestCheckOrbTimezone:
         df["Time"] = df["Time"].dt.tz_localize("UTC").dt.tz_convert("America/New_York")
         m.check_orb("IWM", df)
         assert m.orb_levels["IWM"]["5m_high"] == pytest.approx(200.0 + 10 * 0.1)
+
+
+# ── exits in thirds spec: the monitor gates on the unspaced targets ────
+
+
+def test_design_8_brief_row_keeps_the_monitors_gate_and_reanchor():
+    """The brief row built from the Design 8 fixture (calls T1 253.00 gating,
+    275.00 planned) under level_gate_mode and put_reanchor_mode enforce: a
+    call bar reaching 254.00 leaves the call leg post_t1 and the fire is
+    suppressed, as on origin/main, and the enforced put re-anchor's tracker
+    T1 is the first unspaced level below the re-anchored trigger."""
+    from datetime import datetime, timedelta
+    from unittest.mock import patch
+    from zoneinfo import ZoneInfo
+
+    import pandas as pd
+
+    from gcp.signal_monitor import SignalMonitor
+    from tests.lib.session_levels_helpers import d8_session
+
+    sl = d8_session()
+    lm = sl.to_level_map()
+    # The brief row's structured columns, as the brief writes them from the
+    # LevelMap's trigger dicts (on origin/main and on this head alike).
+    cols = {}
+    for side, trig in (("calls", lm.calls_trigger), ("puts", lm.puts_trigger)):
+        cols[f"{side}_trigger_price"] = trig["trigger_level"]
+        cols[f"{side}_stop_price"] = trig["stop"]
+        for k, tg in enumerate(trig["targets"][:3], 1):
+            cols[f"{side}_t{k}_price"] = tg["price"]
+    assert cols["calls_t1_price"] == 253.00
+    brief = {"bias": "CALL", "alignment": None, "setup_count": 4, "ftfc_direction": "bullish",
+             "ftfc_score": 0.8, "reason": "aligned", **cols}
+
+    monitor = SignalMonitor()
+    monitor.webhook_url = ""
+    monitor.signal_cfg.level_gate_mode = "enforce"
+    monitor.signal_cfg.put_reanchor_mode = "enforce"
+    monitor.level_maps["QQQ"] = lm
+    monitor.session_levels["QQQ"] = sl
+    base = datetime.now(ZoneInfo("US/Eastern")).replace(hour=10, minute=0, second=0,
+                                                        microsecond=0, tzinfo=None)
+    bars = pd.DataFrame([{"Time": base + timedelta(minutes=i), "Open": (hi + lo) / 2,
+                          "High": hi, "Low": lo, "Close": (hi + lo) / 2, "Volume": 1000}
+                         for i, (hi, lo) in enumerate([(252.0, 251.5), (254.0, 252.2)])])
+    with patch.object(monitor, "_resolve_brief_bias", return_value=brief), \
+         patch.object(monitor, "_persist_put_reanchor"):
+        monitor.update_window("QQQ", bars)
+    assert monitor._resolve_level_state("QQQ", "CALL")[0] == "post_t1"
+    assert monitor.leg_trackers["QQQ"]["call"].t1 == 253.00
+
+    put_side = sl.with_reference(251.75).short
+    assert monitor.leg_trackers["QQQ"]["put"].trigger == put_side.trigger["price"]
+    assert monitor.leg_trackers["QQQ"]["put"].t1 == 247.50
+
+    bar = pd.Series({"Close": 254.0, "Last": 254.0, "RSI14": 40.0, "RVOL": 1.5, "VWAP": 253.0,
+                     "EMA9": 253.5, "EMA20": 253.0, "ATR14": 1.0, "StochRSI_K": 25.0,
+                     "Consecutive_Down": 3})
+    with patch.object(monitor, "_persist_signal_alert") as persist:
+        monitor.fire_alert("QQQ", {"direction": "CALL", "base_score": 4.0,
+                                   "conditions_met": ["rsi_in_range"]},
+                           4.0, "medium", 0.5, 0, bar)
+    assert not persist.called

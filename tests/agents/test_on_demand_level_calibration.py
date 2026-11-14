@@ -24,9 +24,13 @@ import pytest
 
 from gcp import calibrate_level_params as job
 from lib.agents import summarizers
-from lib.strat_levels import SessionLevels
+from lib.strat_levels import POLICY_SEEDED_KEYS, SessionLevels
 from tests.lib import strat_2026_11_06 as fx
-from tests.lib.level_params_fixtures import ParamsDb
+from tests.lib.level_params_fixtures import LEGACY_1753_VALUES, ParamsDb
+
+# One row per per-ticker key: the calibrated keys and the policy_seed keys
+# (target_min_spacing_atr, gap_fill_flag_atr), which carry the policy's seed.
+TICKER_KEYS = len(LEGACY_1753_VALUES)
 
 SESSION = date(2026, 11, 6)
 NEW = "NEWT"
@@ -85,7 +89,7 @@ def _rows(pdb):
 def test_a_ticker_without_rows_is_calibrated_on_demand(world):
     out = summarizers.summarize_session_levels(NEW, as_of=SESSION, loader=world["loader"])
     rows = _rows(world["pdb"])
-    assert len(world["writes"]) == 1 and len(rows) == 23
+    assert len(world["writes"]) == 1 and len(rows) == TICKER_KEYS
     assert set(rows["source"]) == {"on_demand"} and set(rows["effective_from"]) == {"2026-11-06"}
     assert (rows["input_to"].dropna() < "2026-11-06").all()
     windows = rows.set_index("param_key").loc[["trigger_window_long_atr", "trigger_window_short_atr"]]
@@ -110,10 +114,14 @@ def test_a_ticker_with_100_bars_gets_insufficient_history(world):
     world["frame"] = frame.iloc[-101:]  # 100 completed bars and the session's own row
     out = summarizers.summarize_session_levels(NEW, as_of=SESSION, loader=world["loader"])
     rows = _rows(world["pdb"]).set_index("param_key")
-    assert len(rows) == 23 and set(rows["source"]) == {"on_demand"}
+    assert len(rows) == TICKER_KEYS and set(rows["source"]) == {"on_demand"}
     assert rows.loc["trigger_window_long_atr", "status"] == "insufficient_history"
     assert rows.loc["trigger_window_short_atr", "status"] == "insufficient_history"
-    assert (rows["status"] != "ok").all() and rows["value"].isna().all()
+    calibrated = rows.drop(index=list(POLICY_SEEDED_KEYS))
+    assert (calibrated["status"] != "ok").all() and calibrated["value"].isna().all()
+    # A policy seed needs no bars: those keys are ok at the policy's seed.
+    seeded = rows.loc[list(POLICY_SEEDED_KEYS)]
+    assert (seeded["status"] == "ok").all() and seeded["value"].notna().all()
     sl = SessionLevels.from_basis(out["level_basis"])
     for side in (sl.long, sl.short):
         assert side.regime == "orb_only" and side.reason == "params_insufficient_history"

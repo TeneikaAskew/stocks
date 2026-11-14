@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from lib import level_calibration as lc
-from lib.strat_levels import PARAM_OK
+from lib.strat_levels import PARAM_OK, POLICY_WIDE_KEYS
 from tests.lib import strat_2026_11_06 as fx
 from tests.lib.level_params_fixtures import seeded_policy
 
@@ -479,7 +479,8 @@ def test_no_look_ahead():
     assert base == full == later
     assert base["trigger_window_long_atr"].ok
     assert base["trigger_window_long_atr"].input_to < "2026-10-15"
-    assert set(base) == set(k for k in seeded_policy() if k not in ("atr_basis", "calibration_universe"))
+    assert set(base) == set(k for k in seeded_policy()
+                            if k not in ("atr_basis", "calibration_universe") + POLICY_WIDE_KEYS)
 
 
 def test_calibration_universe_reads_the_policy_sources():
@@ -573,3 +574,42 @@ def test_a_break_on_the_last_bar_is_unfilled():
     assert lc.BreakBatch([b, b]).fill(np.array([T + 0.1, T + 0.1])).tolist() == [-1, -1]
     assert lc.persona_fill(b, T + 0.1) is None
     assert lc.persona_outcome(b, T + 0.1, risk_atr=1.0) == lc.Outcome(filled=False)
+
+
+# ── policy_seed keys (exits in thirds spec, Design 1 and 5) ─────────────
+
+
+def test_policy_seed_keys_are_calibrated_at_their_seeds():
+    """A calibration of a fixture ticker returns target_min_spacing_atr and
+    gap_fill_flag_atr at the seed of the policy in force, status ok, method
+    policy_seed, and to_rows writes them with the run's run_id."""
+    daily = _daily([101.0] * 30)
+    out = lc.calibrate("TST", daily, None, policy(), "2026-11-06")
+    assert (out["target_min_spacing_atr"].status, out["target_min_spacing_atr"].value) == ("ok", 0.25)
+    assert (out["gap_fill_flag_atr"].status, out["gap_fill_flag_atr"].value) == ("ok", 0.5)
+    assert out["target_min_spacing_atr"].method_id == "policy_seed"
+    hist = lc.HistoryCalibrator("TST", daily, None, "2026-11-06").calibrate(policy(), "2026-11-06")
+    assert hist["target_min_spacing_atr"] == out["target_min_spacing_atr"]
+    assert hist["gap_fill_flag_atr"] == out["gap_fill_flag_atr"]
+    rows = {r["param_key"]: r for r in lc.to_rows("tst", out, policy(), date(2026, 11, 6),
+                                                  "run-7", "history", "ts")}
+    r = rows["target_min_spacing_atr"]
+    assert (r["value"], r["status"], r["method_id"], r["run_id"]) == (0.25, "ok", "policy_seed", "run-7")
+    assert r["policy_effective_from"] == "2015-01-02"
+
+
+def test_a_seed_change_is_a_policy_row():
+    p = policy(target_min_spacing_atr={"extra": {"seed": 0.30}, "effective_from": "2026-11-05"})
+    out = lc.calibrate("TST", _daily([101.0] * 30), None, p, "2026-11-06")
+    assert out["target_min_spacing_atr"].value == 0.30
+
+
+@pytest.mark.parametrize("key", ["target_min_spacing_atr", "gap_fill_flag_atr"])
+def test_a_policy_without_a_seeded_key_cannot_calibrate(key):
+    from lib.strat_levels import LevelParamsUnavailable
+    p = policy()
+    del p[key]
+    with pytest.raises(LevelParamsUnavailable, match=key):
+        lc.calibrate("TST", _daily([101.0] * 30), None, p, "2026-11-06")
+    with pytest.raises(LevelParamsUnavailable, match=key):
+        lc.HistoryCalibrator("TST", _daily([101.0] * 30), None, "2026-11-06").calibrate(p, "2026-11-06")

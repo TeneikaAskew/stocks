@@ -1895,6 +1895,14 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION,
+    -- Exits in thirds: the spaced plan targets (t1..t3 above keep the
+    -- gating targets the monitor and the existing outcome read).
+    ADD COLUMN IF NOT EXISTS calls_plan_t1_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t2_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t3_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t1_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t2_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t3_price    DOUBLE PRECISION,
 
     -- ── SHADOW: put leg re-anchored on the 9:31 open (audit §15.5) ───
     -- The brief anchors the playbook on the 8:31 price (yesterday's close).
@@ -1959,6 +1967,41 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS puts_entry_status     VARCHAR(16),
     ADD COLUMN IF NOT EXISTS puts_fill_price       DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_exit_reason      VARCHAR(8),
+
+    -- The brief's exit plan in thirds, scored (FEAT-STRAT-001 exits spec,
+    -- Design 6; outcome_resolver_version 2026-11-12.v3). Read from the row's
+    -- level_basis (plan targets, stop, exit_legs, entry_cutoff_et); a v2
+    -- basis falls back to the structured t1..t3 columns with the legs and
+    -- cutoff of the policy in force on the session. plan_entry_status:
+    -- 'entered', 'opened_through' (the first RTH bar opened at or beyond the
+    -- trigger), 'late_cross' (first cross in a bar starting at or after the
+    -- cutoff), 'no_cross', 'no_trigger'. plan_fill_price/_ts: the trigger, or
+    -- the open of a later bar that opened beyond it (entered only). plan_r:
+    -- sum over legs of (1/legs) x (exit - fill) x sign / |fill - stop|,
+    -- gross; NULL unless plan_r_status = 'ok'. plan_r_status, the first that
+    -- applies: 'targets_unavailable' (no plan published), 'stop_unavailable'
+    -- (no stop beyond the fill), 'not_entered', 'ok'. plan_t1..t3_hit_ts:
+    -- touches of the plan targets by the walk of t1_hit_ts (not exits).
+    -- plan_exit: each leg's exit in order, e.g. 't1,t2,close'. A stop-less
+    -- leg keeps its exits (targets or close) with plan_r NULL.
+    ADD COLUMN IF NOT EXISTS calls_plan_entry_status VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS calls_plan_fill_price  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_fill_ts     TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_r           DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_r_status    VARCHAR(24),
+    ADD COLUMN IF NOT EXISTS calls_plan_t1_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_t2_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_t3_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_exit        TEXT,
+    ADD COLUMN IF NOT EXISTS puts_plan_entry_status VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS puts_plan_fill_price  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_fill_ts     TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_r           DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_r_status    VARCHAR(24),
+    ADD COLUMN IF NOT EXISTS puts_plan_t1_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_t2_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_t3_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_exit        TEXT,
 
     -- ── Resolver metadata ────────────────────────────────────────────
     ADD COLUMN IF NOT EXISTS outcome_resolved_at   TIMESTAMPTZ,
@@ -2119,7 +2162,13 @@ ALTER TABLE premarket_analysis_history
     ADD COLUMN IF NOT EXISTS puts_stop_name        VARCHAR(20),
     ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
-    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION;
+    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t1_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t2_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t3_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t1_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t2_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t3_price    DOUBLE PRECISION;
 
 
 -- ============================================================================
@@ -2237,7 +2286,19 @@ INSERT INTO level_param_policy (
     ('target_neutral_2_r', 'filled_reach_share', 0.45, 750, 150, '{"persona": "neutral", "k": 2}', '2015-01-02', NULL),
     ('target_neutral_3_r', 'filled_reach_share', 0.30, 750, 150, '{"persona": "neutral", "k": 3}', '2015-01-02', NULL),
     ('target_conservative_1_r', 'filled_reach_share', 0.65, 750, 150, '{"persona": "conservative", "k": 1}', '2015-01-02', NULL),
-    ('target_conservative_2_r', 'filled_reach_share', 0.50, 750, 150, '{"persona": "conservative", "k": 2}', '2015-01-02', NULL)
+    ('target_conservative_2_r', 'filled_reach_share', 0.50, 750, 150, '{"persona": "conservative", "k": 2}', '2015-01-02', NULL),
+    -- Exits in thirds (docs/superpowers/specs/2026-11-11-feat-strat-001-brief-exits-in-thirds.md).
+    -- policy_seed: lib.level_calibration writes one ticker_level_params row
+    -- per ticker at the seed in force; a later per-ticker method replaces it
+    -- without a code change. policy: one value for every ticker.
+    ('target_min_spacing_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 0.25}', '2015-01-02',
+     'least distance from the trigger, or the target before, a published target keeps / ATR'),
+    ('gap_fill_flag_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 0.5}', '2015-01-02',
+     '|reference - prior close| / ATR at which a prior-close target is labelled a gap fill'),
+    ('exit_legs', 'policy', NULL, NULL, NULL, '{"legs": 3}', '2015-01-02',
+     'equal legs the exit plan sells, one at each spaced target'),
+    ('entry_cutoff_et', 'policy', NULL, NULL, NULL, '{"time_et": "10:00"}', '2015-01-02',
+     'last minute (ET, exclusive) a first cross of the trigger is an entry')
 ON CONFLICT (param_key, effective_from) DO NOTHING;
 
 

@@ -168,10 +168,11 @@ def test_no_numbers_on_the_level_and_plan_path(rel):
 
 def test_the_walk_reaches_the_rules_it_must_cover():
     """The walk is not vacuous: it reaches the side rule, the window check,
-    the cluster detector, the premarket acceptance and the persona plan."""
+    the cluster detector, the premarket acceptance, the target spacing (exits
+    in thirds spec) and the persona plan."""
     reach = set(_reachable(_tree("lib/strat_levels.py"), "build_session_levels"))
     assert {"_pick_side", "_within_staleness_window", "detect_level_clusters",
-            "_accept_premarket", "compute_gap_levels"} <= reach
+            "_accept_premarket", "compute_gap_levels", "_plan_targets"} <= reach
     plan = set(_reachable(_tree("lib/agents/trade_planner.py"), "compute_persona_plans"))
     assert {"_plan", "compute_risk_metrics", "_build_rationale"} <= plan
 

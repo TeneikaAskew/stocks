@@ -114,13 +114,22 @@ def test_persist_writes_level_basis_to_both_tables(monkeypatch, brief_basis):
                         lambda df, table, keys: captured.append((table, df.to_dict("records"))) or len(df))
     monkeypatch.setattr(database, "row_exists", lambda *a, **k: False)
     monkeypatch.delenv("BRIEF_AS_OF", raising=False)      # a live run
+    # Exits in thirds spec: the gating t1..t3 and the spaced plan targets
+    # (the Design 8 calls) are written beside each other to both tables.
+    prices = {"calls_t1_price": 253.0, "calls_t2_price": 275.0, "calls_t3_price": 280.0,
+              "calls_plan_t1_price": 275.0, "calls_plan_t2_price": 280.0,
+              "calls_plan_t3_price": 285.0, "puts_t1_price": 247.5, "puts_t2_price": 247.0,
+              "puts_t3_price": 225.0, "puts_plan_t1_price": 225.0, "puts_plan_t2_price": 220.0,
+              "puts_plan_t3_price": 215.0}
     brief = {"analysis_date": SESSION,
-             "tickers": {"QQQ": {"status": None, "price": 647.05, "level_basis": brief_basis}}}
+             "tickers": {"QQQ": {"status": None, "price": 647.05, "level_basis": brief_basis,
+                                 **prices}}}
     persist_to_cloud_sql(brief, allow_update=True, run_kind="scheduled", triggered_by="test")
     tables = {t: rows for t, rows in captured}
     assert set(tables) == {"premarket_analysis_history", "premarket_analysis"}
     for rows in tables.values():
         assert rows[0]["level_basis"] == brief_basis
+        assert {k: rows[0][k] for k in prices} == prices
     assert tables["premarket_analysis"][0]["run_kind"] == "live"
 
 
@@ -431,3 +440,78 @@ def test_read_live_level_basis_raises_on_a_failed_query_and_none_on_a_missing_co
                               "SPY", "2026-11-06")
     missing = _raising(RuntimeError('column "level_basis" does not exist'))
     assert read_live_level_basis(missing, "SPY", "2026-11-06") is None
+
+
+# ── exits in thirds spec, Design 7: level_basis and the rule version ───
+
+EXIT_KEYS = ("target_min_spacing_atr", "gap_fill_flag_atr", "exit_legs", "entry_cutoff_et")
+
+
+def _exit_picks(sl):
+    return [([round(r["price"], 2) for r in side.targets],
+             [round(r["price"], 2) for r in side.gate_targets],
+             [round(r["price"], 2) for r in side.skipped], side.target_status)
+            for side in (sl.long, sl.short)]
+
+
+def test_v3_basis_records_the_exit_parameters():
+    from tests.lib.session_levels_helpers import d8_basis
+    stored = json.loads(json.dumps(SessionLevels.from_basis(d8_basis()).to_basis()))
+    assert LEVEL_RULE_VERSION == stored["rule_version"] == "feat-strat-001.v3"
+    for key in EXIT_KEYS:
+        p = stored["params"][key]
+        assert p["status"] == "ok" and p["value"] is not None
+        assert p["method_id"] and p["effective_from"]
+    assert stored["params"]["target_min_spacing_atr"]["value"] == 0.25
+    assert stored["params"]["exit_legs"]["value"] == 3.0
+    assert stored["long"]["plan"]["legs"] == 3
+
+
+def test_from_basis_v3_rebuilds_the_recorded_plan_after_the_row_changes():
+    from tests.lib.session_levels_helpers import d8_basis, d8_params
+    stored = json.loads(json.dumps(SessionLevels.from_basis(d8_basis()).to_basis()))
+    rebuilt = SessionLevels.from_basis(stored)
+    offered = SessionLevels.from_basis(stored, params=d8_params(spacing=0.05))
+    want = [([275.0, 280.0, 285.0], [253.0, 275.0, 280.0], [253.0], "ok"),
+            ([225.0, 220.0, 215.0], [247.5, 247.0, 225.0], [247.5, 247.0], "ok")]
+    assert _exit_picks(rebuilt) == _exit_picks(offered) == want
+
+
+def test_from_basis_v2_rebuilds_the_v2_targets():
+    """A stored feat-strat-001.v2 basis records no spacing: it rebuilds the
+    v2 targets (the gating ones), no skipped list and no plan, and the brief
+    copy is the v2 copy."""
+    from tests.lib.session_levels_helpers import d8_basis
+    stored = json.loads(json.dumps(d8_basis()))
+    stored["rule_version"] = "feat-strat-001.v2"
+    for key in EXIT_KEYS:
+        stored["params"].pop(key)
+    rebuilt = SessionLevels.from_basis(stored)
+    assert rebuilt.to_basis()["rule_version"] == "feat-strat-001.v2"
+    assert _exit_picks(rebuilt) == [([253.0, 275.0, 280.0], [253.0, 275.0, 280.0], [], "ok"),
+                                    ([247.5, 247.0, 225.0], [247.5, 247.0, 225.0], [], "ok")]
+    assert rebuilt.long.plan is None
+    lm = rebuilt.to_level_map()
+    assert "plan" not in lm.calls_trigger
+    from lib.strat_levels import format_levels_for_brief
+    text = format_levels_for_brief(lm, "neutral")
+    assert "    T1: 253.00 (PDH)\n" in text and "sell" not in text
+
+
+def test_a_replay_with_no_spacing_row_publishes_no_unspaced_target():
+    """A session the history run did not cover for the exits keys reads
+    target_min_spacing_atr as params_unavailable: the side keeps its
+    trigger and stop and publishes no target, never the unspaced ones."""
+    from tests.lib.level_params_fixtures import LEGACY_1753_VALUES, ParamsDb
+    from tests.lib.session_levels_helpers import D8_LEVELS, D8_PREMARKET
+    db = ParamsDb()
+    db.write("TST", {k: v for k, v in LEGACY_1753_VALUES.items()
+                     if k not in ("target_min_spacing_atr", "gap_fill_flag_atr")},
+             effective_from=date(2015, 1, 2))
+    lp = db.load(["TST"], SESSION)["TST"]
+    assert lp.status("target_min_spacing_atr") == "params_unavailable"
+    sl = SessionLevels.from_basis(basis(D8_LEVELS, prior_close=247.0, atr=14.0,
+                                        premarket=D8_PREMARKET, params=lp))
+    for side in (sl.long, sl.short):
+        assert side.trigger is not None and side.stop is not None
+        assert side.targets == [] and side.target_status == "params_unavailable"
