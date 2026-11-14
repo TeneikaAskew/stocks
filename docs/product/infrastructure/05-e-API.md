@@ -121,12 +121,12 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `GET` | `/api/live/status` | [`platform/api/routers/live.py:172`](../../../platform/api/routers/live.py#L172) | Return current market open/closed status based on Eastern Time. |
 | `GET` | `/api/magnitude/{ticker}/{tf}/at/{ts}` | [`platform/api/routers/magnitude.py:183`](../../../platform/api/routers/magnitude.py#L183) | Return the prediction for exactly this (ticker, tf, ts). |
 | `GET` | `/api/magnitude/{ticker}/{tf}/latest` | [`platform/api/routers/magnitude.py:129`](../../../platform/api/routers/magnitude.py#L129) | Return the most-recent prediction for this (ticker, tf). |
-| `GET` | `/api/market/coverage` | [`platform/api/main.py:1265`](../../../platform/api/main.py#L1265) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
+| `GET` | `/api/market/coverage` | [`platform/api/main.py:1268`](../../../platform/api/main.py#L1268) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
 | `GET` | `/api/market/data/{ticker}/{date}` | [`platform/api/main.py:908`](../../../platform/api/main.py#L908) | Load intraday OHLCV data for a specific ticker and date. |
 | `GET` | `/api/market/dates/{ticker}` | [`platform/api/main.py:610`](../../../platform/api/main.py#L610) | List available trading dates for a ticker (Cloud SQL → local fallback). |
-| `GET` | `/api/market/most-active` | [`platform/api/main.py:1544`](../../../platform/api/main.py#L1544) | Most-active tickers snapshot, with per-ticker snapshot sparklines. |
+| `GET` | `/api/market/most-active` | [`platform/api/main.py:1547`](../../../platform/api/main.py#L1547) | Most-active tickers snapshot, with per-ticker snapshot sparklines. |
 | `GET` | `/api/market/reference/{ticker}/{date}` | [`platform/api/main.py:1089`](../../../platform/api/main.py#L1089) | Get previous day OHLC reference levels for support/resistance. |
-| `GET` | `/api/market/sectors` | [`platform/api/main.py:1436`](../../../platform/api/main.py#L1436) | Sector rotation snapshot computed from SPDR sector ETF daily closes. |
+| `GET` | `/api/market/sectors` | [`platform/api/main.py:1439`](../../../platform/api/main.py#L1439) | Sector rotation snapshot computed from SPDR sector ETF daily closes. |
 | `GET` | `/api/me` | [`platform/api/main.py:285`](../../../platform/api/main.py#L285) | Return the authenticated identity + role flags. |
 | `GET` | `/api/me/preferences` | [`platform/api/routers/preferences.py:132`](../../../platform/api/routers/preferences.py#L132) |  |
 | `PUT` | `/api/me/preferences` | [`platform/api/routers/preferences.py:149`](../../../platform/api/routers/preferences.py#L149) | Upsert the provided subset of fields and return the full stored row. |

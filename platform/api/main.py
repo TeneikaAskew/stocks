@@ -1094,8 +1094,11 @@ def get_reference_levels(ticker: str, date: str):
     date format: YYYYMMDD (e.g., 20260220) or YYYY-MM-DD.
 
     One read: the five newest `market_data_daily` rows dated before the
-    requested date. The newest is the reference day; `week` is the high/low
-    across those rows (null under two rows). `source` is always `cloud_sql`.
+    requested date that hold a close. A row the premarket refresh has
+    inserted and the nightly fetch has not yet filled has no prices and is
+    never the reference day. The newest is the reference day; `week` is the
+    high/low across those rows (null under two rows). `source` is always
+    `cloud_sql`.
     `stale_days` is the calendar days from the reference day to the requested
     date when the request is under 30 days old and that gap is over 3, else 0.
 
@@ -1117,7 +1120,7 @@ def get_reference_levels(ticker: str, date: str):
                 """
                 SELECT date, open, high, low, close, rsi_14
                 FROM market_data_daily
-                WHERE ticker = :ticker AND date < :dt
+                WHERE ticker = :ticker AND date < :dt AND close IS NOT NULL
                 ORDER BY date DESC LIMIT 5
                 """,
                 {"ticker": ticker_upper, "dt": date_str},

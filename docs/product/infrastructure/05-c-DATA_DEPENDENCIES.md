@@ -699,7 +699,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/features/experimental/cross_asset.py`](../../../lib/features/experimental/cross_asset.py) — line [45](../../../lib/features/experimental/cross_asset.py#L45)
 - [`lib/features/experimental/vol_regime.py`](../../../lib/features/experimental/vol_regime.py) — line [52](../../../lib/features/experimental/vol_regime.py#L52)
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1816](../../../lib/strat_levels.py#L1816)
-- [`platform/api/main.py`](../../../platform/api/main.py) — line [1119](../../../platform/api/main.py#L1119), [1285](../../../platform/api/main.py#L1285), [1455](../../../platform/api/main.py#L1455), [1457](../../../platform/api/main.py#L1457)
+- [`platform/api/main.py`](../../../platform/api/main.py) — line [1122](../../../platform/api/main.py#L1122), [1288](../../../platform/api/main.py#L1288), [1458](../../../platform/api/main.py#L1458), [1460](../../../platform/api/main.py#L1460)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [786](../../../platform/api/routers/catalysts.py#L786)
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [150](../../../platform/api/routers/dashboard.py#L150), [285](../../../platform/api/routers/dashboard.py#L285)
 - [`platform/api/routers/live.py`](../../../platform/api/routers/live.py) — line [546](../../../platform/api/routers/live.py#L546)
@@ -724,7 +724,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [457](../../../lib/data_loader.py#L457)
 - [`lib/features/intraday_flow.py`](../../../lib/features/intraday_flow.py) — line [125](../../../lib/features/intraday_flow.py#L125)
 - [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [599](../../../lib/options_intraday.py#L599)
-- [`platform/api/main.py`](../../../platform/api/main.py) — line [625](../../../platform/api/main.py#L625), [761](../../../platform/api/main.py#L761), [1289](../../../platform/api/main.py#L1289), [1700](../../../platform/api/main.py#L1700)
+- [`platform/api/main.py`](../../../platform/api/main.py) — line [625](../../../platform/api/main.py#L625), [761](../../../platform/api/main.py#L761), [1292](../../../platform/api/main.py#L1292), [1703](../../../platform/api/main.py#L1703)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [208](../../../scripts/analysis/per_ticker_calibration.py#L208), [205](../../../scripts/analysis/per_ticker_calibration.py#L205)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [647](../../../scripts/audit_data_freshness.py#L647), [648](../../../scripts/audit_data_freshness.py#L648), [807](../../../scripts/audit_data_freshness.py#L807)
 - [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [133](../../../scripts/backfill_and_replay.py#L133)
@@ -861,7 +861,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [496](../../../lib/agents/ranker/signals.py#L496)
 
 ### `top_movers_intraday`
-- [`platform/api/main.py`](../../../platform/api/main.py) — line [1567](../../../platform/api/main.py#L1567), [1568](../../../platform/api/main.py#L1568)
+- [`platform/api/main.py`](../../../platform/api/main.py) — line [1570](../../../platform/api/main.py#L1570), [1571](../../../platform/api/main.py#L1571)
 
 ### `trades`
 - [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [176](../../../gcp/trade_logger.py#L176), [212](../../../gcp/trade_logger.py#L212), [243](../../../gcp/trade_logger.py#L243)

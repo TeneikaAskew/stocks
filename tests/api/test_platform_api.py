@@ -1322,6 +1322,7 @@ class TestReferenceAPI:
         assert len(queries) == 1
         sql, params = queries[0]
         assert "market_data_daily" in sql and "LIMIT 5" in sql
+        assert "close IS NOT NULL" in sql
         assert params == {"ticker": "IWM", "dt": requested.isoformat()}
         assert vendor == []
         for gone in ("_fetch_av_daily_reference", "_fetch_week_range", "AV_API_KEY", "AV_BASE"):
@@ -1394,6 +1395,76 @@ class TestReferenceAPI:
         assert r.status_code == 200
         assert r.json()["stale_days"] == expected
         assert r.json()["week"] is None
+
+    @staticmethod
+    def _daily_table(monkeypatch, rows):
+        """A real `market_data_daily` (in-memory SQLite) behind the strict
+        query helper, so the route's own SQL text runs and its WHERE clause
+        decides which rows come back. `rows` is (date, open, high, low,
+        close, rsi_14) per row; None is NULL."""
+        import sqlite3
+
+        from gcp import database
+        db = sqlite3.connect(":memory:", check_same_thread=False)
+        db.execute("CREATE TABLE market_data_daily (ticker TEXT, date TEXT, open REAL, "
+                   "high REAL, low REAL, close REAL, rsi_14 REAL)")
+        db.executemany("INSERT INTO market_data_daily VALUES ('IWM', ?, ?, ?, ?, ?, ?)", rows)
+        monkeypatch.setattr(
+            database, "query_to_dataframe_strict",
+            lambda sql, params=None, timeout_s=None: pd.read_sql_query(sql, db, params=params))
+
+    # The 08:20 ET premarket refresh inserts the day's market_data_daily row
+    # with only its pre_* columns (gcp/fetchers/fetch_premarket_refresh.py,
+    # _upsert_premarket_sql); open, high, low and close stay NULL until the
+    # 23:00 ET fetch fills them. A reference day with null prices is not a
+    # value (CLAUDE.md 3.7), so such a row is never the reference day.
+    _PREMARKET_ONLY = ("2020-03-16", None, None, None, None, None)
+
+    def test_reference_skips_a_daily_row_that_has_no_prices_yet(self, client, monkeypatch):
+        _flags(monkeypatch, True, False)
+        self._daily_table(monkeypatch, [
+            self._PREMARKET_ONLY,
+            ("2020-03-13", 121.0, 125.0, 118.0, 120.5, 40.0),
+            ("2020-03-12", 122.0, 126.0, 117.0, 121.5, 41.0),
+            ("2020-03-11", 123.0, 127.0, 116.0, 122.5, 42.0),
+            ("2020-03-10", 124.0, 128.0, 115.0, 123.5, 43.0),
+            ("2020-03-09", 125.0, 129.0, 114.0, 124.5, 44.0),
+        ])
+
+        r = client.get("/api/market/reference/IWM/20200317")
+
+        assert r.status_code == 200
+        body = r.json()
+        # the newest COMPLETE row, not the newest row
+        assert body["date"] == "20200313"
+        assert (body["open"], body["high"], body["low"], body["close"]) == (121.0, 125.0, 118.0, 120.5)
+        # and `week` is the five complete rows, without the premarket-only one
+        assert body["week"] == {
+            "high": 129.0, "low": 114.0, "avg_close": 122.5, "avg_rsi_14": 42.0,
+            "start_date": "2020-03-09", "end_date": "2020-03-13", "sessions": 5,
+        }
+
+    def test_reference_404_when_the_only_daily_row_has_no_prices(self, client, monkeypatch):
+        _flags(monkeypatch, True, False)
+        self._daily_table(monkeypatch, [self._PREMARKET_ONLY])
+
+        r = client.get("/api/market/reference/IWM/20200317")
+
+        assert r.status_code == 404
+        assert r.json() == {
+            "detail": "No daily bar for IWM before 20200317 in market_data_daily."}
+
+    @pytest.mark.parametrize("far", ["99991231", "9999-12-31"])
+    def test_reference_far_future_date_is_an_answer_not_a_500(self, client, monkeypatch, far):
+        """The bar route's window arithmetic overflowed on year 9999. This
+        route builds no window: the date is bound as it is."""
+        _flags(monkeypatch, True, False)
+        self._daily_table(monkeypatch, [("2020-03-13", 121.0, 125.0, 118.0, 120.5, 40.0)])
+
+        r = _loud(client).get(f"/api/market/reference/IWM/{far}")
+
+        assert r.status_code == 200
+        assert r.json()["date"] == "20200313"
 
     def test_reference_accepts_the_dashed_date(self, client, monkeypatch):
         """The handler has always passed YYYY-MM-DD through to the query."""
