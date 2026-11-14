@@ -768,6 +768,8 @@ def get_grid_live(
             expirations_filter=exp_filter,
         )
         payload = summary.to_dict()
+        if payload.get("reason") is None:
+            payload.pop("reason", None)
         # The cached payload stores the fill-time observation; hits re-stamp
         # from a copy (`_serve_cached`), never in place.
         payload["snapshot_provenance"] = build_snapshot_provenance(evidence, _now_utc())
@@ -844,6 +846,8 @@ def get_grid_historical(
             expirations_filter=exp_filter,
         )
         payload = summary.to_dict()
+        if payload.get("reason") is None:
+            payload.pop("reason", None)
         payload["snapshot_provenance"] = build_snapshot_provenance(evidence, _now_utc())
         _HIST_GRID_CACHE[cache_key] = payload
         response.headers["Cache-Control"] = "public, max-age=43200"
@@ -946,7 +950,7 @@ def _build_nodes_payload(
     midpoints: list[dict] = []  # 1-D summary doesn't yet surface midpoints
                                 # via build_summary; defer to Phase D.
 
-    return {
+    payload = {
         "ticker": ticker.upper(),
         "snapshot_ts": ts_iso,
         "snapshot_date": (snapshot_date.isoformat() if snapshot_date else None),
@@ -969,6 +973,9 @@ def _build_nodes_payload(
         "tactical_summary": None,   # Phase D — wires AI insight pipeline
         "warnings": list(summary_1d.warnings),
     }
+    if summary_1d.reason is not None:
+        payload["reason"] = summary_1d.reason
+    return payload
 
 
 @router.get("/api/options/{ticker}/nodes", response_model=GammaNodesResponse, response_model_exclude_unset=True)

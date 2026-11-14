@@ -181,6 +181,7 @@ class TestLevelsRoute:
         assert data["regime"] == "unknown" and data["total_gex"] is None and data["gamma_balance"] is None and data["gamma_flip"] is None
         assert data["kings"] == [] and data["levels"] == [] and data["chain_size"] == 3
         assert gamma.partial_chain_warning("puts_only") in data["warnings"]
+        assert data["reason"] == "calls_missing"
 
 
 class TestGridRoutes:
@@ -195,6 +196,7 @@ class TestGridRoutes:
         data = grid_client.get("/api/options/SPY/grid").json()
         assert data["data_source"] == "realtime" and data["regime"] == "unknown" and data["total_gex"] is None and data["total_vex"] is None and data["cells"] == []
         assert gamma.partial_chain_warning("calls_only") in data["warnings"] and data["snapshot_provenance"] is not None
+        assert data["reason"] == "puts_missing"
 
     def test_unavailable_envelope_totals_are_null(self, grid_client, clock, monkeypatch):
         _install_query_router(monkeypatch)
@@ -213,6 +215,7 @@ class TestNodesRoutes:
         _install_query_router(monkeypatch, realtime_df=df[df["option_type"] == "puts"])
         data = grid_client.get("/api/options/SPY/nodes").json()
         assert data["regime"] == "unknown" and data["total_gex"] is None and data["total_vex"] is None and data["king"] is None and data["gates"] == [] and data["opex_nodes"] == []
+        assert data["reason"] == "calls_missing"
 
     def test_unavailable_nodes_totals_are_null(self, grid_client, monkeypatch):
         _install_query_router(monkeypatch)

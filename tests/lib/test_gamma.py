@@ -766,15 +766,18 @@ class TestBuildGridSummary:
         assert g.cells == [] and g.expirations == [] and g.strikes == []
         assert g.spot.method == "delta"
         assert gamma.partial_chain_warning("calls_only") in g.warnings
+        assert g.reason == "puts_missing"
 
     def test_puts_only_grid_is_unavailable(self):
         opts = [o for o in self._build_chain() if o["type"] == "put"]
         g = gamma.build_grid_summary("XYZ", "2026-05-23", opts, window_pct=15.0)
         assert g.total_gex is None and g.total_vex is None and g.cells == []
+        assert g.reason == "calls_missing"
 
     def test_both_sided_grid_numerics_unchanged(self):
         g = gamma.build_grid_summary("XYZ", "2026-05-23", self._build_chain(), window_pct=15.0)
         assert len(g.cells) == 5 and g.total_gex == sum(c.gex for c in g.cells) and g.total_vex == sum(c.vex for c in g.cells)
+        assert g.reason is None
 
     def test_grid_no_spot_returns_null_totals(self):
         g = gamma.build_grid_summary("XYZ", "2026-05-23", [], window_pct=15.0)
@@ -1180,6 +1183,7 @@ class TestPartialChainIsUnavailable:
         assert s.levels == [] and s.kings == [] and s.gates == []
         assert s.spot.method == "delta" and s.spot.price == 100.0
         assert gamma.partial_chain_warning("calls_only") in s.warnings
+        assert s.reason == "puts_missing"
 
     def test_puts_only_chain_is_unavailable_with_median_spot(self):
         rows = [_chain_row(s, typ="put") for s in (98, 100, 102)]
@@ -1187,12 +1191,14 @@ class TestPartialChainIsUnavailable:
         assert s.total_gex is None and s.regime == "unknown"
         assert s.spot.method == "median_strike"
         assert gamma.partial_chain_warning("puts_only") in s.warnings
+        assert s.reason == "calls_missing"
 
     def test_both_sided_no_crossing_keeps_its_own_warning_not_the_partial_one(self):
         opts = [{"type": "put", "strike": 95, "open_interest": 500, "gamma": 0.05, "expiration": "2025-01-01"},
                 {"type": "call", "strike": 105, "open_interest": 2000, "gamma": 0.05, "expiration": "2025-01-01"}]
         s = gamma.build_summary("XYZ", "2025-01-01", opts, spot_override=100)
         assert s.regime == "positive_gamma" and s.total_gex > 0
+        assert s.reason is None
         assert not any("no put contracts" in w or "no call contracts" in w for w in s.warnings)
 
     def test_chain_sides_and_reasons(self):

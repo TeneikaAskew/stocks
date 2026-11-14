@@ -2785,6 +2785,17 @@
             "title": "Levels",
             "type": "array"
           },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
           "regime": {
             "title": "Regime",
             "type": "string"
@@ -2925,6 +2936,17 @@
             },
             "title": "Opex Nodes",
             "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
           },
           "regime": {
             "title": "Regime",

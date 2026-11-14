@@ -997,6 +997,7 @@ class GammaLevelsResponse(ApiModel):
     gamma_balance_levels: list[GammaLevel]
     window_pct: float
     warnings: list[str]
+    reason: Optional[str] = None
     snapshot_timestamp: Optional[str] = None
     chain_size: int
     snapshot_provenance: Optional[SnapshotProvenance] = None
@@ -1086,6 +1087,7 @@ class GammaNodesResponse(ApiModel):
     opex_nodes: list[OpexNode]
     tactical_summary: Any = None
     warnings: list[str]
+    reason: Optional[str] = None
 
 
 class GridSeriesRow(ApiModel):

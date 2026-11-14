@@ -900,8 +900,11 @@ def get_gamma_levels(
         window_pct=window_pct,
     )
 
+    summary_dict = summary.to_dict()
+    if summary_dict.get("reason") is None:
+        summary_dict.pop("reason", None)
     return {
-        **summary.to_dict(),
+        **summary_dict,
         "snapshot_timestamp": chain_response.get("snapshot_timestamp"),
         "chain_size": len(options),
         # `with_observation` returns a new dict stamped with this response's

@@ -129,6 +129,9 @@ class GammaSummary:
     gamma_balance_levels: list[Level]
     window_pct: float
     warnings: list[str] = field(default_factory=list)
+    # Machine-readable partial-chain reason (puts_missing | calls_missing |
+    # empty_chain); None on every both-sided summary.
+    reason: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -200,6 +203,9 @@ class GammaGridSummary:
     strikes: list[float]      # ascending — row headers
     window_pct: float
     warnings: list[str] = field(default_factory=list)
+    # Machine-readable partial-chain reason (puts_missing | calls_missing |
+    # empty_chain); None on every both-sided summary.
+    reason: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -1097,6 +1103,7 @@ def build_summary(
             total_gex=None, levels=[], kings=[], gates=[],
             gamma_balance_levels=[], window_pct=window_pct,
             warnings=warnings + [partial_chain_warning(sides)],
+            reason=partial_chain_reason(sides),
         )
 
     if spot.price <= 0:
@@ -1303,6 +1310,7 @@ def build_grid_summary(
             strikes=[],
             window_pct=window_pct,
             warnings=warnings + [partial_chain_warning(sides)],
+            reason=partial_chain_reason(sides),
         )
 
     if spot.price <= 0:
