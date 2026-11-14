@@ -18,7 +18,6 @@ import json
 import logging
 import subprocess
 import sys
-import textwrap
 import weakref
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -1416,7 +1415,6 @@ def history(monkeypatch, argv, *, configured=True, bucket="b", export=None, env=
     def no_fetch(*_args, **_kwargs):
         pytest.fail("--export-bars-from fetches nothing")
 
-    code, calls = None, None
     monkeypatch.setattr(fai, "get_api_keys", no_fetch)
     if bucket is None:
         monkeypatch.delenv("GCS_BUCKET", raising=False)
