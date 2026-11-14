@@ -3377,6 +3377,40 @@ def _late_build_refusal(brief: dict, tickers: list[str], clock: LateSlotClock) -
     return None
 
 
+class LateSlotWrite:
+    """What persist_to_cloud_sql needs to do the late slot's one guarded
+    overwrite, and where it reports what happened.
+
+    In: the slot's clock, the brief tickers, the rows in force as this run
+    read them after its wait, the build check's refusal (or None) and,
+    for tests, the clock to read at the write check.
+    Out, None until persist_to_cloud_sql sets them: `outcome` ('applied',
+    'build_not_usable', 'row_changed' or 'past_cutoff'), `reason`,
+    `written_at` (the UTC instant of the write check, stored as
+    analysis_ts), `history_recorded` and `rows_now` (the re-read)."""
+
+    def __init__(self, clock: LateSlotClock, tickers: list[str], rows_read: dict,
+                 refusal: Optional[str] = None,
+                 now: Optional[Callable[[], datetime]] = None):
+        self.clock = clock
+        self.tickers = list(tickers)
+        self.rows_read = rows_read
+        self.refusal = refusal
+        self.now = now
+        self.outcome: Optional[str] = None
+        self.reason: Optional[str] = None
+        self.written_at: Optional[datetime] = None
+        self.history_recorded: Optional[bool] = None
+        self.rows_now: Optional[dict] = None
+
+
+def _row_identity(row: Optional[dict]) -> Optional[tuple]:
+    """What must not move between the late run's read and its write."""
+    if row is None:
+        return None
+    return (row.get('run_kind'), row.get('analysis_ts'), row.get('built_at'))
+
+
 # ── Cloud SQL Persistence ───────────────────────────────────────────────────
 
 def _resolve_run_kind_and_update(allow_update_arg: bool) -> tuple[bool, str]:
@@ -3403,7 +3437,8 @@ def _resolve_run_kind_and_update(allow_update_arg: bool) -> tuple[bool, str]:
 
 def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
                          run_kind: str = 'scheduled',
-                         triggered_by: Optional[str] = None) -> int:
+                         triggered_by: Optional[str] = None,
+                         late_slot: Optional[LateSlotWrite] = None) -> int:
     """Write premarket analysis rows to Cloud SQL.
 
     Always INSERTs a row into `premarket_analysis_history` (audit
@@ -3417,6 +3452,10 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
 
     See docs/plans/MORNING_RUN_PROTECTION_PLAN.md for the rationale.
     """
+    if late_slot is not None and (allow_update or _as_of_override() is not None):
+        # The operator's overwrite and a replay have their own rules; the
+        # late slot's guarded overwrite is neither (decision G).
+        raise ValueError("late_slot cannot be combined with allow_update or BRIEF_AS_OF")
     try:
         from gcp.database import (
             is_cloud_sql_configured, upsert_dataframe, bulk_insert_dataframe,
@@ -3559,10 +3598,6 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'level_basis': data.get('level_basis'),
         })
 
-    if not rows:
-        return 0
-
-    # Step 1 — always insert into history (append-only).
     # When a ticker is stale, populate the `notes` column with a
     # human-readable explanation so a SELECT on history rows can
     # immediately distinguish "the brief ran healthy" from "the
@@ -3583,15 +3618,91 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             return f"PLAYBOOK_FAILED: {brief['tickers'][ticker].get('playbook_error')}"
         return None
 
-    history_rows = [
-        {**row, 'run_kind': run_kind, 'triggered_by': triggered_by,
-         'notes': _row_notes(row)}
-        for row in rows
-    ]
-    history_df = pd.DataFrame(history_rows)
-    n_hist = bulk_insert_dataframe(history_df, 'premarket_analysis_history')
-    logger.info("Inserted %d rows into premarket_analysis_history (run_kind=%s)",
-                n_hist, run_kind)
+    def _insert_history(late_note: Optional[str] = None) -> int:
+        """The history rows of this run (append-only). `late_note` is the
+        late slot's LATE_SLOT_APPLIED or LATE_SLOT_NOT_APPLIED text, put in
+        front of the ticker's own stale or failed note when it has one."""
+        def _notes(row):
+            own = _row_notes(row)
+            if late_note is None:
+                return own
+            return f"{late_note}; {own}" if own else late_note
+
+        history_rows = [
+            {**row, 'run_kind': run_kind, 'triggered_by': triggered_by,
+             'notes': _notes(row)}
+            for row in rows
+        ]
+        history_df = pd.DataFrame(history_rows)
+        n_hist = bulk_insert_dataframe(history_df, 'premarket_analysis_history')
+        logger.info("Inserted %d rows into premarket_analysis_history (run_kind=%s)",
+                    n_hist, run_kind)
+        return n_hist
+
+    if late_slot is not None:
+        # The late slot (BRIEF_RUN_SLOT=late): the one scheduled path that
+        # replaces a live canonical row. All tickers or none, one statement,
+        # canonical first and history second, so a late history row's notes
+        # say what happened to the canonical row.
+        def _not_applied(outcome: str, reason: str) -> int:
+            late_slot.outcome, late_slot.reason = outcome, reason
+            logger.warning("late slot not applied: %s %s", outcome, reason)
+            if rows:
+                _insert_history(f"LATE_SLOT_NOT_APPLIED: {outcome} {reason}")
+                late_slot.history_recorded = True
+            return 0
+
+        if late_slot.refusal:
+            return _not_applied('build_not_usable', late_slot.refusal)
+
+        # Re-read the rows in force: a row another writer changed since this
+        # run read them is not this run's to replace. A failed read raises.
+        rows_now = _read_rows_in_force(analysis_date, late_slot.tickers)
+        late_slot.rows_now = rows_now
+        changed = [t for t in late_slot.tickers
+                   if _row_identity(late_slot.rows_read.get(t)) != _row_identity(rows_now.get(t))]
+        if changed:
+            return _not_applied(
+                'row_changed', f"changed since this run read them: {', '.join(changed)}")
+
+        # The cutoff, on the exchange's clock, just before the one statement.
+        checked = (late_slot.now or _eastern_now)()
+        if as_utc_instant(checked) >= late_slot.clock.write_cutoff:
+            return _not_applied(
+                'past_cutoff',
+                f"write check at {as_eastern_time(checked):%H:%M:%S} ET, at or after the "
+                f"write cutoff {as_eastern_time(late_slot.clock.write_cutoff):%H:%M:%S} ET")
+
+        written_at = as_utc_instant(checked)
+        late_rows = [{**r, 'run_kind': 'live', 'analysis_ts': written_at}
+                     for r in rows if r['ticker'] not in (playbook_failed | stale_data)]
+        if sorted(r['ticker'] for r in late_rows) != sorted(late_slot.tickers):
+            return _not_applied(
+                'build_not_usable',
+                f"rows built for {sorted(r['ticker'] for r in late_rows)}, "
+                f"brief tickers {sorted(late_slot.tickers)}")
+
+        # One statement for every brief ticker: all change or none does. A
+        # canonical write that raises propagates and no history row is written.
+        n = upsert_dataframe(pd.DataFrame(late_rows), 'premarket_analysis',
+                             ['analysis_date', 'ticker'])
+        late_slot.outcome, late_slot.reason, late_slot.written_at = 'applied', None, written_at
+        logger.info("late slot: UPSERTED %d rows to premarket_analysis at %s ET",
+                    n, f"{as_eastern_time(checked):%H:%M:%S}")
+        try:
+            _insert_history('LATE_SLOT_APPLIED')
+            late_slot.history_recorded = True
+        except Exception:  # noqa: BLE001 -- reported: history_recorded False, the run exits 1
+            logger.exception("late slot: the canonical rows were rewritten but the "
+                             "history insert failed")
+            late_slot.history_recorded = False
+        return n
+
+    if not rows:
+        return 0
+
+    # Step 1 — always insert into history (append-only).
+    _insert_history()
 
     # Step 2 — write to current table. Per-ticker conditional UPSERT
     # protects the canonical morning row when allow_update=False.

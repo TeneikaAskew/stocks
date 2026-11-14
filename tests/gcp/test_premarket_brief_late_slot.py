@@ -795,3 +795,200 @@ class TestLateBuildCheck:
 
     def test_a_build_of_no_tickers_is_refused(self):
         assert pb._late_build_refusal({'tickers': {}}, T, CLOCK) == 'IWM: not built'
+
+
+# ── The late write in persist_to_cloud_sql ─────────────────────────────────
+
+class _WriteDoubles:
+    """gcp.database's writers and the re-read, recorded in call order."""
+
+    def __init__(self, monkeypatch):
+        import gcp.database as database
+
+        self.calls: list = []          # ('upsert' | 'insert' | 'exists', frame or where)
+        self.fail: dict = {}           # 'upsert' | 'insert' -> exception to raise
+        self.now_rows = {t: {'run_kind': 'live', 'analysis_ts': _utc('08:30:54'),
+                             'built_at': EARLY_BUILT_AT} for t in T}
+        self.read_rows = lambda d, t: self.now_rows
+
+        def upsert(df, table, keys):
+            if 'upsert' in self.fail:
+                raise self.fail['upsert']
+            assert (table, keys) == ('premarket_analysis', ['analysis_date', 'ticker'])
+            self.calls.append(('upsert', df))
+            return len(df)
+
+        def insert(df, table):
+            if 'insert' in self.fail:
+                raise self.fail['insert']
+            assert table == 'premarket_analysis_history'
+            self.calls.append(('insert', df))
+            return len(df)
+
+        def exists(table, where):
+            self.calls.append(('exists', where))
+            return False
+
+        monkeypatch.delenv('BRIEF_AS_OF', raising=False)
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(database, 'upsert_dataframe', upsert)
+        monkeypatch.setattr(database, 'bulk_insert_dataframe', insert)
+        monkeypatch.setattr(database, 'row_exists', exists)
+        monkeypatch.setattr(pb, '_read_rows_in_force', lambda d, t: self.read_rows(d, t))
+
+    def kinds(self):
+        return [kind for kind, _ in self.calls]
+
+    def late(self, at: str, *, refusal=None, tickers=None):
+        """A LateSlotWrite whose rows_read equal now_rows as they are now
+        and whose clock reads `at` Eastern on the session date."""
+        instant = datetime.fromisoformat(f'{D} {at}').replace(tzinfo=ET)
+        return pb.LateSlotWrite(CLOCK, list(tickers or T), copy.deepcopy(self.now_rows),
+                                refusal=refusal, now=lambda: instant)
+
+
+@pytest.fixture
+def db(monkeypatch):
+    return _WriteDoubles(monkeypatch)
+
+
+class TestLateWrite:
+    def test_applied(self, db):
+        w = db.late('09:21:30')
+        assert pb.persist_to_cloud_sql(_late_brief(), run_kind='scheduled', triggered_by='x',
+                                       late_slot=w) == 3
+        assert db.kinds() == ['upsert', 'insert']
+        df = db.calls[0][1]
+        assert sorted(df['ticker']) == list(TICKERS) and set(df['run_kind']) == {'live'}
+        assert set(df['analysis_ts']) == {datetime.fromisoformat('2026-11-13T14:21:30+00:00')}
+        assert set(db.calls[1][1]['notes']) == {'LATE_SLOT_APPLIED'}
+        assert set(db.calls[1][1]['run_kind']) == {'scheduled'}
+        assert 'analysis_ts' not in db.calls[1][1].columns
+        assert (w.outcome, w.reason, w.history_recorded) == ('applied', None, True)
+        assert w.written_at == datetime.fromisoformat('2026-11-13T14:21:30+00:00')
+        assert w.rows_now is db.now_rows
+        for col in ('llm_overview', 'llm_orb_explanation', 'llm_analysis', 'llm_playbook'):
+            assert col in df.columns and df[col].isna().all()     # NULL is written, not skipped
+
+    @pytest.mark.parametrize('at,outcome', [('09:29:29.999999', 'applied'),
+                                            ('09:29:30', 'past_cutoff'), ('09:35:00', 'past_cutoff')])
+    def test_the_cutoff(self, db, at, outcome):
+        w = db.late(at)
+        n = pb.persist_to_cloud_sql(_late_brief(), run_kind='scheduled', triggered_by='x', late_slot=w)
+        assert w.outcome == outcome
+        if outcome == 'past_cutoff':
+            assert n == 0 and db.kinds() == ['insert']
+            assert all(note.startswith('LATE_SLOT_NOT_APPLIED: past_cutoff')
+                       for note in db.calls[0][1]['notes'])
+            assert w.reason == (f'write check at {at} ET, at or after the write cutoff 09:29:30 ET')
+            assert w.written_at is None
+        else:
+            assert n == 3 and db.kinds() == ['upsert', 'insert']
+
+    @pytest.mark.parametrize('edit', ['run_kind', 'analysis_ts', 'built_at', 'row appeared', 'row gone'])
+    def test_a_row_that_changed(self, db, edit):
+        if edit == 'row appeared':
+            del db.now_rows['SPY']
+        w = db.late('09:21:30')                 # rows_read: a copy of the rows as the run read them
+        if edit == 'run_kind':
+            db.now_rows['SPY']['run_kind'] = 'replay'
+        elif edit == 'analysis_ts':
+            db.now_rows['SPY']['analysis_ts'] = _utc('09:22:00')
+        elif edit == 'built_at':
+            db.now_rows['SPY']['built_at'] = '2026-11-13T09:22:00-05:00'
+        elif edit == 'row appeared':
+            db.now_rows['SPY'] = {'run_kind': 'live', 'analysis_ts': _utc('09:22:00'),
+                                  'built_at': '2026-11-13T09:22:00-05:00'}
+        elif edit == 'row gone':
+            del db.now_rows['SPY']
+        assert pb.persist_to_cloud_sql(_late_brief(), late_slot=w) == 0
+        assert (w.outcome, db.kinds()) == ('row_changed', ['insert'])
+        assert w.reason == 'changed since this run read them: SPY' and w.rows_now is db.now_rows
+        assert all(note.startswith('LATE_SLOT_NOT_APPLIED: row_changed')
+                   for note in db.calls[0][1]['notes'])
+
+    def test_a_refused_build_is_history_only_and_reads_nothing(self, db):
+        db.read_rows = _refuse
+        w = db.late('09:21:30', refusal='QQQ: status PLAYBOOK_FAILED')
+        brief = _late_brief()
+        brief['tickers']['QQQ'].update(status='PLAYBOOK_FAILED', playbook_error='KeyError: boom')
+        assert pb.persist_to_cloud_sql(brief, late_slot=w) == 0
+        assert (w.outcome, w.reason, db.kinds()) == (
+            'build_not_usable', 'QQQ: status PLAYBOOK_FAILED', ['insert'])
+        notes = dict(zip(db.calls[0][1]['ticker'], db.calls[0][1]['notes']))
+        assert all(note.startswith('LATE_SLOT_NOT_APPLIED: build_not_usable QQQ: status PLAYBOOK_FAILED')
+                   for note in notes.values())
+        # the ticker's own failed note follows the late slot's
+        assert notes['QQQ'].endswith('; PLAYBOOK_FAILED: KeyError: boom')
+        assert notes['SPY'] == 'LATE_SLOT_NOT_APPLIED: build_not_usable QQQ: status PLAYBOOK_FAILED'
+
+    def test_a_ticker_missing_from_the_rows_is_refused(self, db):
+        w = db.late('09:21:30')                      # no refusal given
+        assert pb.persist_to_cloud_sql(_late_brief(('IWM', 'SPY')), late_slot=w) == 0
+        assert (w.outcome, db.kinds()) == ('build_not_usable', ['insert'])
+        assert 'QQQ' in w.reason
+
+    def test_a_failed_ticker_is_never_written_alone(self, db):
+        # STALE_DAILY_DATA with no refusal handed in: the canonical frame
+        # would hold two of three tickers, so nothing is written.
+        brief = _late_brief()
+        brief['tickers']['QQQ']['status'] = 'STALE_DAILY_DATA'
+        w = db.late('09:21:30')
+        assert pb.persist_to_cloud_sql(brief, late_slot=w) == 0
+        assert (w.outcome, db.kinds()) == ('build_not_usable', ['insert'])
+
+    def test_a_build_with_no_rows_still_has_an_outcome(self, db):
+        brief = _late_brief()
+        for t in T:
+            brief['tickers'][t] = {'status': 'NO DATA'}
+        w = db.late('09:21:30', refusal='IWM: status NO DATA')
+        assert pb.persist_to_cloud_sql(brief, late_slot=w) == 0
+        assert (w.outcome, db.kinds()) == ('build_not_usable', [])
+
+    def test_a_failed_history_insert_keeps_the_write(self, db, caplog):
+        db.fail['insert'] = OSError('history down')
+        w = db.late('09:21:30')
+        with caplog.at_level(logging.ERROR, logger='gcp.premarket_brief'):
+            assert pb.persist_to_cloud_sql(_late_brief(), late_slot=w) == 3
+        assert (w.outcome, w.history_recorded) == ('applied', False)
+        assert db.kinds() == ['upsert']
+        assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+    def test_a_failed_canonical_write_raises_and_records_no_history(self, db):
+        db.fail['upsert'] = OSError('db down')
+        w = db.late('09:21:30')
+        with pytest.raises(OSError):
+            pb.persist_to_cloud_sql(_late_brief(), late_slot=w)
+        assert db.kinds() == [] and w.outcome is None
+
+    def test_a_failed_re_read_raises_and_writes_nothing(self, db):
+        db.read_rows = raise_(ConnectionError('db down'))
+        w = db.late('09:21:30')
+        with pytest.raises(ConnectionError):
+            pb.persist_to_cloud_sql(_late_brief(), late_slot=w)
+        assert db.kinds() == [] and w.outcome is None
+
+    def test_late_with_an_update_is_refused(self, db):
+        w = db.late('09:21:30')
+        with pytest.raises(ValueError):
+            pb.persist_to_cloud_sql(_late_brief(), allow_update=True, late_slot=w)
+        assert db.calls == []
+
+    def test_late_on_a_replay_is_refused(self, db, monkeypatch):
+        monkeypatch.setenv('BRIEF_AS_OF', SESSION)
+        w = db.late('09:21:30')
+        with pytest.raises(ValueError):
+            pb.persist_to_cloud_sql(_late_brief(), late_slot=w)
+        assert db.calls == []
+
+    def test_no_database_leaves_the_outcome_unset(self, db, monkeypatch):
+        import gcp.database as database
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: False)
+        w = db.late('09:21:30')
+        assert pb.persist_to_cloud_sql(_late_brief(), late_slot=w) == 0
+        assert w.outcome is None and db.calls == []
+
+    def test_the_early_path_is_the_path_of_main(self, db):
+        pb.persist_to_cloud_sql(_late_brief(), run_kind='scheduled', triggered_by='x')
+        assert db.kinds() == ['insert', 'exists', 'exists', 'exists', 'upsert']
+        assert 'analysis_ts' not in db.calls[-1][1].columns and db.calls[0][1]['notes'].isna().all()
