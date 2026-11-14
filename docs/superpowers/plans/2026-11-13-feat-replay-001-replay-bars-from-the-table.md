@@ -3,7 +3,7 @@ feat_id: FEAT-REPLAY-001
 spec: docs/superpowers/specs/2026-11-13-feat-replay-001-replay-bars-from-the-table.md
 branch: fix/feat-replay-001-replay-bars-from-the-table
 pr: 1891
-status: ready
+status: done
 ---
 
 # Replays on Discord and the API read bars from the table or say they cannot: implementation plan
