@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-13-feat-data-001-two-bar-writers.md
 branch: fix/feat-data-001-two-bar-writers
-pr: null
+pr: 1936
 status: ready
 ---
 
