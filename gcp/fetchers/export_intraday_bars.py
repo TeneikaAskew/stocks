@@ -22,9 +22,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import io
 import os
+import re
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Optional, Sequence
 
 import pandas as pd
@@ -472,3 +475,88 @@ def export_window(tickers: Sequence[str], months: Sequence[tuple[int, int]], *,
                 entry["basis"]["state"], done, total)
     return {"months": done, "rows": rows_written,
             "seconds": time.monotonic() - started}
+
+
+# -- reading the files back -----------------------------------------------------
+
+_MONTH = re.compile(r"(\d{4})-(0[1-9]|1[0-2])")
+
+
+def _parse_month(value: str) -> tuple[int, int]:
+    match = _MONTH.fullmatch(str(value))
+    if match is None:
+        raise ValueError(f"{value!r} is not a month (YYYY-MM)")
+    return int(match.group(1)), int(match.group(2))
+
+
+def read_bars(root, ticker: str, first_month: str, last_month: str
+              ) -> tuple[pd.DataFrame, list[dict]]:
+    """The exported bars of *ticker* from *first_month* to *last_month*
+    (``YYYY-MM``, both included), and what the manifest says of each month.
+
+    *root* is a local directory that holds ``TICKER/manifest.json`` and the
+    month files beside it, as a download of the ticker's bucket folder leaves
+    them. For an analysis session, by hand: this function has no database
+    path, and no job, replay, backtest or route calls it.
+
+    Returns ``(bars, months)``. ``bars`` has the seven columns of ``COLUMNS``,
+    ``ts`` as UTC datetimes ascending, a fresh integer index, ``volume`` as
+    ``Int64``. ``months`` has one dict per requested month, in order: the
+    manifest entry plus ``"month"``. Read ``months`` before using ``bars``: a
+    month is returned whatever its basis state and however many of its
+    instants rest on inference (``inferred_rows``), and ``exported_at`` and
+    ``last_ts`` say how fresh it is.
+
+    Raises ValueError when a month argument is not ``YYYY-MM`` or the first
+    is after the last; FileNotFoundError when the manifest is absent;
+    ValueError when it is not a version 1 manifest of *ticker*; KeyError
+    naming the month when a requested month has no entry; and for an entry
+    that names a file, FileNotFoundError when it is absent and ValueError
+    naming the month when its sha256 is not the entry's. Rows of a file that
+    does not match its entry are never returned. An entry with no file (a
+    month that held no row) adds no rows and opens nothing.
+    """
+    import pyarrow as pa  # noqa: PLC0415
+    import pyarrow.parquet as pq  # noqa: PLC0415
+
+    first, last = _parse_month(first_month), _parse_month(last_month)
+    if first > last:
+        raise ValueError(f"first_month {first_month} is after last_month {last_month}")
+    folder = Path(root) / ticker
+    manifest_path = folder / "manifest.json"
+    doc = _parse_manifest(manifest_path.read_bytes(), ticker, str(manifest_path))
+
+    keys = [f"{year:04d}-{month:02d}" for year, month in months_between(first, last)]
+    for key in keys:
+        if key not in doc["months"]:
+            raise KeyError(f"{manifest_path} has no entry for {key}")
+
+    months: list[dict] = []
+    frames: list[pd.DataFrame] = []
+    for key in keys:
+        entry = doc["months"][key]
+        months.append({**entry, "month": key})
+        if entry["file"] is None:
+            continue
+        data = (folder / Path(entry["file"]).name).read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != entry["sha256"]:
+            raise ValueError(
+                f"{key}: {folder / Path(entry['file']).name} has sha256 {digest}, the "
+                f"manifest records {entry['sha256']}. Download the ticker's folder "
+                f"again; if it still differs the month is unreadable until its next "
+                f"export.")
+        # Parsed from the bytes that were hashed, not from a second read.
+        frames.append(pq.read_table(io.BytesIO(data), columns=list(COLUMNS)).to_pandas(
+            types_mapper={pa.int64(): pd.Int64Dtype()}.get))
+
+    if not frames:
+        bars = pd.DataFrame({
+            "ts": pd.Series(pd.DatetimeIndex([], tz="UTC")),
+            "open": pd.Series(dtype="float64"), "high": pd.Series(dtype="float64"),
+            "low": pd.Series(dtype="float64"), "close": pd.Series(dtype="float64"),
+            "volume": pd.Series(dtype="Int64"), "data_source": pd.Series(dtype="object"),
+        })
+        return bars, months
+    bars = pd.concat(frames, ignore_index=True)
+    return bars[list(COLUMNS)], months

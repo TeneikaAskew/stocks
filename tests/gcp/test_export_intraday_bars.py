@@ -10,13 +10,18 @@ minutes and their values), never through the code under test.
 """
 from __future__ import annotations
 
+import ast
 import gc
 import hashlib
 import io
 import json
 import logging
+import subprocess
+import sys
+import textwrap
 import weakref
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -901,3 +906,327 @@ def test_months_between_and_nightly_months():
     assert xb.nightly_months(date(2026, 10, 31)) == [(2026, 9), (2026, 10)]
     assert xb.nightly_months(date(2026, 1, 5)) == [(2025, 12), (2026, 1)]
     assert len(xb.months_between((2015, 1), (2026, 11))) == 143
+
+
+# -- Task 5: read_bars, and nothing else reads the copy -------------------------
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def to_disk(bucket: MemoryBucket, root: Path) -> Path:
+    """Every object of *bucket* under *root*, as ``gcloud storage cp -r
+    .../intraday-bars/v1/1min/SPY ./bars/`` leaves a ticker's folder."""
+    for name, data in bucket.objects.items():
+        assert name.startswith(xb.PREFIX + "/")
+        target = root / name[len(xb.PREFIX) + 1:]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    return root
+
+
+def test_read_bars_returns_the_exported_rows_and_entries(monkeypatch, tmp_path):
+    bucket = MemoryBucket()
+    months = [(2025, 5), (2025, 6)]
+    bars = {("SPY", y, m): month_rows(y, m, inserted=NEW) for y, m in months}
+    run(monkeypatch, ["SPY"], months, bars, bucket, daily={"SPY": pd.concat(
+        [daily_rows(2025, 5), daily_rows(2025, 6)], ignore_index=True)})
+    root = to_disk(bucket, tmp_path)
+
+    got, entries = xb.read_bars(root, "SPY", "2025-05", "2025-06")
+
+    want = pd.concat([expected_table(2025, 5), expected_table(2025, 6)], ignore_index=True)
+    assert_rows_equal(got, want)
+    assert str(got["ts"].dt.tz) == "UTC"
+    assert got["ts"].is_monotonic_increasing and got["ts"].is_unique
+    assert list(got.index) == list(range(len(want)))
+    assert str(got["volume"].dtype) == "Int64"
+    doc = manifest_doc(bucket)
+    assert [e["month"] for e in entries] == ["2025-05", "2025-06"]
+    assert entries == [{**doc["months"][key], "month": key} for key in ("2025-05", "2025-06")]
+    assert entries[0]["basis"]["state"] == "as_traded"
+    assert entries[0]["sha256"] == sha(bucket.objects[MAY])
+
+    june, june_entries = xb.read_bars(str(root), "SPY", "2025-06", "2025-06")
+    assert_rows_equal(june, expected_table(2025, 6))
+    assert list(june.index) == list(range(len(june)))
+    assert [e["month"] for e in june_entries] == ["2025-06"]
+
+
+def _exported_on_disk(monkeypatch, tmp_path) -> Path:
+    return to_disk(_exported_may_and_june(monkeypatch), tmp_path)
+
+
+@pytest.mark.parametrize("case,error,match", [
+    ("no_manifest", FileNotFoundError, "manifest.json"),
+    ("file_deleted", FileNotFoundError, "2025-05"),
+    ("no_entry", KeyError, "2025-07"),
+    ("file_replaced", ValueError, "2025-05"),
+    ("version_2", ValueError, "version"),
+    ("first_after_last", ValueError, "2025-06"),
+    ("not_a_month", ValueError, "2025-5"),
+])
+def test_read_bars_errors(monkeypatch, tmp_path, case, error, match):
+    root = _exported_on_disk(monkeypatch, tmp_path)
+    first, last = "2025-05", "2025-06"
+    if case == "no_manifest":
+        (root / "SPY" / "manifest.json").unlink()
+    elif case == "file_deleted":
+        (root / "SPY" / "2025-05.parquet").unlink()
+    elif case == "no_entry":
+        last = "2025-07"
+    elif case == "file_replaced":
+        # Another valid Parquet file under the month's name: June's.
+        (root / "SPY" / "2025-05.parquet").write_bytes(
+            (root / "SPY" / "2025-06.parquet").read_bytes())
+    elif case == "version_2":
+        path = root / "SPY" / "manifest.json"
+        doc = json.loads(path.read_text())
+        doc["version"] = 2
+        path.write_text(json.dumps(doc))
+    elif case == "first_after_last":
+        first, last = "2025-06", "2025-05"
+    elif case == "not_a_month":
+        first = "2025-5"
+
+    with pytest.raises(error, match=match):
+        xb.read_bars(root, "SPY", first, last)
+
+
+def _state_month(state: str):
+    """Task 3's inputs for a month in *state*: (rows, daily)."""
+    if state == "inferred":
+        rows = month_rows(2025, 5, inserted=NEW)
+        rows.loc[rows["ts"] == pd.Timestamp("2025-05-16 14:00", tz="UTC"), "inserted_at"] = OLD
+        return rows, daily_rows(2025, 5)
+    if state == "adjusted":
+        return (month_rows(2025, 5, inserted=NEW,
+                           days={"2025-05-07": {"f_high": 0.99430, "f_low": 0.99430}}),
+                daily_rows(2025, 5))
+    if state == "partial":
+        return month_rows(2025, 5, inserted=NEW), daily_rows(2025, 5, skip=("2025-05-14",))
+    if state == "unmeasured":
+        return month_rows(2025, 5, inserted=NEW), daily_rows(2025, 5, src="alphavantage_1min")
+    raise AssertionError(state)
+
+
+@pytest.mark.parametrize("state", ["inferred", "adjusted", "partial", "unmeasured"])
+def test_read_bars_does_not_refuse_a_month_for_its_state(monkeypatch, tmp_path, state):
+    rows, daily = _state_month(state)
+    bucket = MemoryBucket()
+    run(monkeypatch, ["SPY"], [(2025, 5)], {("SPY", 2025, 5): rows}, bucket,
+        daily={"SPY": daily})
+
+    got, entries = xb.read_bars(to_disk(bucket, tmp_path), "SPY", "2025-05", "2025-05")
+    assert len(got) == 20181
+    assert entries[0]["basis"]["state"] == state
+
+
+def test_a_month_with_rows_0_returns_no_row(monkeypatch, tmp_path):
+    empty = pd.DataFrame(columns=BARS_COLUMNS)
+    bucket = MemoryBucket()
+    run(monkeypatch, ["SPY"], [(2025, 5)], {("SPY", 2025, 5): empty}, bucket)
+    assert sorted(bucket.objects) == [SPY_MANIFEST]            # no file for the month
+
+    got, entries = xb.read_bars(to_disk(bucket, tmp_path / "a"), "SPY", "2025-05", "2025-05")
+    assert len(got) == 0 and list(got.columns) == FILE_COLUMNS
+    assert entries[0]["rows"] == 0 and entries[0]["file"] is None
+
+    # Review Focus: an earlier export wrote the month, and it holds no row now.
+    # The old object is still beside the manifest; it is not read.
+    bucket = _exported_may_and_june(monkeypatch)
+    run(monkeypatch, ["SPY"], [(2025, 5)], {("SPY", 2025, 5): empty}, bucket)
+    assert MAY in bucket.objects
+    assert manifest_doc(bucket)["months"]["2025-05"]["file"] is None
+    root = to_disk(bucket, tmp_path / "b")
+    assert (root / "SPY" / "2025-05.parquet").exists()
+
+    got, entries = xb.read_bars(root, "SPY", "2025-05", "2025-05")
+    assert len(got) == 0
+    assert entries[0]["rows"] == 0
+    both, _ = xb.read_bars(root, "SPY", "2025-05", "2025-06")
+    assert len(both) == 961                                    # June's rows only
+
+
+def test_after_a_failed_run_read_bars_tells_the_months_apart(monkeypatch, tmp_path):
+    newer = dict(day_high=700.0, day_low=690.0)
+    months = [(2025, 5), (2025, 6)]
+
+    # The second month's upload failed: May is whole and readable.
+    bucket = _exported_may_and_june(monkeypatch)
+    bucket.fail_write = lambda name: ConnectionError("reset") if name == JUNE else None
+    with pytest.raises(ConnectionError):
+        run(monkeypatch, ["SPY"], months, small_bars(["SPY"], months, **newer), bucket)
+    may, _ = xb.read_bars(to_disk(bucket, tmp_path / "a"), "SPY", "2025-05", "2025-05")
+    assert len(may) == 961 and may["high"].max() == 700.0
+
+    # A month's upload succeeded and its manifest write failed, with an older
+    # entry: the entry describes the old file, and the month is refused by name.
+    bucket = _exported_may_and_june(monkeypatch)
+    bucket.fail_write = (
+        lambda name: ConnectionError("reset") if name == SPY_MANIFEST else None)
+    with pytest.raises(ConnectionError):
+        run(monkeypatch, ["SPY"], [(2025, 5)],
+            small_bars(["SPY"], [(2025, 5)], **newer), bucket)
+    root = to_disk(bucket, tmp_path / "b")
+    with pytest.raises(ValueError, match="2025-05"):
+        xb.read_bars(root, "SPY", "2025-05", "2025-05")
+    june, _ = xb.read_bars(root, "SPY", "2025-06", "2025-06")       # June is untouched
+    assert len(june) == 961
+
+    # Review Focus: the same failure on the month's first export, with an
+    # older manifest that has no entry for it.
+    bucket = _exported_may_and_june(monkeypatch)
+    bucket.fail_write = (
+        lambda name: ConnectionError("reset") if name == SPY_MANIFEST else None)
+    with pytest.raises(ConnectionError):
+        run(monkeypatch, ["SPY"], [(2025, 7)], small_bars(["SPY"], [(2025, 7)]), bucket)
+    with pytest.raises(KeyError, match="2025-07"):
+        xb.read_bars(to_disk(bucket, tmp_path / "c"), "SPY", "2025-07", "2025-07")
+
+    # And on the ticker's first export ever: no manifest at all.
+    bucket = MemoryBucket()
+    bucket.fail_write = (
+        lambda name: ConnectionError("reset") if name == SPY_MANIFEST else None)
+    with pytest.raises(ConnectionError):
+        run(monkeypatch, ["SPY"], [(2025, 5)], small_bars(["SPY"], [(2025, 5)]), bucket)
+    with pytest.raises(FileNotFoundError):
+        xb.read_bars(to_disk(bucket, tmp_path / "d"), "SPY", "2025-05", "2025-05")
+
+
+_ISOLATED = """
+import importlib.abc, sys
+
+BLOCKED = ("gcp.database", "lib", "sqlalchemy", "google", "requests",
+           "pandas_market_calendars")
+
+
+class Refuse(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if any(name == b or name.startswith(b + ".") for b in BLOCKED):
+            raise ImportError("blocked for this test: " + name)
+        return None
+
+
+sys.meta_path.insert(0, Refuse())
+for name in BLOCKED:
+    try:
+        __import__(name)
+    except ImportError:
+        continue
+    raise SystemExit("the block does not hold for " + name)
+
+from gcp.fetchers.export_intraday_bars import read_bars
+
+bars, months = read_bars(sys.argv[1], "SPY", "2025-05", "2025-06")
+loaded = sorted(m for m in sys.modules if any(m == b or m.startswith(b + ".") for b in BLOCKED))
+print(len(bars), [m["month"] for m in months], loaded)
+"""
+
+
+def test_read_bars_needs_only_pandas_and_pyarrow(monkeypatch, tmp_path):
+    root = _exported_on_disk(monkeypatch, tmp_path)
+    done = subprocess.run(
+        [sys.executable, "-c", _ISOLATED, str(root)], cwd=REPO, capture_output=True,
+        text=True, timeout=120)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "1922 ['2025-05', '2025-06'] []"
+
+
+# What marks a file as reading the copy. A docstring may name the module or the
+# prefix; code may not.
+MODULE = "export_intraday_bars"
+EXPORT_MODULE = "gcp/fetchers/export_intraday_bars.py"
+FETCH_MODULE = "gcp/fetchers/fetch_alphavantage_intraday.py"
+TREE_ROOTS = ("gcp", "lib", "scripts", "platform")
+TREE_SKIP = {"__pycache__", "node_modules", ".venv", "venv"}
+
+
+def copy_uses(source: str) -> set[str]:
+    """How *source* reaches the bucket copy: any of ``imports-module`` (an
+    import of the export module, or a string that holds its name),
+    ``names-read_bars`` and ``names-prefix`` (a string holding the prefix).
+
+    It cannot see a module name built at run time
+    (``"export_" + "intraday_bars"``), nor a name reached through a variable
+    another file assigned.
+    """
+    tree = ast.parse(source)
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = node.body
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                docstrings.add(id(body[0].value))
+    found = set()
+    for node in ast.walk(tree):
+        names = []
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names] + [a.asname or "" for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = ([node.module or ""] + [a.name for a in node.names]
+                     + [a.asname or "" for a in node.names])
+        elif isinstance(node, ast.Name):
+            names = [node.id]
+        elif isinstance(node, ast.Attribute):
+            names = [node.attr]
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names = [node.name]
+        elif isinstance(node, ast.arg):
+            names = [node.arg]
+        elif isinstance(node, ast.keyword):
+            names = [node.arg or ""]
+        for name in names:
+            if MODULE in name.split("."):
+                found.add("imports-module")
+            if "read_bars" in name.split("."):
+                found.add("names-read_bars")
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in docstrings):
+            if MODULE in node.value:
+                found.add("imports-module")
+            if "read_bars" in node.value:
+                found.add("names-read_bars")
+            if "intraday-bars/" in node.value:
+                found.add("names-prefix")
+    return found
+
+
+@pytest.mark.parametrize("snippet,want", [
+    ("from gcp.fetchers.export_intraday_bars import read_bars",
+     {"imports-module", "names-read_bars"}),
+    ("from gcp.fetchers import export_intraday_bars as xb", {"imports-module"}),
+    ("import gcp.fetchers.export_intraday_bars", {"imports-module"}),
+    ('import importlib\nm = importlib.import_module("gcp.fetchers.export_intraday_bars")',
+     {"imports-module"}),
+    ('def f(b, t):\n    return f"gs://{b}/intraday-bars/v1/1min/{t}"', {"names-prefix"}),
+    ("def f(m):\n    return m.read_bars('.', 'SPY', '2025-01', '2025-02')",
+     {"names-read_bars"}),
+    ('def f(m):\n    return getattr(m, "read_bars")', {"names-read_bars"}),
+    ('def f():\n    """Bars come from gcp.fetchers.export_intraday_bars (read_bars),\n'
+     '    under intraday-bars/v1/1min/."""\n    return 1', set()),
+    ('"""The export module is gcp/fetchers/export_intraday_bars.py."""\nX = 1', set()),
+    ("import pandas as pd\nX = pd.DataFrame()", set()),
+])
+def test_the_copy_check_catches_each_way_in(snippet, want):
+    assert copy_uses(snippet) == want
+
+
+def test_nothing_in_the_tree_reads_the_copy():
+    # CLAUDE.md 3.7.1: the bucket copy is never a source for the tree. No job,
+    # replay, backtest or route imports the export module or names its prefix,
+    # so nothing can fall back to it when Cloud SQL fails. The one caller is
+    # the fetch job, which only writes the copy.
+    uses = {}
+    for root in TREE_ROOTS:
+        for path in sorted((REPO / root).rglob("*.py")):
+            rel = path.relative_to(REPO)
+            if TREE_SKIP.isdisjoint(rel.parts):
+                found = copy_uses(path.read_text(encoding="utf-8"))
+                if found:
+                    uses[rel.as_posix()] = found
+    assert uses.pop(EXPORT_MODULE) >= {"names-prefix", "names-read_bars"}   # the module itself
+    fetch = uses.pop(FETCH_MODULE, set())
+    assert fetch <= {"imports-module"}, fetch         # it writes; it never reads back
+    assert uses == {}
