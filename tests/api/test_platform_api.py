@@ -2075,20 +2075,31 @@ class TestInsightsWatchlistAPI:
         list is the default watchlist for every caller (FEAT-INSIGHT-001
         stage A), and a caller's own tickers arrive as ``extras``. Until
         2026-11-13 this test asserted the caller's email, which ranked a
-        per-user row set no job ever read (#1215)."""
-        from api.routers import insights as insights_module
+        per-user row set no job ever read (#1215). The caller signs in
+        through the real firebase middleware, with token verification
+        stubbed to accept one bearer (tests/api/test_platform_auth.py)."""
+        import api.auth
 
+        bearer = {"Authorization": "Bearer good:alice@example.com"}
         called_with = {}
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
             return _watchlist_payload()
 
+        def fake_verify(request):
+            if (request.headers.get("authorization") or "") == bearer["Authorization"]:
+                return "alice@example.com"
+            return None
+
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
-        monkeypatch.setattr(
-            insights_module, "current_user_email", lambda req: "alice@example.com"
-        )
-        client.get("/api/insights/watchlist")
+        monkeypatch.setenv("AUTH_OPEN_SIGNUP", "1")
+        monkeypatch.setattr(api.auth, "AUTH_MODE", "firebase")
+        monkeypatch.setattr(api.auth, "_verify_bearer_email", fake_verify)
+        # The sign-in is live: without the bearer the middleware refuses.
+        assert client.get("/api/insights/watchlist").status_code == 401
+        r = client.get("/api/insights/watchlist", headers=bearer)
+        assert r.status_code == 200, r.text
         assert called_with["user_id"] == "default"
 
 

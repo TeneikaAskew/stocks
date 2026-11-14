@@ -112,6 +112,28 @@ def _without_as_of(body: dict) -> dict:
     return {k: v for k, v in body.items() if k != "as_of"}
 
 
+# A caller signed in through the real firebase middleware (the pattern of tests/api/test_platform_auth.py):
+# AUTH_MODE is firebase, open signup admits any verified email, and token verification is stubbed so
+# exactly this bearer verifies as alice@example.com. Every other request (no header, another token) is
+# unverified and the middleware answers 401 before routing.
+FIREBASE_BEARER = {"Authorization": "Bearer good:alice@example.com"}
+
+
+def _sign_in_firebase(monkeypatch) -> None:
+    import api.auth
+
+    monkeypatch.setenv("AUTH_OPEN_SIGNUP", "1")
+    monkeypatch.setattr(api.auth, "AUTH_MODE", "firebase")
+
+    def fake_verify(request):
+        authz = request.headers.get("authorization") or ""
+        if authz == FIREBASE_BEARER["Authorization"]:
+            return "alice@example.com"
+        return None
+
+    monkeypatch.setattr(api.auth, "_verify_bearer_email", fake_verify)
+
+
 # ── GET /api/insights/watchlist/default ────────────────────────────────────────
 
 
@@ -159,13 +181,21 @@ def test_default_watchlist_sql_excludes_removed_and_other_owners(client):
 
 
 def test_default_watchlist_is_identical_for_open_and_signed_in_callers(client, monkeypatch):
-    from api.routers import insights as insights_module
+    """The open caller and a caller signed in through the firebase middleware (see
+    _sign_in_firebase) get the same default list."""
+    import api.auth
 
     engine, _ = _watchlists_engine(FIXTURE_ROWS)
     with patch("gcp.database.get_engine", return_value=engine):
-        open_body = client.get("/api/insights/watchlist/default").json()
-        monkeypatch.setattr(insights_module, "current_user_email", lambda req: "alice@example.com")
-        signed_in_body = client.get("/api/insights/watchlist/default").json()
+        monkeypatch.setattr(api.auth, "AUTH_MODE", "open")
+        open_response = client.get("/api/insights/watchlist/default")
+        _sign_in_firebase(monkeypatch)
+        # The sign-in is live: without the bearer the middleware refuses before routing.
+        assert client.get("/api/insights/watchlist/default").status_code == 401
+        signed_in_response = client.get("/api/insights/watchlist/default", headers=FIREBASE_BEARER)
+    assert open_response.status_code == 200, open_response.text
+    assert signed_in_response.status_code == 200, signed_in_response.text
+    open_body, signed_in_body = open_response.json(), signed_in_response.json()
     assert _without_as_of(open_body) == _without_as_of(signed_in_body)
     assert [row["ticker"] for row in signed_in_body["rows"]] == ["SPY", "QQQ", "IWM"]
 
@@ -230,8 +260,6 @@ def _ranked_payload() -> dict:
 def test_ranked_watchlist_passes_default_owner_and_extras(client, monkeypatch):
     """A signed-in caller is ranked as owner 'default' (spec section "Ranked list"), and the
     per-call ``extras`` hook still carries the caller's own tickers, upper-cased."""
-    from api.routers import insights as insights_module
-
     called_with: dict = {}
 
     def fake_rank(**kwargs):
@@ -239,8 +267,11 @@ def test_ranked_watchlist_passes_default_owner_and_extras(client, monkeypatch):
         return _ranked_payload()
 
     monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
-    monkeypatch.setattr(insights_module, "current_user_email", lambda req: "alice@example.com")
-    r = client.get("/api/insights/watchlist?extras=nvda")
+    _sign_in_firebase(monkeypatch)
+    # The sign-in is live: without the bearer the middleware refuses before routing.
+    assert client.get("/api/insights/watchlist?extras=nvda").status_code == 401
+    assert called_with == {}
+    r = client.get("/api/insights/watchlist?extras=nvda", headers=FIREBASE_BEARER)
     assert r.status_code == 200, r.text
     assert called_with["user_id"] == "default"
     assert called_with["extras"] == ["NVDA"]
@@ -251,9 +282,6 @@ def test_ranked_watchlist_passes_default_owner_and_extras(client, monkeypatch):
 # FEAT-INSIGHT-001 stage B (docs/superpowers/specs/2026-11-14-feat-insight-001-watchlist-write-routes-410-r2.md,
 # sections Design and Tests): both web write routes answer 410 with one detail for every caller and
 # write nothing.
-
-FIREBASE_BEARER = {"Authorization": "Bearer good:alice@example.com"}
-
 
 def _retired_detail() -> str:
     from api.routers import insights as insights_module
@@ -283,18 +311,7 @@ def test_add_and_remove_answer_410_in_open_mode(client, monkeypatch):
 def test_add_and_remove_answer_410_in_firebase_mode(client, monkeypatch):
     """A signed-in caller (the firebase pattern of tests/api/test_platform_auth.py) gets the same 410,
     not a write scoped to their identity."""
-    import api.auth
-
-    monkeypatch.setenv("AUTH_OPEN_SIGNUP", "1")
-    monkeypatch.setattr(api.auth, "AUTH_MODE", "firebase")
-
-    def fake_verify(request):
-        authz = request.headers.get("authorization") or ""
-        if authz == FIREBASE_BEARER["Authorization"]:
-            return "alice@example.com"
-        return None
-
-    monkeypatch.setattr(api.auth, "_verify_bearer_email", fake_verify)
+    _sign_in_firebase(monkeypatch)
     # The stub is live: without the bearer the middleware refuses before routing.
     assert client.post("/api/insights/watchlist/add", json={"ticker": "nvda"}).status_code == 401
     _assert_retired(client.post("/api/insights/watchlist/add", json={"ticker": "nvda"}, headers=FIREBASE_BEARER))
@@ -340,8 +357,11 @@ def test_write_routes_touch_no_connection(client, monkeypatch):
     """Two recorders, one beneath each database path the API process has: gcp.database.get_engine
     (an engine whose every executed statement, through begin() or connect(), is recorded) and
     lib.agents.model_routing.connect, the DB-API path gcp.fetchers._watchlist's add_to_watchlist and
-    remove_from_watchlist open. After an add and a remove both records are empty. Before stage B the
-    add route reached connect() through add_to_watchlist and this failed."""
+    remove_from_watchlist open. The router binds that ``connect`` at import
+    (``from lib.agents.model_routing import connect``), so ``api.routers.insights.connect`` carries a
+    third recorder, which catches a direct ``connect()`` in a handler that the module patch would miss.
+    After an add and a remove every record is empty. Before stage B the add route reached connect()
+    through add_to_watchlist and this failed."""
     from starlette.testclient import TestClient
     from api.main import app
     import api.auth
@@ -355,14 +375,19 @@ def test_write_routes_touch_no_connection(client, monkeypatch):
 
     engine, engine_statements = _watchlists_engine(FIXTURE_ROWS)
     dbapi_statements: list[str] = []
+    router_statements: list[str] = []
     with TestClient(app, raise_server_exceptions=False) as quiet, \
             patch("gcp.database.get_engine", return_value=engine), \
             patch("lib.agents.model_routing.connect",
-                  side_effect=lambda *a, **k: _RecordingConnection(dbapi_statements)):
+                  side_effect=lambda *a, **k: _RecordingConnection(dbapi_statements)), \
+            patch("api.routers.insights.connect",
+                  side_effect=lambda *a, **k: _RecordingConnection(router_statements)) as router_connect:
         add = quiet.post("/api/insights/watchlist/add", json={"ticker": "nvda"})
         remove = quiet.delete("/api/insights/watchlist/NVDA")
     assert engine_statements == [], engine_statements
     assert dbapi_statements == [], dbapi_statements
+    assert router_statements == [], router_statements
+    assert router_connect.call_count == 0, router_connect.call_args_list
     _assert_retired(add)
     _assert_retired(remove)
 

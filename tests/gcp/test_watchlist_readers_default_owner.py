@@ -25,8 +25,8 @@ query of its own has to be inventoried as such.
 No exclusion. Stage B (docs/superpowers/specs/2026-11-14-feat-insight-001-watchlist-write-routes-410-r2.md)
 turned platform/api/routers/insights.py's two web write routes into 410 and deleted ``_watchlist_owner``,
 so every file in the inventory, the router included, is held to the same rules, and
-``test_insights_router_imports_nothing_from_watchlist_helper`` fails if the router imports the helper
-module or defines the owner resolver again.
+``test_insights_router_imports_nothing_from_watchlist_helper`` fails if any API module imports the helper
+module or the router defines the owner resolver again.
 
 Writers. ``WRITERS`` are the production files whose SQL text inserts into or updates ``watchlists``;
 ``MENTIONS_ONLY`` are the files whose only match is a log hint, a comment or a docstring, pinned to the
@@ -376,9 +376,41 @@ def test_only_the_named_writers_insert_or_update_watchlists():
         assert matches[rel] == [recorded], f"{rel}: {matches[rel]} is not the recorded mention {recorded!r}"
 
 
+WATCHLIST_HELPER_MODULE = "gcp.fetchers._watchlist"
+
+
+def _watchlist_helper_imports(tree: ast.AST) -> list[str]:
+    """Every import in ``tree`` that binds gcp.fetchers._watchlist or a name from it, whatever the
+    spelling: ``import gcp.fetchers._watchlist`` (aliased or not), ``from gcp.fetchers._watchlist
+    import ...`` and ``from gcp.fetchers import _watchlist``."""
+    hits: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == WATCHLIST_HELPER_MODULE or alias.name.startswith(WATCHLIST_HELPER_MODULE + "."):
+                    hits.append(f"line {node.lineno}: import {alias.name}")
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            if node.module == WATCHLIST_HELPER_MODULE:
+                hits.append(f"line {node.lineno}: from {node.module} import ...")
+            elif node.module == "gcp.fetchers" and any(a.name == "_watchlist" for a in node.names):
+                hits.append(f"line {node.lineno}: from gcp.fetchers import _watchlist")
+    return hits
+
+
 def test_insights_router_imports_nothing_from_watchlist_helper():
-    """Stage B: the web write routes answer 410, so the API router holds no path to the add and
-    remove helpers and no owner resolver for them."""
-    source = _read("platform/api/routers/insights.py")
-    assert "gcp.fetchers._watchlist" not in source
-    assert "_watchlist_owner" not in source
+    """Stage B: the web write routes answer 410, so no module of the API package holds a path to the
+    add and remove helpers, and the router defines no owner resolver for them. The import check walks
+    each module's AST, so ``from gcp.fetchers import _watchlist`` fails it as surely as the dotted
+    form does."""
+    api_files = [
+        path for path in sorted((REPO / "platform" / "api").rglob("*.py"))
+        if not SKIPPED_DIRS & set(path.relative_to(REPO).parts)
+    ]
+    assert REPO / "platform" / "api" / "routers" / "insights.py" in api_files
+    offenders: dict[str, list[str]] = {}
+    for path in api_files:
+        hits = _watchlist_helper_imports(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
+        if hits:
+            offenders[path.relative_to(REPO).as_posix()] = hits
+    assert offenders == {}, f"API modules importing {WATCHLIST_HELPER_MODULE}: {offenders}"
+    assert "_watchlist_owner" not in _read("platform/api/routers/insights.py")

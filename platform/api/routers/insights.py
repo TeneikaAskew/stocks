@@ -41,10 +41,6 @@ from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
 import lib.agents.vertex_adapter  # noqa: F401, E402 — registers adapter
 
-# Server-verified identity. No handler here reads it since the watchlist write routes were retired
-# (FEAT-INSIGHT-001 stage B); the name stays bound so the stage A tests that sign a caller in by
-# patching it keep proving every caller is ranked and listed as the default owner.
-from api.auth import current_user_email  # noqa: E402, F401
 from api.http_errors import unavailable  # noqa: E402
 from lib.infra_errors import is_infrastructure_error  # noqa: E402
 from api.schemas import (
@@ -607,19 +603,20 @@ def get_ticker_peers(ticker: str):
     return {"ticker": ticker.upper(), "peers": peers}
 
 
+# The dependency raises first; the raise in each handler keeps the retirement visible there. The
+# add route's typed body stays so the operation's requestBody in the OpenAPI document is unchanged.
+# These notes sit in a comment, not the docstrings, because a docstring becomes the operation's
+# public OpenAPI description.
 @router.post(
     "/api/insights/watchlist/add",
     response_model=WatchlistAddResponse,
     response_model_exclude_unset=True,
     dependencies=[Depends(_watchlist_writes_retired)],
     responses={410: {"description": "The web write path is retired"}},
+    deprecated=True,
 )
 def add_to_watchlist(body: WatchlistAddRequest, request: Request) -> WatchlistAddResponse:
-    """Retired (FEAT-INSIGHT-001 stage B): answers 410 and writes nothing.
-
-    The dependency raises first; this raise keeps the retirement visible in the handler. The
-    typed body stays so the operation's requestBody in the OpenAPI document is unchanged.
-    """
+    """Retired (FEAT-INSIGHT-001 stage B): answers 410 and writes nothing."""
     raise HTTPException(status_code=410, detail=WATCHLIST_WRITE_RETIRED_DETAIL)
 
 
@@ -629,6 +626,7 @@ def add_to_watchlist(body: WatchlistAddRequest, request: Request) -> WatchlistAd
     response_model_exclude_unset=True,
     dependencies=[Depends(_watchlist_writes_retired)],
     responses={410: {"description": "The web write path is retired"}},
+    deprecated=True,
 )
 def remove_from_watchlist(ticker: str, request: Request) -> WatchlistRemoveResponse:
     """Retired (FEAT-INSIGHT-001 stage B): answers 410 and writes nothing."""
