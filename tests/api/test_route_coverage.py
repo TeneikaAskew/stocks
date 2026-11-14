@@ -395,6 +395,10 @@ REQUESTS: list[Req] = [
     Req("PUT", "/api/me/profile", 503, json={"display_name": "rc"}),
     Req("GET", "/api/me/watchlist", 401,
         note="open mode has no identity: 401 sign in required before any database call"),
+    Req("POST", "/api/me/watchlist", 401, json={"ticker": T, "source": "ui"},
+        note="open mode has no identity: 401 sign in required before any database call"),
+    Req("DELETE", f"/api/me/watchlist/{T}", 401,
+        note="open mode has no identity: 401 sign in required before any database call"),
 
     # ── market ──────────────────────────────────────────────────────────────
     # 503 for the same reason as the options twin above: #991 made a
