@@ -386,3 +386,479 @@ def test_an_empty_group_and_a_group_nothing_matches_run_no_extra_statement(recom
     assert len(seen) == 1
     assert rows(engine, "bar_recompute_ledger") == []
     assert len(stamps) == 3
+
+
+# ── --re-resolve and --revert-run, through the resolver's main() ──────
+
+import csv  # noqa: E402
+import json  # noqa: E402
+import sys  # noqa: E402
+from datetime import time  # noqa: E402
+
+from lib.eastern_time import eastern_bounds_utc, session_close  # noqa: E402
+
+ALERT_EXIT_FIELDS = ("exit_ts", "exit_reason", "exit_price", "exit_return_pct",
+                     "exit_recompute_run")
+TRADE_EXIT_FIELDS = ("exit_time", "exit_price", "exit_reason", "return_pct",
+                     "exit_recompute_run")
+
+
+def seed_bars(engine, ticker: str, day: date, base: float, *, first_et: str = "04:00",
+              last_et: str = "19:59") -> None:
+    """One bar a minute, in one statement: the close is base + 0.02 on odd
+    minutes and base on even ones. Inserted now, so every row is proven."""
+    start, end = eastern_bounds_utc(day, time.fromisoformat(first_et), time.fromisoformat(last_et))
+    execute(engine, """
+        INSERT INTO market_data_intraday (ticker, interval, ts, open, high, low, close, volume)
+        SELECT :ticker, '1min', g, c, c, c, c, 1000
+          FROM (SELECT g, CASE WHEN MOD(CAST(extract(minute FROM g) AS INTEGER), 2) = 1
+                               THEN CAST(:odd AS DOUBLE PRECISION)
+                               ELSE CAST(:even AS DOUBLE PRECISION) END AS c
+                  FROM generate_series(CAST(:start AS TIMESTAMPTZ), CAST(:end AS TIMESTAMPTZ),
+                                       INTERVAL '1 minute') AS g) AS s
+    """, {"ticker": ticker, "odd": round(base + 0.02, 2), "even": base,
+          "start": start, "end": end})
+
+
+def run_resolver(monkeypatch, tmp_path, run_id: str, *argv: str) -> int:
+    import gcp.signal_monitor_eod_resolver as resolver_module
+
+    def no_http(*_args, **_kwargs):
+        raise AssertionError("the recompute made an HTTP request")
+
+    monkeypatch.setattr(resolver_module.requests, "post", no_http)
+    monkeypatch.delenv("GCS_BUCKET", raising=False)
+    monkeypatch.setenv("CLOUD_RUN_EXECUTION", run_id)
+    monkeypatch.setattr(sys, "argv", ["signal_monitor_eod_resolver", *argv,
+                                      "--report-dir", str(tmp_path)])
+    return resolver_module.main()
+
+
+def read_report(tmp_path, target: str, run_id: str) -> tuple[dict, dict]:
+    """rows.csv by row key (ticker, row_key) and summary.json."""
+    folder = tmp_path / "bar-recompute" / "v1" / target / run_id
+    with open(folder / "rows.csv", newline="") as handle:
+        table = {(r["ticker"], r["row_key"]): r for r in csv.DictReader(handle)}
+    return table, json.loads((folder / "summary.json").read_text())
+
+
+def differing(before: dict, after: dict) -> set:
+    return {column for column in before if before[column] != after[column]}
+
+
+EXIT_WINDOW = ("--from", "2026-10-05", "--to", "2026-10-07")
+
+# alert_ts of each seeded alert, by a short name.
+A = {
+    "spy_late": utc("2026-10-06T19:50:00.250000"),     # time_stop after the close -> eod_close
+    "spy_same": utc("2026-10-06T14:00:07.500000"),     # already what the bars give
+    "spy_target": utc("2026-10-06T15:00:01.000001"),   # stored price 0.1 + 0.2 -> target_hit
+    "qqq_stop": utc("2026-10-06T14:10:03.000004"),     # wrong minute -> time_stop
+    "spy_next": utc("2026-10-07T19:50:00.250000"),     # a second date -> eod_close
+    "iwm_nobars": utc("2026-10-07T14:10:03.000004"),   # no bars stored
+}
+
+
+def seed_exit_world(engine) -> None:
+    seed_bars(engine, "SPY", date(2026, 10, 6), 100.0)                   # after-hours bars stored
+    seed_bars(engine, "QQQ", date(2026, 10, 6), 400.0)
+    seed_bars(engine, "SPY", date(2026, 10, 7), 100.0, last_et="15:59")  # nothing after the close
+    seed_alert(engine, "SPY", A["spy_late"], exit_ts=utc("2026-10-06T20:20:00"),
+               reason="time_stop", price=100.0, ret=0.0)
+    seed_alert(engine, "SPY", A["spy_same"], direction="PUT", target=90.0,
+               exit_ts=utc("2026-10-06T14:31:00"), reason="time_stop", price=100.02,
+               ret=-0.01999999999999602)
+    seed_alert(engine, "SPY", A["spy_target"], target=100.02,
+               exit_ts=utc("2026-10-06T15:03:00"), reason="target_hit", price=0.1 + 0.2,
+               ret=0.495)
+    seed_alert(engine, "QQQ", A["qqq_stop"], entry=400.0, target=440.0,
+               exit_ts=utc("2026-10-06T14:45:00"), reason="time_stop", price=400.5, ret=0.125)
+    seed_alert(engine, "SPY", A["spy_next"], exit_ts=utc("2026-10-07T20:20:00"),
+               reason="time_stop", price=100.0, ret=0.0)
+    seed_alert(engine, "IWM", A["iwm_nobars"], entry=200.0, target=220.0,
+               exit_ts=utc("2026-10-07T14:41:00"), reason="time_stop", price=200.0, ret=0.0)
+
+
+def seed_rows_never_selected(engine) -> dict:
+    """Rows the selection must not return, each a whole-row snapshot."""
+    seed_alert(engine, "SPY", utc("2026-10-06T16:00:00.111111"), run_kind="replay",
+               exit_ts=utc("2026-10-06T16:31:00"), reason="time_stop", price=1.0, ret=1.0)
+    seed_alert(engine, "SPY", utc("2026-10-06T16:05:00.111111"), run_kind="backfill",
+               exit_ts=utc("2026-10-06T16:36:00"), reason="time_stop", price=1.0, ret=1.0)
+    seed_alert(engine, "SPY", utc("2026-10-06T16:10:00.111111"), is_open=True)
+    seed_alert(engine, "SPY", utc("2026-10-06T16:15:00.111111"),
+               exit_ts=utc("2026-10-06T16:44:12.345678"), reason="target_hit", price=1.0, ret=1.0)
+    return never_selected_rows(engine)
+
+
+NEVER_SELECTED = "{column} >= '2026-10-06T16:00:00+00:00' AND {column} < '2026-10-06T19:00:00+00:00'"
+
+
+def never_selected_rows(engine) -> dict:
+    return {"alerts": rows(engine, "signal_alerts", NEVER_SELECTED.format(column="alert_ts")),
+            "trades": rows(engine, "trades", NEVER_SELECTED.format(column="entry_time"))}
+
+
+def alert_row(engine, name: str) -> dict:
+    return row(engine, "signal_alerts", "alert_ts = :ts", {"ts": A[name]})
+
+
+def trade_row(engine, name: str) -> dict:
+    return row(engine, "trades", "entry_time = :ts", {"ts": A[name]})
+
+
+def key_of(name: str) -> str:
+    return br.json_value(A[name])
+
+
+def test_a_committed_run_overwrites_only_the_exit_fields(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_exit_world(engine)
+    never = seed_rows_never_selected(engine)
+    names = ("spy_late", "spy_same", "spy_target", "qqq_stop", "spy_next")
+    before = {n: (alert_row(engine, n), trade_row(engine, n)) for n in names}
+
+    code = run_resolver(monkeypatch, tmp_path, "exits-run-1", "--re-resolve", *EXIT_WINDOW,
+                        "--commit")
+
+    assert code == 1  # the IWM alert has no bars and is left
+    expected = {
+        "spy_late": (utc("2026-10-06T20:00:00"), "eod_close", 100.02, 0.01999999999999602),
+        "spy_same": (utc("2026-10-06T14:31:00"), "time_stop", 100.02, -0.01999999999999602),
+        "spy_target": (utc("2026-10-06T15:01:00"), "target_hit", 100.02, 0.01999999999999602),
+        "qqq_stop": (utc("2026-10-06T14:41:00"), "time_stop", 400.02, 0.0049999999999954525),
+        "spy_next": (utc("2026-10-07T20:00:00"), "eod_close", 100.02, 0.01999999999999602),
+    }
+    for name in names:
+        alert, trade = alert_row(engine, name), trade_row(engine, name)
+        exit_ts, reason, price, ret = expected[name]
+        assert (alert["exit_ts"], alert["exit_reason"], alert["exit_price"],
+                alert["exit_return_pct"], alert["exit_recompute_run"]) == (
+            exit_ts, reason, price, ret, "exits-run-1"), name
+        assert (trade["exit_time"], trade["exit_price"], trade["exit_reason"],
+                trade["return_pct"], trade["exit_recompute_run"]) == (
+            exit_ts, price, reason, ret, "exits-run-1"), name
+        assert differing(before[name][0], alert) <= set(ALERT_EXIT_FIELDS), name
+        assert differing(before[name][1], trade) <= set(TRADE_EXIT_FIELDS), name
+        assert alert["is_open"] is False
+
+    # Not selected: equal in every column.
+    after = never_selected_rows(engine)
+    assert len(never["alerts"]) == 4 and len(never["trades"]) == 4
+    assert after == never
+
+    table, summary = read_report(tmp_path, "signal-alert-exits", "exits-run-1")
+    assert {k: (r["status"], r["written"]) for k, r in table.items()} == {
+        ("SPY", key_of("spy_late")): ("recomputed", "true"),
+        ("SPY", key_of("spy_same")): ("recomputed", "true"),
+        ("SPY", key_of("spy_target")): ("recomputed", "true"),
+        ("QQQ", key_of("qqq_stop")): ("recomputed", "true"),
+        ("SPY", key_of("spy_next")): ("recomputed", "true"),
+        ("IWM", key_of("iwm_nobars")): ("no_bars", "false"),
+    }
+    assert table[("SPY", key_of("spy_same"))]["changed"] == "false"
+    assert summary["written"] == 5
+    assert summary["arguments"]["commit"] is True
+
+
+def test_a_diverged_trade_is_left_and_its_alert_written(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_exit_world(engine)
+    execute(engine, "UPDATE trades SET exit_price = 77.0 WHERE entry_time = :ts",
+            {"ts": A["qqq_stop"]})
+    trade_before = trade_row(engine, "qqq_stop")
+
+    code = run_resolver(monkeypatch, tmp_path, "exits-run-1", "--re-resolve",
+                        "--from", "2026-10-06", "--to", "2026-10-06", "--commit")
+
+    assert code == 1
+    assert trade_row(engine, "qqq_stop") == trade_before
+    alert = alert_row(engine, "qqq_stop")
+    assert alert["exit_ts"] == utc("2026-10-06T14:41:00")
+    assert alert["exit_recompute_run"] == "exits-run-1"
+    table, _summary = read_report(tmp_path, "signal-alert-exits", "exits-run-1")
+    assert table[("QQQ", key_of("qqq_stop"))]["status"] == "trade_diverged"
+    assert table[("QQQ", key_of("qqq_stop"))]["written"] == "true"
+    held = [h for h in br.ledger_of_run("exits-run-1", br.TARGET_EXITS) if h["ticker"] == "QQQ"]
+    assert len(held) == 1 and held[0]["new_values"]["trades"] is None
+
+
+def test_an_alert_with_no_trade_is_written(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_bars(engine, "QQQ", date(2026, 10, 6), 400.0)
+    seed_alert(engine, "QQQ", A["qqq_stop"], entry=400.0, target=440.0, trade=False,
+               exit_ts=utc("2026-10-06T14:45:00"), reason="time_stop", price=400.5, ret=0.125)
+
+    code = run_resolver(monkeypatch, tmp_path, "exits-run-1", "--re-resolve",
+                        "--from", "2026-10-06", "--to", "2026-10-06", "--commit")
+
+    assert code == 0
+    assert alert_row(engine, "qqq_stop")["exit_recompute_run"] == "exits-run-1"
+    assert rows(engine, "trades") == []
+    table, _summary = read_report(tmp_path, "signal-alert-exits", "exits-run-1")
+    assert table[("QQQ", key_of("qqq_stop"))]["status"] == "trade_missing"
+    assert table[("QQQ", key_of("qqq_stop"))]["written"] == "true"
+    held, = br.ledger_of_run("exits-run-1", br.TARGET_EXITS)
+    assert held["old_values"]["trades"] is None and held["new_values"]["trades"] is None
+
+
+def test_an_alert_changed_underneath_leaves_its_trade(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_exit_world(engine)
+    real_save = br.save_report
+    saves = []
+
+    def save_after_another_writer(*args, **kwargs):
+        if not saves:
+            # Between the run's read and its write.
+            execute(engine, "UPDATE signal_alerts SET exit_price = 999.0 WHERE alert_ts = :ts",
+                    {"ts": A["spy_late"]})
+        saves.append(1)
+        return real_save(*args, **kwargs)
+
+    trade_before = trade_row(engine, "spy_late")
+    monkeypatch.setattr(br, "save_report", save_after_another_writer)
+    code = run_resolver(monkeypatch, tmp_path, "exits-run-1", "--re-resolve",
+                        "--from", "2026-10-06", "--to", "2026-10-06", "--commit")
+
+    assert code == 1
+    alert = alert_row(engine, "spy_late")
+    assert alert["exit_price"] == 999.0
+    assert alert["exit_reason"] == "time_stop"
+    assert alert["exit_recompute_run"] is None
+    # The trade still held the alert's old exit; it follows its alert and stays.
+    assert trade_row(engine, "spy_late") == trade_before
+    table, _summary = read_report(tmp_path, "signal-alert-exits", "exits-run-1")
+    assert table[("SPY", key_of("spy_late"))]["status"] == "changed_underneath"
+    assert table[("SPY", key_of("spy_late"))]["written"] == "false"
+    held = br.ledger_of_run("exits-run-1", br.TARGET_EXITS)
+    assert key_of("spy_late") not in {h["row_key"] for h in held}
+    assert len(held) == 3
+    assert alert_row(engine, "spy_target")["exit_recompute_run"] == "exits-run-1"
+
+
+def test_each_written_alert_has_one_ledger_row(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_exit_world(engine)
+    run_resolver(monkeypatch, tmp_path, "exits-run-1", "--re-resolve", *EXIT_WINDOW, "--commit")
+
+    held = br.ledger_of_run("exits-run-1", br.TARGET_EXITS)
+    assert sorted(h["row_key"] for h in held) == sorted(
+        key_of(n) for n in ("spy_late", "spy_same", "spy_target", "qqq_stop", "spy_next"))
+    late = next(h for h in held if h["row_key"] == key_of("spy_late"))
+    assert late["action"] == "recompute"
+    assert late["changed"] is True
+    assert late["session_date"] == date(2026, 10, 6)
+    assert late["old_values"] == {
+        "signal_alerts": {"exit_ts": "2026-10-06T20:20:00.000000+00:00",
+                          "exit_reason": "time_stop", "exit_price": 100.0,
+                          "exit_return_pct": 0.0, "exit_recompute_run": None},
+        "trades": {"exit_time": "2026-10-06T20:20:00.000000+00:00", "exit_price": 100.0,
+                   "exit_reason": "time_stop", "return_pct": 0.0, "exit_recompute_run": None}}
+    assert late["new_values"] == {
+        "signal_alerts": {"exit_ts": "2026-10-06T20:00:00.000000+00:00",
+                          "exit_reason": "eod_close", "exit_price": 100.02,
+                          "exit_return_pct": 0.01999999999999602,
+                          "exit_recompute_run": "exits-run-1"},
+        "trades": {"exit_time": "2026-10-06T20:00:00.000000+00:00", "exit_price": 100.02,
+                   "exit_reason": "eod_close", "return_pct": 0.01999999999999602,
+                   "exit_recompute_run": "exits-run-1"}}
+    same = next(h for h in held if h["row_key"] == key_of("spy_same"))
+    assert same["changed"] is False
+
+    bars = late["basis"]["bars"]
+    assert bars["rows"] == 960
+    assert len(bars["sha256"]) == 64
+    assert bars["first_ts"] == "2026-10-06T08:00:00.000000+00:00"
+    assert bars["last_ts"] == "2026-10-06T23:59:00.000000+00:00"
+    assert bars["inserted_min"] <= bars["inserted_max"]
+    assert "git_commit" in late["basis"]["code"]
+    assert late["basis"]["configuration"] == {
+        "call_exit_mode": "target_stop", "put_exit_mode": "target_stop", "rsi_period": 14,
+        "call_rsi_exit": 80.0, "put_rsi_exit": 20.0}
+
+
+def test_groups_commit_one_at_a_time(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_exit_world(engine)
+    real_write = br.write_group
+    calls = []
+    failure = RuntimeError("the second group fails")
+
+    def failing_second(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise failure
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(br, "write_group", failing_second)
+    with pytest.raises(RuntimeError) as caught:
+        run_resolver(monkeypatch, tmp_path, "exits-run-1", "--re-resolve", *EXIT_WINDOW,
+                     "--commit")
+    assert caught.value is failure
+
+    # The first group (QQQ 2026-10-06) is committed with its ledger row.
+    assert alert_row(engine, "qqq_stop")["exit_recompute_run"] == "exits-run-1"
+    assert trade_row(engine, "qqq_stop")["exit_recompute_run"] == "exits-run-1"
+    held = br.ledger_of_run("exits-run-1", br.TARGET_EXITS)
+    assert [h["ticker"] for h in held] == ["QQQ"]
+    # The second (SPY 2026-10-06) and everything after it are not.
+    for name in ("spy_late", "spy_same", "spy_target", "spy_next"):
+        assert alert_row(engine, name)["exit_recompute_run"] is None
+        assert trade_row(engine, name)["exit_recompute_run"] is None
+    assert alert_row(engine, "spy_late")["exit_reason"] == "time_stop"
+
+
+def test_a_second_run_writes_nothing(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_bars(engine, "SPY", date(2026, 10, 6), 100.0)
+    for name in ("spy_late", "spy_same"):
+        seed_alert(engine, "SPY", A[name], direction="PUT" if name == "spy_same" else "CALL",
+                   target=90.0 if name == "spy_same" else 110.0,
+                   exit_ts=utc("2026-10-06T14:31:00"), reason="time_stop", price=100.02,
+                   ret=-0.01999999999999602)
+    window = ("--from", "2026-10-06", "--to", "2026-10-06")
+    assert run_resolver(monkeypatch, tmp_path, "exits-run-1", "--re-resolve", *window,
+                        "--commit") == 0
+    alerts, trades = rows(engine, "signal_alerts"), rows(engine, "trades")
+    ledger = rows(engine, "bar_recompute_ledger")
+    assert len(ledger) == 2
+
+    assert run_resolver(monkeypatch, tmp_path, "exits-run-2", "--re-resolve", *window,
+                        "--commit") == 0
+
+    assert rows(engine, "signal_alerts") == alerts
+    assert rows(engine, "trades") == trades
+    assert rows(engine, "bar_recompute_ledger") == ledger
+    table, summary = read_report(tmp_path, "signal-alert-exits", "exits-run-2")
+    assert {r["status"] for r in table.values()} == {"already_current"}
+    assert {r["written"] for r in table.values()} == {"false"}
+    assert summary["written"] == 0
+
+
+def marker_count(engine, table: str, column: str, run_id: str) -> int:
+    with engine.connect() as conn:
+        return conn.execute(sqlalchemy.text(
+            f"SELECT count(*) FROM {table} WHERE {column} = :run_id"),
+            {"run_id": run_id}).scalar_one()
+
+
+def test_markers_per_run_and_coverage_are_two_checks(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_exit_world(engine)
+    # Run A: one date. Run B: the whole window, one group of it with no bars.
+    assert run_resolver(monkeypatch, tmp_path, "exits-run-A", "--re-resolve",
+                        "--from", "2026-10-06", "--to", "2026-10-06", "--commit") == 0
+    assert run_resolver(monkeypatch, tmp_path, "exits-run-B", "--re-resolve", *EXIT_WINDOW,
+                        "--commit") == 1
+
+    table, _summary = read_report(tmp_path, "signal-alert-exits", "exits-run-B")
+    selected = len(table)
+    written = [r for r in table.values() if r["written"] == "true"]
+    refused_or_left = {k for k, r in table.items() if r["status"] in br.REFUSED_STATUSES}
+
+    # Per run: the rows whose marker is this run's id are its written rows.
+    assert marker_count(engine, "signal_alerts", "exit_recompute_run", "exits-run-B") == len(written)
+    assert marker_count(engine, "trades", "exit_recompute_run", "exits-run-B") == len(written)
+    assert len(br.ledger_of_run("exits-run-B", br.TARGET_EXITS)) == len(written)
+    assert 0 < len(written) < selected
+
+    # Coverage: a selected alert has a marker, or is in the report as refused or left.
+    unmarked = rows(engine, "signal_alerts", "exit_recompute_run IS NULL")
+    assert {(a["ticker"], br.json_value(a["alert_ts"])) for a in unmarked} == refused_or_left
+    assert refused_or_left == {("IWM", key_of("iwm_nobars"))}
+
+    # Run A's rows were already current for B and keep A's id.
+    assert marker_count(engine, "signal_alerts", "exit_recompute_run", "exits-run-A") == 4
+    for name in ("spy_late", "spy_same", "spy_target", "qqq_stop"):
+        assert table[(alert_row(engine, name)["ticker"], key_of(name))]["status"] == "already_current"
+
+
+def test_the_stored_exit_is_the_deciding_bars_close(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_exit_world(engine)
+    run_resolver(monkeypatch, tmp_path, "exits-run-1", "--re-resolve", *EXIT_WINDOW, "--commit")
+
+    written = rows(engine, "signal_alerts", "exit_recompute_run = 'exits-run-1'")
+    assert {a["exit_reason"] for a in written} == {"eod_close", "time_stop", "target_hit"}
+    for alert in written:
+        at_exit = rows(engine, "market_data_intraday", "ticker = :t AND ts = :ts",
+                       {"t": alert["ticker"], "ts": alert["exit_ts"]}, order="ts")
+        if alert["exit_reason"] == "eod_close":
+            # Stamped with the session close, priced from the last bar before it.
+            assert alert["exit_ts"] == session_close(alert["alert_date"])
+            before_close = rows(
+                engine, "market_data_intraday", "ticker = :t AND ts < :ts AND ts >= :lo",
+                {"t": alert["ticker"], "ts": alert["exit_ts"],
+                 "lo": eastern_bounds_utc(alert["alert_date"], time(0), time(0))[0]},
+                order="ts")
+            deciding = before_close[-1]
+            assert alert["exit_price"] == deciding["close"]
+            assert (alert["exit_ts"] - deciding["ts"]).total_seconds() == 60
+            # A bar at the exit minute, when one is stored, is the first
+            # after-hours bar, and its close is not the exit price.
+            assert all(bar["close"] != alert["exit_price"] for bar in at_exit)
+        else:
+            deciding, = at_exit
+            assert alert["exit_price"] == deciding["close"]
+    # Both shapes are in the fixture: after-hours bars stored, and none.
+    assert len(rows(engine, "market_data_intraday", "ticker = 'SPY' AND ts = :ts",
+                    {"ts": utc("2026-10-06T20:00:00")}, order="ts")) == 1
+    assert rows(engine, "market_data_intraday", "ticker = 'SPY' AND ts = :ts",
+                {"ts": utc("2026-10-07T20:00:00")}, order="ts") == []
+
+
+def test_revert_restores_the_old_values(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    seed_exit_world(engine)
+    names = ("spy_late", "spy_same", "spy_target", "qqq_stop")
+    before = {n: (alert_row(engine, n), trade_row(engine, n)) for n in names}
+    window = ("--from", "2026-10-06", "--to", "2026-10-06")
+    assert run_resolver(monkeypatch, tmp_path, "exits-run-A", "--re-resolve", *window,
+                        "--commit") == 0
+    after_run = {n: (alert_row(engine, n), trade_row(engine, n)) for n in names}
+    ledger_after_run = rows(engine, "bar_recompute_ledger")
+
+    # A dry revert writes nothing and says what it would do.
+    assert run_resolver(monkeypatch, tmp_path, "revert-dry", "--revert-run", "exits-run-A") == 0
+    assert {n: (alert_row(engine, n), trade_row(engine, n)) for n in names} == after_run
+    assert rows(engine, "bar_recompute_ledger") == ledger_after_run
+    table, _summary = read_report(tmp_path, "signal-alert-exits", "revert-dry")
+    assert {r["status"] for r in table.values()} == {"would_revert"}
+    assert {r["written"] for r in table.values()} == {"false"}
+
+    # A later write changes one row; the revert must leave it.
+    execute(engine, "UPDATE signal_alerts SET exit_price = 555.0 WHERE alert_ts = :ts",
+            {"ts": A["qqq_stop"]})
+
+    assert run_resolver(monkeypatch, tmp_path, "revert-1", "--revert-run", "exits-run-A",
+                        "--commit") == 1
+
+    for name in ("spy_late", "spy_same", "spy_target"):
+        alert, trade = alert_row(engine, name), trade_row(engine, name)
+        for field in ALERT_EXIT_FIELDS[:4]:
+            assert alert[field] == before[name][0][field], (name, field)
+        for field in TRADE_EXIT_FIELDS[:4]:
+            assert trade[field] == before[name][1][field], (name, field)
+        assert alert["exit_recompute_run"] == "revert-1"
+        assert trade["exit_recompute_run"] == "revert-1"
+        assert differing(before[name][0], alert) == {"exit_recompute_run"}
+        assert differing(before[name][1], trade) == {"exit_recompute_run"}
+    assert alert_row(engine, "spy_target")["exit_price"] == 0.1 + 0.2
+
+    left = alert_row(engine, "qqq_stop")
+    assert left["exit_price"] == 555.0
+    assert left["exit_recompute_run"] == "exits-run-A"
+    assert trade_row(engine, "qqq_stop") == after_run["qqq_stop"][1]
+
+    reverted = br.ledger_of_run("revert-1", br.TARGET_EXITS)
+    assert sorted(h["row_key"] for h in reverted) == sorted(
+        key_of(n) for n in ("spy_late", "spy_same", "spy_target"))
+    assert {h["action"] for h in reverted} == {"revert"}
+    assert {h["basis"]["revert_of"] for h in reverted} == {"exits-run-A"}
+    table, _summary = read_report(tmp_path, "signal-alert-exits", "revert-1")
+    assert table[("QQQ", key_of("qqq_stop"))]["status"] == "changed_underneath"
+    assert table[("SPY", key_of("spy_late"))]["status"] == "reverted"
+    assert table[("SPY", key_of("spy_late"))]["written"] == "true"
+    # The first run's ledger rows are still there: nothing is deleted.
+    assert len(br.ledger_of_run("exits-run-A", br.TARGET_EXITS)) == 4

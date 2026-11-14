@@ -787,8 +787,6 @@ class EODResolver:
         """
         from gcp import bar_recompute
 
-        if commit:
-            raise NotImplementedError("the committed re-resolve is not written yet")
         alerts = self.find_resolved_alerts(tickers, first, last)
         logger.info("re-resolve %s..%s tickers=%s candidates=%d commit=%s run_id=%s",
                     first, last, " ".join(tickers), len(alerts), commit, run_id)
@@ -820,10 +818,54 @@ class EODResolver:
             'configuration': configuration,
         }
         return bar_recompute.finish_run(
-            target=bar_recompute.TARGET_EXITS, run_id=run_id, commit=False,
+            target=bar_recompute.TARGET_EXITS, run_id=run_id, commit=commit,
             action='recompute', rows=rows, groups=groups, summary=summary,
             csv_columns=self.EXIT_CSV_COLUMNS, report_dir=report_dir,
             summarize=self._outcomes)
+
+    def revert_run(self, revert_of: str, *, commit: bool, run_id: str,
+                   report_dir: Optional[str]) -> int:
+        """Write back the exits the committed run *revert_of* replaced, from
+        its ledger rows, and return the exit code.
+
+        A row is restored only while it still holds what that run wrote; a
+        row a later run or another writer changed is left and reported. The
+        revert writes its own ledger rows and sets the marker to its own run
+        id: the history stays in the ledger. Without *commit* it reads only
+        the ledger and reports what it would restore.
+        """
+        from gcp import bar_recompute
+
+        target = bar_recompute.TARGET_EXITS
+        held = bar_recompute.ledger_of_run(revert_of, target)
+        if not held:
+            logger.error(
+                "refused: the ledger holds no row of run %s for target %s; nothing to revert",
+                revert_of, target)
+            return 1
+        units = bar_recompute.revert_units(held, target)
+        rows = [bar_recompute.ReportRow(
+            ticker=unit.ticker, session_date=unit.session_date, row_key=unit.row_key,
+            old={c: unit.primary.old[c] for c in self.EXIT_CSV_COLUMNS},
+            new=dict(unit.primary.new), changed=unit.changed,
+            status='reverted' if commit else 'would_revert',
+            bars_rows=None, bars_sha256=None) for unit in units]
+        by_group: dict = {}
+        for unit in units:
+            by_group.setdefault((unit.ticker, unit.session_date), []).append(unit)
+        groups = [(f"{ticker} {day}", members) for (ticker, day), members in by_group.items()]
+        logger.info("revert-run %s target=%s rows=%d groups=%d commit=%s run_id=%s",
+                    revert_of, target, len(units), len(groups), commit, run_id)
+        summary = {
+            'target': target,
+            'run_id': run_id,
+            'arguments': {'revert_run': revert_of, 'commit': bool(commit)},
+            'code_version': bar_recompute.code_version(),
+        }
+        return bar_recompute.finish_run(
+            target=target, run_id=run_id, commit=commit, action='revert', rows=rows,
+            groups=groups, summary=summary, csv_columns=self.EXIT_CSV_COLUMNS,
+            report_dir=report_dir, summarize=self._outcomes)
 
     # ── 5. Orchestration ──────────────────────────────────────────────
 
@@ -951,7 +993,8 @@ def _recompute_main(args) -> int:
 
     run_id = bar_recompute.run_id()
     if args.revert_run:
-        raise NotImplementedError("--revert-run is not written yet")
+        return resolver.revert_run(
+            args.revert_run, commit=args.commit, run_id=run_id, report_dir=args.report_dir)
     tickers, first, last = window
     return resolver.re_resolve(
         tickers, first, last, commit=args.commit, run_id=run_id,

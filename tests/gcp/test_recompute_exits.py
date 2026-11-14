@@ -644,3 +644,66 @@ def test_an_empty_selection_is_exit_zero(monkeypatch, tmp_path):
     assert table == [CSV_HEADER]
     assert summary["totals"] == {}
     assert reader.of("FROM market_data_intraday") == []
+
+
+# ── --revert-run ──────────────────────────────────────────────────────
+
+
+def test_revert_of_an_unknown_run_is_exit_one(monkeypatch, tmp_path, caplog):
+    asked = []
+
+    def nothing_held(run_id, target):
+        asked.append((run_id, target))
+        return []
+
+    monkeypatch.setattr(database, "query_to_dataframe_strict",
+                        Reader([("information_schema.columns", schema_ready)]))
+    monkeypatch.setattr(br, "ledger_of_run", nothing_held)
+    with caplog.at_level(logging.ERROR):
+        code = run_main(monkeypatch, "--revert-run", "no-such-run", "--commit",
+                        "--report-dir", str(tmp_path))
+
+    assert code == 1
+    assert asked == [("no-such-run", "signal-alert-exits")]
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "no-such-run" in errors[0] and "signal-alert-exits" in errors[0]
+    assert not (tmp_path / "bar-recompute").exists()
+
+
+def test_a_dry_revert_reads_only_the_ledger(monkeypatch, tmp_path):
+    held = [{
+        "run_id": "exits-run-A", "ticker": "SPY", "session_date": date(2026, 10, 6),
+        "row_key": "2026-10-06T19:50:00.250000+00:00", "action": "recompute", "changed": True,
+        "old_values": {
+            "signal_alerts": {"exit_ts": "2026-10-06T20:20:00.000000+00:00",
+                              "exit_reason": "time_stop", "exit_price": 100.0,
+                              "exit_return_pct": 0.0, "exit_recompute_run": None},
+            "trades": None},
+        "new_values": {
+            "signal_alerts": {"exit_ts": "2026-10-06T20:00:00.000000+00:00",
+                              "exit_reason": "eod_close", "exit_price": 100.02,
+                              "exit_return_pct": 0.01999999999999602,
+                              "exit_recompute_run": "exits-run-A"},
+            "trades": None},
+        "basis": {},
+    }]
+    monkeypatch.setattr(br, "ledger_of_run", lambda run_id, target: held)
+    code = dry_run_revert(monkeypatch, tmp_path)
+    assert code == 0
+    table, summary = report(tmp_path, "revert-dry")
+    assert table[1] == [
+        "SPY", "2026-10-06", "2026-10-06T19:50:00.250000+00:00",
+        "2026-10-06T20:00:00.000000+00:00", "eod_close", "100.02", "0.01999999999999602",
+        "2026-10-06T20:20:00.000000+00:00", "time_stop", "100.0", "0.0",
+        "true", "would_revert", "", "", "false"]
+    assert summary["arguments"] == {"revert_run": "exits-run-A", "commit": False}
+    assert summary["totals"] == {"would_revert": 1}
+
+
+def dry_run_revert(monkeypatch, tmp_path) -> int:
+    monkeypatch.setattr(database, "query_to_dataframe_strict",
+                        Reader([("information_schema.columns", schema_ready)]))
+    monkeypatch.setattr(database, "get_engine", lambda: NoTransactionEngine())
+    monkeypatch.setenv("CLOUD_RUN_EXECUTION", "revert-dry")
+    return run_main(monkeypatch, "--revert-run", "exits-run-A", "--report-dir", str(tmp_path))
