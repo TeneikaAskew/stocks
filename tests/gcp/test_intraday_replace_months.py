@@ -1732,6 +1732,28 @@ def test_a_failed_tail_swap_reports_tail_not_written():
     assert [world.rows["SPY"][k][5] for k in FEB_LATE] == ["2026-04-13"] * 3
 
 
+def test_the_key_read_is_strict_and_returns_utc_keys():
+    """The spared keys of the tail swap come from this read. It goes through
+    the strict query, so a database error is raised and never reads as "no
+    keys stored" (which would spare nothing); a zone-less result is UTC."""
+    reads = []
+
+    def read(sql, params, **kw):
+        reads.append((" ".join(sql.split()), params, kw))
+        return pd.DataFrame({"ts": pd.to_datetime(["2018-03-01 02:04", "2018-03-01 03:00"])})
+
+    with patch.object(fai, "query_to_dataframe_strict", side_effect=read):
+        keys = fai._stored_keys("SPY", FEB_END, MARCH_MIDNIGHT)
+    assert keys == [pd.Timestamp("2018-03-01 02:04", tz="UTC"), pd.Timestamp("2018-03-01 03:00", tz="UTC")]
+    sql, params, kw = reads[0]
+    assert len(reads) == 1 and sql.startswith("SELECT ts FROM market_data_intraday") and sql.endswith("ORDER BY ts")
+    assert params == {"t": "SPY", "s": FEB_END, "e": MARCH_MIDNIGHT} and kw == {"timeout_s": 120}
+
+    with patch.object(fai, "query_to_dataframe_strict", side_effect=RuntimeError("db down")), \
+         pytest.raises(RuntimeError, match="db down"):
+        fai._stored_keys("SPY", FEB_END, MARCH_MIDNIGHT)
+
+
 def test_a_failed_strip_read_raises_before_any_swap():
     """Design 8: a database error on any read is raised. The key read comes
     before the main swap, so nothing has been written when it fails."""
