@@ -2565,6 +2565,17 @@
    "serves": "MODEL-STRAT-001 / MODEL-FTFC-001 — emits the decision, not just the inputs: `StratClassifier.classify_series` + `detect_combos` (`gcp/fetchers/fetch_market_data.py:367-380`), then `ftfc_score`, `ftfc_direction` and the thresholded `strat_setup = last_combo and abs(ftfc_score) >= 0.3` (`:370-379`), upserted to `market_data_daily` (`:439`). Served by `/api/dashboard` (`platform/api/routers/dashboard.py:146-149`) and scored by MODEL-RANK-001 (`lib/agents/ranker/signals.py:55`, `:68-73`)"
   },
   {
+   "cron_america_new_york": "`45 23 * * 1-5`",
+   "job": "`fetch-watched-tickers`",
+   "models": [
+    "MODEL-FTFC-001",
+    "MODEL-IND-001",
+    "MODEL-STRAT-001"
+   ],
+   "scheduler": "`watched-tickers-nightly`",
+   "serves": "MODEL-STRAT-001 / MODEL-FTFC-001, the same decision clause as `fetch-market-data-daily` above, for the tickers web users watch: `gcp/fetchers/fetch_watched_tickers.py` (`upsert_indicators`) calls `fetch_market_data.compute_and_upsert_daily_indicators`, which classifies the latest daily candle with `StratClassifier`, detects the combo, computes `ftfc_score` and writes the thresholded `strat_setup = last_combo and abs(ftfc_score) >= 0.3` with `strat_candle` and `strat_combo` to `market_data_daily` for each watched ticker's session row; the indicator columns the same call writes are MODEL-IND-001 inputs. The set is read owner-free from `watched_tickers` and `user_watchlists` (the watched-ticker ingest v3, #1927; scheduled by the FEAT-DEPLOY-001 r2 deploy)"
+  },
+  {
    "cron_america_new_york": "`30 2 * * 1-6`",
    "job": "`backfill-daily-indicators`",
    "models": [
@@ -2615,7 +2626,7 @@
  ],
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "9752340744b8580d57910eadb6df84c536081b42",
-  "docs/product/07-MODEL-REGISTRY.md": "5a6d4fae8beb35532db208132a4fd0bb26fa8a68",
+  "docs/product/07-MODEL-REGISTRY.md": "94afe7543c87b0bba1f9f4619161346335d2d80e",
   "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
  },
  "tables": [
@@ -2715,7 +2726,7 @@
     "Job",
     "Serves"
    ],
-   "rows": 34,
+   "rows": 35,
    "section": "Model and Algorithm Registry / Experiment traceability / Which of these actually run"
   },
   {
