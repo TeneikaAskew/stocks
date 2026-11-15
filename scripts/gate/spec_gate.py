@@ -1131,8 +1131,9 @@ def is_process_file(path: str, trees=()) -> bool:
 def is_package_metadata(path: str) -> bool:
     """`python3 -m pytest` puts the checkout first on sys.path and pytest loads every `pytest11` entry point
     importlib.metadata finds there, so a root `*.dist-info` or `*.egg-info` folder (or file) registers a plugin
-    in both gate suites (FEAT-CICD-001 Part A follow-up: folders the gate suites import from the checkout)."""
-    return path.split("/", 1)[0].endswith((".dist-info", ".egg-info"))
+    in both gate suites (FEAT-CICD-001 Part A follow-up: folders the gate suites import from the checkout).
+    importlib.metadata matches the two suffixes in any case, so the name is compared folded."""
+    return path.split("/", 1)[0].lower().endswith((".dist-info", ".egg-info"))
 # pytest takes its options (`addopts = --co` runs nothing and passes) from the first of these files in the
 # gate suites' directory or a parent up to the checkout (FEAT-CICD-001 Part A pin prerequisite)
 PYTEST_CONFIG_NAMES = ("pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg", "pyproject.toml")

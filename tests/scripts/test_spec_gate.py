@@ -6936,13 +6936,14 @@ def test_a_folder_an_import_finds_in_the_checkout_is_a_process_file(repo):
 def test_package_metadata_at_the_root_is_a_process_file(repo):
     """`python3 -m pytest` puts the checkout first on sys.path and pytest loads every `pytest11` entry point
     it finds there, so a root `*.dist-info` folder naming a module registers it as a plugin in both gate
-    suites, serially too; root `*.dist-info` and `*.egg-info` paths are FEAT-CICD-001's work. The same
+    suites, serially too; root `*.dist-info` and `*.egg-info` paths, in any case as importlib.metadata matches
+    them, are FEAT-CICD-001's work. The same
     names below the root, and files only named like them, stay ordinary."""
     cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
     on_base(repo, {CATALOG: cicd_row})
     sg = load_gate(repo)
     process = ("zzq-1.0.dist-info/entry_points.txt", "zzq-1.0.dist-info/METADATA", "zzq.egg-info",
-               "zzq.egg-info/entry_points.txt", "zzq.egg-info/PKG-INFO")
+               "zzq.egg-info/entry_points.txt", "zzq.egg-info/PKG-INFO", "ZZQ-1.0.DIST-INFO/entry_points.txt", "Zzq.Egg-Info/PKG-INFO")
     assert [p for p in process if not sg.is_process_file(p)] == []
     ordinary = ("docs/zzq.dist-info.md", "lib/zzq-1.0.dist-info/entry_points.txt", "tests/zzq.egg-info/PKG-INFO",
                 "zzq.dist-info.md", "dist-info/x.txt", "zzq.egg-info.bak")
