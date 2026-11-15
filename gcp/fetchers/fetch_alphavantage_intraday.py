@@ -494,10 +494,15 @@ DERIVED_TS_TABLES = (
 # they hold outcomes people have read, so invalidating them is a separate,
 # approved recompute step, not a side effect of the replace (Codex P1 on
 # #1185). The run lists every replaced ticker-month (REPLACED lines) and, per
-# table, the recompute path or that none exists yet (RECOMPUTE lines). Two
-# tables have no correct path today, so a committed run is gated on #1190
-# (CLAUDE.md Rule 0.1: the runbook says "do not run X until Y lands" rather
-# than naming a command that does not do the job).
+# table, its recompute path (RECOMPUTE lines). Every table has one:
+# historical_signals by a full regeneration (scripts/run_historical_signals.py),
+# premarket_analysis outcomes by the playbook resolver's force
+# (gcp/premarket_playbook_resolver.py), signal_alerts exits by the end-of-day
+# resolver's --re-resolve (gcp/signal_monitor_eod_resolver.py) and the daily
+# premarket fields by the daily fetcher's --recompute-premarket. The last two
+# read only bars that are proven true UTC, write a ledger row per overwrite
+# and can be reverted (gcp/bar_recompute.py). Each named command does the job
+# it is named for (CLAUDE.md Rule 0.1).
 BAR_DERIVED_RESULTS = {
     "historical_signals / signal_metrics":
         "FULL regeneration only: run_historical_signals --force deletes every row "
@@ -508,9 +513,11 @@ BAR_DERIVED_RESULTS = {
         "PLAYBOOK_RESOLVE_FORCE=true python -m gcp.premarket_playbook_resolver, "
         "per replaced session",
     "signal_alerts exits":
-        "NO PATH YET: the EOD resolver never re-selects resolved alerts (#1190)",
+        "python -m gcp.signal_monitor_eod_resolver --re-resolve "
+        "--from <first session> --to <last session>, dry run first, then with --commit",
     "market_data_daily premarket fields (pre_high/pre_low/pre_vwap/gap_pct)":
-        "NO PATH YET: only fetch_market_data computes them, right after its fetch (#1190)",
+        "python -m gcp.fetchers.fetch_market_data --recompute-premarket "
+        "--from <first session> --to <last session>, dry run first, then with --commit",
 }
 # A refetched session may hold this share fewer bars than already held
 # (rounded down, so a session under 50 bars must be complete) before the
@@ -1066,9 +1073,6 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
             log.warning("REPLACED %s", item)
         for table, how in BAR_DERIVED_RESULTS.items():
             log.warning("RECOMPUTE %s: %s", table, how)
-        if commit:
-            log.warning("Tables marked NO PATH YET stay computed from the old bars "
-                        "until #1190 lands; the reader cutover is not complete.")
     if retry:
         for item in retry:
             log.error("RETRY %s", item)

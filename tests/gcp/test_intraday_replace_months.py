@@ -943,10 +943,10 @@ def test_the_recompute_advice_never_names_a_destructive_or_no_op_command():
     them was a no-op; and --force --start-date <window> would have deleted
     every earlier historical_signals row for the ticker."""
     adv = fai.BAR_DERIVED_RESULTS
-    assert "NO PATH YET" in adv["signal_alerts exits"]
-    assert "#1190" in adv["signal_alerts exits"]
+    assert "python -m gcp.signal_monitor_eod_resolver --re-resolve" in adv["signal_alerts exits"] and "--from" in adv["signal_alerts exits"] and "--to" in adv["signal_alerts exits"]
+    assert "NO PATH YET" not in adv["signal_alerts exits"] and "#1190" not in adv["signal_alerts exits"]
     premarket = next(v for k, v in adv.items() if k.startswith("market_data_daily"))
-    assert "NO PATH YET" in premarket and "backfill_daily_indicators" not in premarket
+    assert "python -m gcp.fetchers.fetch_market_data --recompute-premarket" in premarket and "--from" in premarket and "--to" in premarket and not any(old in premarket for old in ("NO PATH YET", "#1190", "backfill_daily_indicators"))
     hs = adv["historical_signals / signal_metrics"]
     assert "FULL regeneration" in hs and "earliest" in hs
 
