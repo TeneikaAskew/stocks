@@ -237,7 +237,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/run_walk_forward.py`](../../../scripts/run_walk_forward.py) — line [144](../../../scripts/run_walk_forward.py#L144)
 
 ### `bar_recompute_ledger`
-- [`gcp/bar_recompute.py`](../../../gcp/bar_recompute.py) — line [719](../../../gcp/bar_recompute.py#L719)
+- [`gcp/bar_recompute.py`](../../../gcp/bar_recompute.py) — line [720](../../../gcp/bar_recompute.py#L720)
 
 ### `daily_rates`
 - [`gcp/fetchers/fetch_fred_rates.py`](../../../gcp/fetchers/fetch_fred_rates.py) — line [121](../../../gcp/fetchers/fetch_fred_rates.py#L121)
@@ -406,7 +406,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 ### `signal_alerts`
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [1816](../../../gcp/signal_monitor.py#L1816), [2465](../../../gcp/signal_monitor.py#L2465)
-- [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [476](../../../gcp/signal_monitor_eod_resolver.py#L476)
+- [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [493](../../../gcp/signal_monitor_eod_resolver.py#L493)
 - [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [552](../../../scripts/replay_signal_monitor.py#L552)
 
 ### `signal_metrics`
@@ -437,7 +437,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 ### `trades`
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [669](../../../gcp/migrate_to_gcp.py#L669)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2480](../../../gcp/signal_monitor.py#L2480)
-- [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [490](../../../gcp/signal_monitor_eod_resolver.py#L490)
+- [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [507](../../../gcp/signal_monitor_eod_resolver.py#L507)
 - [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [98](../../../gcp/trade_logger.py#L98), [101](../../../gcp/trade_logger.py#L101)
 
 ### `user_preferences`
@@ -515,7 +515,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/generate_backtest_report.py`](../../../scripts/generate_backtest_report.py) — line [214](../../../scripts/generate_backtest_report.py#L214), [221](../../../scripts/generate_backtest_report.py#L221), [224](../../../scripts/generate_backtest_report.py#L224)
 
 ### `bar_recompute_ledger`
-- [`gcp/bar_recompute.py`](../../../gcp/bar_recompute.py) — line [513](../../../gcp/bar_recompute.py#L513), [523](../../../gcp/bar_recompute.py#L523)
+- [`gcp/bar_recompute.py`](../../../gcp/bar_recompute.py) — line [514](../../../gcp/bar_recompute.py#L514), [524](../../../gcp/bar_recompute.py#L524)
 
 ### `daily_rates`
 - [`lib/options_exec_backtest/runner.py`](../../../lib/options_exec_backtest/runner.py) — line [207](../../../lib/options_exec_backtest/runner.py#L207)
@@ -740,7 +740,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [703](../../../gcp/premarket_playbook_resolver.py#L703)
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [340](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L340)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2003](../../../gcp/signal_monitor.py#L2003)
-- [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [594](../../../gcp/signal_monitor_eod_resolver.py#L594)
+- [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [611](../../../gcp/signal_monitor_eod_resolver.py#L611)
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [457](../../../lib/data_loader.py#L457)
 - [`lib/features/intraday_flow.py`](../../../lib/features/intraday_flow.py) — line [125](../../../lib/features/intraday_flow.py#L125)
 - [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [599](../../../lib/options_intraday.py#L599)
@@ -840,9 +840,9 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [155](../../../scripts/backfill_watchlist_data.py#L155)
 
 ### `signal_alerts`
-- [`gcp/bar_recompute.py`](../../../gcp/bar_recompute.py) — line [514](../../../gcp/bar_recompute.py#L514)
+- [`gcp/bar_recompute.py`](../../../gcp/bar_recompute.py) — line [515](../../../gcp/bar_recompute.py#L515)
 - [`gcp/indicator_correlation_job.py`](../../../gcp/indicator_correlation_job.py) — line [514](../../../gcp/indicator_correlation_job.py#L514)
-- [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [163](../../../gcp/signal_monitor_eod_resolver.py#L163), [192](../../../gcp/signal_monitor_eod_resolver.py#L192)
+- [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [170](../../../gcp/signal_monitor_eod_resolver.py#L170), [199](../../../gcp/signal_monitor_eod_resolver.py#L199)
 - [`gcp/signal_quality_alarm.py`](../../../gcp/signal_quality_alarm.py) — line [209](../../../gcp/signal_quality_alarm.py#L209)
 - [`gcp/signal_replay.py`](../../../gcp/signal_replay.py) — line [118](../../../gcp/signal_replay.py#L118)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [969](../../../lib/agents/summarizers.py#L969), [987](../../../lib/agents/summarizers.py#L987)
@@ -887,7 +887,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/main.py`](../../../platform/api/main.py) — line [1571](../../../platform/api/main.py#L1571), [1572](../../../platform/api/main.py#L1572)
 
 ### `trades`
-- [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [193](../../../gcp/signal_monitor_eod_resolver.py#L193)
+- [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [200](../../../gcp/signal_monitor_eod_resolver.py#L200)
 - [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [177](../../../gcp/trade_logger.py#L177), [213](../../../gcp/trade_logger.py#L213), [244](../../../gcp/trade_logger.py#L244)
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [865](../../../lib/data_loader.py#L865)
 - [`lib/strategies/insight_cache.py`](../../../lib/strategies/insight_cache.py) — line [285](../../../lib/strategies/insight_cache.py#L285)
