@@ -8,7 +8,6 @@ tables it already clears.
 """
 from __future__ import annotations
 
-from datetime import date
 
 import pandas as pd
 
@@ -40,7 +39,9 @@ def test_replace_month_clears_the_six_levels_tables(monkeypatch):
 
     monkeypatch.setattr(
         fai, "fetch_month", lambda *a, **k: (_vendor_month(["2026-09-24"]), fai.FETCH_OK))
-    monkeypatch.setattr(fai, "_held_session_dates", lambda *a, **k: {date(2026, 9, 24): 1})
+    monkeypatch.setattr(fai, "_stored_window_rows", lambda *a, **k: pd.DataFrame({
+        "ts": [pd.Timestamp("2026-09-24 13:30", tz="UTC")],
+        "open": 2.0, "high": 2.0, "low": 2.0, "close": 2.0, "volume": [100]}))
     monkeypatch.setattr(fai, "_held_digest", lambda *a, **k: "digest-0")
     monkeypatch.setattr(fai, "replace_rows_in_window", fake_replace)
 

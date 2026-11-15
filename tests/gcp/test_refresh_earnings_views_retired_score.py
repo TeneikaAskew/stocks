@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 
 from gcp import refresh_earnings_views as rev
+from lib.eastern_time import market_today
 from lib.earnings_reactions import (
     confidence_label, recommended_structure, score_quintile,
 )
@@ -25,7 +26,7 @@ from tests.fixtures.earnings_calendar_sources import (
     av, ew_only, hydrated, make_db, run_earnings_sql, uw,
 )
 
-TODAY = date.today()
+TODAY = market_today()  # the readers' own "today" (lib.eastern_time), not the host's
 D = TODAY + timedelta(days=2)
 RETIRED_FIELDS = ('playability_score', 'quintile', 'confidence_label',
                   'recommended_structure_long_only', 'recommended_structure_ic_mode')
