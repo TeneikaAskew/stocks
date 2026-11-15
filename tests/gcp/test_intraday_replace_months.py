@@ -633,6 +633,52 @@ def test_a_same_count_upsert_during_the_refetch_rolls_the_month_back():
     assert "content" in r["detail"]
 
 
+def test_a_write_between_the_snapshot_and_the_digest_rolls_the_month_back():
+    """Codex P1 on #1955 (472fd8ee): the rows classify_stored_rows reads and
+    the digest the locked re-check compares with must describe the same
+    table. A writer that commits between the two reads changes values the
+    classification never saw; with the digest read second, the re-check
+    matches the newer digest and the swap deletes on the old reading. The
+    digest is read first, so the same write leaves the re-check differing."""
+    start, end = fai.month_replace_window(2026, 9)
+    table = {"digest": "before"}
+    order = []
+
+    def write():                                   # same keys, new values
+        table["digest"] = "after"
+
+    def snapshot(*a, **k):
+        order.append("SNAPSHOT")
+        rows = _held_rows({date(2026, 9, 24): 961})
+        if order == ["SNAPSHOT"]:
+            write()                                # lands right after this read
+        return rows
+
+    def digest(symbol, s, e, conn=None):
+        if (s, e) != (start, end):
+            return "tail"                          # the strip past the window
+        order.append("DIGEST" if conn is None else "LOCKED")
+        value = table["digest"]
+        if order == ["DIGEST"]:
+            write()                                # lands right after this read
+        return value
+
+    def fake_replace(df, table_name, key, ts_col, s, e, **kw):
+        kw["verify"](object())
+        return 961, len(df)
+
+    with patch.object(fai, "fetch_month", return_value=(_full_session(), fai.FETCH_OK)), \
+         patch.object(fai, "_stored_window_rows", side_effect=snapshot), \
+         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 961}), \
+         patch.object(fai, "_held_digest", side_effect=digest), \
+         patch.object(fai, "replace_rows_in_window", side_effect=fake_replace) as swap:
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    assert r["status"] == fai.REPLACE_CHANGED
+    assert "content" in r["detail"]
+    swap.assert_called_once()                      # refused under the lock, nothing deleted
+    assert order == ["DIGEST", "SNAPSHOT", "LOCKED"]
+
+
 def test_an_unchanged_month_still_replaces_under_the_digest_check():
     with patch.object(fai, "fetch_month", return_value=(_full_session(), fai.FETCH_OK)), \
          patch.object(fai, "_stored_window_rows", return_value=_held_rows({date(2026, 9, 24): 961})), \
@@ -1589,12 +1635,13 @@ def test_a_months_own_late_bars_past_the_window_are_written():
     assert second.kwargs["max_delete_ratio"] == fai.REPLACE_MAX_DELETE_RATIO
     assert callable(second.kwargs["verify"])
 
-    # Both baselines are taken before the vendor is asked; the strip's digest
-    # is taken again under the second swap's lock.
+    # Both baselines are taken before the vendor is asked, the window's before
+    # its rows are read; the strip's digest is taken again under the second
+    # swap's lock.
     feb_window = fai.month_replace_window(2018, 2)
     assert world.events == [
-        ("rows", *feb_window),
-        ("digest", *feb_window, False), ("digest", FEB_END, MARCH_MIDNIGHT, False),
+        ("digest", *feb_window, False), ("rows", *feb_window),
+        ("digest", FEB_END, MARCH_MIDNIGHT, False),
         ("fetch",),
         ("keys", FEB_END, end),
         ("swap", 1), ("digest", *feb_window, True),
@@ -1623,7 +1670,7 @@ def test_a_committed_month_without_late_bars_makes_one_swap_and_no_key_read():
     r, swap = _replace(stored, in_session, "SPY", 2018, 2, commit=True, world=world)
     assert r["status"] == fai.REPLACE_OK and r["tail"] == 0
     assert swap.call_count == 1
-    assert [e[0] for e in world.events] == ["rows", "digest", "digest", "fetch", "swap", "digest"]
+    assert [e[0] for e in world.events] == ["digest", "rows", "digest", "fetch", "swap", "digest"]
     # Late bars the vendor no longer returns stay as they are.
     assert [world.rows["SPY"][k][5] for k in FEB_LATE] == ["2026-04-13"] * 3
 

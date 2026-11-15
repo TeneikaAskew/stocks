@@ -779,6 +779,14 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     # verify() below refuses the month. Snapshotting after the fetch let such
     # bars into ``held`` but not into the refetch, where the shortfall
     # tolerance could pass them and the DELETE erase them (Codex P1 on #1185).
+    # Content, not just counts: a same-count upsert must also refuse the month.
+    # Only a committed run deletes, so only it needs the baseline. Read BEFORE
+    # the rows that are classified: a writer that commits between the two reads
+    # then differs from this digest under the lock, and the month is refused.
+    # Read after them, the digest would hold the newer values while the
+    # classification used the older ones, and the re-check would pass (Codex
+    # P1 on #1955). The tail strip below keeps the same order: digest, then keys.
+    digest = _held_digest(symbol, start, end) if commit else None
     stored = _stored_window_rows(symbol, start, end)
     # The window's bars as _held_session_dates places them; verify() re-reads
     # exactly this under the lock.
@@ -790,9 +798,6 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
         # H2), and there is no reason to spend a vendor call finding that out.
         out['status'] = REPLACE_NOTHING_HELD
         return out
-    # Content, not just counts: a same-count upsert must also refuse the month.
-    # Only a committed run deletes, so only it needs the baseline.
-    digest = _held_digest(symbol, start, end) if commit else None
     # The same for the tail strip, also before the refetch: the baseline of
     # the second swap's re-check. A key-only check there would let this run's
     # refetch overwrite a row another writer rewrote in the meantime.
