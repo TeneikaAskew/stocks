@@ -816,25 +816,43 @@ def finish_run(*, target: str, run_id: str, commit: bool, action: str,
     the account of every attempt and the first save of a retry cannot replace
     the old values an earlier attempt recorded.
 
+    A ledger row whose follower is null records a primary written without its
+    follower: the follower was missing, or it was left. The ledger does not
+    say which, and this attempt's own rows do. Such a row keeps the status
+    this attempt gave it when that status was refused or left
+    (``trade_diverged`` while the trade still disagrees with its alert), and
+    is ``trade_diverged`` when this attempt would write a follower for it (a
+    revert whose earlier attempt did not restore the trade). So a retry exits
+    1 while a trade an earlier attempt left still disagrees.
+
     A dry run reads no ledger and opens no engine. A failed report raises
     before any write. A failed group raises; the groups before it stay
     committed.
     """
-    primary_spec, _follower_spec = TARGET_TABLES[target]
+    primary_spec, follower_spec = TARGET_TABLES[target]
     if commit:
         held = {(h["ticker"], h["row_key"]): h for h in ledger_of_run(run_id, target)}
         if held:
+            planned = {(u.ticker, u.row_key): u for _label, units in groups for u in units}
             for i, row in enumerate(rows):
                 entry = held.get((row.ticker, row.row_key))
                 if entry is None:
                     continue
+                status = "reverted" if entry["action"] == "revert" else "recomputed"
+                if (follower_spec is not None
+                        and entry["new_values"].get(follower_spec.table) is None):
+                    unit = planned.get((row.ticker, row.row_key))
+                    if row.status in REFUSED_STATUSES:
+                        status = row.status
+                    elif unit is not None and unit.follower is not None:
+                        status = "trade_diverged"
                 bars = entry["basis"].get("bars") or {}
                 rows[i] = ReportRow(
                     ticker=row.ticker, session_date=row.session_date, row_key=row.row_key,
                     old=entry["old_values"][primary_spec.table],
                     new=entry["new_values"][primary_spec.table],
                     changed=entry["changed"],
-                    status="reverted" if entry["action"] == "revert" else "recomputed",
+                    status=status,
                     bars_rows=bars.get("rows"), bars_sha256=bars.get("sha256"),
                     written=True)
             groups = [

@@ -709,6 +709,179 @@ def dry_run_revert(monkeypatch, tmp_path) -> int:
     return run_main(monkeypatch, "--revert-run", "exits-run-A", "--report-dir", str(tmp_path))
 
 
+# ── a retry under the same run id ─────────────────────────────────────
+#
+# A Cloud Run retry keeps the execution's name, so a committed attempt finds
+# the ledger rows an earlier attempt wrote and reports those rows from the
+# ledger. The ledger holds null for a trade that attempt did not write, both
+# when the trade was missing and when it was left.
+
+LATE_KEY = "2026-10-06T19:50:00.250000+00:00"
+EARLY_KEY = "2026-10-06T14:00:07.500000+00:00"
+LATE_OLD = ("2026-10-06T20:20:00.000000+00:00", "time_stop", 100.0, 0.0)
+LATE_NEW = ("2026-10-06T20:00:00.000000+00:00", "eod_close", 100.02, 0.01999999999999602)
+EARLY_EXIT = ("2026-10-06T14:31:00.000000+00:00", "time_stop", 100.02, -0.01999999999999602)
+
+
+def alert_object(values, marker) -> dict:
+    ts, reason, price, ret = values
+    return {"exit_ts": ts, "exit_reason": reason, "exit_price": price,
+            "exit_return_pct": ret, "exit_recompute_run": marker}
+
+
+def trade_object(values, marker) -> dict:
+    ts, reason, price, ret = values
+    return {"exit_time": ts, "exit_reason": reason, "exit_price": price,
+            "return_pct": ret, "exit_recompute_run": marker}
+
+
+def held_row(run_id, row_key, old_values, new_values, *, action="recompute",
+             changed=True) -> dict:
+    """A ledger row as `ledger_of_run` returns it."""
+    basis = ({"bars": {"rows": 960, "sha256": SPY_1006_SHA}} if action == "recompute"
+             else {"revert_of": "exits-run-A"})
+    return {
+        "run_id": run_id, "ticker": "SPY", "session_date": date(2026, 10, 6),
+        "row_key": row_key, "action": action, "changed": changed,
+        "old_values": old_values, "new_values": new_values, "basis": basis,
+    }
+
+
+def committed_retry(monkeypatch, tmp_path, alerts, ledgers, *argv) -> int:
+    """A committed attempt under RUN_ID. *ledgers* maps (run id, target) to the
+    rows the ledger holds; every row the attempt would write is held, so it
+    must enter no transaction."""
+    monkeypatch.setattr(database, "query_to_dataframe_strict", exits_reader(alerts=alerts))
+    monkeypatch.setattr(database, "get_engine", lambda: NoTransactionEngine())
+    monkeypatch.setattr(br, "ledger_of_run", lambda run_id, target: ledgers[(run_id, target)])
+    monkeypatch.setenv("CLOUD_RUN_EXECUTION", RUN_ID)
+    return run_main(monkeypatch, *argv, "--commit", "--report-dir", str(tmp_path))
+
+
+def test_a_retry_keeps_a_trade_the_first_attempt_left(monkeypatch, tmp_path):
+    """The first attempt wrote the late alert and left its trade, whose exit
+    price another writer had changed: trade_diverged, exit 1. The retry finds
+    the alert written and the trade still not its mirror. Its row comes from
+    the ledger and is still trade_diverged, and the run still exits 1."""
+    alerts = stored_alerts()
+    late = dict(alerts[5], exit_ts=pd.Timestamp("2026-10-06 20:00", tz="UTC"),
+                exit_reason="eod_close", exit_price=100.02,
+                exit_return_pct=0.01999999999999602, exit_recompute_run=RUN_ID,
+                trade_exit_price=99.0)
+    ledgers = {(RUN_ID, br.TARGET_EXITS): [held_row(
+        RUN_ID, LATE_KEY,
+        {"signal_alerts": alert_object(LATE_OLD, None), "trades": None},
+        {"signal_alerts": alert_object(LATE_NEW, RUN_ID), "trades": None})]}
+
+    code = committed_retry(monkeypatch, tmp_path, [late], ledgers, "--re-resolve",
+                           "--from", "2026-10-06", "--to", "2026-10-06", "--tickers", "SPY")
+
+    assert code == 1
+    table, summary = report(tmp_path)
+    assert table[1:] == [[
+        "SPY", "2026-10-06", LATE_KEY,
+        "2026-10-06T20:20:00.000000+00:00", "time_stop", "100.0", "0.0",
+        "2026-10-06T20:00:00.000000+00:00", "eod_close", "100.02", "0.01999999999999602",
+        "true", "trade_diverged", "960", SPY_1006_SHA, "true"]]
+    assert summary["totals"] == {"trade_diverged": 1}
+    assert summary["written"] == 1
+
+
+def test_a_retry_that_cannot_read_the_day_does_not_vouch_for_a_left_trade(
+        monkeypatch, tmp_path):
+    """As above, but the retry reads no bars for the day, so it never looks at
+    the trade. The row keeps this attempt's no_bars beside the ledger's values
+    and written true, and the run exits 1."""
+    alerts = stored_alerts()
+    late = dict(alerts[5], exit_ts=pd.Timestamp("2026-10-06 20:00", tz="UTC"),
+                exit_reason="eod_close", exit_price=100.02,
+                exit_return_pct=0.01999999999999602, exit_recompute_run=RUN_ID,
+                trade_exit_price=99.0)
+    ledgers = {(RUN_ID, br.TARGET_EXITS): [held_row(
+        RUN_ID, LATE_KEY,
+        {"signal_alerts": alert_object(LATE_OLD, None), "trades": None},
+        {"signal_alerts": alert_object(LATE_NEW, RUN_ID), "trades": None})]}
+    monkeypatch.setattr(database, "query_to_dataframe_strict",
+                        exits_reader(alerts=[late], bars={}))
+    monkeypatch.setattr(database, "get_engine", lambda: NoTransactionEngine())
+    monkeypatch.setattr(br, "ledger_of_run", lambda run_id, target: ledgers[(run_id, target)])
+    monkeypatch.setenv("CLOUD_RUN_EXECUTION", RUN_ID)
+
+    code = run_main(monkeypatch, "--re-resolve", "--from", "2026-10-06", "--to", "2026-10-06",
+                    "--tickers", "SPY", "--commit", "--report-dir", str(tmp_path))
+
+    assert code == 1
+    table, _summary = report(tmp_path)
+    assert [(line[2], line[8], line[12], line[15]) for line in table[1:]] == [
+        (LATE_KEY, "eod_close", "no_bars", "true")]
+
+
+def test_a_retry_over_a_missing_trade_is_exit_zero(monkeypatch, tmp_path):
+    """The first attempt wrote an alert that has no trades row (trade_missing,
+    exit 0). The ledger holds null for its trade as it does for a trade that
+    was left; the retry's read finds no trade to disagree with, so it reports
+    none and exits 0."""
+    alerts = stored_alerts()
+    early = dict(alerts[4], exit_recompute_run=RUN_ID, trade_found=False,
+                 trade_exit_time=pd.NaT, trade_exit_price=float("nan"),
+                 trade_exit_reason=None, trade_return_pct=float("nan"))
+    ledgers = {(RUN_ID, br.TARGET_EXITS): [held_row(
+        RUN_ID, EARLY_KEY,
+        {"signal_alerts": alert_object(EARLY_EXIT, None), "trades": None},
+        {"signal_alerts": alert_object(EARLY_EXIT, RUN_ID), "trades": None},
+        changed=False)]}
+
+    code = committed_retry(monkeypatch, tmp_path, [early], ledgers, "--re-resolve",
+                           "--from", "2026-10-06", "--to", "2026-10-06", "--tickers", "SPY")
+
+    assert code == 0
+    table, summary = report(tmp_path)
+    assert [(line[2], line[12], line[15]) for line in table[1:]] == [
+        (EARLY_KEY, "recomputed", "true")]
+    assert summary["totals"] == {"recomputed": 1}
+
+
+def test_a_revert_retry_keeps_a_trade_the_first_attempt_left(monkeypatch, tmp_path):
+    """exits-run-A wrote both late rows and only the early alert. The first
+    attempt of the revert restored both alerts and left the late trade, which
+    another writer had changed: trade_diverged, exit 1. Its retry reports the
+    late row trade_diverged again and exits 1; the early row, whose trade
+    exits-run-A never wrote, is reverted."""
+    run_a = "exits-run-A"
+    original = [
+        held_row(run_a, LATE_KEY,
+                 {"signal_alerts": alert_object(LATE_OLD, None),
+                  "trades": trade_object(LATE_OLD, None)},
+                 {"signal_alerts": alert_object(LATE_NEW, run_a),
+                  "trades": trade_object(LATE_NEW, run_a)}),
+        held_row(run_a, EARLY_KEY,
+                 {"signal_alerts": alert_object(EARLY_EXIT, None), "trades": None},
+                 {"signal_alerts": alert_object(EARLY_EXIT, run_a), "trades": None},
+                 changed=False),
+    ]
+    first_attempt = [
+        held_row(RUN_ID, LATE_KEY,
+                 {"signal_alerts": alert_object(LATE_NEW, run_a), "trades": None},
+                 {"signal_alerts": alert_object(LATE_OLD, RUN_ID), "trades": None},
+                 action="revert"),
+        held_row(RUN_ID, EARLY_KEY,
+                 {"signal_alerts": alert_object(EARLY_EXIT, run_a), "trades": None},
+                 {"signal_alerts": alert_object(EARLY_EXIT, RUN_ID), "trades": None},
+                 action="revert", changed=False),
+    ]
+    ledgers = {(run_a, br.TARGET_EXITS): original, (RUN_ID, br.TARGET_EXITS): first_attempt}
+
+    code = committed_retry(monkeypatch, tmp_path, [], ledgers, "--revert-run", run_a)
+
+    assert code == 1
+    table, summary = report(tmp_path)
+    assert {line[2]: (line[12], line[15]) for line in table[1:]} == {
+        LATE_KEY: ("trade_diverged", "true"),
+        EARLY_KEY: ("reverted", "true"),
+    }
+    assert summary["totals"] == {"trade_diverged": 1, "reverted": 1}
+
+
 # ── the replace's RECOMPUTE lines ─────────────────────────────────────
 
 
