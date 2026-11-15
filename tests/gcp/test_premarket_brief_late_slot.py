@@ -1693,3 +1693,33 @@ class TestLateSlotFailures:
             h.run('2026-11-13 09:21:30', late=True)
         assert before.unchanged(h)
         assert 'Late brief run failed (RuntimeError)' in h.sent[-1][1]['embeds'][0]['description']
+
+
+# ── The late slot is written down where the morning row's protection is ────
+
+class TestLateSlotIsDocumented:
+    PHRASES = ('BRIEF_RUN_SLOT=late', 'NYSE session', '09:20:00', 'filtered', '09:29:30',
+               'unchanged since')
+
+    @pytest.mark.parametrize('name', ['module', 'persist', 'plan'])
+    def test_the_one_scheduled_overwrite_and_its_four_conditions(self, name):
+        text = {'module': pb.__doc__, 'persist': pb.persist_to_cloud_sql.__doc__,
+                'plan': (REPO / 'docs/plans/MORNING_RUN_PROTECTION_PLAN.md').read_text()}[name]
+        assert 'one scheduled path that replaces a live canonical row' in ' '.join(text.split())
+        for phrase in self.PHRASES:
+            assert phrase in text
+
+    def test_the_module_docstring_keeps_its_lines(self):
+        # docs/product/07-MODEL-REGISTRY.md and 03-SITE-TRACEABILITY.md cite
+        # lines of this module by number: the docstring may not grow.
+        assert pb.__doc__.count('\n') == 6
+
+    def test_the_module_docstring_first_line_names_the_late_run(self):
+        assert '9:20 AM ET' in pb.__doc__.strip().splitlines()[0]
+
+    def test_the_plan_names_what_else_holds(self):
+        text = ' '.join((REPO / 'docs/plans/MORNING_RUN_PROTECTION_PLAN.md').read_text().split())
+        section = text.split('## The late slot (FEAT-PLAYBOOK-001, 2026-11)', 1)[1]
+        for phrase in ('All tickers or none', 'moves on that write', '--update', 'BRIEF_UPDATE',
+                       'keeps the early row in full'):
+            assert phrase in section

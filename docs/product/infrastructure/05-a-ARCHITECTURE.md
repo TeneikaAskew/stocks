@@ -963,7 +963,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/insight_tasks.py`](../../../gcp/insight_tasks.py) | Cloud Tasks enqueue for the insight-pipeline Cloud Run Job. | — |
 | [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) | Migrate all local Parquet data to GCS (raw backup) + Cloud SQL (structured). | — |
 | [`gcp/options_retention_job.py`](../../../gcp/options_retention_job.py) | Cloud Run Job: prune stale REALTIME rows from etf_options_snapshots. | `etf-options-retention` |
-| [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) | Pre-market brief -- Cloud Run Job triggered by Cloud Scheduler at 8:30 AM ET. | `premarket-brief` |
+| [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) | Pre-market brief -- Cloud Run Job triggered by Cloud Scheduler at 8:30 AM ET, and at 9:20 AM ET in the late slot. | `premarket-brief` |
 | [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) | End-of-day resolver for brief-playbook outcomes. | `premarket-playbook-resolver` |
 | [`gcp/queries/run_query.py`](../../../gcp/queries/run_query.py) | Run SQL via Cloud SQL connector and emit phone-friendly artifacts. | — |
 | [`gcp/refresh_earnings_views.py`](../../../gcp/refresh_earnings_views.py) | Cloud Run Job — refresh the earnings frontend mat views + upcoming table. | `refresh-earnings-views` |

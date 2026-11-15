@@ -552,3 +552,46 @@ PR titles:
 - The user has already audited the proposal and called out the
   edge cases (Cloud Scheduler retries, BRIEF_AS_OF replay,
   /replay cached behavior).
+
+## The late slot (FEAT-PLAYBOOK-001, 2026-11)
+
+Spec: `docs/superpowers/specs/2026-11-14-feat-playbook-001-brief-late-slot.md`.
+
+The protection above has one scheduled exception. A run of `premarket-brief`
+with `BRIEF_RUN_SLOT=late` (the late slot) is the one scheduled path that
+replaces a live canonical row of `premarket_analysis`, and only when all four
+hold:
+
+1. the date is an NYSE session (`lib.eastern_time.is_session`);
+2. every brief ticker's premarket snapshot was fetched at or after 09:20:00
+   America/New_York with its prints filtered (`market_data_daily.pre_fetched_at`
+   and `pre_filter_status` ok, and the same again in the built `level_basis`);
+3. the write check is before 09:29:30 America/New_York;
+4. the rows are unchanged since the run read them (run kind, `analysis_ts` and
+   `level_basis.built_at`, re-read just before the write).
+
+On a day that is not a session the late run logs one line and exits 0, with
+nothing read, written or posted. When any of the other three fails the
+canonical rows stay as they are, the run posts one "not applied" line to
+Discord (unless posting is turned off) and exits 1. What else holds:
+
+- All tickers or none. The late write is one statement for every brief ticker;
+  no path writes a canonical row for fewer than all of them.
+- `analysis_ts` moves on that write, to the instant of the write check, and on
+  no other: a first write takes the column default, and `--update`,
+  `BRIEF_UPDATE` and a `BRIEF_AS_OF` replay leave it where it was.
+- `--update` and `BRIEF_UPDATE` are unchanged: no wait, no cutoff, run kind
+  `manual_update`. Together with the slot they are refused (exit 2) before
+  anything is read. A `BRIEF_AS_OF` run is the replay it is without the slot.
+- `premarket_analysis_history` keeps the early row in full beside the late one.
+  A late run's history rows carry `LATE_SLOT_APPLIED`, or
+  `LATE_SLOT_NOT_APPLIED: <outcome> <reason>` when the canonical rows were not
+  rewritten. A late run that never builds (not a session, before 09:20:00, at
+  or after 09:29:30 at its first check, no usable snapshot by 09:27:00, rows
+  already built on this snapshot) writes no history row.
+- With `BRIEF_RUN_SLOT` unset or `early` nothing above changes: a scheduled
+  run still does not overwrite a live row.
+
+Code: `gcp/premarket_brief.py` (`_run_late_slot`, and the `late_slot` argument
+of `persist_to_cloud_sql`). Tests: `tests/gcp/test_premarket_brief_late_slot.py`
+and `tests/integration/test_premarket_brief_late_slot_pg.py`.

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Pre-market brief -- Cloud Run Job triggered by Cloud Scheduler at 8:30 AM ET.
+Pre-market brief -- Cloud Run Job triggered by Cloud Scheduler at 8:30 AM ET, and at 9:20 AM ET in the late slot.
 
-Loads latest daily data from Cloud SQL, computes Strat/FTFC classifications,
-queries upcoming economic events, and sends a rich multi-embed Discord brief.
-Also persists per-ticker analysis to the premarket_analysis table.
+Loads latest daily data from Cloud SQL, computes Strat/FTFC classifications, queries upcoming economic events, and sends a rich multi-embed Discord brief. Also persists per-ticker analysis to the premarket_analysis table.
+The late slot (BRIEF_RUN_SLOT=late) is the one scheduled path that replaces a live canonical row, and only when all four hold: the date is an NYSE session;
+every brief ticker's premarket snapshot was fetched at or after 09:20:00 America/New_York with its prints filtered; the write check is before 09:29:30; the rows are unchanged since the run read them.
 """
 
 import argparse
@@ -3609,6 +3609,22 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
         canonical morning row.
       - Otherwise: UPSERT (INSERT, or UPDATE on conflict). Used for
         the first run of the day and for explicit --update overrides.
+
+    With `late_slot` (a LateSlotWrite; BRIEF_RUN_SLOT=late) the function
+    is the one scheduled path that replaces a live canonical row, and only
+    when all four hold: the date is an NYSE session; every brief ticker's
+    premarket snapshot was fetched at or after 09:20:00 America/New_York
+    with its prints filtered; the write check is before 09:29:30; the rows
+    are unchanged since the run read them. The caller establishes the
+    first two (the session gate, the wait and the build check, handed in
+    as `late_slot.refusal`); this function re-reads the rows and checks
+    the clock. Then ONE upsert writes every brief ticker's row with
+    run_kind live and analysis_ts set to the instant of the check (no
+    other write moves analysis_ts), followed by the history rows with
+    notes LATE_SLOT_APPLIED. All tickers or none: a refusal writes history
+    rows only, with LATE_SLOT_NOT_APPLIED: <outcome> <reason>, and returns
+    0. What happened is on `late_slot.outcome`. `late_slot` with
+    `allow_update` or BRIEF_AS_OF raises ValueError.
 
     See docs/plans/MORNING_RUN_PROTECTION_PLAN.md for the rationale.
     """
