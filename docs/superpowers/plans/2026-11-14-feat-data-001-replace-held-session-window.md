@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-14-feat-data-001-replace-held-session-window-r2.md
 branch: fix/feat-data-001-replace-held-session-window-r2
-pr: null
+pr: 1955
 status: ready
 ---
 
