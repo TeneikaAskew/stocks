@@ -1,5 +1,5 @@
 """Real SQL + actual route controls for retained pre-retirement snapshots."""
-from datetime import date, timedelta
+from datetime import timedelta
 import sys
 from pathlib import Path
 
@@ -10,6 +10,7 @@ import sqlalchemy as sa
 
 from tests.integration.test_catalyst_earnings_estimate_numbers_pg import local_calendar_database
 from gcp import refresh_earnings_views as refresh
+from lib.eastern_time import market_today
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'platform'))
 from api.routers import earnings
@@ -45,7 +46,7 @@ def snapshot_db(local_calendar_database, monkeypatch):
 
 
 def seed(engine, ticker, source, event_date, *, snapshot_date=None):
-    day = date.today() - timedelta(days=1) if snapshot_date is None else snapshot_date
+    day = market_today() - timedelta(days=1) if snapshot_date is None else snapshot_date
     with engine.begin() as conn:
         conn.execute(sa.text('''INSERT INTO earnings_calendar
             (ticker, earnings_date, company_name, strategy, data_source)
@@ -59,10 +60,10 @@ def seed(engine, ticker, source, event_date, *, snapshot_date=None):
 
 def test_empty_retirement_refresh_cannot_resurrect_prior_ew_snapshot(snapshot_db):
     engine, client = snapshot_db
-    event = date.today() + timedelta(days=2)
+    event = market_today() + timedelta(days=2)
     seed(engine, 'EWO', 'earnings_whispers', event)
     seed(engine, 'EWR', 'EarningsWhispers', event)
-    seed(engine, 'TODAYEW', 'earnings_whispers', event, snapshot_date=date.today())
+    seed(engine, 'TODAYEW', 'earnings_whispers', event, snapshot_date=market_today())
     refresh.refresh_daily(14)  # actual SQL + actual atomic empty replacement
     response = client.get('/api/earnings/upcoming?days=14')
     assert response.status_code == 200
@@ -75,7 +76,7 @@ def test_empty_retirement_refresh_cannot_resurrect_prior_ew_snapshot(snapshot_db
 
 def test_prior_non_ew_snapshots_keep_descriptors_but_never_retired_scores(snapshot_db):
     engine, client = snapshot_db
-    event = date.today() + timedelta(days=2)
+    event = market_today() + timedelta(days=2)
     sources = {'AV':'alphavantage','UW':'unusual_whales','YH':'yahoo',
                'NULL':None,'UNKNOWN':'unknown','NEAR':'Earnings_Whispers',
                'EWO':'earnings_whispers','EWR':'EarningsWhispers'}
@@ -98,7 +99,7 @@ def test_prior_non_ew_snapshots_keep_descriptors_but_never_retired_scores(snapsh
 
 def test_retained_source_admission_is_bound_to_the_snapshot_event_date(snapshot_db):
     engine, client = snapshot_db
-    early = date.today() + timedelta(days=1)
+    early = market_today() + timedelta(days=1)
     later = early + timedelta(days=1)
     seed(engine,'MIX','earnings_whispers',early)
     seed(engine,'MIX','alphavantage',later)
