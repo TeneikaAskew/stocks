@@ -58,7 +58,7 @@ Usage:
 """
 from __future__ import annotations
 
-from lib.eastern_time import ET, is_session
+from lib.eastern_time import ET, is_session, session_close
 import logging
 import math
 import os
@@ -93,8 +93,11 @@ _ET = ET
 # 2026-05-11.v1 booked the last target reached from the trigger price.
 # 2026-11-12.v3 adds the plan columns (FEAT-STRAT-001 exits in thirds,
 # Design 6, :func:`resolve_plan`); the existing columns are unchanged from
-# 2026-11-11.v2.
-RESOLVER_VERSION = '2026-11-12.v3'
+# 2026-11-11.v2. 2026-11-15.v4 ends the plan's bars at the exchange's close
+# (FEAT-STRAT-001 drop-entry-cutoff spec, Design 3), so on a half day a print
+# after the early close is never a plan entry and the close legs book at the
+# last bar before the close; the existing columns are unchanged.
+RESOLVER_VERSION = '2026-11-15.v4'
 
 # plan_r_status values, in the order the first that applies wins.
 PLAN_TARGETS_UNAVAILABLE = 'targets_unavailable'
@@ -753,8 +756,15 @@ def resolve_one(
                 [ticker], analysis_date)[ticker.upper()]
         return _policy['p']
 
-    calls_plan = resolve_plan('call', plan_inputs('calls', row, basis, _policy_fn), bars)
-    puts_plan = resolve_plan('put', plan_inputs('puts', row, basis, _policy_fn), bars)
+    # The plan's walk ends at the exchange's close (drop-entry-cutoff spec,
+    # Design 3): 13:00 ET on a half day, so a print after the early close is
+    # never a first cross or a close leg. The resolve_leg columns above keep
+    # reading every bar to 15:59 as before. A non-session raises; holidays
+    # already returned no_bars.
+    close_utc = pd.Timestamp(session_close(analysis_date))
+    plan_bars = bars[bars['time'] < close_utc].reset_index(drop=True)
+    calls_plan = resolve_plan('call', plan_inputs('calls', row, basis, _policy_fn), plan_bars)
+    puts_plan = resolve_plan('put', plan_inputs('puts', row, basis, _policy_fn), plan_bars)
 
     # Build update payload
     updates = {

@@ -2297,8 +2297,8 @@ INSERT INTO level_param_policy (
      '|reference - prior close| / ATR at which a prior-close target is labelled a gap fill'),
     ('exit_legs', 'policy', NULL, NULL, NULL, '{"legs": 3}', '2015-01-02',
      'equal legs the exit plan sells, one at each spaced target'),
-    ('entry_cutoff_et', 'policy', NULL, NULL, NULL, '{"time_et": "10:00"}', '2015-01-02',
-     'last minute (ET, exclusive) a first cross of the trigger is an entry'),
+    ('entry_cutoff_et', 'policy', NULL, NULL, NULL, '{"time_et": "16:00"}', '2015-01-02',
+     'last minute (ET, exclusive) a first cross of the trigger is an entry; 16:00 is the regular close, so every first cross in the session is one'),
     -- ATR levels (docs/superpowers/specs/2026-11-11-feat-strat-001-brief-atr-levels.md).
     -- Display only: the brief's NEXT LEVELS ATR line; never a trigger, stop
     -- or target. The anchor list is policy-wide (it names levels, in name
