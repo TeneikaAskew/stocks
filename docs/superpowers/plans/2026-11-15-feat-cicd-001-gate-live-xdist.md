@@ -3,6 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-14-feat-cicd-001-test-suite-audit-a-live.md
 branch: feature/feat-cicd-001-gate-live-xdist
 status: ready
+pr: 1968
 ---
 
 # Test suite audit, Part A stage three: CI runs the gate suite on four workers
