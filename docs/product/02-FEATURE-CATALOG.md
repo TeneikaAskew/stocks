@@ -209,7 +209,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation; issue #1308 market-date repair verified locally, rollout pending; the premarket brief dates a live run by the exchange's date, so the Sunday 21:00 ET run no longer writes Monday's canonical row and Monday's 08:30 run writes it ([#1941](https://github.com/TeneikaAskew/stocks/pull/1941); implementation under review, not deployed); the brief's late slot (BRIEF_RUN_SLOT=late) rebuilds the day's levels from the 09:20 premarket snapshot and replaces the session's canonical rows before 09:29:30 ET ([#PRNUM](https://github.com/TeneikaAskew/stocks/pull/PRNUM); implementation under review, not deployed, and inert until the 09:20 schedule of [#1929](https://github.com/TeneikaAskew/stocks/pull/1929) runs it) |
+| Status | Production but needs remediation; issue #1308 market-date repair verified locally, rollout pending; the premarket brief dates a live run by the exchange's date, so the Sunday 21:00 ET run no longer writes Monday's canonical row and Monday's 08:30 run writes it ([#1941](https://github.com/TeneikaAskew/stocks/pull/1941); implementation under review, not deployed); the brief's late slot (BRIEF_RUN_SLOT=late) rebuilds the day's levels from the 09:20 premarket snapshot and replaces the session's canonical rows before 09:29:30 ET ([#1961](https://github.com/TeneikaAskew/stocks/pull/1961); implementation under review, not deployed, and inert until the 09:20 schedule of [#1929](https://github.com/TeneikaAskew/stocks/pull/1929) runs it) |
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
