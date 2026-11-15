@@ -42,7 +42,7 @@
    "calls_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -162,7 +162,7 @@
    "puts_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -404,7 +404,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -594,7 +594,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -714,7 +714,7 @@
    "calls_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -835,7 +835,7 @@
    "puts_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -1078,7 +1078,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -1267,7 +1267,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -1386,7 +1386,7 @@
    "calls_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -1507,7 +1507,7 @@
    "puts_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -1750,7 +1750,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -1939,7 +1939,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -2058,7 +2058,7 @@
    "calls_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -2179,7 +2179,7 @@
    "puts_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -2422,7 +2422,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -2611,7 +2611,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -2730,7 +2730,7 @@
    "calls_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -2851,7 +2851,7 @@
    "puts_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -3094,7 +3094,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -3283,7 +3283,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -3395,7 +3395,7 @@
    "calls_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -3523,7 +3523,7 @@
    "puts_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -3761,7 +3761,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -3988,7 +3988,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -4074,7 +4074,7 @@
    "calls_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -4195,7 +4195,7 @@
    "puts_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -4438,7 +4438,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -4627,7 +4627,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -4746,7 +4746,7 @@
    "calls_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -4854,7 +4854,7 @@
    "puts_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -5066,7 +5066,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -5201,7 +5201,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -5293,7 +5293,7 @@
    "calls_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -5393,7 +5393,7 @@
    "puts_trigger": {
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -5611,7 +5611,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",
@@ -5765,7 +5765,7 @@
    ],
    "plan": {
     "atr_basis": "atr_14",
-    "entry_cutoff_et": "10:00",
+    "entry_cutoff_et": "16:00",
     "entry_cutoff_status": "ok",
     "gap_fill_flag_atr": 0.5,
     "gap_fill_flag_status": "ok",

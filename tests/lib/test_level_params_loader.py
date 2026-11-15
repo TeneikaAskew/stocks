@@ -278,3 +278,14 @@ def test_a_later_anchor_row_of_the_prior_close_builds_prior_close_rungs():
     assert after == {"PDC"}
     assert sorted(r["price"] for r in sl.atr_rungs + sl.atr_rungs_dropped) == [
         219.0, 226.0, 233.0, 240.0, 254.0, 261.0, 268.0, 275.0]
+
+
+def test_the_seeded_entry_cutoff_is_the_regular_close():
+    """Drop-entry-cutoff spec, Design 1: the policy seeded in gcp/schema.sql
+    gives entry_cutoff_et 16:00 ET, 960 minutes after midnight."""
+    from lib.strat_levels import policy_wide_param
+    from tests.lib.level_params_fixtures import seeded_policy
+
+    p = policy_wide_param("entry_cutoff_et", seeded_policy()["entry_cutoff_et"], "SPY", "atr_14")
+    assert p.status == "ok" and p.value == 960.0
+    assert p.extra == {"time_et": "16:00"}

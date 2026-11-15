@@ -242,7 +242,7 @@ def test_level_basis_records_every_parameter_and_the_policy(monkeypatch):
     assert (b["params"]["exit_legs"]["value"], b["params"]["exit_legs"]["status"]) == (3.0, "ok")
     assert b["params"]["exit_legs"]["method_id"] == "policy"
     assert b["params"]["exit_legs"]["effective_from"] == "2015-01-02"
-    assert b["params"]["entry_cutoff_et"]["extra"] == {"time_et": "10:00"}
+    assert b["params"]["entry_cutoff_et"]["extra"] == {"time_et": "16:00"}
     for key, value in LEGACY_1753_VALUES.items():
         p = b["params"][key]
         assert p["value"] == pytest.approx(value) and p["status"] == "ok"

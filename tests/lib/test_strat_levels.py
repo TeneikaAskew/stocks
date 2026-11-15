@@ -1106,7 +1106,7 @@ class TestTargetSpacing:
             assert cols['calls_trigger_price'] == 252.10 and cols['calls_stop_price'] == 248.20
 
 
-D8_CALLS = """  CALLS above 252.10 (PMK_H), new entries 09:30 to 10:00 ET
+D8_CALLS = """  CALLS above 252.10 (PMK_H), new entries 09:30 to 16:00 ET
     No entry if the open is at or above 252.10.
     Stop: 248.20 (PMK_L)
     T1: 275.00 (PMH), sell 1/3
@@ -1115,7 +1115,7 @@ D8_CALLS = """  CALLS above 252.10 (PMK_H), new entries 09:30 to 10:00 ET
     Skipped, closer than 0.25 x ATR(14) = 3.50: 253.00 (PDH)
     Room to trigger: 0.84%"""
 
-D8_PUTS = """  PUTS below 248.20 (PMK_L), new entries 09:30 to 10:00 ET
+D8_PUTS = """  PUTS below 248.20 (PMK_L), new entries 09:30 to 16:00 ET
     No entry if the open is at or below 248.20.
     Stop: 252.10 (PMK_H)
     T1: 225.00 (PML), sell 1/3
