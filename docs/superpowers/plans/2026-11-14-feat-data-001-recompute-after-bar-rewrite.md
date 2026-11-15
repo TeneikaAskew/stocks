@@ -3,7 +3,7 @@ feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-14-feat-data-001-recompute-after-bar-rewrite.md
 branch: feature/feat-data-001-recompute-after-bar-rewrite
 pr: 1959
-status: ready
+status: done
 ---
 
 # Recompute paths for signal_alerts exits and the daily premarket fields: implementation plan
