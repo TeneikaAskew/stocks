@@ -2,7 +2,7 @@
 feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-11-15-feat-strat-001-plan-targets-gap-edges.md
 branch: feature/feat-strat-001-plan-gap-edges
-pr: null
+pr: 1972
 status: ready
 ---
 
