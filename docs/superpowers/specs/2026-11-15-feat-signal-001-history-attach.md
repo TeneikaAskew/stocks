@@ -7,11 +7,11 @@ site_source_notes: [DASHBOARD-05]
 done_when:
   - "tests/scripts/test_run_historical_signals_plan.py::test_attach_query_shape passes: for one ticker with N signals over K sessions (N 2,500, K 20) the attach step issues exactly 5 read queries and ceil(N / 1000) writes; the 5 reads are the bars for the window, the stored signals' keys, the daily rows with their premarket fields, the parameters in force over the range (one query of the range read beside load_level_params) and the open basis over the range (one query of the range form of read_open_level_basis)"
   - "tests/scripts/test_run_historical_signals_plan.py::test_attach_plans passes: --attach-plans --start-date D updates plan and outcome columns of stored rows from D on, changes no other column and no row before D, never deletes, and a second run changes nothing; a stored row whose entry_time has no bar in the frame, or whose entry_price differs from that bar's close by more than half a cent, gets plan_status bar_mismatch and NULL plan prices; a stored row on its session's last regular-hours bar gets plan_r_status no_fill with plan_fill_price and plan_r NULL; --attach-plans with --dry-run writes nothing"
-  - "tests/gcp/test_signal_plan_level_source.py::TestOpenBasisAttach passes: for a session with an early live brief write at 08:30, a late write at 09:22 and the canonical live row overwritten at 10:32, --attach-plans gives that session's stored signals at 09:35 and 14:00 plan_status basis_replaced with every plan price NULL, never the 10:32 levels and never a rebuild"
+  - "tests/gcp/test_signal_plan_level_source.py::TestOpenBasisAttach passes: for a session with an early live brief write at 08:30, a late write at 09:22 and the canonical live row overwritten at 10:32, --attach-plans gives that session's stored signals at 09:35 and 14:00 plan_status basis_replaced with every plan price NULL, never the 10:32 levels and never a rebuild; without the 10:32 overwrite, the same two signals both get the 09:22 basis"
   - "Source identity (DASHBOARD-05): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-SIGNAL-001, DASHBOARD-05) note row carries that source_identity_sha256"
   - "The FEAT-SIGNAL-001 catalog record (Status, Last reviewed) and the PR traceability entry are updated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
   - "The PR body carries the Capacity section of this spec with the attach run's measured numbers from a --dry-run on one ticker (signals, read queries, seconds per stage), next to the estimates"
-status: approved
+status: draft
 supersedes: null
 ---
 
@@ -27,6 +27,10 @@ On 2026-11-15 the owner answered the recommendation "split it" for PR #1950 with
 to be completed". The parent records that as its decision 8: the range parameter read, `--attach-plans`
 and the dry-run measurement move here. No code is written under this spec before it, and the parent's
 implementation, are on main.
+
+This spec is `status: draft`. The move added what the approved text did not hold: the last-bar case of
+`test_attach_plans`, `TestOpenBasisAttach` as an item of its own, the source identity and the product
+records. The owner approves it on its own pull request.
 
 The text below is moved from the parent, verbatim where it could be. "Decision N" and "Design N" name
 the parent's sections. Every statement about code or data keeps the parent's mark, "read" (read in the
@@ -174,9 +178,14 @@ record and traceability entry, and the `(FEAT-SIGNAL-001, DASHBOARD-05)` note ro
 2. **Clean bars.** No stored signal is given a plan or scored before the month replace and rebuilds
    planned for 2026-11-14 and 11-15 are done and verified, and `historical_signals` has been
    regenerated on those bars by the runbook (REQ-VALID-001). Code and tests may land before; the
-   attach run and any scored figure may not.
+   attach run and any scored figure may not. Met on 2026-11-15: every month of the three tickers is
+   proven (scan `freshness-watchdog-dq7hh`, 429 months, 0 unproven rows), and the momentum rows of
+   `historical_signals` were regenerated on the clean bars, 144 of 144 quarters (both recorded on
+   PR #1943).
 3. **Level parameters.** The attach run waits until the history-mode calibration of FEAT-STRAT-001 is
-   written for the window, which needs the owner's yes of its own (decision 6).
+   written for the window, which needs the owner's yes of its own (decision 6). Met on 2026-11-15 with
+   the owner's yes: `ticker_level_params` holds `history` rows for SPY, QQQ and IWM on 431 effective
+   dates from 2025-03-03 to 2026-11-16, 12,045 rows a ticker, all `ok` (run, `db-query-9q6nm`).
 
 ## Capacity and cost
 
@@ -238,7 +247,7 @@ product-delivery skill prescribes, and the plan set to `status: done` on a `docs
   so such sessions can be counted. Their recompute is the recompute spec's, not this one's.
 - **No parameters before 2026-11-12.** Until the history-mode calibration is written for the window,
   every stored signal before 2026-11-12 would get `params_unavailable` (decision 6). Order 3 holds the
-  run.
+  run; it was met on 2026-11-15 for the window.
 
 ## What was not verified
 
@@ -260,3 +269,8 @@ unchanged:
   columns named like stop, plan, t1 or target on the three signal tables.
 - `db-query-8ptk7`: `ticker_level_params` coverage for SPY, QQQ and IWM; `level_basis` coverage of
   `premarket_analysis`; `signal_metrics` counts; `level_param_policy` keys (25, none of #1832's yet).
+
+Read-only, no `--commit`, 2026-11-15, run for this spec:
+
+- `db-query-9q6nm`: `ticker_level_params` rows of SPY, QQQ and IWM by source, with their effective
+  dates and `ok` count (Order 3).
