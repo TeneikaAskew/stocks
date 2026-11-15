@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-14-feat-data-001-deployed-dates-exchange-clock.md
 branch: fix/feat-data-001-evening-test-dates
-pr: null
+pr: 1956
 status: ready
 ---
 
