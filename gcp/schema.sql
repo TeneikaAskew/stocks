@@ -2311,7 +2311,12 @@ INSERT INTO level_param_policy (
     ('atr_rung_max_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 2.0}', '2015-01-02',
      'farthest ATR rung from its anchor / ATR'),
     ('atr_rung_stretch_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 1.5}', '2015-01-02',
-     'distance from its anchor / ATR at which an ATR rung is marked stretch')
+     'distance from its anchor / ATR at which an ATR rung is marked stretch'),
+    -- Gap-edge plan targets (docs/superpowers/specs/2026-11-15-feat-strat-001-plan-targets-gap-edges.md).
+    -- Policy-wide: the level types, beyond the trigger candidates, the exits
+    -- plan's spaced target walk may use. An empty list turns gap edges off.
+    ('plan_target_level_types', 'policy', NULL, NULL, NULL, '{"level_types": ["gap_high", "gap_low"]}', '2015-01-02',
+     'level types, beyond the trigger candidates, the exits plan''s spaced target walk may use')
 ON CONFLICT (param_key, effective_from) DO NOTHING;
 
 

@@ -1006,7 +1006,13 @@ ATR_RUNG_KEYS = (ATR_RUNG_ANCHORS_KEY, ATR_RUNG_STEP_KEY, ATR_RUNG_MAX_KEY,
                  ATR_RUNG_STRETCH_KEY)
 POLICY_SEEDED_KEYS = (TARGET_SPACING_KEY, GAP_FILL_FLAG_KEY, ATR_RUNG_STEP_KEY,
                       ATR_RUNG_MAX_KEY, ATR_RUNG_STRETCH_KEY)
-POLICY_WIDE_KEYS = (EXIT_LEGS_KEY, ENTRY_CUTOFF_KEY, ATR_RUNG_ANCHORS_KEY)
+# FEAT-STRAT-001 gap-edge plan targets (2026-11-15 spec). Policy-wide: the
+# level types, beyond the trigger candidates, that the exits plan's spaced
+# target walk may use. Never a trigger, stop, gate target or ladder rung.
+PLAN_TARGET_LEVEL_TYPES_KEY = 'plan_target_level_types'
+PLAN_TARGET_LEVEL_TYPE_CHOICES = ('gap_high', 'gap_low')
+POLICY_WIDE_KEYS = (EXIT_LEGS_KEY, ENTRY_CUTOFF_KEY, ATR_RUNG_ANCHORS_KEY,
+                    PLAN_TARGET_LEVEL_TYPES_KEY)
 
 
 def target_key(persona: str, k: int) -> str:
@@ -1205,6 +1211,13 @@ class LevelParams:
         p = self.param(ATR_RUNG_ANCHORS_KEY)
         return atr_rung_anchor_names(p.extra) if p.ok else None
 
+    def plan_target_level_types(self) -> Optional[tuple]:
+        """The level types the plan's target walk may use beyond the
+        candidates (the plan_target_level_types row in force, recorded in its
+        extra), or None when that row is not usable."""
+        p = self.param(PLAN_TARGET_LEVEL_TYPES_KEY)
+        return plan_target_level_types(p.extra) if p.ok else None
+
     def to_basis(self) -> dict:
         return {
             'atr_basis': self.atr_basis,
@@ -1318,6 +1331,21 @@ def atr_rung_anchor_names(extra) -> Optional[tuple]:
     return tuple(names)
 
 
+def plan_target_level_types(extra) -> Optional[tuple]:
+    """The level types of a plan_target_level_types policy extra
+    ({"level_types": [...]}): a tuple (empty when the list is empty), or None
+    when the list is missing, names a type other than gap_high or gap_low,
+    or names one type twice."""
+    types = (extra or {}).get('level_types') if isinstance(extra, dict) else None
+    if not isinstance(types, list):
+        return None
+    if not all(isinstance(t, str) and t in PLAN_TARGET_LEVEL_TYPE_CHOICES for t in types):
+        return None
+    if len(set(types)) != len(types):
+        return None
+    return tuple(types)
+
+
 def policy_atr_rung_anchors(policy: Dict[str, dict]) -> tuple:
     """The atr_rung_anchors row in force, read like atr_basis: a policy
     without a usable row cannot build levels (CLAUDE.md 3.7)."""
@@ -1352,6 +1380,11 @@ def policy_wide_param(key: str, pol: dict, ticker: str, atr_basis: str) -> Level
         # The value is the number of anchors; the names are the extra.
         names = atr_rung_anchor_names(extra)
         value = float(len(names)) if names else None
+    elif key == PLAN_TARGET_LEVEL_TYPES_KEY:
+        # The value is the number of types (0 turns gap edges off); the
+        # types are the extra.
+        types = plan_target_level_types(extra)
+        value = float(len(types)) if types is not None else None
     return LevelParam(
         key=key, status=PARAM_OK if value is not None else 'input_unavailable',
         value=value, ticker=ticker, effective_from=pol.get('effective_from'),
@@ -1725,6 +1758,14 @@ class SessionLevels:
     # for a session rebuilt from a level_basis written before ATR rungs,
     # which rebuilds none.
     atr_rung_rule: bool = True
+    # Gap-edge plan targets (2026-11-15 spec). `plan_target_rule` is False
+    # for a session rebuilt from a level_basis written before the rule (no
+    # `plan_target_level_types_status`): its plan walks the candidates only
+    # and plan_target_level_types is never checked. Under the rule the basis
+    # records the key's status and the types used.
+    plan_target_rule: bool = True
+    plan_target_level_types_status: Optional[str] = None
+    plan_target_level_types: list = field(default_factory=list)
     atr_rungs: list = field(default_factory=list)
     atr_rungs_dropped: list = field(default_factory=list)
     atr_rung_anchors: list = field(default_factory=list)
@@ -1863,6 +1904,9 @@ class SessionLevels:
             'long': self.long.to_dict(),
             'short': self.short.to_dict(),
             **(self._atr_rung_basis() if self.atr_rung_rule else {}),
+            **({'plan_target_level_types_status': self.plan_target_level_types_status,
+                'plan_target_level_types': list(self.plan_target_level_types)}
+               if self.plan_target_rule else {}),
         }
 
     def _atr_rung_basis(self) -> dict:
@@ -1949,6 +1993,10 @@ class SessionLevels:
             # loader records every policy key, the rung keys included, once
             # the policy rows exist (Codex P2 on #1951).
             atr_rung_rule='atr_rung_status' in basis,
+            # The same marker pattern for gap-edge plan targets: a basis
+            # written before the rule keeps the old walk, whether or not its
+            # params record plan_target_level_types (Codex P2 on #1970).
+            plan_target_rule='plan_target_level_types_status' in basis,
         )
         if recorded is None:
             # A pre-parameter basis stored zones from the old percentage
@@ -2392,7 +2440,14 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
         pmg_status=base.pmg_status,
         prior_close=base.prior_close, strat_class=base.strat_class,
         pmg_zones=list(base.pmg_zones), atr_rung_rule=base.atr_rung_rule,
+        plan_target_rule=base.plan_target_rule,
     )
+    plan_types = None
+    if out.plan_target_rule:
+        p = out.params.param(PLAN_TARGET_LEVEL_TYPES_KEY) if out.params is not None else None
+        out.plan_target_level_types_status = p.status if p is not None else PARAMS_UNAVAILABLE
+        plan_types = out.params.plan_target_level_types() if out.params is not None else None
+        out.plan_target_level_types = list(plan_types) if plan_types is not None else []
     structural = [lv for lv in base.levels
                   if lv.name not in (PREMARKET_HIGH, PREMARKET_LOW)]
     if base.status != 'ok':
@@ -2428,6 +2483,11 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
     candidates = _candidate_rungs(out.levels)
     if out.atr_rung_rule:
         _place_atr_rungs(out, candidates, ref)
+    # Under the gap-edge rule the plan's walk gets the extra rungs (empty
+    # when the row lists none or is unusable, in which case _plan_targets
+    # publishes no target with the row's status); None keeps the old walk.
+    plan_extra = (_plan_extra_rungs(out.levels, plan_types or (), candidates)
+                  if out.plan_target_rule else None)
     if not premarket:
         # Spec revision 2: with no premarket snapshot nothing has traded
         # yet, so a candidate on the reference's own cent (PDC itself when
@@ -2437,9 +2497,11 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
         ref_cents = price_cents(ref)
         candidates = [c for c in candidates if c['cents'] != ref_cents]
     out.long = _pick_side('long', candidates, ref, out.cleared_above, out.atr, out.params,
-                          rule_version=rule, prior_close=out.prior_close)
+                          rule_version=rule, prior_close=out.prior_close,
+                          plan_extra=plan_extra)
     out.short = _pick_side('short', candidates, ref, out.cleared_below, out.atr, out.params,
-                           rule_version=rule, prior_close=out.prior_close)
+                           rule_version=rule, prior_close=out.prior_close,
+                           plan_extra=plan_extra)
     return out
 
 
@@ -2453,6 +2515,32 @@ def _candidate_rungs(levels: List[StratLevel]) -> list:
         c = price_cents(lv.price)
         if c in by_cent:
             by_cent[c]['aliases'].append(lv.name)
+            continue
+        by_cent[c] = {
+            'name': lv.name, 'price': float(lv.price), 'cents': c,
+            'level_type': lv.level_type, 'timeframe': lv.timeframe,
+            'period': lv.period_label, 'aliases': [],
+        }
+    return sorted(by_cent.values(), key=lambda d: d['cents'])
+
+
+def _plan_extra_rungs(levels: List[StratLevel], level_types, candidates: list) -> list:
+    """The extra rungs the exits plan's target walk may use (gap-edge plan
+    targets spec): the session's levels whose level_type is listed, distinct
+    by cent. A cent a candidate holds is dropped and the candidate is left as
+    it is; two edges on one cent give the most recent gap's, high before low.
+    Never a candidate, so never a trigger, stop, gate target or ladder rung."""
+    types = set(level_types or ())
+    if not types:
+        return []
+    taken = {c['cents'] for c in candidates}
+    picked = sorted((lv for lv in levels if lv.level_type in types),
+                    key=lambda lv: (lv.period_label or '', lv.level_type == 'gap_high'),
+                    reverse=True)
+    by_cent: Dict[int, dict] = {}
+    for lv in picked:
+        c = price_cents(lv.price)
+        if c in taken or c in by_cent:
             continue
         by_cent[c] = {
             'name': lv.name, 'price': float(lv.price), 'cents': c,
@@ -2633,7 +2721,8 @@ def _window_detail(params: Optional[LevelParams], side: str) -> Optional[dict]:
 def _pick_side(side: str, candidates: list, ref: float, cleared: float,
                atr: Optional[float], params: Optional[LevelParams], *,
                rule_version: str = LEVEL_RULE_VERSION,
-               prior_close: Optional[float] = None) -> SideLevels:
+               prior_close: Optional[float] = None,
+               plan_extra: Optional[list] = None) -> SideLevels:
     """One side rule, one broken rule, one window.
 
     A candidate is on the long list when its cent is at or above the
@@ -2646,6 +2735,10 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
     the other side's windows its stop (the stop lies on the other side of the
     reference). A window that is not ok gives no trigger, with its status as
     the reason.
+
+    `plan_extra` (gap-edge plan targets spec) are extra rungs the plan's
+    spaced walk may also use, kept when beyond the trigger and inside the
+    side's own window; None keeps the walk on the candidates alone.
     """
     own = params.param(trigger_window_key(side)) if params is not None else None
     opp_side = 'short' if side == 'long' else 'long'
@@ -2710,7 +2803,13 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
     if rule_version == LEVEL_RULE_V2:
         out.targets = list(out.gate_targets)
     else:
-        _plan_targets(out, rungs, ref, atr, params, prior_close)
+        extra = None
+        if plan_extra is not None:
+            tc = trig['cents']
+            extra = [g for g in plan_extra
+                     if (g['cents'] > tc if side == 'long' else g['cents'] < tc)
+                     and _within_staleness_window(g['price'], ref, atr, window)]
+        _plan_targets(out, rungs, ref, atr, params, prior_close, extra=extra)
     stop = next((c for c in other if _within_staleness_window(c['price'], ref, atr, stop_window)), None)
     out.stop = _rung(stop, ref) if stop else None
     out.ladder = [_ladder_entry(c, ref) for c in rungs[:2]]
@@ -2720,15 +2819,24 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
 
 
 def _plan_targets(out: SideLevels, rungs: list, ref: float, atr: float,
-                  params: LevelParams, prior_close: Optional[float]) -> None:
+                  params: LevelParams, prior_close: Optional[float],
+                  extra: Optional[list] = None) -> None:
     """Design 1 and 2 of the exits spec: walk the side's rungs past the
     trigger in order, keeping a candidate only when it is at least the
     ticker's spacing (target_min_spacing_atr x ATR, to the cent, equal kept)
     past the trigger or the target before it, until exit_legs targets are
     kept. A spacing, leg or entry cutoff parameter that is not ok publishes
     no target and records its status: there is no unspaced fallback, and no
-    plan without the entry rule it is scored on (CLAUDE.md 3.7)."""
-    missing = params.first_not_ok((TARGET_SPACING_KEY, EXIT_LEGS_KEY, ENTRY_CUTOFF_KEY))
+    plan without the entry rule it is scored on (CLAUDE.md 3.7).
+
+    `extra` (gap-edge plan targets spec): rungs past the trigger, in the
+    side's window, that the walk also uses, merged with the candidates in
+    price order. Under that rule plan_target_level_types is checked with the
+    other keys; with `extra` None (a basis written before the rule) it is not."""
+    keys = (TARGET_SPACING_KEY, EXIT_LEGS_KEY, ENTRY_CUTOFF_KEY)
+    if extra is not None:
+        keys += (PLAN_TARGET_LEVEL_TYPES_KEY,)
+    missing = params.first_not_ok(keys)
     cutoff = params.param(ENTRY_CUTOFF_KEY)
     flag = params.param(GAP_FILL_FLAG_KEY)
     out.plan = {
@@ -2750,8 +2858,12 @@ def _plan_targets(out: SideLevels, rungs: list, ref: float, atr: float,
     spacing_cents = price_cents(spacing * atr)
     out.plan['spacing_price'] = spacing_cents / 100.0
     prev = rungs[0]
+    walk = rungs[1:]
+    if extra:
+        walk = sorted(walk + list(extra), key=lambda c: c['cents'],
+                      reverse=out.side != 'long')
     targets, skipped = [], []
-    for c in rungs[1:]:
+    for c in walk:
         if len(targets) == legs:
             break
         if abs(c['cents'] - prev['cents']) >= spacing_cents:
