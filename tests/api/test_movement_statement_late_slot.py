@@ -59,6 +59,28 @@ def client():
     os.chdir(original_cwd)
 
 
+_RESEARCH_MODULES = ("lightgbm", "sklearn", "sklearn.calibration",
+                     "sklearn.metrics", "joblib", "scipy")
+
+
+def _stub_research_modules(monkeypatch):
+    """Scoped stand-ins for the research stack when it is not installed.
+
+    `monkeypatch.setitem`, not a module-level stub, so nothing leaks into
+    another module's `pytest.importorskip("lightgbm")`; reverted at teardown.
+    """
+    from unittest.mock import MagicMock
+    for name in _RESEARCH_MODULES:
+        try:
+            __import__(name)
+        except Exception:
+            parts = name.split(".")
+            for i in range(1, len(parts) + 1):
+                key = ".".join(parts[:i])
+                if key not in sys.modules:
+                    monkeypatch.setitem(sys.modules, key, MagicMock())
+
+
 def _serve(monkeypatch, harness):
     """Answer the route's reads of premarket_analysis from the table the
     brief wrote, with each query's own filter. Every other read is empty.
@@ -102,6 +124,11 @@ def _serve(monkeypatch, harness):
         return real_assemble(ticker, timeframe, **kw)
 
     monkeypatch.setattr(ms, 'assemble_movement_statement', assemble)
+    # The serving module imports the training module, which imports
+    # lightgbm (requirements-research.txt only). Stub it for this test only,
+    # and only when the real one cannot be imported, the way
+    # tests/api/test_route_coverage.py::_reach_predict_backend does.
+    _stub_research_modules(monkeypatch)
     import gcp.research.strat_engine.strat_pred_serve as serve
     monkeypatch.setattr(serve, 'predict_one',
                         lambda *a, **k: {'available': False, 'note': 'muted'})
