@@ -509,6 +509,70 @@ def test_a_stored_brief_keeps_the_cutoff_it_recorded():
     assert fresh["long"]["plan"]["entry_cutoff_et"] == "16:00"
 
 
+def _with_gap(b: dict) -> dict:
+    b = json.loads(json.dumps(b))
+    b["levels"].append({"name": "GAP_H_2026-10-20", "price": 262.40, "timeframe": "day",
+                        "level_type": "gap_high", "period_label": "2026-10-20"})
+    return b
+
+
+@pytest.mark.parametrize("recorded", ["absent", "ok", "input_unavailable"])
+def test_a_stored_brief_without_the_gap_marker_keeps_its_targets(recorded):
+    """Gap-edge plan targets spec, done_when 'Stored briefs keep their
+    targets': a basis with no plan_target_level_types_status key, whose params
+    (a) do not record plan_target_level_types (every brief stored before the
+    row exists) or (b) record it (as the loader records every policy key once
+    the row exists, whatever its status), rebuilds the old walk: the gap edge
+    in reach is not a target, the new key is never checked, target_status ok
+    and plan_inputs gives the same targets with plan_available true."""
+    from dataclasses import replace
+
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib.session_levels_helpers import d8_basis, d8_params
+
+    lp = d8_params()
+    if recorded == "absent":
+        del lp.params["plan_target_level_types"]
+    else:
+        p = lp.params["plan_target_level_types"]
+        lp.params["plan_target_level_types"] = replace(p, status=recorded)
+    stored = _with_gap(d8_basis(params=lp))
+    assert "plan_target_level_types_status" not in stored
+    assert ("plan_target_level_types" in stored["params"]) is (recorded != "absent")
+
+    sl = SessionLevels.from_basis(stored)
+    assert [t["price"] for t in sl.long.targets] == [275.00, 280.00, 285.00]
+    assert [t["price"] for t in sl.long.skipped] == [253.00]
+    assert sl.long.target_status == sl.short.target_status == "ok"
+    assert "plan_target_level_types_status" not in sl.to_basis()
+    plan = mod.plan_inputs("calls", {}, stored, policy_fn=lambda: pytest.fail("no policy read"))
+    assert plan.targets == (275.00, 280.00, 285.00)
+    assert plan.plan_available
+
+
+def test_a_basis_built_under_the_gap_rule_records_it_and_rebuilds_it():
+    """A basis built on the head records plan_target_level_types_status ok and
+    the list used, and rebuilds with the gap edge as a target after a JSON
+    round trip; plan_inputs gives the same targets."""
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib.session_levels_helpers import d8_basis
+
+    b = _with_gap(d8_basis())
+    b["plan_target_level_types_status"] = None
+    built = SessionLevels.from_basis(b)
+    stored = json.loads(json.dumps(built.to_basis()))
+    assert stored["plan_target_level_types_status"] == "ok"
+    assert stored["plan_target_level_types"] == ["gap_high", "gap_low"]
+
+    rebuilt = SessionLevels.from_basis(stored)
+    assert [t["price"] for t in rebuilt.long.targets] == [262.40, 275.00, 280.00]
+    assert rebuilt.long.targets[0]["name"] == "GAP_H_2026-10-20"
+    assert rebuilt.long.targets == built.long.targets
+    plan = mod.plan_inputs("calls", {}, stored, policy_fn=lambda: pytest.fail("no policy read"))
+    assert plan.targets == (262.40, 275.00, 280.00)
+    assert plan.plan_available
+
+
 def test_from_basis_v2_rebuilds_the_v2_targets():
     """A stored feat-strat-001.v2 basis records no spacing: it rebuilds the
     v2 targets (the gating ones), no skipped list and no plan, and the brief
