@@ -5,11 +5,11 @@ issues: []
 canvases: []
 site_source_notes: [DASHBOARD-01]
 done_when:
-  - "Policy: the level_param_policy seed row entry_cutoff_et (method_id policy, effective 2015-01-02) in gcp/schema.sql holds extra {\"time_et\": \"16:00\"} with ON CONFLICT DO NOTHING and a note saying a first cross anywhere in the regular session is an entry; no other level_param_policy row changes; git diff origin/main --stat on the implementation head lists no file under lib/ or gcp/ other than gcp/schema.sql; tests/gcp/test_level_params_consumers.py asserts the basis records entry_cutoff_et extra {\"time_et\": \"16:00\"}, and a test in tests/lib/test_level_params_loader.py loads the seeded policy from gcp/schema.sql and asserts policy_wide_param gives entry_cutoff_et status ok and value 960 (minutes after midnight); both fail on origin/main, where the seed is 10:00 and the value 600"
-  - "Resolver: tests/gcp/test_premarket_playbook_resolver.py passes a test that builds PlanInputs through plan_inputs from a v2 row with the policy loaded from gcp/schema.sql (as test_level_params_behaviour does) for a call with trigger 100.00, stop 99.00, targets 101.00, 102.00, 103.00: on synthetic 1-minute RTH bars whose first cross of the trigger is the 10:00 bar it gives plan_entry_status entered and plan_fill_price 100.00, and with the first cross in the 15:59 bar it gives entered; on origin/main the 10:00 case gives late_cross; the existing TestPlanOutcome cases that pass an explicit cutoff of 10:00 still give late_cross for a 10:00 first cross and entered for a 09:59 one, so the cutoff mechanism is unchanged and only the seeded value moves"
+  - "Policy: the level_param_policy seed row entry_cutoff_et (method_id policy, effective 2015-01-02) in gcp/schema.sql holds extra {\"time_et\": \"16:00\"} with ON CONFLICT DO NOTHING and a note saying a first cross anywhere in the regular session is an entry; no other level_param_policy row changes; git diff origin/main --stat on the implementation head lists no file under lib/ or gcp/ other than gcp/schema.sql and gcp/premarket_playbook_resolver.py (Design 3); tests/gcp/test_level_params_consumers.py asserts the basis records entry_cutoff_et extra {\"time_et\": \"16:00\"}, and a test in tests/lib/test_level_params_loader.py loads the seeded policy from gcp/schema.sql and asserts policy_wide_param gives entry_cutoff_et status ok and value 960 (minutes after midnight); both fail on origin/main, where the seed is 10:00 and the value 600"
+  - "Resolver: tests/gcp/test_premarket_playbook_resolver.py passes a test that builds PlanInputs through plan_inputs from a v2 row with the policy loaded from gcp/schema.sql (as test_level_params_behaviour does) for a call with trigger 100.00, stop 99.00, targets 101.00, 102.00, 103.00: on synthetic 1-minute RTH bars whose first cross of the trigger is the 10:00 bar it gives plan_entry_status entered and plan_fill_price 100.00, and with the first cross in the 15:59 bar it gives entered; on origin/main the 10:00 case gives late_cross; the existing TestPlanOutcome cases that pass an explicit cutoff of 10:00 still give late_cross for a 10:00 first cross and entered for a 09:59 one, so the cutoff mechanism is unchanged and only the seeded value moves; a resolve_one test with a stubbed engine on a half day (2026-11-27, close 13:00 ET) whose bars include prints from 13:00 to 15:59 gives a first cross at 13:30 plan_entry_status no_cross and no plan R, a trade entered at 09:45 that is open at the close books its close legs at the 12:59 bar's close, not a later print, and the existing columns (trigger_hit_ts, t1_hit_ts to t3_hit_ts, stop_hit_ts, eod_pnl_pct) are bound exactly as on origin/main for the same bars; on origin/main the plan's close legs take the last print, and on a head without Design 3 the 13:30 cross would be entered"
   - "Brief copy: the exits spec's Design 8 golden strings in tests/lib/test_strat_levels.py (D8_CALLS, D8_PUTS) read 'new entries 09:30 to 16:00 ET' on both sides and are otherwise byte-identical to origin/main's; the brief's generated test fixtures that record the seeded cutoff (tests/fixtures/atr_levels_brief_base.json, tests/fixtures/atr_levels_display_only_base.json) differ from origin/main only in entry_cutoff_et values and the window text"
   - "Stored briefs keep their cutoff: tests/gcp/test_level_basis.py passes a test where SessionLevels.from_basis on a stored basis recording entry_cutoff_et 10:00 rebuilds a plan with entry_cutoff_et 10:00 after the policy row is changed to 16:00, and the resolver scores a 10:00 first cross on that stored row as late_cross; a basis built after the change records 16:00"
-  - "Unchanged, each pinned by an existing test that passes on origin/main and on the implementation head: the trigger, stop, gate targets, plan targets, skipped list, exit_legs and the thirds, the opened-through rule, the ATR rungs line, the signal monitor's fire decisions and put re-anchor, the movement statement, persona plans and the CALL/PUT pick; LEVEL_RULE_VERSION and RESOLVER_VERSION do not change (the cutoff is recorded in level_basis as a value, so the rule that reads it is the same)"
+  - "Unchanged, each pinned by an existing test that passes on origin/main and on the implementation head: the trigger, stop, gate targets, plan targets, skipped list, exit_legs and the thirds, the opened-through rule, the ATR rungs line, the signal monitor's fire decisions and put re-anchor, the movement statement, persona plans, the CALL/PUT pick and the resolver's existing outcome columns; LEVEL_RULE_VERSION does not change (the cutoff is recorded in level_basis as a value, so the rule that reads it is the same); RESOLVER_VERSION moves past 2026-11-12.v3 because Design 3 changes plan columns on half days"
   - "Experiment through the production paths, before any production change: the implementation PR body shows, for SPY, QQQ and IWM over 2022-01-03 to 2026-11-10 on the same ticker-days as this spec's Experiment (one trade per ticker-day, the first side to cross its trigger, a same-bar tie is no trade, half days cut at the exchange close, SPY 2025-04-09 and IWM 2026-06-26 left out), plan R from gcp.premarket_playbook_resolver.resolve_plan with the cutoff read from the seeded policy on origin/main and on the head, per ticker and per six-month block, with the 90% day-resampled range of head minus origin/main (seed 7, 2,000 draws); the totals match this spec's Experiment to 0.1 R (+164.6 and +172.3); this is a reproduction for the record, not a gate, since the owner decided on these numbers"
   - "Source identity (DASHBOARD-01): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, DASHBOARD-01) note row carries that source_identity_sha256 with implementation and test prose for this PR"
   - "The FEAT-STRAT-001 catalog record and the PR traceability entry are updated; python3 scripts/gate/spec_gate.py --pr origin/main passes; the production entry_cutoff_et row is changed only after the owner's yes, by the statement in Design 2, and recorded separately"
@@ -24,7 +24,9 @@ supersedes: null
 The owner's ruling, 2026-11-15 (UTC), after seeing the Experiment below: "Drop it." It answers Open
 question 1 of `docs/superpowers/specs/2026-11-11-feat-strat-001-brief-exits-in-thirds.md` (the exits
 spec), which asked whether the 10:00 cutoff should stay for every ticker. That spec's Design 4 says the
-cutoff "is one row, so the owner can move or drop it without a code change"; this spec is that change.
+cutoff "is one row, so the owner can move or drop it without a code change"; this spec is that change,
+plus the one guard that dropping it needs: the plan's bars end at the exchange's close (Design 3), so a
+print after a half day's early close never becomes an entry.
 
 Rulings still in force: values are never hard-coded and come from policy or per-ticker parameter rows
 (2026-11-08); a change is tested against its hypothesis before it is swapped in; R is the stock's move
@@ -60,9 +62,10 @@ rule that adds nothing clear overall.
 
 ## Approaches considered
 
-1. Chosen: move the seeded value to 16:00 ET, the regular session's close. The resolver's walk reads
-   regular-session bars only, the last of which starts at 15:59, so no bar is at or after the cutoff and
-   no first cross is `late_cross`. No code changes.
+1. Chosen: move the seeded value to 16:00 ET, the regular session's close, and end the plan's bars at
+   the exchange's own close (Design 3). The resolver's bar read stops before 16:00, so no bar is at or
+   after the cutoff and no first cross in the session is `late_cross`; on a half day the bars stop at
+   the early close. The only code change is that trim.
 2. Make the cutoff optional in code (a policy value meaning "none", the brief printing no window, the
    resolver skipping the check). Rejected for now: more code and tests for the same plan R, and the
    window line still tells the reader the rule in force.
@@ -102,7 +105,23 @@ the same rule as the live brief and the scores stay like for like. A brief alrea
 cutoff its `level_basis` recorded (`SessionLevels.from_basis` reads the recorded value), so no stored
 row or its replay changes. The statement touches one row or none; the run records which.
 
-### 3. What the brief will look like
+### 3. The plan's bars end at the exchange's close
+
+`resolve_one` reads every 1-minute bar from 09:30 to 15:59 ET, with no early-close filter. On a half day
+the stored table can hold prints after the 13:00 close (the Experiment's data check found 27 ticker-days
+with them over 2022 to 2026). Under the 10:00 cutoff those prints could never be a first cross; at 16:00
+they could, so a 13:30 print on a half day would become an entry. The plan's walk must stop at the close.
+
+`resolve_one` passes `resolve_plan` only the bars that start before
+`lib.eastern_time.session_close(analysis_date)` (13:00 ET on a half day, 16:00 otherwise, from the NYSE
+calendar, never a literal). The existing `resolve_leg` columns keep reading the same bars as on
+origin/main; trimming them is a separate change (Found while reading). A date that is not a session has
+no close, and `session_close` raises for it rather than assume 16:00 (CLAUDE.md 3.7); `resolve_one`
+already returns `no_bars` before this point for a holiday, which has no bars. The trim also moves a half
+day's close legs from the last print to the last bar before the close, which is what the Experiment
+scored. `RESOLVER_VERSION` moves so the re-resolved rows can be told apart.
+
+### 4. What the brief will look like
 
 On the exits spec's Design 8 fixture the only change is the window clause on each side's first line:
 
@@ -111,8 +130,8 @@ On the exits spec's Design 8 fixture the only change is the window clause on eac
   PUTS below 248.20 (PMK_L), new entries 09:30 to 16:00 ET
 ```
 
-Every other line is unchanged. On a half day the line still reads 16:00; the session's bars end at the
-early close, so no first cross is late there either (Risks).
+Every other line is unchanged. On a half day the line still reads 16:00; the plan's bars end at the
+early close (Design 3), so no first cross in the session is late there either (Risks).
 
 ## Experiment
 
@@ -182,7 +201,7 @@ different. Nothing else in the brief, the monitor or the movement statement chan
 
 - **Volume:** no new row or column; one existing policy row's `extra` and `note` change.
 - **Velocity:** no new query; the row rides the one `load_level_params` query per run.
-- **Wall-clock:** unchanged; the resolver walks the same bars and scores more legs to the close.
+- **Wall-clock:** unchanged; one in-memory session-close lookup per resolved row, and the resolver walks the same or fewer bars and scores more legs to the close.
 - **Cost:** $0; no new job, schedule or resource.
 
 ## Source identity and close-out
@@ -202,7 +221,14 @@ product-delivery skill prescribes.
   dropping it, QQQ clearly). The owner chose to drop it knowing this; a cutoff comes back with one row.
 - **Lower average per trade.** Late trades average about zero, so the plan's per-trade average falls
   while its total barely moves.
-- **Half days.** The window line reads 16:00 on a day that closes at 13:00. No first cross is late on
-  such a day, so the rule is right; only the printed time is the regular close, not the early one.
+- **Half days.** The window line reads 16:00 on a day that closes at 13:00. Design 3 ends the plan's
+  bars at the early close, so a print after it is never an entry or an exit; only the printed time is
+  the regular close, not the early one.
 - **A production row edited in place.** Design 2 is guarded on the 10:00 value, so it changes nothing if
   the row was already moved, and stored briefs keep their recorded cutoff.
+
+## Found while reading (not changed by this spec)
+
+- The resolver's existing columns (`resolve_leg`: `trigger_hit_ts`, `t1_hit_ts` to `t3_hit_ts`,
+  `stop_hit_ts`, `eod_pnl_pct`) also read prints after a half day's 13:00 close. Under the 10:00 cutoff
+  this was already true for them; it needs its own fix and its own owner.
