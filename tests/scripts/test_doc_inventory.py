@@ -269,10 +269,16 @@ def test_reconcile_against_snapshot_reports_the_known_deltas():
     # 2026-11-01 (FEAT-DEPLOY-001, EarningsWhispers retirement); the 2026-09-07
     # snapshot still carries both, so they read live-only until the separately
     # authorized deletion runs and a fresher snapshot is taken.
+    # watched-tickers-nightly and its job fetch-watched-tickers were added to
+    # deploy.sh on 2026-11-15 (FEAT-DEPLOY-001, the watched-ticker ingest
+    # deploy); the 2026-09-07 snapshot predates both, so they read repo-only
+    # until a fresher snapshot carries them.
     assert rec["schedulers_paused"] == []
     assert rec["schedulers_live_only"] == ["evaluate-ew-strikes-daily"]
     assert "evaluate-ew-strikes" in rec["jobs_live_only"]
-    assert rec["schedulers_repo_only"] == ["earnings-sweep-sunday"]
+    assert "fetch-watched-tickers" in rec["jobs_repo_only"]
+    assert rec["schedulers_repo_only"] == ["earnings-sweep-sunday",
+                                           "watched-tickers-nightly"]
     assert rec["schedulers_cron_drift"] == []
     assert rec["counts"]["jobs_live"] == live["counts"]["jobs"]
 
