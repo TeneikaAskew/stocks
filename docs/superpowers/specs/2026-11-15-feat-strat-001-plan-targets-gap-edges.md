@@ -8,10 +8,10 @@ done_when:
   - "Policy: gcp/schema.sql seeds one new level_param_policy row plan_target_level_types (method_id policy, effective 2015-01-02, extra {\"level_types\": [\"gap_high\", \"gap_low\"]}) with ON CONFLICT DO NOTHING; no other level_param_policy row changes; lib/strat_levels.py names the key once (PLAN_TARGET_LEVEL_TYPES_KEY) in POLICY_WIDE_KEYS, and policy_wide_param gives it status ok with value equal to the number of listed types when every listed type is gap_high or gap_low and none repeats, ok with value 0 for an empty list, and input_unavailable for a missing list, an unknown type or a repeat; a test in tests/lib/test_level_params_loader.py loads the seeded policy from gcp/schema.sql and asserts status ok and value 2, and each unusable extra gives input_unavailable"
   - "Plan walk: tests/lib/test_strat_levels.py passes tests on a session built through build_session_levels or SessionLevels.from_basis with the seeded policy where (a) a gap edge (level_type gap_high or gap_low in the session's levels) beyond the trigger, inside the side's own window and at least the spacing past the trigger joins the plan's targets in price order and is published under its own name (GAP_H_YYYY-MM-DD or GAP_L_YYYY-MM-DD, printed as M/D Gap High or Low); (b) a gap edge closer than the spacing to the trigger or the target before it is listed in skipped; (c) a gap edge at or before the trigger, outside the window, or on the same cent as a candidate adds nothing (the candidate's record is byte-identical to origin/main's, no alias added); two gap edges on one cent give one rung, the most recent gap's, high before low; (d) with plan_target_level_types extra {\"level_types\": []} the plan's targets and skipped list equal origin/main's; (e) with the key unusable or missing the side publishes no target and target_status is that key's status, as for the spacing, leg and cutoff keys"
   - "Never anything but a plan target: on the same sessions, the trigger, stop, gate_targets (rungs 1 to 3 of the candidate list), ladder, room, distance_atr, the candidates list, the ATR rungs line, and the legacy targets and t1..t3 columns are byte-identical to origin/main's, each asserted against an origin/main golden; _candidate_rungs is unchanged and gap levels stay out of it"
-  - "Stored briefs keep their targets: tests/gcp/test_level_basis.py passes a test where SessionLevels.from_basis on a stored basis with no plan_target_level_types_status key, whose params record plan_target_level_types (as the loader records every policy key once the row exists), rebuilds plan targets equal to origin/main's for that basis, and a basis built on the head records plan_target_level_types_status ok and rebuilds with gap edges; gcp.premarket_playbook_resolver.plan_inputs on each gives the matching targets"
+  - "Stored briefs keep their targets: tests/gcp/test_level_basis.py passes two tests on stored bases with no plan_target_level_types_status key: (a) params that do not record plan_target_level_types at all (every brief stored before the row exists), and (b) params that record it (as the loader records every policy key once the row exists); each rebuilds through SessionLevels.from_basis with target_status ok and plan targets and skipped list equal to origin/main's for that basis, so the new key is never checked for a markerless basis; a basis built on the head records plan_target_level_types_status ok and rebuilds with gap edges; gcp.premarket_playbook_resolver.plan_inputs on each gives the matching targets and plan_available true for (a) and (b)"
   - "Brief copy: a new golden in tests/lib/test_strat_levels.py on the exits spec's Design 8 fixture plus one level GAP_H_2026-10-20 at 262.40 gives the calls lines of this spec's Design 4 byte for byte; the existing D8_CALLS and D8_PUTS goldens (no gap level) are unchanged"
   - "Unchanged, each pinned by an existing test that passes on origin/main and on the implementation head: the trigger and stop rule, gate targets, the opened-through rule, the entry cutoff, exit_legs and the thirds, the ATR rungs line, the signal monitor's fire decisions and put re-anchor, the movement statement, persona plans, the CALL/PUT pick and the resolver's existing outcome columns; LEVEL_RULE_VERSION and RESOLVER_VERSION do not change (the marker in Design 3 tells old and new bases apart, and the resolver's code does not change)"
-  - "Experiment through the production paths, before any production change: the implementation PR body shows, for SPY, QQQ and IWM over 2022-01-03 to 2026-11-10 on the same ticker-days as this spec's Experiment (one trade per ticker-day, the first side to cross its trigger, a same-bar tie is no trade, half days cut at the exchange close, no entry cutoff, SPY 2025-04-09 and IWM 2026-06-26 left out), plan R from gcp.premarket_playbook_resolver.resolve_plan with targets from plan_inputs on bases built with the seeded policy on origin/main and on the head, per ticker and per six-month block, with the 90% day-resampled range of head minus origin/main (seed 7, 2,000 draws); origin/main matches this spec's +172.3 to 0.1 R and the head matches +176.8 to 1.0 R (the Experiment's walk rounds the spacing outside the production code); a reproduction for the record, not a gate"
+  - "Experiment through the production paths, before any production change: the implementation PR body shows, for SPY, QQQ and IWM over 2022-01-03 to 2026-11-10 on the same ticker-days as this spec's Experiment (one trade per ticker-day, the first side to cross its trigger, a same-bar tie is no trade, half days cut at the exchange close, SPY 2025-04-09 and IWM 2026-06-26 left out), plan R from gcp.premarket_playbook_resolver.resolve_plan with inputs from plan_inputs on bases built with the seeded policy on origin/main and on the head, both arms reading the entry_cutoff_et seed of 16:00 that #1967 put on main (so no first cross in the session is late_cross and no research-only override is used), per ticker and per six-month block, with the 90% day-resampled range of head minus origin/main (seed 7, 2,000 draws); origin/main matches this spec's +172.3 to 0.1 R and the head matches +176.8 to 1.0 R (the Experiment's walk rounds the spacing outside the production code); a reproduction for the record, not a gate"
   - "Source identity (DASHBOARD-01): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, DASHBOARD-01) note row carries that source_identity_sha256 with implementation and test prose for this PR"
   - "The FEAT-STRAT-001 catalog record and the PR traceability entry are updated; python3 scripts/gate/spec_gate.py --pr origin/main passes; the production plan_target_level_types row is inserted only after the owner's yes, by the statement in Design 2, before the code that reads it is deployed, and recorded separately"
 status: approved
@@ -81,9 +81,12 @@ six-month blocks.
 
 `policy_wide_param` reads it like `atr_rung_anchors`: the value is the number of listed types; an empty
 list is ok with value 0 (the walk uses candidates only, as on origin/main); a missing list, a type other
-than `gap_high` or `gap_low`, or a repeat is `input_unavailable`. `_plan_targets` adds the key to the
-keys it checks first (spacing, legs, cutoff), so a side whose row is unusable or missing publishes no
-target and says why, never a walk without the rule it is scored on (CLAUDE.md 3.7).
+than `gap_high` or `gap_low`, or a repeat is `input_unavailable`. For a session built under this rule
+(every new build, and a stored basis that carries the Design 3 marker), `_plan_targets` adds the key to
+the keys it checks first (spacing, legs, cutoff), so a side whose row is unusable or missing publishes
+no target and says why, never a walk without the rule it is scored on (CLAUDE.md 3.7). A stored basis
+without the marker is rebuilt under the old walk and the key is not checked at all, because a brief
+stored before the row existed recorded no such parameter (Design 3).
 
 ### 2. The production row
 
@@ -116,7 +119,9 @@ are kept; a closer rung is listed in `skipped`. The trigger, stop, `gate_targets
 still taken from the candidates alone.
 
 A basis built under this rule records a top-level `plan_target_level_types_status` (`ok` or the key's
-status) and the list used. `SessionLevels.from_basis` rebuilds gap rungs only when that key is present,
+status) and the list used. `SessionLevels.from_basis` rebuilds gap rungs, and checks the new key, only when that key is present;
+without it the walk and its checked keys are exactly origin/main's, whether or not the basis's params
+record `plan_target_level_types`. This is
 the same marker pattern as `atr_rung_status` (Codex P2 on #1951): the parameter itself is not a marker,
 because the loader records every policy key once the row exists. So a stored brief, its replay and the
 resolver's plan R for it do not change. `LEVEL_RULE_VERSION` does not move, because moving it would
@@ -150,7 +155,8 @@ the same replay and data check as the entry cutoff spec
 exchange close; SPY 2025-04-09 and IWM 2026-06-26 left out.
 
 Method: one trade per ticker-day, the first side to cross its trigger; a same-bar tie is no trade; a day
-that opens past a trigger is no trade; no entry cutoff. The gap edges are the stored basis's
+that opens past a trigger is no trade; no entry cutoff, which is what the seeded policy gives now that
+#1967 moved `entry_cutoff_et` to 16:00 on main. The gap edges are the stored basis's
 `GAP_H_`/`GAP_L_` levels beyond the trigger and inside the side's window, merged with the side's
 unbroken in-window candidates by cent. Each trade is scored by
 `gcp.premarket_playbook_resolver.resolve_plan` on the same bars with three targets from each rule. R per
