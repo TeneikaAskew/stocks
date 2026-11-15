@@ -3,7 +3,7 @@ feat_id: FEAT-PLAYBOOK-001
 spec: docs/superpowers/specs/2026-11-14-feat-playbook-001-brief-late-slot.md
 branch: feature/feat-playbook-001-brief-late-slot
 pr: 1961
-status: ready
+status: done
 ---
 
 # The brief's late slot: implementation plan
