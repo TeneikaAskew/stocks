@@ -209,11 +209,11 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation; issue #1308 market-date repair verified locally, rollout pending; the premarket brief dates a live run by the exchange's date, so the Sunday 21:00 ET run no longer writes Monday's canonical row and Monday's 08:30 run writes it ([#1941](https://github.com/TeneikaAskew/stocks/pull/1941); implementation under review, not deployed) |
+| Status | Production but needs remediation; issue #1308 market-date repair verified locally, rollout pending; the premarket brief dates a live run by the exchange's date, so the Sunday 21:00 ET run no longer writes Monday's canonical row and Monday's 08:30 run writes it ([#1941](https://github.com/TeneikaAskew/stocks/pull/1941); implementation under review, not deployed); the brief's late slot (BRIEF_RUN_SLOT=late) rebuilds the day's levels from the 09:20 premarket snapshot and replaces the session's canonical rows before 09:29:30 ET ([#1961](https://github.com/TeneikaAskew/stocks/pull/1961); implementation under review, not deployed, and inert until the 09:20 schedule of [#1929](https://github.com/TeneikaAskew/stocks/pull/1929) runs it) |
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-14 |
+| Last reviewed | 2026-11-15 |
 | Evidence status | Existing production needs remediation; current-session ORB consumer candidate passes 137 guarded affected backend/OpenAPI tests after the first local review repair batch (timestamp identity, cold-calendar admission, bounded-response worker ownership and overflow isolation). The authorized SEC Low/P3 principal-fairness repair adds four verified-email attempts within the unchanged global eight and passes192 affected tests with1 existing Postgres-dependent skip. PLAYBOOK-05 source proof and generated inventory require final refresh for this repair; external review, hosted checks, API image/fleet qualification and deployed parity remain pending. |
 | UI surface | `/playbook` |
 | Backend | `/api/playbook` |
