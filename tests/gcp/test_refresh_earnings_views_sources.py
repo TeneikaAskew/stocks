@@ -11,19 +11,20 @@ The negative control is main's upcoming_sql (e9a06998) verbatim.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 
 import pandas as pd
 import pytest
 
 from gcp import refresh_earnings_views as rev
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+from lib.eastern_time import market_today
 from tests.fixtures.earnings_calendar_sources import (
     av, ew_only, ew_raw_alias, hydrated, make_db, null_source, run_earnings_sql,
     unknown_source, uw, yahoo, yahoo_bulk,
 )
 
-TODAY = date.today()
+TODAY = market_today()  # the readers' own "today" (lib.eastern_time), not the host's
 D = TODAY + timedelta(days=3)
 
 # gcp/refresh_earnings_views.py upcoming_sql at main e9a06998, verbatim.

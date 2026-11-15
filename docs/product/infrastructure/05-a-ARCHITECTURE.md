@@ -108,7 +108,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 
 | Service | Role | Live 2026-09-07 |
 |---|---|---|
-| Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 95 relations live, of which **26 runtime relations** are created by research and analytics jobs and are not declared in `gcp/schema.sql`; that file declares 76 (73 tables, 2 materialized views, 1 view), a set that overlaps the live one without equalling it (§5) |
+| Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 95 relations live, of which **26 runtime relations** are created by research and analytics jobs and are not declared in `gcp/schema.sql`; that file declares 77 (74 tables, 2 materialized views, 1 view), a set that overlaps the live one without equalling it (§5) |
 | Cloud Run Jobs | every fetcher, analyzer, backfill, audit and research run | 76 jobs; 68 declared in [`gcp/deploy.sh`](../../../gcp/deploy.sh) |
 | Cloud Run Services | 3 long-lived HTTP services | `solyra-api-staging`, `discord-interactions` (min-instances 1 only inside the weekday warm window, 0 otherwise — §7.4), `failure-notifier` |
 | Cloud Scheduler | cron triggers, all `America/New_York` | 65 entries, none paused (`evaluate-ew-strikes-daily` deleted 2026-11-12, `signal-quality-report-hourly` 2026-09-07) |
@@ -140,7 +140,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 
 ## 5. Schema catalog
 
-`gcp/schema.sql` declares **76 relations** (73 tables, 2 materialized views, 1 view); the live database holds **95**, of which **26 runtime relations** are live but **not declared in this file** (the `strat_features_*` family, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, the `*_30m_predictions` tables, `market_data_indicators*`, `market_data_cross_asset`). That is a statement about `gcp/schema.sql`, not about where they come from: none is applied by `apply-schema-migrations`, and they are created three different ways.
+`gcp/schema.sql` declares **77 relations** (74 tables, 2 materialized views, 1 view); the live database holds **95**, of which **26 runtime relations** are live but **not declared in this file** (the `strat_features_*` family, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, the `*_30m_predictions` tables, `market_data_indicators*`, `market_data_cross_asset`). That is a statement about `gcp/schema.sql`, not about where they come from: none is applied by `apply-schema-migrations`, and they are created three different ways.
 
 1. **DDL embedded in the job that owns the table**, applied just-in-time on each run — `gamma_levels_eod` ([`gcp/research/p2_build_gamma_levels.py:81`](../../../gcp/research/p2_build_gamma_levels.py#L81)), `gamma_events` ([`gcp/research/p2_outcomes_grid.py:72`](../../../gcp/research/p2_outcomes_grid.py#L72)), `magnitude_walk_forward_results` and `magnitude_per_bar_predictions` ([`gcp/research/magnitude_engine/mag_walk_forward.py:88`](../../../gcp/research/magnitude_engine/mag_walk_forward.py#L88)), and `strat_features_4h` ([`gcp/research/strat_engine/strat_data_builder.py:96`](../../../gcp/research/strat_engine/strat_data_builder.py#L96), executed at [`:906`](../../../gcp/research/strat_engine/strat_data_builder.py#L906), whose comment notes the other timeframes are not its to apply), and all six `strat_features_levels_*` tables, whose DDL is **generated at runtime** from the enrichment columns discovered for that timeframe ([`gcp/research/strat_engine/strat_enrich_levels.py:130`](../../../gcp/research/strat_engine/strat_enrich_levels.py#L130)) and executed as it is built ([`:138`](../../../gcp/research/strat_engine/strat_enrich_levels.py#L138)) — so their column list exists in no file at all.
 2. **A dedicated DDL file under `gcp/queries/`, applied by hand** — [`gcp/queries/p7_schema.sql:7`](../../../gcp/queries/p7_schema.sql#L7) for the five `strat_features_{1m,5m,15m,30m,60m}` tables, and only those, [`gcp/queries/magnitude_engine_schema.sql:3`](../../../gcp/queries/magnitude_engine_schema.sql#L3) for `market_data_indicators*` and `market_data_cross_asset`, [`gcp/queries/p7_vex_cache.sql:9`](../../../gcp/queries/p7_vex_cache.sql#L9) for `daily_vex`. No job runs these. The first two still instruct an operator to dispatch `db-query.yml`, a workflow deleted on 2026-05-30 and replaced by `./scripts/db_query_cr.sh`, so those instructions are stale.
@@ -150,39 +150,40 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 <!-- inventory:tables:start -->
 | Relation | Kind | Defined |
 |---|---|---|
-| `admin_refresh_leases` | table | [`gcp/schema.sql:5339`](../../../gcp/schema.sql#L5339) |
+| `admin_refresh_leases` | table | [`gcp/schema.sql:5413`](../../../gcp/schema.sql#L5413) |
 | `archive_yahoo_earnings_options_snapshots` | table | [`gcp/schema.sql:566`](../../../gcp/schema.sql#L566) |
 | `archive_yahoo_etf_options_snapshots` | table | [`gcp/schema.sql:563`](../../../gcp/schema.sql#L563) |
 | `archive_yahoo_market_data_daily` | table | [`gcp/schema.sql:557`](../../../gcp/schema.sql#L557) |
 | `archive_yahoo_market_data_intraday` | table | [`gcp/schema.sql:560`](../../../gcp/schema.sql#L560) |
-| `backtest_reports` | table | [`gcp/schema.sql:4148`](../../../gcp/schema.sql#L4148) |
-| `backtest_sweeps` | table | [`gcp/schema.sql:4119`](../../../gcp/schema.sql#L4119) |
-| `backtest_trades` | table | [`gcp/schema.sql:4077`](../../../gcp/schema.sql#L4077) |
-| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:4174`](../../../gcp/schema.sql#L4174) |
+| `backtest_reports` | table | [`gcp/schema.sql:4222`](../../../gcp/schema.sql#L4222) |
+| `backtest_sweeps` | table | [`gcp/schema.sql:4193`](../../../gcp/schema.sql#L4193) |
+| `backtest_trades` | table | [`gcp/schema.sql:4151`](../../../gcp/schema.sql#L4151) |
+| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:4248`](../../../gcp/schema.sql#L4248) |
+| `bar_recompute_ledger` | table | [`gcp/schema.sql:5571`](../../../gcp/schema.sql#L5571) |
 | `daily_rates` | table | [`gcp/schema.sql:536`](../../../gcp/schema.sql#L536) |
 | `earnings_calendar` | table | [`gcp/schema.sql:576`](../../../gcp/schema.sql#L576) |
-| `earnings_calibration` | table | [`gcp/schema.sql:4267`](../../../gcp/schema.sql#L4267) |
+| `earnings_calibration` | table | [`gcp/schema.sql:4341`](../../../gcp/schema.sql#L4341) |
 | `earnings_history` | table | [`gcp/schema.sql:737`](../../../gcp/schema.sql#L737) |
 | `earnings_options_snapshots` | table | [`gcp/schema.sql:475`](../../../gcp/schema.sql#L475) |
-| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:4495`](../../../gcp/schema.sql#L4495) |
-| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:4523`](../../../gcp/schema.sql#L4523) |
+| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:4569`](../../../gcp/schema.sql#L4569) |
+| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:4597`](../../../gcp/schema.sql#L4597) |
 | `earnings_reactions` | table | [`gcp/schema.sql:783`](../../../gcp/schema.sql#L783) |
-| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:5051`](../../../gcp/schema.sql#L5051) |
+| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:5125`](../../../gcp/schema.sql#L5125) |
 | `economic_events` | table | [`gcp/schema.sql:1455`](../../../gcp/schema.sql#L1455) |
 | `etf_options_daily_greeks` | table | [`gcp/schema.sql:382`](../../../gcp/schema.sql#L382) |
 | `etf_options_snapshots` | table | [`gcp/schema.sql:175`](../../../gcp/schema.sql#L175) |
-| `exit_config_overrides` | table | [`gcp/schema.sql:3496`](../../../gcp/schema.sql#L3496) |
-| `historical_signals` | table | [`gcp/schema.sql:2339`](../../../gcp/schema.sql#L2339) |
-| `indicator_correlation` | table | [`gcp/schema.sql:4336`](../../../gcp/schema.sql#L4336) |
+| `exit_config_overrides` | table | [`gcp/schema.sql:3570`](../../../gcp/schema.sql#L3570) |
+| `historical_signals` | table | [`gcp/schema.sql:2413`](../../../gcp/schema.sql#L2413) |
+| `indicator_correlation` | table | [`gcp/schema.sql:4410`](../../../gcp/schema.sql#L4410) |
 | `insider_transactions` | table | [`gcp/schema.sql:992`](../../../gcp/schema.sql#L992) |
 | `insight_reports` | table | [`gcp/schema.sql:1554`](../../../gcp/schema.sql#L1554) |
-| `insight_reports_history` | table | [`gcp/schema.sql:2270`](../../../gcp/schema.sql#L2270) |
+| `insight_reports_history` | table | [`gcp/schema.sql:2344`](../../../gcp/schema.sql#L2344) |
 | `insight_runs` | table | [`gcp/schema.sql:1590`](../../../gcp/schema.sql#L1590) |
 | `intraday_flow_15m` | table | [`gcp/schema.sql:422`](../../../gcp/schema.sql#L422) |
 | `intraday_gex_15m` | table | [`gcp/schema.sql:443`](../../../gcp/schema.sql#L443) |
-| `job_runs` | table | [`gcp/schema.sql:5188`](../../../gcp/schema.sql#L5188) |
+| `job_runs` | table | [`gcp/schema.sql:5262`](../../../gcp/schema.sql#L5262) |
 | `journal_entries` | table | [`gcp/schema.sql:1213`](../../../gcp/schema.sql#L1213) |
-| `level_param_policy` | table | [`gcp/schema.sql:2162`](../../../gcp/schema.sql#L2162) |
+| `level_param_policy` | table | [`gcp/schema.sql:2211`](../../../gcp/schema.sql#L2211) |
 | `market_data_daily` | table | [`gcp/schema.sql:37`](../../../gcp/schema.sql#L37) |
 | `market_data_intraday` | table | [`gcp/schema.sql:140`](../../../gcp/schema.sql#L140) |
 | `market_data_intraday_iwm` | partition of `market_data_intraday` | [`gcp/schema.sql:158`](../../../gcp/schema.sql#L158) |
@@ -194,37 +195,37 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 | `news_sentiment` | table | [`gcp/schema.sql:1632`](../../../gcp/schema.sql#L1632) |
 | `options_daily_features` | table | [`gcp/schema.sql:285`](../../../gcp/schema.sql#L285) |
 | `playbook_cards` | table | [`gcp/schema.sql:1381`](../../../gcp/schema.sql#L1381) |
-| `playbook_cards_staging` | table | [`gcp/schema.sql:5162`](../../../gcp/schema.sql#L5162) |
+| `playbook_cards_staging` | table | [`gcp/schema.sql:5236`](../../../gcp/schema.sql#L5236) |
 | `premarket_analysis` | table | [`gcp/schema.sql:1327`](../../../gcp/schema.sql#L1327) |
-| `premarket_analysis_history` | table | [`gcp/schema.sql:2010`](../../../gcp/schema.sql#L2010) |
+| `premarket_analysis_history` | table | [`gcp/schema.sql:2053`](../../../gcp/schema.sql#L2053) |
 | `ranker_runs` | table | [`gcp/schema.sql:1067`](../../../gcp/schema.sql#L1067) |
 | `realtime_gex_15m` | table | [`gcp/schema.sql:462`](../../../gcp/schema.sql#L462) |
-| `regime_combo_results` | table | [`gcp/schema.sql:4413`](../../../gcp/schema.sql#L4413) |
-| `schema_apply_history` | table | [`gcp/schema.sql:5353`](../../../gcp/schema.sql#L5353) |
+| `regime_combo_results` | table | [`gcp/schema.sql:4487`](../../../gcp/schema.sql#L4487) |
+| `schema_apply_history` | table | [`gcp/schema.sql:5427`](../../../gcp/schema.sql#L5427) |
 | `sec_filings` | table | [`gcp/schema.sql:959`](../../../gcp/schema.sql#L959) |
 | `signal_alerts` | table | [`gcp/schema.sql:1085`](../../../gcp/schema.sql#L1085) |
-| `signal_metrics` | table | [`gcp/schema.sql:3726`](../../../gcp/schema.sql#L3726) |
-| `strat_combo_results` | table | [`gcp/schema.sql:4445`](../../../gcp/schema.sql#L4445) |
+| `signal_metrics` | table | [`gcp/schema.sql:3800`](../../../gcp/schema.sql#L3800) |
+| `strat_combo_results` | table | [`gcp/schema.sql:4519`](../../../gcp/schema.sql#L4519) |
 | `strat_levels` | table | [`gcp/schema.sql:1672`](../../../gcp/schema.sql#L1672) |
-| `ticker_calibration` | table | [`gcp/schema.sql:3409`](../../../gcp/schema.sql#L3409) |
-| `ticker_info` | table | [`gcp/schema.sql:2404`](../../../gcp/schema.sql#L2404) |
-| `ticker_level_params` | table | [`gcp/schema.sql:2175`](../../../gcp/schema.sql#L2175) |
+| `ticker_calibration` | table | [`gcp/schema.sql:3483`](../../../gcp/schema.sql#L3483) |
+| `ticker_info` | table | [`gcp/schema.sql:2478`](../../../gcp/schema.sql#L2478) |
+| `ticker_level_params` | table | [`gcp/schema.sql:2224`](../../../gcp/schema.sql#L2224) |
 | `top_movers_daily` | table | [`gcp/schema.sql:1018`](../../../gcp/schema.sql#L1018) |
 | `top_movers_intraday` | table | [`gcp/schema.sql:1042`](../../../gcp/schema.sql#L1042) |
 | `trades` | table | [`gcp/schema.sql:1170`](../../../gcp/schema.sql#L1170) |
-| `user_preferences` | table | [`gcp/schema.sql:5276`](../../../gcp/schema.sql#L5276) |
-| `user_profile` | table | [`gcp/schema.sql:5307`](../../../gcp/schema.sql#L5307) |
-| `user_roles` | table | [`gcp/schema.sql:5225`](../../../gcp/schema.sql#L5225) |
-| `user_style_results` | table | [`gcp/schema.sql:5144`](../../../gcp/schema.sql#L5144) |
-| `user_watchlists` | table | [`gcp/schema.sql:2576`](../../../gcp/schema.sql#L2576) |
-| `waitlist_signups` | table | [`gcp/schema.sql:5131`](../../../gcp/schema.sql#L5131) |
-| `walk_forward_results` | table | [`gcp/schema.sql:4220`](../../../gcp/schema.sql#L4220) |
-| `watched_tickers` | table | [`gcp/schema.sql:2567`](../../../gcp/schema.sql#L2567) |
-| `watchlist_history` | table | [`gcp/schema.sql:2696`](../../../gcp/schema.sql#L2696) |
-| `watchlist_history_origin` | table | [`gcp/schema.sql:3302`](../../../gcp/schema.sql#L3302) |
-| `watchlists` | table | [`gcp/schema.sql:2460`](../../../gcp/schema.sql#L2460) |
-| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:4661`](../../../gcp/schema.sql#L4661) |
-| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4856`](../../../gcp/schema.sql#L4856) |
+| `user_preferences` | table | [`gcp/schema.sql:5350`](../../../gcp/schema.sql#L5350) |
+| `user_profile` | table | [`gcp/schema.sql:5381`](../../../gcp/schema.sql#L5381) |
+| `user_roles` | table | [`gcp/schema.sql:5299`](../../../gcp/schema.sql#L5299) |
+| `user_style_results` | table | [`gcp/schema.sql:5218`](../../../gcp/schema.sql#L5218) |
+| `user_watchlists` | table | [`gcp/schema.sql:2650`](../../../gcp/schema.sql#L2650) |
+| `waitlist_signups` | table | [`gcp/schema.sql:5205`](../../../gcp/schema.sql#L5205) |
+| `walk_forward_results` | table | [`gcp/schema.sql:4294`](../../../gcp/schema.sql#L4294) |
+| `watched_tickers` | table | [`gcp/schema.sql:2641`](../../../gcp/schema.sql#L2641) |
+| `watchlist_history` | table | [`gcp/schema.sql:2770`](../../../gcp/schema.sql#L2770) |
+| `watchlist_history_origin` | table | [`gcp/schema.sql:3376`](../../../gcp/schema.sql#L3376) |
+| `watchlists` | table | [`gcp/schema.sql:2534`](../../../gcp/schema.sql#L2534) |
+| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:4735`](../../../gcp/schema.sql#L4735) |
+| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4930`](../../../gcp/schema.sql#L4930) |
 | `v_etf_options_node` | view | [`gcp/schema.sql:319`](../../../gcp/schema.sql#L319) |
 <!-- inventory:tables:end -->
 
@@ -344,7 +345,7 @@ There are **no foreign keys between domain tables** other than `insight_runs.rep
 | `walk_forward_results` | 0 | 264 kB | `gcp/schema.sql` |
 | `watchlists` | 0 | 64 kB | `gcp/schema.sql` |
 
-Declared in `gcp/schema.sql` but absent live: `level_param_policy`, `schema_apply_history`, `ticker_level_params`, `user_watchlists`, `watched_tickers`, `watchlist_history`, `watchlist_history_origin`
+Declared in `gcp/schema.sql` but absent live: `bar_recompute_ledger`, `level_param_policy`, `schema_apply_history`, `ticker_level_params`, `user_watchlists`, `watched_tickers`, `watchlist_history`, `watchlist_history_origin`
 <!-- inventory:dbtables:end -->
 
 ## 6. Cloud Run Jobs
@@ -496,11 +497,11 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/backtest/equity/{ticker}` | [`platform/api/routers/backtest.py:258`](../../../platform/api/routers/backtest.py#L258) | Return equity curve from the most recent equity CSV for the given ticker, |
 | `POST` | `/api/backtest/replay-trades` | [`platform/api/routers/backtest.py:517`](../../../platform/api/routers/backtest.py#L517) | Score the signed-in user's labeled journal trades against actual bars |
 | `GET` | `/api/backtest/results/{ticker}` | [`platform/api/routers/backtest.py:189`](../../../platform/api/routers/backtest.py#L189) | Return trades from the most recent backtest CSV for the given ticker, |
-| `GET` | `/api/catalysts/asof/{ticker}` | [`platform/api/routers/catalysts.py:650`](../../../platform/api/routers/catalysts.py#L650) | Unified point-in-time catalyst view for a ticker. |
-| `GET` | `/api/catalysts/events` | [`platform/api/routers/catalysts.py:162`](../../../platform/api/routers/catalysts.py#L162) | Get catalyst events grouped by date. |
-| `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:651`](../../../platform/api/routers/catalysts.py#L651) | Unified point-in-time catalyst view for a ticker. |
-| `GET` | `/api/catalysts/ticker/{ticker}` | [`platform/api/routers/catalysts.py:613`](../../../platform/api/routers/catalysts.py#L613) | Get all catalyst events for a specific ticker. |
-| `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:816`](../../../platform/api/routers/catalysts.py#L816) | Return available catalyst types and WSH upgrade info. |
+| `GET` | `/api/catalysts/asof/{ticker}` | [`platform/api/routers/catalysts.py:651`](../../../platform/api/routers/catalysts.py#L651) | Unified point-in-time catalyst view for a ticker. |
+| `GET` | `/api/catalysts/events` | [`platform/api/routers/catalysts.py:163`](../../../platform/api/routers/catalysts.py#L163) | Get catalyst events grouped by date. |
+| `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:652`](../../../platform/api/routers/catalysts.py#L652) | Unified point-in-time catalyst view for a ticker. |
+| `GET` | `/api/catalysts/ticker/{ticker}` | [`platform/api/routers/catalysts.py:614`](../../../platform/api/routers/catalysts.py#L614) | Get all catalyst events for a specific ticker. |
+| `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:821`](../../../platform/api/routers/catalysts.py#L821) | Return available catalyst types and WSH upgrade info. |
 | `GET` | `/api/config/firebase` | [`platform/api/routers/config.py:47`](../../../platform/api/routers/config.py#L47) | Public runtime auth config for the frontend bootstrap. |
 | `GET` | `/api/config/indicators` | [`platform/api/routers/config.py:77`](../../../platform/api/routers/config.py#L77) | Return indicator periods, signal thresholds, and zone labels. |
 | `GET` | `/api/config/market-hours` | [`platform/api/routers/config.py:145`](../../../platform/api/routers/config.py#L145) | Return US equity market session windows, holidays and early closes. |
@@ -566,13 +567,13 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:325`](../../../platform/api/routers/options.py#L325) | Return the `limit` most-recent snapshot dates with AlphaVantage data. |
 | `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:783`](../../../platform/api/routers/options.py#L783) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
 | `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:663`](../../../platform/api/routers/options.py#L663) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |
-| `GET` | `/api/options/{ticker}/grid` | [`platform/api/routers/grid.py:644`](../../../platform/api/routers/grid.py#L644) | Live 2-D strike × expiration grid. |
-| `GET` | `/api/options/{ticker}/grid/timeseries` | [`platform/api/routers/grid.py:1119`](../../../platform/api/routers/grid.py#L1119) | Per-strike GEX time-series for a single expiration over the last |
-| `GET` | `/api/options/{ticker}/nodes` | [`platform/api/routers/grid.py:974`](../../../platform/api/routers/grid.py#L974) | Live semantic taxonomy — King / Gates / Midpoints / Hedge Nodes / |
+| `GET` | `/api/options/{ticker}/grid` | [`platform/api/routers/grid.py:645`](../../../platform/api/routers/grid.py#L645) | Live 2-D strike × expiration grid. |
+| `GET` | `/api/options/{ticker}/grid/timeseries` | [`platform/api/routers/grid.py:1120`](../../../platform/api/routers/grid.py#L1120) | Per-strike GEX time-series for a single expiration over the last |
+| `GET` | `/api/options/{ticker}/nodes` | [`platform/api/routers/grid.py:975`](../../../platform/api/routers/grid.py#L975) | Live semantic taxonomy — King / Gates / Midpoints / Hedge Nodes / |
 | `GET` | `/api/options/{ticker}/{date_str}` | [`platform/api/routers/options.py:651`](../../../platform/api/routers/options.py#L651) | Return the AlphaVantage option chain for `ticker` on `date_str` |
-| `GET` | `/api/options/{ticker}/{date_str}/grid` | [`platform/api/routers/grid.py:779`](../../../platform/api/routers/grid.py#L779) | Historical 2-D grid for a past date — EOD only. |
+| `GET` | `/api/options/{ticker}/{date_str}/grid` | [`platform/api/routers/grid.py:780`](../../../platform/api/routers/grid.py#L780) | Historical 2-D grid for a past date — EOD only. |
 | `GET` | `/api/options/{ticker}/{date_str}/levels` | [`platform/api/routers/options.py:839`](../../../platform/api/routers/options.py#L839) | Stratalyst-style King/Gate/Spot/Flip taxonomy for a Cloud SQL snapshot. |
-| `GET` | `/api/options/{ticker}/{date_str}/nodes` | [`platform/api/routers/grid.py:1043`](../../../platform/api/routers/grid.py#L1043) | Historical semantic taxonomy — EOD only. |
+| `GET` | `/api/options/{ticker}/{date_str}/nodes` | [`platform/api/routers/grid.py:1044`](../../../platform/api/routers/grid.py#L1044) | Historical semantic taxonomy — EOD only. |
 | `POST` | `/api/playbook/evaluate` | [`platform/api/routers/playbook.py:785`](../../../platform/api/routers/playbook.py#L785) | Evaluate playbook condition strings against a live snapshot. |
 | `GET` | `/api/playbook/{ticker}` | [`platform/api/routers/playbook.py:312`](../../../platform/api/routers/playbook.py#L312) | Return structured setup cards for a ticker from ``playbook_cards``. |
 | `GET` | `/api/reports/list/{ticker}` | [`platform/api/routers/playbook.py:373`](../../../platform/api/routers/playbook.py#L373) | List available phase report files for a given ticker (from GCS). |
@@ -916,6 +917,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) | Cloud Run Job: pre-warm the AI insight cache for the top-N ranker tickers. | `auto-refresh-top-n` |
 | [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) | Backfill historical data for a single ticker — Cloud Run Job. | `backfill-ticker` |
 | [`gcp/backtest_job.py`](../../../gcp/backtest_job.py) | Strategy backtest — Cloud Run Job wrapper. | `backtest` |
+| [`gcp/bar_recompute.py`](../../../gcp/bar_recompute.py) | What the two bar recompute tools share (FEAT-DATA-001). | — |
 | [`gcp/brief_explanations.py`](../../../gcp/brief_explanations.py) | LLM-generated explanations for the pre-market brief. | — |
 | [`gcp/build_intraday_flow.py`](../../../gcp/build_intraday_flow.py) | Build / refresh `intraday_flow_15m` — the MATERIALIZED per-15m-bucket | — |
 | [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) | Build / refresh `intraday_gex_15m` — MATERIALIZED reconstructed intraday | — |
@@ -950,7 +952,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/fetchers/fetch_insider_transactions.py`](../../../gcp/fetchers/fetch_insider_transactions.py) | Cloud Run Job: Fetch insider transactions from AV INSIDER_TRANSACTIONS → Cloud SQL. | `fetch-insider-transactions` |
 | [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) | Cloud Run Job: Fetch daily market data and write to Cloud SQL. | `fetch-market-data` |
 | [`gcp/fetchers/fetch_news_sentiment.py`](../../../gcp/fetchers/fetch_news_sentiment.py) | Fetch news sentiment data from AlphaVantage NEWS_SENTIMENT endpoint. | `fetch-news-sentiment`, `fetch-news-sentiment-earnings`, `fetch-news-sentiment-topics` |
-| [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) | Pre-market refresh fetcher — runs at 8:20 AM ET (premarket-refresh-daily), before the 8:30 brief. | `fetch-premarket-refresh` |
+| [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) | Pre-market refresh fetcher — runs at 8:20 AM ET (premarket-refresh-daily), before the 8:30 brief, and at 9:20 AM ET before the late brief on | `fetch-premarket-refresh` |
 | [`gcp/fetchers/fetch_rss_news.py`](../../../gcp/fetchers/fetch_rss_news.py) | Fetch news from RSS feeds + FinViz, score with FinBERT + Gemini Flash. | — |
 | [`gcp/fetchers/fetch_sec_filings.py`](../../../gcp/fetchers/fetch_sec_filings.py) | Cloud Run Job: Poll SEC EDGAR for recent filings (8-K, 10-Q, 10-K) → Cloud SQL. | `fetch-sec-filings` |
 | [`gcp/fetchers/fetch_top_movers.py`](../../../gcp/fetchers/fetch_top_movers.py) | Cloud Run Job: Fetch AV TOP_GAINERS_LOSERS daily snapshot → Cloud SQL. | `fetch-top-movers` |
@@ -963,7 +965,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/insight_tasks.py`](../../../gcp/insight_tasks.py) | Cloud Tasks enqueue for the insight-pipeline Cloud Run Job. | — |
 | [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) | Migrate all local Parquet data to GCS (raw backup) + Cloud SQL (structured). | — |
 | [`gcp/options_retention_job.py`](../../../gcp/options_retention_job.py) | Cloud Run Job: prune stale REALTIME rows from etf_options_snapshots. | `etf-options-retention` |
-| [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) | Pre-market brief -- Cloud Run Job triggered by Cloud Scheduler at 8:30 AM ET. | `premarket-brief` |
+| [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) | Pre-market brief -- Cloud Run Job triggered by Cloud Scheduler at 8:30 AM ET, and at 9:20 AM ET in the late slot. | `premarket-brief` |
 | [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) | End-of-day resolver for brief-playbook outcomes. | `premarket-playbook-resolver` |
 | [`gcp/queries/run_query.py`](../../../gcp/queries/run_query.py) | Run SQL via Cloud SQL connector and emit phone-friendly artifacts. | — |
 | [`gcp/refresh_earnings_views.py`](../../../gcp/refresh_earnings_views.py) | Cloud Run Job — refresh the earnings frontend mat views + upcoming table. | `refresh-earnings-views` |

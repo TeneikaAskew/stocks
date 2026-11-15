@@ -731,7 +731,7 @@ def calculate_orb(
     """
     if market_open is None:
         market_open = time(9, 30)
-    orb_end = (datetime.combine(datetime.today(), market_open) + timedelta(minutes=minutes)).time()
+    orb_end = (datetime.combine(datetime(2000, 1, 1), market_open) + timedelta(minutes=minutes)).time()
 
     df = pd.DataFrame({
         'Time': times, 'High': high, 'Low': low, 'Close': close,

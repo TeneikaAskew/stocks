@@ -23,6 +23,7 @@ from datetime import date
 import pytest
 
 from gcp import insight_pipeline_job, premarket_brief
+from lib.eastern_time import market_today
 
 
 class TestAsOfOverrideNormalisation:
@@ -34,7 +35,8 @@ class TestAsOfOverrideNormalisation:
         assert premarket_brief._as_of_override() is None
         # The date resolver already agreed; the point is that everything
         # else now asks the same question.
-        assert premarket_brief._resolve_analysis_date() == date.today()
+        # The exchange's date, as the resolver reads it (lib.eastern_time), not the host's.
+        assert premarket_brief._resolve_analysis_date() == market_today()
 
     def test_real_brief_as_of_is_returned_stripped(self, monkeypatch):
         monkeypatch.setenv("BRIEF_AS_OF", "  2026-05-08 ")

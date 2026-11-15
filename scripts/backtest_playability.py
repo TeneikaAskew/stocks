@@ -28,7 +28,7 @@ import argparse
 import logging
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -36,6 +36,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from gcp.database import query_to_dataframe
+from lib.eastern_time import market_today
 from lib.earnings_reactions import (
     compute_playability_score,
     classify_archetype,
@@ -850,7 +851,7 @@ def compute_options_insights(
         return 'over_priced'
     detail['ratio_bucket'] = detail['ratio'].map(_bucket)
 
-    today = datetime.now().date()
+    today = market_today()
     structures = ['long_straddle', 'long_call', 'long_put', 'long_strangle',
                   'short_straddle', 'short_strangle']
     insight_rows: list[dict] = []

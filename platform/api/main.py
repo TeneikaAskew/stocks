@@ -1140,7 +1140,7 @@ def get_reference_levels(ticker: str, date: str):
         # Stale only for a "recent" request (under 30 days old): how far the
         # newest stored row is behind it.
         requested_dt = datetime.strptime(date_str, "%Y-%m-%d").date()
-        is_recent = (datetime.now().date() - requested_dt).days < 30
+        is_recent = (market_today() - requested_dt).days < 30
         ref_dt = datetime.strptime(ref_date_str, "%Y-%m-%d").date()
         staleness_days = (requested_dt - ref_dt).days if is_recent else 0
         return {

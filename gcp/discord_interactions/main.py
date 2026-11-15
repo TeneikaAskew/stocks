@@ -49,6 +49,8 @@ from nacl.signing import VerifyKey
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from lib.eastern_time import market_today  # noqa: E402
+
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 logger = logging.getLogger("discord-interactions")
@@ -133,7 +135,7 @@ def parse_date_arg(raw: str, today: Optional[date] = None) -> date:
     Future-dated absolute strings are rejected so a typo doesn't
     silently produce a blank brief / insight.
     """
-    today = today or date.today()
+    today = today or market_today()
     if not raw or not raw.strip():
         raise ValueError("date is required")
     raw = raw.strip().lower()

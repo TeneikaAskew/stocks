@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Pre-market brief -- Cloud Run Job triggered by Cloud Scheduler at 8:30 AM ET.
+Pre-market brief -- Cloud Run Job triggered by Cloud Scheduler at 8:30 AM ET, and at 9:20 AM ET in the late slot.
 
-Loads latest daily data from Cloud SQL, computes Strat/FTFC classifications,
-queries upcoming economic events, and sends a rich multi-embed Discord brief.
-Also persists per-ticker analysis to the premarket_analysis table.
+Loads latest daily data from Cloud SQL, computes Strat/FTFC classifications, queries upcoming economic events, and sends a rich multi-embed Discord brief. Also persists per-ticker analysis to the premarket_analysis table.
+The late slot (BRIEF_RUN_SLOT=late) is the one scheduled path that replaces a live canonical row, and only when all four hold: the date is an NYSE session;
+every brief ticker's premarket snapshot was fetched at or after 09:20:00 America/New_York with its prints filtered; the write check is before 09:29:30; the rows are unchanged since the run read them.
 """
 
 import argparse
@@ -15,11 +15,11 @@ import logging
 import requests
 import pandas as pd
 from pathlib import Path
-from datetime import datetime, date, timedelta
-from typing import Optional
+from datetime import datetime, date, time, timedelta
+from typing import Callable, NamedTuple, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.eastern_time import ET, ET_NAME, market_today
+from lib.eastern_time import ET, ET_NAME, as_eastern_time, as_utc_instant, eastern_bounds_utc, is_session, market_today
 from lib.earnings_reactions import earnings_not_retired_sql
 
 from lib.data_loader import DataLoader
@@ -1422,24 +1422,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             # "trigger hit at HH:MM, T1 hit at HH:MM, stop never touched,
             # EOD pnl +0.97%". Without them, brief-playbook-outcome analytics
             # would have to parse the LLM prose — fragile and brittle.
-            ct = level_map.calls_trigger or {}
-            pt = level_map.puts_trigger or {}
-            ct_targets = ct.get('targets', []) if ct else []
-            pt_targets = pt.get('targets', []) if pt else []
-            d['calls_trigger_price'] = ct.get('trigger_level') if ct else None
-            d['calls_trigger_name']  = ct.get('trigger_name')  if ct else None
-            d['calls_stop_price']    = ct.get('stop')          if ct else None
-            d['calls_stop_name']     = ct.get('stop_name')     if ct else None
-            d['calls_t1_price'] = ct_targets[0]['price'] if len(ct_targets) >= 1 else None
-            d['calls_t2_price'] = ct_targets[1]['price'] if len(ct_targets) >= 2 else None
-            d['calls_t3_price'] = ct_targets[2]['price'] if len(ct_targets) >= 3 else None
-            d['puts_trigger_price'] = pt.get('trigger_level') if pt else None
-            d['puts_trigger_name']  = pt.get('trigger_name')  if pt else None
-            d['puts_stop_price']    = pt.get('stop')          if pt else None
-            d['puts_stop_name']     = pt.get('stop_name')     if pt else None
-            d['puts_t1_price'] = pt_targets[0]['price'] if len(pt_targets) >= 1 else None
-            d['puts_t2_price'] = pt_targets[1]['price'] if len(pt_targets) >= 2 else None
-            d['puts_t3_price'] = pt_targets[2]['price'] if len(pt_targets) >= 3 else None
+            d.update(structured_playbook_columns(level_map))
 
             # Persist level map to Cloud SQL so the realtime signal_monitor
             # (which doesn't itself recompute) can query it for level-break
@@ -1562,6 +1545,26 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
 
 
 # ── Discord Formatting (3 embeds) ───────────────────────────────────────────
+
+def structured_playbook_columns(level_map) -> dict:
+    """The premarket_analysis structured playbook columns for one ticker's
+    LevelMap: trigger, stop, the gating targets in t1..t3 (what the signal
+    monitor and the existing outcome read) and, from the exits in thirds
+    spec, the spaced plan targets the brief prints in plan_t1..plan_t3."""
+    d = {}
+    for side, trig in (('calls', level_map.calls_trigger or {}),
+                       ('puts', level_map.puts_trigger or {})):
+        d[f'{side}_trigger_price'] = trig.get('trigger_level')
+        d[f'{side}_trigger_name'] = trig.get('trigger_name')
+        d[f'{side}_stop_price'] = trig.get('stop')
+        d[f'{side}_stop_name'] = trig.get('stop_name')
+        for prefix, targets in (('t', trig.get('targets') or []),
+                                ('plan_t', trig.get('plan_targets') or [])):
+            for k in (1, 2, 3):
+                d[f'{side}_{prefix}{k}_price'] = (targets[k - 1]['price']
+                                                  if len(targets) >= k else None)
+    return d
+
 
 def _fmt_price(val):
     return f'${val:,.2f}' if val is not None else 'N/A'
@@ -2809,6 +2812,45 @@ def _build_calendar_embed(events: dict, mode: str = 'daily') -> dict:
     return embed
 
 
+_CODE_FENCE_OPEN = '```\n'
+_CODE_FENCE_CLOSE = '\n```'
+_CONTINUED = ' (continued)'
+
+
+def _playbook_code_fields(ticker: str, text: str) -> list[dict]:
+    """One ticker's playbook as code-block fields, each within Discord's
+    MAX_FIELD_VALUE with the fences counted (Codex P2 on #1832: a 1,024
+    character cut plus the eight fence characters made a field Discord
+    rejects, and with it the whole message). The text is split at line
+    breaks, a line longer than a field is split inside it, and nothing is
+    cut. The first field is "{ticker} Playbook", later ones add
+    " (continued)", in order."""
+    budget = MAX_FIELD_VALUE - len(_CODE_FENCE_OPEN) - len(_CODE_FENCE_CLOSE)
+    pieces: list[str] = []
+    for line in str(text).split('\n'):
+        while len(line) > budget:
+            pieces.append(line[:budget])
+            line = line[budget:]
+        pieces.append(line)
+    chunks: list[str] = []
+    current: Optional[str] = None
+    for piece in pieces:
+        if current is None:
+            current = piece
+        elif len(current) + 1 + len(piece) <= budget:
+            current += '\n' + piece
+        else:
+            chunks.append(current)
+            current = piece
+    if current is not None:
+        chunks.append(current)
+    return [{
+        'name': f'{ticker} Playbook' + (_CONTINUED if i else ''),
+        'value': f'{_CODE_FENCE_OPEN}{chunk}{_CODE_FENCE_CLOSE}',
+        'inline': False,
+    } for i, chunk in enumerate(chunks)]
+
+
 def _build_playbook_embed(brief: dict) -> dict:
     """Embed: per-ticker Strat playbook with trigger, stop, T1/T2 + R:R.
 
@@ -2836,14 +2878,7 @@ def _build_playbook_embed(brief: dict) -> dict:
     for ticker, d in brief.get('tickers', {}).items():
         if not d.get('playbook'):
             continue
-        value = d['playbook']
-        if len(value) > MAX_FIELD_VALUE:
-            value = value[:MAX_FIELD_VALUE - 3] + '...'
-        fields.append({
-            'name': f'{ticker} Playbook',
-            'value': f'```\n{value}\n```',
-            'inline': False,
-        })
+        fields.extend(_playbook_code_fields(ticker, d['playbook']))
 
         # 🧠 Per-ticker playbook explanation — explains why this trigger /
         # what the trader should watch. Sits directly under the playbook
@@ -2864,15 +2899,71 @@ def _build_playbook_embed(brief: dict) -> dict:
     }
 
 
+# Discord's cap on fields in one embed.
+MAX_EMBED_FIELDS = 25
+_WHY_PREFIX = '\U0001F9E0 '
+
+
+def _split_playbook_embed(embed: dict) -> list[dict]:
+    """The playbook embed as one or more embeds, each within the
+    per-message budget (MAX_EMBED_CHARS, measured as the routed check
+    measures it) and MAX_EMBED_FIELDS, so no ticker's plan is dropped for
+    size (Codex P2 on #1832: six tickers with the exits spec's plan and a
+    "Why this trigger" each outgrew one message). A ticker's playbook field
+    and its "Why this trigger" field stay together, in order. The first
+    embed keeps the title and description; each later one is titled as a
+    continuation."""
+    fields = embed.get('fields') or []
+    groups: list[list[dict]] = []
+    for f in fields:
+        name = str(f.get('name', ''))
+        if groups and (name.startswith(_WHY_PREFIX) or name.endswith(_CONTINUED)):
+            groups[-1].append(f)
+        else:
+            groups.append([f])
+    title = embed.get('title') or ''
+
+    def _fits(e: dict) -> bool:
+        return (len(json.dumps(e)) <= MAX_EMBED_CHARS
+                and len(e['fields']) <= MAX_EMBED_FIELDS)
+
+    def _next(fields_: list) -> dict:
+        return {**embed, 'title': f'{title}{_CONTINUED}', 'description': '',
+                'fields': list(fields_)}
+
+    # A ticker whose fields cannot share one embed even alone is packed
+    # field by field, still in order, rather than dropped for size.
+    units: list[list[dict]] = []
+    for group in groups:
+        if _fits(_next(group)):
+            units.append(group)
+        else:
+            units.extend([f] for f in group)
+    chunks: list[dict] = []
+    current = {**embed, 'fields': []}
+    for unit in units:
+        trial = {**current, 'fields': current['fields'] + unit}
+        if _fits(trial) or not current['fields']:
+            current = trial
+            continue
+        chunks.append(current)
+        current = _next(unit)
+    if current['fields']:
+        chunks.append(current)
+    return chunks
+
+
 def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
     """Format brief as a list of (channel_kind, payload) tuples.
 
-    Returns 1-4 messages, each tagged with the webhook channel it
+    Returns one message or more, each tagged with the webhook channel it
     should post to:
 
-      ('main', overview + ticker_analysis + playbook)   — analytics
-      ('earnings', earnings)                            — company earnings
-      ('main', economic calendar)                       — macro events
+      ('main', overview + ticker_analysis)   — analytics
+      ('main', playbook), one or more        — the Strat playbook, split
+                                               by _split_playbook_embed
+      ('earnings', earnings)                 — company earnings
+      ('main', economic calendar)            — macro events
 
     The caller maps `channel_kind` to a webhook URL. If the earnings
     webhook isn't configured, the caller falls back to the main
@@ -2903,9 +2994,9 @@ def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
     # dropped on most runs because overview+ticker already filled the
     # 6000-char per-message cap. Same split-for-budget pattern the
     # macro calendar already uses below.) ────────────────────────────
-    playbook_msg = []
-    if playbook.get('fields'):
-        playbook_msg.append(playbook)
+    # The playbook itself is split into as many messages as its fields
+    # need, each with its own budget, so no ticker's plan is dropped.
+    playbook_msgs = [[chunk] for chunk in _split_playbook_embed(playbook)]
 
     # ── Earnings channel — company earnings ─────────────────────────
     earnings_msg = []
@@ -2920,7 +3011,7 @@ def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
 
     output: list[tuple[str, dict]] = []
     for kind, embeds in [('main', analytics_msg),
-                         ('main', playbook_msg),
+                         *(('main', m) for m in playbook_msgs),
                          ('earnings', earnings_msg),
                          ('main', calendar_msg)]:
         # Per-message truncation
@@ -2968,6 +3059,518 @@ def format_discord_message(brief: dict) -> dict:
     return {'embeds': embeds}
 
 
+# ── The late slot (BRIEF_RUN_SLOT=late) ─────────────────────────────────────
+#
+# FEAT-PLAYBOOK-001 (docs/superpowers/specs/2026-11-14-feat-playbook-001-brief-late-slot.md).
+# A second run of this job at 09:20 America/New_York waits for the premarket
+# refresh, rebuilds the day's levels from that snapshot and replaces the
+# session's canonical rows before the write cutoff. Every clock read goes
+# through lib.eastern_time (CLAUDE.md 3.9).
+
+RUN_SLOTS = ('early', 'late')
+LATE_SLOT_START = time(9, 20)             # a usable snapshot is stamped at or after this
+LATE_SLOT_WAIT_DEADLINE = time(9, 27)     # the wait for the refresh ends here
+LATE_SLOT_WRITE_CUTOFF = time(9, 29, 30)  # no canonical statement is sent at or after this
+LATE_SLOT_POLL_SECONDS = 5
+LATE_SLOT_READ_TIMEOUT_S = 5              # statement timeout of one stamp read
+
+
+class LateSlotClock(NamedTuple):
+    """The slot's three instants on the session date, in UTC."""
+    start: datetime
+    wait_deadline: datetime
+    write_cutoff: datetime
+
+
+def _resolve_run_slot() -> str:
+    """The run slot named by BRIEF_RUN_SLOT: unset, blank or 'early' is
+    'early', 'late' is 'late'. The value is stripped and compared exactly;
+    anything else raises ValueError naming it, so a typo never runs as the
+    early slot."""
+    raw = (os.environ.get('BRIEF_RUN_SLOT') or '').strip()
+    if raw in ('', 'early'):
+        return 'early'
+    if raw == 'late':
+        return 'late'
+    raise ValueError(f"BRIEF_RUN_SLOT must be one of {RUN_SLOTS}; got {raw!r}")
+
+
+def _late_slot_clock(session_date: date) -> LateSlotClock:
+    """09:20:00, 09:27:00 and 09:29:30 America/New_York on `session_date`
+    as UTC instants (14:20Z in winter, 13:20Z in summer)."""
+    start, wait_deadline = eastern_bounds_utc(session_date, LATE_SLOT_START,
+                                              LATE_SLOT_WAIT_DEADLINE)
+    _, write_cutoff = eastern_bounds_utc(session_date, LATE_SLOT_START,
+                                         LATE_SLOT_WRITE_CUTOFF)
+    return LateSlotClock(start, wait_deadline, write_cutoff)
+
+
+def _eastern_now() -> datetime:
+    """The exchange's clock, looked up on lib.eastern_time at call time so
+    one replacement of eastern_now freezes a whole run."""
+    from lib import eastern_time  # noqa: PLC0415
+    return eastern_time.eastern_now()
+
+
+class LateSlotWait(NamedTuple):
+    """What the wait on the refresh found."""
+    ready: bool
+    stamps: dict      # ticker -> aware UTC datetime, or None (no row, no stamp, no read succeeded)
+    reasons: dict     # ticker -> reason, only for a ticker that did not pass
+    polls: int        # stamp reads attempted
+    waited_s: float   # by the injected clock, first check to return
+
+
+def _sleep(seconds: float) -> None:
+    """time.sleep under a module name, so a test replaces the wait's sleep."""
+    import time as _time  # noqa: PLC0415
+    _time.sleep(seconds)
+
+
+def _late_slot_binds(session_date: date, tickers: list[str]) -> tuple[str, dict]:
+    """The `:t0, :t1, ...` placeholder list and the bind values of a keyed
+    read for the brief tickers: no ticker text reaches the SQL."""
+    params: dict = {'session_date': session_date}
+    names = []
+    for i, ticker in enumerate(tickers):
+        params[f't{i}'] = ticker
+        names.append(f':t{i}')
+    return ', '.join(names), params
+
+
+def _null_to_none(value):
+    """NULL as pandas hands it back (None, NaN, NaT) is None; anything
+    else is itself. A missing value is never read as a number."""
+    if value is None or isinstance(value, (dict, list, str)):
+        return value
+    try:
+        return None if pd.isna(value) else value
+    except (TypeError, ValueError):
+        return value
+
+
+def _read_late_slot_stamps(session_date: date, tickers: list[str]) -> dict[str, dict]:
+    """The refresh's stamp and filter status on the session's own
+    market_data_daily row, per brief ticker: {ticker: {'pre_fetched_at',
+    'pre_filter_status'}}. A ticker with no row is absent. One keyed
+    statement with a statement timeout; a failed read raises
+    (query_to_dataframe_strict), it is never read as "no row"."""
+    from gcp import database  # noqa: PLC0415
+    placeholders, params = _late_slot_binds(session_date, tickers)
+    df = database.query_to_dataframe_strict(
+        "SELECT ticker, pre_fetched_at, pre_filter_status "
+        "FROM market_data_daily "
+        f"WHERE date = :session_date AND ticker IN ({placeholders})",
+        params, timeout_s=LATE_SLOT_READ_TIMEOUT_S)
+    out: dict[str, dict] = {}
+    for record in df.to_dict('records'):
+        stamp = _null_to_none(record.get('pre_fetched_at'))
+        if isinstance(stamp, pd.Timestamp):
+            stamp = stamp.to_pydatetime()
+        if stamp is not None and stamp.tzinfo is not None:
+            stamp = as_utc_instant(stamp)
+        out[str(record['ticker'])] = {
+            'pre_fetched_at': stamp,
+            'pre_filter_status': _null_to_none(record.get('pre_filter_status')),
+        }
+    return out
+
+
+def _late_slot_stamp_reason(row: Optional[dict], clock: LateSlotClock) -> Optional[str]:
+    """Why a ticker's refresh row is not a usable 09:20 snapshot, or None
+    when it is. First that applies: no row; no stamp; a stamp with no zone
+    (never localized by guess); a stamp before the slot's start; a filter
+    status other than ok (the level builder refuses that snapshot)."""
+    if row is None:
+        return 'no row'
+    stamp = row.get('pre_fetched_at')
+    if stamp is None:
+        return 'no stamp'
+    if stamp.tzinfo is None or stamp.utcoffset() is None:
+        return 'stamp has no zone'
+    if stamp < clock.start:
+        return f"stamp {as_eastern_time(stamp):%H:%M:%S}"
+    status = row.get('pre_filter_status')
+    if status != 'ok':
+        return f"status {'none' if status is None else status}"
+    return None
+
+
+def _wait_for_late_snapshot(session_date: date, tickers: list[str], clock: LateSlotClock, *,
+                            now: Optional[Callable[[], datetime]] = None,
+                            sleep: Optional[Callable[[float], None]] = None,
+                            read: Optional[Callable] = None) -> LateSlotWait:
+    """Poll the refresh's stamps every LATE_SLOT_POLL_SECONDS until every
+    brief ticker has a usable 09:20 snapshot, or the wait deadline.
+
+    The clock is checked before every read: at or after the deadline the
+    wait returns not ready without reading. A read that raises is logged at
+    WARNING and counted, and the next poll still runs. Not ready carries one
+    reason per ticker that did not pass, from the last read that succeeded;
+    `read failed: <type>` when none did; `no read before the deadline` when
+    none was attempted. The run never rebuilds from the early snapshot
+    (CLAUDE.md 3.7): not ready is a refusal the caller reports."""
+    now = now or _eastern_now
+    sleep = sleep or _sleep
+    read = read or _read_late_slot_stamps
+    started = now()
+    polls = 0
+    last_rows: Optional[dict] = None
+    last_error: Optional[BaseException] = None
+
+    def _result(ready: bool, reasons: dict) -> LateSlotWait:
+        rows = last_rows or {}
+        stamps = {t: (rows.get(t) or {}).get('pre_fetched_at') for t in tickers}
+        return LateSlotWait(ready, stamps, reasons, polls,
+                            (now() - started).total_seconds())
+
+    while as_utc_instant(now()) < clock.wait_deadline:
+        polls += 1
+        try:
+            rows = read(session_date, tickers)
+        except Exception as exc:  # noqa: BLE001 -- reported as a refusal, never as a pass
+            logger.warning("late slot stamp read failed: %s: %s", type(exc).__name__, exc)
+            last_error = exc
+        else:
+            last_rows = rows
+            reasons = {}
+            for ticker in tickers:
+                reason = _late_slot_stamp_reason(rows.get(ticker), clock)
+                if reason is not None:
+                    reasons[ticker] = reason
+            if not reasons:
+                return _result(True, {})
+        sleep(LATE_SLOT_POLL_SECONDS)
+
+    if last_rows is not None:
+        reasons = {}
+        for ticker in tickers:
+            reason = _late_slot_stamp_reason(last_rows.get(ticker), clock)
+            if reason is not None:
+                reasons[ticker] = reason
+    elif last_error is not None:
+        reasons = {t: f"read failed: {type(last_error).__name__}" for t in tickers}
+    else:
+        reasons = {t: 'no read before the deadline' for t in tickers}
+    return _result(False, reasons)
+
+
+def _aware_or_none(value) -> Optional[datetime]:
+    """An instant from a level_basis (an ISO string, or a datetime) as an
+    aware UTC datetime; None when it is missing, unreadable or carries no
+    zone. A zone is never assumed."""
+    value = _null_to_none(value)
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime()
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        return None
+    return as_utc_instant(value)
+
+
+_ROWS_IN_FORCE_LEVELS = (
+    'calls_trigger_name', 'calls_trigger_price', 'calls_stop_price', 'calls_t1_price',
+    'puts_trigger_name', 'puts_trigger_price', 'puts_stop_price', 'puts_t1_price',
+)
+
+
+def _read_rows_in_force(session_date: date, tickers: list[str]) -> dict[str, dict]:
+    """The session's canonical premarket_analysis rows for the brief
+    tickers, whatever their run_kind (a replay row must be seen), as
+    {ticker: {...}}; a ticker with no row is absent.
+
+    Per row: run_kind; analysis_ts (aware UTC); built_at (the level_basis's
+    own string, or None); built (aware: built_at when it parses with a zone,
+    else analysis_ts); fetched_at (aware, the basis's premarket fetch time,
+    or None); pre_high and pre_low of that snapshot; and the trigger name
+    and price, stop and first target of each side. NULL and NaN are None.
+    One keyed statement through the strict reader: a failed read raises and
+    is never read as "no earlier row" (CLAUDE.md 3.7)."""
+    from gcp import database  # noqa: PLC0415
+    from lib.strat_levels import parse_level_basis  # noqa: PLC0415
+    placeholders, params = _late_slot_binds(session_date, tickers)
+    df = database.query_to_dataframe_strict(
+        "SELECT ticker, run_kind, analysis_ts, level_basis, "
+        "calls_trigger_name, calls_trigger_price, calls_stop_price, calls_t1_price, "
+        "puts_trigger_name, puts_trigger_price, puts_stop_price, puts_t1_price "
+        "FROM premarket_analysis "
+        f"WHERE analysis_date = :session_date AND ticker IN ({placeholders})",
+        params)
+    out: dict[str, dict] = {}
+    for record in df.to_dict('records'):
+        written = record.get('analysis_ts')
+        if isinstance(written, pd.Timestamp):
+            written = written.to_pydatetime()
+        analysis_ts = as_utc_instant(written)      # raises on a value with no zone
+        basis = parse_level_basis(_null_to_none(record.get('level_basis'))) or {}
+        premarket = basis.get('premarket') if isinstance(basis.get('premarket'), dict) else {}
+        built_at = _null_to_none(basis.get('built_at')) or None
+        row = {
+            'run_kind': _null_to_none(record.get('run_kind')),
+            'analysis_ts': analysis_ts,
+            'built_at': built_at,
+            'built': _aware_or_none(built_at) or analysis_ts,
+            'fetched_at': _aware_or_none(premarket.get('fetched_at')),
+            'pre_high': _null_to_none(premarket.get('pre_high')),
+            'pre_low': _null_to_none(premarket.get('pre_low')),
+        }
+        for column in _ROWS_IN_FORCE_LEVELS:
+            row[column] = _null_to_none(record.get(column))
+        out[str(record['ticker'])] = row
+    return out
+
+
+def _rows_current(rows: dict, stamps: dict, tickers: list[str]) -> bool:
+    """True only when every brief ticker's row is live and was built on a
+    premarket snapshot fetched at or after the stamp this run waited on.
+    A missing row, a missing stamp or a row with no recorded fetch time is
+    not current; neither is an empty ticker list."""
+    if not tickers:
+        return False
+    for ticker in tickers:
+        row, stamp = rows.get(ticker), stamps.get(ticker)
+        if row is None or stamp is None or row.get('run_kind') != 'live':
+            return False
+        fetched = row.get('fetched_at')
+        if fetched is None or fetched < stamp:
+            return False
+    return True
+
+
+_LATE_UNUSABLE_STATUSES = ('NO DATA', 'STALE_DAILY_DATA', 'PLAYBOOK_FAILED')
+
+
+def _late_build_refusal(brief: dict, tickers: list[str], clock: LateSlotClock) -> Optional[str]:
+    """Why a late build may not replace the canonical rows, or None when it
+    may. Every brief ticker must be built, with a status that is not NO DATA,
+    STALE_DAILY_DATA or PLAYBOOK_FAILED, a level_basis whose premarket_status
+    is ok, and a premarket snapshot fetched at or after the slot's start;
+    and the build's tickers must be the set the wait checked. The first
+    ticker that fails is named, in the order of `tickers`."""
+    built = brief.get('tickers') or {}
+    for ticker in tickers:
+        if ticker not in built:
+            return f"{ticker}: not built"
+        data = built[ticker] or {}
+        if data.get('status') in _LATE_UNUSABLE_STATUSES:
+            return f"{ticker}: status {data['status']}"
+        basis = data.get('level_basis')
+        if not isinstance(basis, dict):
+            return f"{ticker}: no level_basis"
+        if basis.get('premarket_status') != 'ok':
+            return f"{ticker}: premarket_status {basis.get('premarket_status')}"
+        premarket = basis.get('premarket') if isinstance(basis.get('premarket'), dict) else {}
+        fetched = _aware_or_none(premarket.get('fetched_at'))
+        if fetched is None:
+            return f"{ticker}: snapshot has no fetch time"
+        if fetched < clock.start:
+            return (f"{ticker}: snapshot fetched {as_eastern_time(fetched):%H:%M:%S} ET, "
+                    f"before {as_eastern_time(clock.start):%H:%M:%S} ET")
+    if set(built) != set(tickers):
+        return f"built {sorted(built)}, waited on {sorted(tickers)}"
+    return None
+
+
+class LateSlotWrite:
+    """What persist_to_cloud_sql needs to do the late slot's one guarded
+    overwrite, and where it reports what happened.
+
+    In: the slot's clock, the brief tickers, the rows in force as this run
+    read them after its wait, the build check's refusal (or None) and,
+    for tests, the clock to read at the write check.
+    Out, None until persist_to_cloud_sql sets them: `outcome` ('applied',
+    'build_not_usable', 'row_changed' or 'past_cutoff'), `reason`,
+    `written_at` (the UTC instant of the write check, stored as
+    analysis_ts), `history_recorded` and `rows_now` (the re-read)."""
+
+    def __init__(self, clock: LateSlotClock, tickers: list[str], rows_read: dict,
+                 refusal: Optional[str] = None,
+                 now: Optional[Callable[[], datetime]] = None):
+        self.clock = clock
+        self.tickers = list(tickers)
+        self.rows_read = rows_read
+        self.refusal = refusal
+        self.now = now
+        self.outcome: Optional[str] = None
+        self.reason: Optional[str] = None
+        self.written_at: Optional[datetime] = None
+        self.history_recorded: Optional[bool] = None
+        self.rows_now: Optional[dict] = None
+
+
+def _row_identity(row: Optional[dict]) -> Optional[tuple]:
+    """What must not move between the late run's read and its write."""
+    if row is None:
+        return None
+    return (row.get('run_kind'), row.get('analysis_ts'), row.get('built_at'))
+
+
+# The late slot's notes. Pure: they format what the run read and built.
+# Discord limits a description to 4096 characters and a message to
+# MAX_EMBED_CHARS.
+MAX_EMBED_DESCRIPTION = 4096
+_NOTE_INDENT = '     '
+_NOTE_SIDES = ('calls', 'puts')
+
+
+def _note_price(value) -> str:
+    """A price for a note: N/A when it is missing (None or NaN), never 0."""
+    return _fmt_price(_null_to_none(value))
+
+
+def _note_time(instant: Optional[datetime], fmt: str = '%H:%M') -> str:
+    """A stored instant on the exchange's clock, or N/A when it is missing."""
+    return f"{as_eastern_time(instant):{fmt}}" if instant is not None else 'N/A'
+
+
+def _price_changed(old, new) -> bool:
+    """A different price in cents (lib.strat_levels.price_cents), or a
+    price on exactly one side. Missing on both sides is not a change."""
+    from lib.strat_levels import price_cents  # noqa: PLC0415
+    old, new = _null_to_none(old), _null_to_none(new)
+    if old is None and new is None:
+        return False
+    if old is None or new is None:
+        return True
+    return price_cents(old) != price_cents(new)
+
+
+def _note_was_now(old, new) -> str:
+    if _price_changed(old, new):
+        return f"{_note_price(old)} to {_note_price(new)}"
+    return f"{_note_price(new)} unchanged"
+
+
+def _note_name(value) -> str:
+    value = _null_to_none(value)
+    return str(value) if value else 'none'
+
+
+def _late_values(data: dict) -> dict:
+    """A late brief ticker entry in the shape of a row in force."""
+    basis = data.get('level_basis') if isinstance(data.get('level_basis'), dict) else {}
+    premarket = basis.get('premarket') if isinstance(basis.get('premarket'), dict) else {}
+    out = {'fetched_at': _aware_or_none(premarket.get('fetched_at')),
+           'pre_high': premarket.get('pre_high'), 'pre_low': premarket.get('pre_low')}
+    for column in _ROWS_IN_FORCE_LEVELS:
+        out[column] = data.get(column)
+    return out
+
+
+def _levels_updated_block(ticker: str, was: Optional[dict], now: dict) -> str:
+    """One ticker's block of the levels-updated note."""
+    if was is None:
+        lines = [f"{ticker}  no earlier row for the session; premarket high "
+                 f"{_note_price(now['pre_high'])}, low {_note_price(now['pre_low'])} "
+                 f"(fetched {_note_time(now['fetched_at'])})"]
+        for side in _NOTE_SIDES:
+            lines.append(
+                f"{_NOTE_INDENT}{side}: trigger {_note_name(now[f'{side}_trigger_name'])} "
+                f"{_note_price(now[f'{side}_trigger_price'])}; "
+                f"stop {_note_price(now[f'{side}_stop_price'])}; "
+                f"first target {_note_price(now[f'{side}_t1_price'])}")
+        return '\n'.join(lines)
+
+    lines = [f"{ticker}  premarket high {_note_was_now(was.get('pre_high'), now['pre_high'])}, "
+             f"low {_note_was_now(was.get('pre_low'), now['pre_low'])} "
+             f"(fetched {_note_time(was.get('fetched_at'))}, {_note_time(now['fetched_at'])}; "
+             f"earlier row built {_note_time(was.get('built'), '%H:%M:%S')} ET)"]
+    any_change = False
+    for side in _NOTE_SIDES:
+        changes = []
+        old_name = _note_name(was.get(f'{side}_trigger_name'))
+        new_name = _note_name(now[f'{side}_trigger_name'])
+        old_price, new_price = was.get(f'{side}_trigger_price'), now[f'{side}_trigger_price']
+        if old_name != new_name or _price_changed(old_price, new_price):
+            changes.append(f"trigger {old_name} {_note_price(old_price)} to "
+                           f"{new_name} {_note_price(new_price)}")
+        for column, word in ((f'{side}_stop_price', 'stop'), (f'{side}_t1_price', 'first target')):
+            if _price_changed(was.get(column), now[column]):
+                changes.append(f"{word} {_note_price(was.get(column))} to {_note_price(now[column])}")
+        if changes:
+            any_change = True
+            lines.append(f"{_NOTE_INDENT}{side}: " + '; '.join(changes))
+    if not any_change:
+        lines.append(f"{_NOTE_INDENT}trigger, stop and first target unchanged")
+    return '\n'.join(lines)
+
+
+def _note_payload(title: str, head: list[str], blocks: list[str], tail: list[str],
+                  color: int) -> dict:
+    """One embed whose description is `head`, then as many whole `blocks`
+    as fit Discord's limits, then `tail`. Blocks are dropped from the end
+    and counted, never cut."""
+    shown = list(blocks)
+    while True:
+        dropped = len(blocks) - len(shown)
+        lines = head + shown
+        if dropped:
+            lines = lines + [f"{dropped} more ticker(s) not shown."]
+        payload = {'embeds': [{'title': title, 'description': '\n'.join(lines + tail),
+                               'color': color}]}
+        if not shown or (len(payload['embeds'][0]['description']) <= MAX_EMBED_DESCRIPTION
+                         and len(json.dumps(payload)) <= MAX_EMBED_CHARS):
+            return payload
+        shown.pop()
+
+
+def format_levels_updated_note(session_date: date, earlier: dict, brief: dict,
+                               result: LateSlotWrite) -> dict:
+    """The late slot's one message when it rewrote the rows: per ticker the
+    premarket high and low of the earlier row and of the late build with
+    when each snapshot was fetched, and per side only what changed among
+    the trigger (name and price), the stop and the first target. A change
+    is a different name or a different price in cents. A ticker with no
+    earlier row says so and is shown in full. The times are the rows' own.
+    `earlier` is what _read_rows_in_force returned before the build."""
+    blocks = [_levels_updated_block(ticker, earlier.get(ticker), _late_values(data or {}))
+              for ticker, data in (brief.get('tickers') or {}).items()]
+    tail = []
+    if result.history_recorded is False:
+        tail.append("History row not recorded: the late build is in the job log.")
+    title = (f"Levels updated: {session_date:%a %b %d}, "
+             f"{_note_time(result.written_at)} ET")
+    return _note_payload(title, [], blocks, tail, 0x2ecc71)
+
+
+def format_late_not_applied_note(session_date: date, outcome: str, reason: str,
+                                 rows: dict, tickers: list[str]) -> dict:
+    """The late slot's one line when it did not rewrite the rows: the
+    outcome and its reason, then per brief ticker when the row in force was
+    built and on which snapshot, or that no row exists for the session."""
+    blocks = []
+    for ticker in tickers:
+        row = rows.get(ticker)
+        if row is None:
+            blocks.append(f"{ticker}: no row for the session")
+        elif row.get('fetched_at') is None:
+            blocks.append(f"{ticker}: row in force built "
+                          f"{_note_time(row.get('built'), '%H:%M:%S')} ET, "
+                          f"no premarket snapshot recorded")
+        else:
+            blocks.append(f"{ticker}: row in force built "
+                          f"{_note_time(row.get('built'), '%H:%M:%S')} ET on the snapshot "
+                          f"fetched {_note_time(row['fetched_at'], '%H:%M:%S')} ET")
+    head = [_truncate(f"{outcome}: {reason}", MAX_EMBED_DESCRIPTION // 2)]
+    return _note_payload(f"Late levels not applied: {session_date:%a %b %d}",
+                         head, blocks, [], 0xe67e22)
+
+
+def format_late_run_failed_note(exc: BaseException) -> dict:
+    """The one line a late run that raised tries to post before it exits."""
+    return {'embeds': [{
+        'title': 'Late brief run failed',
+        'description': (f"Late brief run failed ({type(exc).__name__}). "
+                        f"Check the brief row before the open."),
+        'color': 0xe74c3c}]}
+
+
 # ── Cloud SQL Persistence ───────────────────────────────────────────────────
 
 def _resolve_run_kind_and_update(allow_update_arg: bool) -> tuple[bool, str]:
@@ -2994,7 +3597,8 @@ def _resolve_run_kind_and_update(allow_update_arg: bool) -> tuple[bool, str]:
 
 def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
                          run_kind: str = 'scheduled',
-                         triggered_by: Optional[str] = None) -> int:
+                         triggered_by: Optional[str] = None,
+                         late_slot: Optional[LateSlotWrite] = None) -> int:
     """Write premarket analysis rows to Cloud SQL.
 
     Always INSERTs a row into `premarket_analysis_history` (audit
@@ -3006,8 +3610,28 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
       - Otherwise: UPSERT (INSERT, or UPDATE on conflict). Used for
         the first run of the day and for explicit --update overrides.
 
+    With `late_slot` (a LateSlotWrite; BRIEF_RUN_SLOT=late) the function
+    is the one scheduled path that replaces a live canonical row, and only
+    when all four hold: the date is an NYSE session; every brief ticker's
+    premarket snapshot was fetched at or after 09:20:00 America/New_York
+    with its prints filtered; the write check is before 09:29:30; the rows
+    are unchanged since the run read them. The caller establishes the
+    first two (the session gate, the wait and the build check, handed in
+    as `late_slot.refusal`); this function re-reads the rows and checks
+    the clock. Then ONE upsert writes every brief ticker's row with
+    run_kind live and analysis_ts set to the instant of the check (no
+    other write moves analysis_ts), followed by the history rows with
+    notes LATE_SLOT_APPLIED. All tickers or none: a refusal writes history
+    rows only, with LATE_SLOT_NOT_APPLIED: <outcome> <reason>, and returns
+    0. What happened is on `late_slot.outcome`. `late_slot` with
+    `allow_update` or BRIEF_AS_OF raises ValueError.
+
     See docs/plans/MORNING_RUN_PROTECTION_PLAN.md for the rationale.
     """
+    if late_slot is not None and (allow_update or _as_of_override() is not None):
+        # The operator's overwrite and a replay have their own rules; the
+        # late slot's guarded overwrite is neither (decision G).
+        raise ValueError("late_slot cannot be combined with allow_update or BRIEF_AS_OF")
     try:
         from gcp.database import (
             is_cloud_sql_configured, upsert_dataframe, bulk_insert_dataframe,
@@ -3119,6 +3743,14 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'puts_t1_price':       data.get('puts_t1_price'),
             'puts_t2_price':       data.get('puts_t2_price'),
             'puts_t3_price':       data.get('puts_t3_price'),
+            # Exits in thirds: the spaced plan targets (t1..t3 above stay the
+            # gating targets).
+            'calls_plan_t1_price': data.get('calls_plan_t1_price'),
+            'calls_plan_t2_price': data.get('calls_plan_t2_price'),
+            'calls_plan_t3_price': data.get('calls_plan_t3_price'),
+            'puts_plan_t1_price':  data.get('puts_plan_t1_price'),
+            'puts_plan_t2_price':  data.get('puts_plan_t2_price'),
+            'puts_plan_t3_price':  data.get('puts_plan_t3_price'),
             # Track B audit G.P2.11 — persist LLM-generated brief
             # commentary for audit trail. The four strings are
             # non-deterministic Gemini-Flash outputs (gcp/brief_explanations.py)
@@ -3142,10 +3774,6 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'level_basis': data.get('level_basis'),
         })
 
-    if not rows:
-        return 0
-
-    # Step 1 — always insert into history (append-only).
     # When a ticker is stale, populate the `notes` column with a
     # human-readable explanation so a SELECT on history rows can
     # immediately distinguish "the brief ran healthy" from "the
@@ -3166,15 +3794,91 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             return f"PLAYBOOK_FAILED: {brief['tickers'][ticker].get('playbook_error')}"
         return None
 
-    history_rows = [
-        {**row, 'run_kind': run_kind, 'triggered_by': triggered_by,
-         'notes': _row_notes(row)}
-        for row in rows
-    ]
-    history_df = pd.DataFrame(history_rows)
-    n_hist = bulk_insert_dataframe(history_df, 'premarket_analysis_history')
-    logger.info("Inserted %d rows into premarket_analysis_history (run_kind=%s)",
-                n_hist, run_kind)
+    def _insert_history(late_note: Optional[str] = None) -> int:
+        """The history rows of this run (append-only). `late_note` is the
+        late slot's LATE_SLOT_APPLIED or LATE_SLOT_NOT_APPLIED text, put in
+        front of the ticker's own stale or failed note when it has one."""
+        def _notes(row):
+            own = _row_notes(row)
+            if late_note is None:
+                return own
+            return f"{late_note}; {own}" if own else late_note
+
+        history_rows = [
+            {**row, 'run_kind': run_kind, 'triggered_by': triggered_by,
+             'notes': _notes(row)}
+            for row in rows
+        ]
+        history_df = pd.DataFrame(history_rows)
+        n_hist = bulk_insert_dataframe(history_df, 'premarket_analysis_history')
+        logger.info("Inserted %d rows into premarket_analysis_history (run_kind=%s)",
+                    n_hist, run_kind)
+        return n_hist
+
+    if late_slot is not None:
+        # The late slot (BRIEF_RUN_SLOT=late): the one scheduled path that
+        # replaces a live canonical row. All tickers or none, one statement,
+        # canonical first and history second, so a late history row's notes
+        # say what happened to the canonical row.
+        def _not_applied(outcome: str, reason: str) -> int:
+            late_slot.outcome, late_slot.reason = outcome, reason
+            logger.warning("late slot not applied: %s %s", outcome, reason)
+            if rows:
+                _insert_history(f"LATE_SLOT_NOT_APPLIED: {outcome} {reason}")
+                late_slot.history_recorded = True
+            return 0
+
+        if late_slot.refusal:
+            return _not_applied('build_not_usable', late_slot.refusal)
+
+        # Re-read the rows in force: a row another writer changed since this
+        # run read them is not this run's to replace. A failed read raises.
+        rows_now = _read_rows_in_force(analysis_date, late_slot.tickers)
+        late_slot.rows_now = rows_now
+        changed = [t for t in late_slot.tickers
+                   if _row_identity(late_slot.rows_read.get(t)) != _row_identity(rows_now.get(t))]
+        if changed:
+            return _not_applied(
+                'row_changed', f"changed since this run read them: {', '.join(changed)}")
+
+        # The cutoff, on the exchange's clock, just before the one statement.
+        checked = (late_slot.now or _eastern_now)()
+        if as_utc_instant(checked) >= late_slot.clock.write_cutoff:
+            return _not_applied(
+                'past_cutoff',
+                f"write check at {as_eastern_time(checked):%H:%M:%S} ET, at or after the "
+                f"write cutoff {as_eastern_time(late_slot.clock.write_cutoff):%H:%M:%S} ET")
+
+        written_at = as_utc_instant(checked)
+        late_rows = [{**r, 'run_kind': 'live', 'analysis_ts': written_at}
+                     for r in rows if r['ticker'] not in (playbook_failed | stale_data)]
+        if sorted(r['ticker'] for r in late_rows) != sorted(late_slot.tickers):
+            return _not_applied(
+                'build_not_usable',
+                f"rows built for {sorted(r['ticker'] for r in late_rows)}, "
+                f"brief tickers {sorted(late_slot.tickers)}")
+
+        # One statement for every brief ticker: all change or none does. A
+        # canonical write that raises propagates and no history row is written.
+        n = upsert_dataframe(pd.DataFrame(late_rows), 'premarket_analysis',
+                             ['analysis_date', 'ticker'])
+        late_slot.outcome, late_slot.reason, late_slot.written_at = 'applied', None, written_at
+        logger.info("late slot: UPSERTED %d rows to premarket_analysis at %s ET",
+                    n, f"{as_eastern_time(checked):%H:%M:%S}")
+        try:
+            _insert_history('LATE_SLOT_APPLIED')
+            late_slot.history_recorded = True
+        except Exception:  # noqa: BLE001 -- reported: history_recorded False, the run exits 1
+            logger.exception("late slot: the canonical rows were rewritten but the "
+                             "history insert failed")
+            late_slot.history_recorded = False
+        return n
+
+    if not rows:
+        return 0
+
+    # Step 1 — always insert into history (append-only).
+    _insert_history()
 
     # Step 2 — write to current table. Per-ticker conditional UPSERT
     # protects the canonical morning row when allow_update=False.
@@ -3351,6 +4055,156 @@ def render_existing_brief_to_discord(
         return False
 
 
+def _log_late_slot(outcome: str, session_date: date, *, tickers=(),
+                   wait: Optional[LateSlotWait] = None, applied: bool = False) -> None:
+    """The one record a late run leaves (REQ-OBS-001): its outcome, the
+    session, the tickers, the polls, the seconds waited and each ticker's
+    stamp on the exchange's clock."""
+    if wait is None:
+        polls, waited_s, stamps = 0, 0, '-'
+    else:
+        polls, waited_s = wait.polls, int(wait.waited_s)
+        stamps = ','.join(
+            f"{t}={'none' if wait.stamps.get(t) is None else _note_time(wait.stamps[t], '%H:%M:%S')}"
+            for t in tickers) or '-'
+    logger.info("late_slot outcome=%s session=%s tickers=%s polls=%d waited_s=%d stamps=%s applied=%s",
+                outcome, session_date, ','.join(tickers) or '-', polls, waited_s, stamps, applied)
+
+
+def _post_late_note(payload: dict, webhook_url: str, timeout: int) -> bool:
+    """Post the late slot's one message to the main webhook. With posting
+    turned off (an empty webhook) the payload is printed instead. A post
+    that raises is logged and reported as False: the caller exits nonzero,
+    because a late run that could not tell the owner must not look like a
+    morning with no late run (decision E)."""
+    if not webhook_url:
+        print("\nDISCORD_WEBHOOK_URL not set -- printing the late slot note only")
+        print(json.dumps(payload, indent=2))
+        return True
+    try:
+        send_to_discord(payload, webhook_url, timeout=timeout)
+        return True
+    except Exception:  # noqa: BLE001 -- reported: False makes the run exit 1
+        logger.exception("late slot: the Discord post failed")
+        return False
+
+
+def _run_late_slot(*, cfg, data_dir: str, run_kind: str, triggered_by: str,
+                   webhook_url: str) -> int:
+    """The late slot (BRIEF_RUN_SLOT=late): wait for the 09:20 premarket
+    refresh, rebuild the day's levels from that snapshot, replace the
+    session's canonical rows in one guarded statement before the write
+    cutoff, and post one short note. Returns the process exit code: 0 when
+    the rows were rewritten and the owner was told (or posting is turned
+    off) and the history row recorded, on a day that is not a session, and
+    when the rows are already built on this snapshot; 1 otherwise. The
+    earnings webhook is never used.
+
+    Nothing is swallowed. Unreadable level parameters exit 1 as they do in
+    the early run; any other exception is re-raised. Either way the run
+    first tries, once, to post "Late brief run failed (<type>)", and a
+    failure of that post never masks the error."""
+    timeout = cfg.monitor.discord_timeout
+    try:
+        return _late_slot_flow(cfg=cfg, data_dir=data_dir, run_kind=run_kind,
+                               triggered_by=triggered_by, webhook_url=webhook_url,
+                               timeout=timeout)
+    except LevelParamsUnavailable as exc:
+        # INTERNAL failure (CLAUDE.md 3.7): no row is written for any ticker.
+        logger.error("late premarket brief aborted: %s (%s)", exc.reason, exc)
+        _post_late_note(format_late_run_failed_note(exc), webhook_url, timeout)
+        return 1
+    except Exception as exc:
+        _post_late_note(format_late_run_failed_note(exc), webhook_url, timeout)
+        raise
+
+
+def _late_slot_flow(*, cfg, data_dir: str, run_kind: str, triggered_by: str,
+                    webhook_url: str, timeout: int) -> int:
+    """The body of the late slot; _run_late_slot owns what a failure does."""
+    # 1. Session. A holiday or a weekend: one record, nothing read or written.
+    session_date = market_today()
+    if not is_session(session_date):
+        _log_late_slot('not_session', session_date)
+        return 0
+
+    # 2. The brief's own tickers, and the slot's three instants.
+    tickers = _resolve_brief_tickers(cfg.market.tickers)
+    if not tickers:
+        # "Every ticker passes" is true of nothing: never applied over zero rows.
+        raise RuntimeError('late slot has no brief tickers')
+    clock = _late_slot_clock(session_date)
+
+    def _not_applied(outcome: str, reason: str, rows: Optional[dict] = None,
+                     wait: Optional[LateSlotWait] = None) -> int:
+        """A late run that did not rewrite the rows: the one "not applied"
+        line (with when each row in force was built, and on which
+        snapshot), the record, exit 1. The rows are read here when the run
+        has not read them yet; a failed read raises."""
+        if rows is None:
+            rows = _read_rows_in_force(session_date, tickers)
+        _post_late_note(
+            format_late_not_applied_note(session_date, outcome, reason, rows, tickers),
+            webhook_url, timeout)
+        _log_late_slot(outcome, session_date, tickers=tickers, wait=wait)
+        return 1
+
+    # The slot's window, at the first check: a run started before the slot
+    # opens, or at or after the write cutoff, neither waits nor builds.
+    started = _eastern_now()
+    if as_utc_instant(started) < clock.start:
+        return _not_applied(
+            'before_slot',
+            f"started {as_eastern_time(started):%H:%M:%S} ET, before the slot opens at "
+            f"{as_eastern_time(clock.start):%H:%M:%S} ET")
+    if as_utc_instant(started) >= clock.write_cutoff:
+        return _not_applied(
+            'past_cutoff',
+            f"started {as_eastern_time(started):%H:%M:%S} ET, at or after the write cutoff "
+            f"{as_eastern_time(clock.write_cutoff):%H:%M:%S} ET")
+
+    # 3. Wait for the refresh. Not ready: no build (no model call, no
+    # strat_levels write), so the early levels stand. The run never
+    # rebuilds from the early snapshot and calls the result late.
+    wait = _wait_for_late_snapshot(session_date, tickers, clock)
+    if not wait.ready:
+        named = ', '.join(f"{t} ({wait.reasons[t]})" for t in tickers if t in wait.reasons)
+        return _not_applied(
+            'snapshot_not_ready',
+            f"no usable snapshot by {as_eastern_time(clock.wait_deadline):%H:%M:%S} ET "
+            f"for {named}", wait=wait)
+
+    # 4. The rows in force (a failed read raises). Rows already built on
+    # this snapshot: a duplicate trigger or a rerun after a success.
+    rows = _read_rows_in_force(session_date, tickers)
+    if _rows_current(rows, wait.stamps, tickers):
+        _log_late_slot('already_current', session_date, tickers=tickers, wait=wait)
+        return 0
+
+    # 5. Build, exactly as the early run builds.
+    brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
+    print(json.dumps(brief, indent=2, default=str))
+
+    # 6 and 7. Check the build, then the one guarded write.
+    late = LateSlotWrite(clock, tickers, rows,
+                         refusal=_late_build_refusal(brief, tickers, clock))
+    n = persist_to_cloud_sql(brief, allow_update=False, run_kind=run_kind,
+                             triggered_by=triggered_by, late_slot=late)
+    if late.outcome is None:
+        # persist_to_cloud_sql returned before the late branch (no database
+        # module, Cloud SQL not configured): neither a refusal nor a success.
+        raise RuntimeError('late slot write returned no outcome')
+    print(f"Late slot: {late.outcome}; {n} rows written to premarket_analysis")
+
+    # 8 and 9. The note and the record.
+    if late.outcome == 'applied':
+        posted = _post_late_note(
+            format_levels_updated_note(session_date, rows, brief, late), webhook_url, timeout)
+        _log_late_slot('applied', session_date, tickers=tickers, wait=wait, applied=True)
+        return 0 if posted and late.history_recorded else 1
+    return _not_applied(late.outcome, late.reason, rows=late.rows_now or rows, wait=wait)
+
+
 def main(argv: Optional[list[str]] = None):
     # Cloud Run Jobs pass overrides via env vars, not CLI flags. Translate
     # the env-var equivalent of --post-existing into argv when the caller
@@ -3405,6 +4259,22 @@ def main(argv: Optional[list[str]] = None):
         ok = render_existing_brief_to_discord(ticker, analysis_date)
         sys.exit(0 if ok else 1)
 
+    # The run slot, before any read (FEAT-PLAYBOOK-001, the late slot).
+    try:
+        run_slot = _resolve_run_slot()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+    if run_slot == 'late':
+        # The operator's overwrite and the late slot's overwrite have
+        # different rules; a run that claimed both would have neither's.
+        if args.update or os.environ.get('BRIEF_UPDATE') == 'true':
+            print("ERROR: BRIEF_RUN_SLOT=late cannot be combined with --update "
+                  "or BRIEF_UPDATE=true", file=sys.stderr)
+            sys.exit(2)
+        if _as_of_override() is not None:
+            logger.info("BRIEF_RUN_SLOT=late has no effect on a BRIEF_AS_OF replay")
+
     allow_update, run_kind = _resolve_run_kind_and_update(args.update)
     triggered_by = (
         os.environ.get('BRIEF_TRIGGERED_BY')
@@ -3451,6 +4321,12 @@ def main(argv: Optional[list[str]] = None):
 
     cfg = load_config()
     data_dir = os.environ.get('DATA_DIR', cfg.market.data_dir)
+
+    if run_slot == 'late' and _as_of_override() is None:
+        # The late slot owns its exit code, 0 included. --no-discord and
+        # BRIEF_POST_TO_DISCORD=false reach it as an empty webhook_url.
+        sys.exit(_run_late_slot(cfg=cfg, data_dir=data_dir, run_kind=run_kind,
+                                triggered_by=triggered_by, webhook_url=webhook_url))
 
     print(f"Generating pre-market brief... (allow_update={allow_update}, "
           f"run_kind={run_kind}, triggered_by={triggered_by})")

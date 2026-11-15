@@ -300,7 +300,7 @@ async def _apply_live_overlay(ticker: str, daily: dict) -> dict:
     import pandas as pd
     from lib.indicators import calculate_rsi, calculate_ema, calculate_sma
 
-    today = datetime.now(ET_TZ).date() if ET_TZ else datetime.now().date()
+    today = market_today()
     closes = hist["close"].astype(float).tolist()
     last_date = hist["date"].iloc[-1]
     last_d = last_date if hasattr(last_date, "year") else datetime.strptime(str(last_date), "%Y-%m-%d").date()

@@ -21,12 +21,13 @@ the stored values are byte-identical to what the live path would compute.
 from __future__ import annotations
 import argparse
 import sys
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gcp.database import get_engine
+from lib.eastern_time import market_today
 from lib.features.experimental.options_derived import build_materialized
 from lib.logging_config import setup_logging
 import logging
@@ -47,8 +48,8 @@ def main():
     args = p.parse_args()
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     if args.incremental:
-        since = (date.today() - timedelta(days=args.days)).isoformat()
-        until = date.today().isoformat()
+        since = (market_today() - timedelta(days=args.days)).isoformat()
+        until = market_today().isoformat()
     else:
         since, until = args.since, args.until
     engine = get_engine()
