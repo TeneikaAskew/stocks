@@ -838,3 +838,66 @@ def test_the_five_minute_rule_at_its_boundary():
     assert hit['exit_reason'] == 'target_hit'
     assert hit['exit_ts'] == datetime(2026, 10, 6, 19, 35)
     assert hit['exit_price'] == 110.5
+
+
+def test_an_alert_at_or_after_the_close_is_not_resolved():
+    """The live monitor keeps 16:00 as its close, so on a half day it can fire
+    after 13:00. No bar before the close can price that alert's exit: an
+    eod_close at 13:00 would take the 12:59 close, from before the entry."""
+    half_day = _resolve_on(
+        ('2026-11-27', '09:30', '16:30'),
+        {'alert_ts': datetime(2026, 11, 27, 18, 30, 7), 'direction': 'CALL',
+         'time_stop_minutes': 30})
+    assert half_day is None
+
+    at_the_close = _resolve_on(
+        ('2026-10-06', '09:30', '19:59'),
+        {'alert_ts': datetime(2026, 10, 6, 20, 0, 0), 'direction': 'CALL',
+         'time_stop_minutes': 30})
+    assert at_the_close is None
+
+    # Fired in the last minute of a full session: still the close, with the
+    # 15:59 bar's close.
+    last_minute = _resolve_on(
+        ('2026-10-06', '09:30', '19:59'),
+        {'alert_ts': datetime(2026, 10, 6, 19, 59, 7), 'direction': 'CALL',
+         'time_stop_minutes': 30})
+    assert last_minute['exit_reason'] == 'eod_close'
+    assert last_minute['exit_ts'] == datetime(2026, 10, 6, 20, 0)
+    assert last_minute['exit_price'] == 100.02
+
+
+def test_the_scheduled_run_writes_nothing_for_an_alert_after_the_close(caplog):
+    """The alert of the case above, open on the next business day: the run
+    writes no exit for it, counts it stale (the job exits 1) and logs why."""
+    import logging
+    from datetime import date as _date
+
+    from gcp.signal_monitor_eod_resolver import EODResolver
+
+    resolver = EODResolver()
+    resolver.loader = None  # the run may not reach the loader
+    frame = _session_frame(resolver, '2026-11-27', '09:30', '16:30')
+    late = {'ticker': 'SPY', 'alert_ts': pd.Timestamp('2026-11-27 18:30:07'),
+            'alert_date': _date(2026, 11, 27), 'direction': 'CALL',
+            'price_at_signal': 100.0, 'target_price': 110.0, 'time_stop_minutes': 30}
+    resolver.find_open_alerts = MagicMock(return_value=pd.DataFrame([late]))
+    resolver.persist = MagicMock(return_value=1)
+    resolver._post_digest = MagicMock()
+
+    class _NextBusinessDay(_FrozenNow):
+        _NOW = datetime(2026, 11, 30, 16, 30, 0)
+
+    with patch.object(EODResolver, '_load_day', return_value=frame), \
+         patch('gcp.signal_monitor_eod_resolver.datetime', _NextBusinessDay), \
+         caplog.at_level(logging.WARNING):
+        summary = resolver.run()
+
+    resolver.persist.assert_not_called()
+    assert summary['resolved'] == 0
+    assert summary['skipped'] == 1
+    assert summary['skipped_stale'] == 1
+    resolver._post_digest.assert_called_once_with([], None)
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any('SPY' in m and '2026-11-27 18:30:07' in m and 'session close' in m
+               for m in warned), warned

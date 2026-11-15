@@ -115,6 +115,13 @@ def _alert_day(alert_date):
     return alert_date
 
 
+def _session_close_utc(alert_date) -> pd.Timestamp:
+    """The close of the alert's session (`lib.eastern_time.session_close`:
+    16:00 ET, 13:00 ET on a half day) as naive UTC, the frame of `alert_ts`
+    and of the day's bars."""
+    return pd.Timestamp(session_close(_alert_day(alert_date))).tz_convert(None)
+
+
 class EODResolver:
     """Replay exit logic against historical bars to close stuck alerts."""
 
@@ -354,10 +361,10 @@ class EODResolver:
         loader is then not called (the bounded re-resolve hands in a frame it
         read itself).
 
-        Returns None when the day's intraday partition is missing, or when
-        nothing triggered and the stored bars do not reach the last
-        `EOD_CLOSE_REACH` before the close — the caller logs and continues to
-        the next alert.
+        Returns None when the alert fired at or after the session close, when
+        the day's intraday partition is missing, or when nothing triggered and
+        the stored bars do not reach the last `EOD_CLOSE_REACH` before the
+        close — the caller logs and continues to the next alert.
         """
         ticker = alert['ticker']
         alert_ts = pd.Timestamp(alert['alert_ts'])
@@ -377,7 +384,17 @@ class EODResolver:
         # The day's frame holds premarket and after-hours bars too (the RSI is
         # computed over all of them). Only bars before the session close can
         # be an exit or price one.
-        close_utc = pd.Timestamp(session_close(_alert_day(alert_date))).tz_convert(None)
+        close_utc = _session_close_utc(alert_date)
+        if alert_ts >= close_utc:
+            # The live monitor keeps 16:00 as its close, so on a half day it
+            # can fire after 13:00. Every bar that may price an exit is before
+            # the close, so before this alert: an eod_close would carry a
+            # price from before the entry and a time before it.
+            logger.warning(
+                "%s alert %s fired at or after the session close %s (UTC); "
+                "no exit is resolved for it from the day's bars",
+                ticker, alert_ts, close_utc)
+            return None
         session = bars[bars.index < close_utc]
 
         # Walk only bars at or after the alert timestamp.
@@ -684,9 +701,15 @@ class EODResolver:
             old = stored_exit(alert)
             resolution = self.resolve_one(alert, bars=frame)
             if resolution is None:
+                # No exit: the alert fired at or after the session close, or
+                # the bars stop before the close's last minutes. The report
+                # names which; the row is left either way.
+                fired_after_close = (
+                    pd.Timestamp(alert['alert_ts']).tz_convert(None) >= _session_close_utc(day))
                 rows.append(bar_recompute.ReportRow(
                     ticker=ticker, session_date=day, row_key=row_key, old=old, new=None,
-                    changed=None, status='bars_incomplete',
+                    changed=None,
+                    status='fired_after_close' if fired_after_close else 'bars_incomplete',
                     bars_rows=bars['rows'], bars_sha256=bars['sha256']))
                 continue
             new = {

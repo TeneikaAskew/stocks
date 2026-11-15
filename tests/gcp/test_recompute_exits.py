@@ -617,6 +617,35 @@ def test_bars_that_stop_early_are_bars_incomplete(monkeypatch, tmp_path):
     assert summary["totals"] == {"bars_incomplete": 1}
 
 
+def test_an_alert_fired_after_a_half_day_close_is_refused(monkeypatch, tmp_path):
+    """2026-11-27 closes at 13:00 Eastern and the live monitor keeps 16:00, so
+    it can fire at 13:30. resolve_one gives that alert no exit; the report
+    says why, a committed run writes nothing for it, and the run exits 1."""
+    day = date(2026, 11, 27)
+    bars = {("SPY", day): session_bars(day, 100.0, "2026-11-28")}
+    late = alert("SPY", "2026-11-27 18:30:07", "CALL", 100.0, 110.0, 30,
+                 "2026-11-27 19:00:00", "time_stop", 100.0, 0.0)
+    monkeypatch.setattr(resolver_module, "market_today", lambda: date(2026, 12, 1))
+    monkeypatch.setattr(database, "query_to_dataframe_strict",
+                        exits_reader(alerts=[late], bars=bars))
+    monkeypatch.setattr(database, "get_engine", lambda: NoTransactionEngine())
+    monkeypatch.setattr(br, "ledger_of_run", lambda run_id, target: [])
+    monkeypatch.setenv("CLOUD_RUN_EXECUTION", RUN_ID)
+
+    code = run_main(monkeypatch, "--re-resolve", "--from", "2026-11-27", "--to", "2026-11-27",
+                    "--tickers", "SPY", "--commit", "--report-dir", str(tmp_path))
+
+    assert code == 1
+    table, summary = report(tmp_path)
+    assert len(table) == 2
+    assert table[1][:7] == ["SPY", "2026-11-27", "2026-11-27T18:30:07.000000+00:00",
+                            "2026-11-27T19:00:00.000000+00:00", "time_stop", "100.0", "0.0"]
+    assert table[1][7:14] == ["", "", "", "", "", "fired_after_close", "960"]
+    assert table[1][15] == "false"
+    assert summary["totals"] == {"fired_after_close": 1}
+    assert summary["written"] == 0
+
+
 def test_read_failures_propagate(monkeypatch, tmp_path):
     def failing(marker: str, failure: Exception) -> Reader:
         reader = exits_reader()

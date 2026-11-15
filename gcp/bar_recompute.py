@@ -50,6 +50,7 @@ REFUSED_STATUSES = (
     "unproven_rows",
     "no_bars",
     "bars_incomplete",
+    "fired_after_close",
     "daily_incomplete",
     "changed_underneath",
     "trade_diverged",

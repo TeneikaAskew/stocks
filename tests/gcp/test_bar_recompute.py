@@ -254,7 +254,7 @@ def test_exit_code():
     for status in br.REFUSED_STATUSES:
         assert br.exit_code([row(status)]) == 1
     assert set(br.REFUSED_STATUSES) == {
-        "unproven_rows", "no_bars", "bars_incomplete", "daily_incomplete",
+        "unproven_rows", "no_bars", "bars_incomplete", "fired_after_close", "daily_incomplete",
         "changed_underneath", "trade_diverged"}
 
 
