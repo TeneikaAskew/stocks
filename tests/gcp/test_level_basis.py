@@ -477,6 +477,38 @@ def test_from_basis_v3_rebuilds_the_recorded_plan_after_the_row_changes():
     assert _exit_picks(rebuilt) == _exit_picks(offered) == want
 
 
+def test_a_stored_brief_keeps_the_cutoff_it_recorded():
+    """Drop-entry-cutoff spec: a basis stored under the 10:00 cutoff rebuilds
+    and scores with 10:00 after the policy row moves to 16:00, and a basis
+    built after the move records 16:00."""
+    from dataclasses import replace
+
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib.session_levels_helpers import d8_basis, d8_params
+
+    old = d8_params()
+    p = old.params["entry_cutoff_et"]
+    old.params["entry_cutoff_et"] = replace(p, value=600.0, extra={"time_et": "10:00"})
+    stored = json.loads(json.dumps(SessionLevels.from_basis(d8_basis(params=old)).to_basis()))
+    assert stored["params"]["entry_cutoff_et"]["extra"] == {"time_et": "10:00"}
+
+    rebuilt = SessionLevels.from_basis(stored, params=d8_params())
+    assert rebuilt.long.plan["entry_cutoff_et"] == rebuilt.short.plan["entry_cutoff_et"] == "10:00"
+    plan = mod.plan_inputs("calls", {}, stored, policy_fn=lambda: pytest.fail("no policy read"))
+    assert plan.cutoff_minutes == 600
+    t0 = pd.Timestamp("2026-05-06 13:30", tz="UTC")
+    bars = pd.DataFrame(
+        [{"time": t0 + pd.Timedelta(minutes=m), "open": 251.50, "high": 251.90, "low": 251.40,
+          "close": 251.80} for m in range(30)]
+        + [{"time": t0 + pd.Timedelta(minutes=30), "open": 251.80, "high": 252.40, "low": 251.70,
+            "close": 252.30}])
+    assert mod.resolve_plan("call", plan, bars).entry_status == "late_cross"
+
+    fresh = SessionLevels.from_basis(d8_basis()).to_basis()
+    assert fresh["params"]["entry_cutoff_et"]["extra"] == {"time_et": "16:00"}
+    assert fresh["long"]["plan"]["entry_cutoff_et"] == "16:00"
+
+
 def test_from_basis_v2_rebuilds_the_v2_targets():
     """A stored feat-strat-001.v2 basis records no spacing: it rebuilds the
     v2 targets (the gating ones), no skipped list and no plan, and the brief
