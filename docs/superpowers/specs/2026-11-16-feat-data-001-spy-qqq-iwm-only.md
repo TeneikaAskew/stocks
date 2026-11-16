@@ -290,7 +290,7 @@ Each is written into the text as recommended. Striking one changes only the sect
 10. **`market_data_indicators`: TRUNCATE (23,922 rows).** Its basis is not known, nothing in production reads it, and its fetcher is not scheduled. Magnitude phase 2 returns to needing its backfill. Alternative: keep it until one AlphaVantage call compares an indicator with one computed from as-traded bars.
 11. **`archive_yahoo_market_data_intraday`: TRUNCATE (51,471 rows) now; drop the table in spec B.**
 12. **GCS:** delete the 913 per-ticker folders and `raw/spx/`; also `raw/spy/`, `raw/qqq/` and `raw/iwm/` (yfinance era, `Adj Close`, no reader found). Keep `raw/data/`, `raw/reports/` and `raw/signals/`.
-13. **Restore point:** a fresh dump right before the first delete, verified with `gzip -t`, and copied out of `sql-dumps/` to `gs://adept-mountain-474619-d4-trading-data/retained-dumps/` so the 30-day rule does not remove it. About $0.31 a month at standard storage (list price, not re-read).
+13. **Restore point: decided by the owner.** A fresh dump right before the first delete, verified with `gzip -t`, left in `sql-dumps/`, where the bucket's 30-day rule deletes it like every weekly dump (`gcp/deploy.sh:3337-3367`, read). No copy is kept beyond that. The owner: "Yes drop it, bad data" (2026-11-16): much of the deleted data was stored adjusted, and a ticker is brought back by refetching it as traded, not by restoring it.
 14. **The DEFAULT intraday partition:** keep it, empty. Dropping it (spec B) makes a write of any untracked ticker fail at the database, at the cost of a schema change and an exclusive lock on the parent.
 15. **`adjusted_close`:** clear the remaining rows and drop the column after the companion spec is deployed everywhere (Close-out steps 7 and 8); its line in `gcp/schema.sql` goes in spec B.
 
@@ -328,7 +328,7 @@ None runs from the implementation PR, and none is a `done_when` box. Each step w
    - Check: each job's image is the build's digest (`gcloud run jobs describe <job> --region=us-east1`). After one night, the `fetch-market-data` log reads `Total tickers : 3`, the `fetch-earnings-history` log reads `Eligible targets: 3`, and the next `fetch-premarket-refresh` log reads `Resolved universe: 3 tickers`.
    - Nothing below starts before this check passes: a delete before it would refill the next night.
 2. **Restore point.** `env -u CLOUDSDK_AUTH_ACCESS_TOKEN gcloud run jobs execute cloud-sql-weekly-export --region=us-east1 --wait`.
-   - Check: `gcloud storage ls -l gs://adept-mountain-474619-d4-trading-data/sql-dumps/` lists an object dated today; `gcloud storage cat <object> | gzip -t` exits 0; `gcloud storage cp <object> gs://adept-mountain-474619-d4-trading-data/retained-dumps/` (Decision 13) and the copy lists the same size. Point-in-time recovery covers the 7 days after as a backstop.
+   - Check: `gcloud storage ls -l gs://adept-mountain-474619-d4-trading-data/sql-dumps/` lists an object dated today; `gcloud storage cat <object> | gzip -t` exits 0. No copy is made (Decision 13): the dump ages out with the 30-day rule. Point-in-time recovery covers the 7 days after as a backstop.
 3. **The watchlists.** Read-only: `./scripts/db_query_cr.sh -q "SELECT user_id, ticker FROM watchlists WHERE removed_at IS NULL ORDER BY 1, 2; SELECT count(*) FROM user_watchlists WHERE removed_at IS NULL; SELECT count(*) FROM watched_tickers"`.
    - Expected: `default` IWM, QQQ, SPY; 0; 0 (as in `db-query-89ccp`). Then no write is needed.
    - If another active default row has appeared, the write is `UPDATE watchlists SET removed_at = now() WHERE user_id = 'default' AND removed_at IS NULL AND ticker NOT IN ('SPY','QQQ','IWM')` with `--commit`; its trigger records the removal. The same read then returns the three rows. Rows in `user_watchlists` follow Decision 9.
@@ -355,7 +355,7 @@ The site evidence for this change is the pages of other tickers, specs D and E; 
 ## Risks
 
 - **A delete before the fetch change refills.** Step 1's check comes first, and step 9 looks for refills a week on.
-- **A ticker removed by mistake.** The restore point of step 2 and the 7 days of point-in-time recovery cover it; after that, the retained dump. Re-adding a ticker is one watchlist row and one `backfill-ticker` run.
+- **A ticker removed by mistake.** The restore point of step 2 covers 30 days and point-in-time recovery 7; after that nothing is kept (Decision 13). Re-adding a ticker is one watchlist row, its history refetched as traded, and the builders rerun.
 - **A consumer of other tickers' data breaks loudly.** The sector card and a user's watchlist move to live fetches (specs D and E); an untracked ticker's stored-history views (charts of past sessions, signals, insights) show their SPY, QQQ and IWM scope. Which pages already do this rather than show an empty panel was not checked page by page.
 - **Live fetches spend vendor calls per page view.** The sector card's cache holds a day; the watchlist list is one bulk call per view. Not measured; the account's 600 RPM allowance is far above a single user's views (estimate).
 - **Earnings reactions arrive a week later.** With only the Sunday run, a report on Monday gets its reaction six days later, where the weekday run gave it the next evening. The owner chose this (instruction 4).
