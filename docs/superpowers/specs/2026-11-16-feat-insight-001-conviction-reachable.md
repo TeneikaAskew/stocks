@@ -4,7 +4,7 @@ req_ids: [REQ-DATA-001, REQ-DATA-003, REQ-LLM-001, REQ-REPLAY-001, REQ-VALID-001
 issues: []
 canvases: []
 done_when:
-  - "V1 the measurement is code that can be run again: tests/agents/test_rule_evidence.py passes: measure_sides(rows) builds stop_distance_atr, stop_distance_pct, the first target's R multiple and entry_vs_sma200_pct for each brief side by calling lib.agents.trade_planner.compute_risk_metrics (a stand-in that raises makes the test fail, so the measurement cannot carry its own formula); a side with a null stop, ATR or outcome keeps null and is counted under unmeasurable, never as 0; a side that did not fill is counted under coverage and left out of the outcome; outcome_r is eod_pnl_pct divided by stop_distance_pct; summarize_rule(sides, rule, threshold) returns n_flagged, n_unflagged, sessions per group, the difference in mean R and a 95 percent range from a session-clustered bootstrap with a fixed seed, equal to the values typed in the test for a fixture of 12 sides; a group under the floor returns verdict 'insufficient' and no effect number; fails on origin/main, where the module does not exist"
+  - "V1 the measurement is code that can be run again: tests/agents/test_rule_evidence.py passes: measure_sides(rows) builds stop_distance_atr, stop_distance_pct, the first target's R multiple, the mean of the side's target R multiples (rule N2's measure by the owner's decision of 2026-11-16, V11) and entry_vs_sma200_pct for each brief side by calling lib.agents.trade_planner.compute_risk_metrics (a stand-in that raises makes the test fail, so the measurement cannot carry its own formula); a side with a null stop, ATR or outcome keeps null and is counted under unmeasurable, never as 0; a side that did not fill is counted under coverage and left out of the outcome; outcome_r is eod_pnl_pct divided by stop_distance_pct; summarize_rule(sides, rule, threshold) returns n_flagged, n_unflagged, sessions per group, the difference in mean R and a 95 percent range from a session-clustered bootstrap with a fixed seed, equal to the values typed in the test for a fixture of 12 sides; a group under the floor returns verdict 'insufficient' and no effect number; fails on origin/main, where the module does not exist"
   - "V2 the evidence is a file a reviewer can open: docs/audits/<run date>-conviction-rule-evidence.md and tests/agents/fixtures/conviction_evidence.json exist in the PR; the file names the db-query execution id of every read, the SQL file gcp/queries/conviction_rule_evidence.sql, the rule version of the brief rows read, and holds the five tables of Design 2 and Design 3 (sample, per-rule grid, the N1 and C1 candidates, the ladder candidates, the outcome by level) with every cell either a number with its n or the words 'insufficient' or 'not measurable from stored data'; tests/agents/test_rule_evidence.py::test_evidence_file_matches_its_json passes (the numbers in the markdown tables equal the JSON)"
   - "V3 the owner's choice is on record and the code equals it: the evidence file's section 'Owner decision' names, for each rule and each ladder question of Design 4, the chosen row, who chose and the date; the JSON holds the same under 'decision'; tests/agents/test_trade_planner.py::TestRuleTable::test_table_equals_the_decision_record and tests/agents/test_agent_orchestrator.py::TestConvictionLadder::test_ladder_equals_the_decision_record pass (RISK_RULES and CONVICTION_LADDER equal the 'decision' block field for field); with the 'decision' block absent both tests fail, so the code cannot merge ahead of the choice"
   - "V4 a rule counts only when its evidence allows it: tests/agents/test_trade_planner.py::TestRuleTable passes: compute_rule_flags(plan, direction) reads unit, comparison, threshold and severity from RISK_RULES (replacing a rule's threshold in the table under monkeypatch moves the step at which it fires); each rule is tested one step either side of the threshold the table holds, parametrised from the table and not typed; rule_may_warn(evidence) is true only when both groups meet the floors of Design 4 and the range lies wholly below zero on the fitting sessions and the holdout sessions; test_every_warn_rule_passes_its_own_evidence fails for a table holding a warn rule whose evidence does not pass; a rule with severity info is published with its number and is not counted by _calibrate_conviction; fails on the predecessor's main, where the thresholds are literals in compute_rule_flags"
@@ -13,6 +13,7 @@ done_when:
   - "V7 the report says how its conviction was reached: tests/agents/test_agent_orchestrator.py::TestConvictionLadder::test_inputs_are_stored passes on the real run_insight_pipeline with only the model stubbed: report.conviction_inputs holds analyst_agreement_count, warn_count, block_count, confidence_score, ftfc_score, ftfc_aligned, rule_ids_fired, rule_table_version and ladder_version; _calibrate_conviction called with those stored values returns report.conviction; a brief row whose ftfc_score is null stores null, the level is computed as not aligned, and 0.0 appears nowhere; fails on origin/main, where the field does not exist and a missing score becomes 0.0 (lib/agents/orchestrator.py:554)"
   - "V8 no message quotes an effect the evidence does not hold: tests/agents/test_trade_planner.py::TestRuleTable::test_messages_cite_only_recorded_effects passes: no file under lib/agents/ holds '-31.1pp', '-24.9pp', '-18.8pp' or '-21.8pp'; a rule's message states its measured number (the stop distance, the R multiple) and, when the rule is a warn, the effect and n from its own evidence record"
   - "V9 the changed API response is tested: tests/api/test_insight_report_conviction_inputs.py passes, built as tests/api/test_insight_report_conservative_short.py is (canned bundle, the real run_insight_pipeline with only the model stubbed, the real _upsert_report into a captured connection, then the real router): GET /api/insights/report/IWM returns conviction and conviction_inputs, and the level recomputed from the returned inputs equals the returned conviction; a report stored before this change, without the field, is served unchanged; no network and no database"
+  - "V11 rule N2 judges the average of the plan's targets (owner decision, 2026-11-16): tests/agents/test_trade_planner.py::TestRuleTable::test_n2_reads_the_average_of_the_targets passes: the N2 record of RISK_RULES names the metric mean_target_r, the mean of risk_metrics.target_r_multiples over every target the plan holds, and compute_rule_flags compares that mean with the threshold the table holds, never target_r_multiples[0]; with the table's N2 threshold set to 1.5 under monkeypatch, a short with entry 275.86, stop 277.41, ATR 4.874951 and targets 274.64, 273.42, 272.20 and 270.99 (IWM puts of 2026-11-16 at four quarters of ATR) has multiples 0.787, 1.574, 2.361 and 3.142 from compute_risk_metrics, a mean of 1.966, and no N2 flag although its first target is under 1.5R; a long with entry 278.92, stop 275.86 and targets 280.14, 281.36, 282.58 and 283.79 has a mean of 0.996 and N2 fires with a message that states the mean and the number of targets; a plan with one target has a mean equal to that target's multiple; a plan with no target or a null stop gives no N2 and is counted as unmeasurable, never 0; no file under lib/agents/ compares target_r_multiples[0] with a threshold; fails on the predecessor's main, where N2 reads the first target"
   - "V10 the product record: docs/product/02-FEATURE-CATALOG.md FEAT-INSIGHT-001 record shows Status and Last reviewed moved and docs/product/12-PR-ISSUE-TRACEABILITY.md lists this PR under FEAT-INSIGHT-001"
 status: draft
 supersedes: null
@@ -25,6 +26,14 @@ supersedes: null
 Draft. Not approved. Nothing here is built until the owner says approved.
 
 The owner (T) asked for this spec on 2026-11-16, after the finding below was verified, and agreed with this recommendation: build the approved insight spec as it is, and decide the conviction thresholds separately, with the numbers measured again on more data. The owner's words were relayed in the task brief and are not quoted here.
+
+Decided by the owner on 2026-11-16, in chat, as relayed to the session that recorded it (the chat itself was not read there). The quoted words are the owner's:
+
+- "Agree with high conviction recommendations", said earlier the same day on this spec's recommendations.
+- On rule N2, after seeing the ATR quarter-target experiment: "agree with judge reward on the average of the four targets, which is what you bank if the plan completes." Design 6 and done_when V11 specify it.
+- "Mark specs ready if they are ready and resolve any conflicts. Keep the work moving. Auto merge." Each numbered decision that has a recommendation is therefore decided per that recommendation, and says so in its own line. A production step stays a step the owner approves at the time it is run, exactly as written.
+
+**Why this spec is still a draft.** Decision 4 (the two stop rules, N1 and C1) has no recommendation: the table that decides it is produced by the measurement, which has not run. The owner said the thresholds are decided separately, with the numbers measured again. So decision 4 stays open, and with it every threshold: no line, N2's included, is chosen until the measurement has run and the owner has chosen (V3). Everything else is decided.
 
 So this spec picks no threshold. It defines how each rule is measured, the rule the owner applies to the result, and the code change that follows. Every threshold that ends up in the code comes from the measurement and the owner's choice (done_when V3).
 
@@ -53,17 +62,17 @@ So this spec picks no threshold. It defines how each rule is measured, the rule 
 
 ## Decisions for the owner
 
-None is decided. Each has a recommendation; striking one changes only the section named.
+Decisions 1, 2, 3, 5, 7, 8 and 9 are decided per their recommendations, owner 2026-11-16: keep the work moving. Decision 6 is a production write or a spend and stays a step the owner approves when it is run. Decision 4 is open: it has no recommendation and waits for the measurement. One more decision was made by the owner and is not in this list: what rule N2 reads (Design 6). Striking a decision changes only the section named.
 
-1. **The outcome that defines "worse"** (Design 1). Recommended: R earned by the brief's own plan on the day (profit or loss divided by the distance to the stop), with win rate shown beside it. Alternative: win rate alone, as the spring audit used; a tight stop loses more often and loses less each time, so win rate alone can condemn a rule that costs nothing.
-2. **How sure is sure enough** (Design 4). Recommended: a rule counts as a warning only when the flagged plans did worse with a 95 percent range that stays below zero, on at least 30 filled plans from at least 20 sessions in each group, and again on the most recent third of sessions held back from the fitting. Alternative: a looser bar (90 percent, or no holdout); more rules would count, on thinner proof.
-3. **What happens to a rule the data cannot judge** (Design 4). Recommended: it is shown with its number and does not count toward conviction, until a rerun can judge it. Alternative: it keeps counting as today; `high` then stays out of reach.
-4. **The two stop rules, N1 and C1** (Design 2, table 3). Choose one of: both in ATR units; both in percent of price; one band that counts as a single warning. The table that decides is produced by the measurement; the counts already read are in Design 2.
-5. **The ladder repair** (Design 3). Choose one of candidates A, B, C. Recommended: A now (it is the only one the stored data can check), and B or C only once `conviction_inputs` has been stored for long enough to measure them.
-6. **Growing the sample before deciding** (Design 1). Each is a production write or a spend, and none runs without your yes: (a) score again the 174 brief plans that an early version of the scorer left without a fill status, and the 66 never scored; (b) brief replays for sessions before 2026-05-12. Recommended: (a) first; it adds up to 240 plans for no model spend. Whether the scorer can be run for a past date range was not checked.
-7. **Whether replay rows count** (Design 1). `premarket_analysis` holds 135 replay rows beside the 390 live ones. Recommended: live rows only for the decision, replay rows shown as a separate line.
-8. **One PR with a stop in the middle, or a note first** (Approaches). Recommended: one PR that opens as a draft with the measurement and the evidence file, waits for your choices, then adds the rule table and the ladder. Alternative: run the measurement as a spike note first and approve this spec after it.
-9. **Position size follows conviction** (Risks). Once `medium` and `high` occur, the published size changes (`_SIZE_BY_CONVICTION`, `lib/agents/trade_planner.py:140-144`). Recommended: accept it; that is what the levels are for. Alternative: hold sizes at the `low` row until the levels have been shown to separate outcomes.
+1. **The outcome that defines "worse"** (Design 1). Decided per the recommendation, owner 2026-11-16: keep the work moving. Recommended: R earned by the brief's own plan on the day (profit or loss divided by the distance to the stop), with win rate shown beside it. Alternative: win rate alone, as the spring audit used; a tight stop loses more often and loses less each time, so win rate alone can condemn a rule that costs nothing.
+2. **How sure is sure enough** (Design 4). Decided per the recommendation, owner 2026-11-16: keep the work moving. Recommended: a rule counts as a warning only when the flagged plans did worse with a 95 percent range that stays below zero, on at least 30 filled plans from at least 20 sessions in each group, and again on the most recent third of sessions held back from the fitting. Alternative: a looser bar (90 percent, or no holdout); more rules would count, on thinner proof.
+3. **What happens to a rule the data cannot judge** (Design 4). Decided per the recommendation, owner 2026-11-16: keep the work moving. Recommended: it is shown with its number and does not count toward conviction, until a rerun can judge it. Alternative: it keeps counting as today; `high` then stays out of reach.
+4. **The two stop rules, N1 and C1** (Design 2, table 3). Open: no recommendation was made, and the owner decides the thresholds separately, on the numbers measured again. Choose one of: both in ATR units; both in percent of price; one band that counts as a single warning. The table that decides is produced by the measurement; the counts already read are in Design 2.
+5. **The ladder repair** (Design 3). Decided per the recommendation, owner 2026-11-16: keep the work moving. That is candidate A now; B or C is a later decision, on the stored inputs. Choose one of candidates A, B, C. Recommended: A now (it is the only one the stored data can check), and B or C only once `conviction_inputs` has been stored for long enough to measure them.
+6. **Growing the sample before deciding** (Design 1). Not decided here and not open as a design question: it stays a step the owner approves when it is run, exactly as written. Each is a production write or a spend, and none runs without your yes: (a) score again the 174 brief plans that an early version of the scorer left without a fill status, and the 66 never scored; (b) brief replays for sessions before 2026-05-12. Recommended: (a) first; it adds up to 240 plans for no model spend. Whether the scorer can be run for a past date range was not checked.
+7. **Whether replay rows count** (Design 1). Decided per the recommendation, owner 2026-11-16: keep the work moving. `premarket_analysis` holds 135 replay rows beside the 390 live ones. Recommended: live rows only for the decision, replay rows shown as a separate line.
+8. **One PR with a stop in the middle, or a note first** (Approaches). Decided per the recommendation, owner 2026-11-16: keep the work moving. The stop in the middle is where decision 4 and the thresholds are chosen. Recommended: one PR that opens as a draft with the measurement and the evidence file, waits for your choices, then adds the rule table and the ladder. Alternative: run the measurement as a spike note first and approve this spec after it.
+9. **Position size follows conviction** (Risks). Decided per the recommendation, owner 2026-11-16: keep the work moving. Once `medium` and `high` occur, the published size changes (`_SIZE_BY_CONVICTION`, `lib/agents/trade_planner.py:140-144`). Recommended: accept it; that is what the levels are for. Alternative: hold sizes at the `low` row until the levels have been shown to separate outcomes.
 
 ## Problem
 
@@ -203,7 +212,7 @@ Other stored outcomes, for the record: 3,161 live `signal_alerts` with exits ove
 
 **Unit and range.** The unit is the side; the three tickers share a session, so the range is a bootstrap that resamples sessions, 10,000 draws, fixed seed, 95 percent. Win rates also carry a Wilson range.
 
-**Grid, written down before the run.** Each rule is measured at its present line and at these points, and nowhere else: stop too tight in ATR at 0.25, 0.5, 0.75, 1.0; stop too wide in ATR at 1.0, 1.5, 2.0; stop too tight in percent at 0.1, 0.25, 0.5; stop too wide in percent at 0.5, 1.0, 1.5; first target at 1.0R, 1.5R, 2.0R; above the 200 SMA at 5, 10, 15 percent. N3 is informational today and is measured at its one setting, for the record only. These are candidates to test, not answers.
+**Grid, written down before the run.** Each rule is measured at its present line and at these points, and nowhere else: stop too tight in ATR at 0.25, 0.5, 0.75, 1.0; stop too wide in ATR at 1.0, 1.5, 2.0; stop too tight in percent at 0.1, 0.25, 0.5; stop too wide in percent at 0.5, 1.0, 1.5; reward against the stop (N2) on the average of the side's targets at 1.0R, 1.5R, 2.0R, with the first target's multiple at the same three points shown beside it for the record only (Design 6); above the 200 SMA at 5, 10, 15 percent. N3 is informational today and is measured at its one setting, for the record only. These are candidates to test, not answers.
 
 **Holdout.** Sessions are split by date: the earliest two thirds fit, the latest third confirms.
 
@@ -302,7 +311,7 @@ For N1 and C1 the chosen rows must also pass V5: some stop must be free of both 
 
 **Code, after the predecessor is on `main`.**
 
-- `lib/agents/trade_planner.py`: `RISK_RULES`, a tuple of frozen records (id, metric, unit, comparison, threshold, severity, direction it applies to, evidence). The evidence record holds the execution id, measured-on date, both group sizes and session counts, the effect and its range, the holdout result, who decided and when. `compute_rule_flags(plan, direction)` keeps its signature and return shape and reads the table; it holds no number of its own. `rule_may_warn(evidence)` is the decision rule as a pure function.
+- `lib/agents/trade_planner.py`: `RISK_RULES`, a tuple of frozen records (id, metric, unit, comparison, threshold, severity, direction it applies to, evidence). The evidence record holds the execution id, measured-on date, both group sizes and session counts, the effect and its range, the holdout result, who decided and when. `compute_rule_flags(plan, direction)` keeps its signature and return shape and reads the table; it holds no number of its own. N2's metric in the table is the mean of the plan's target R multiples (Design 6). `rule_may_warn(evidence)` is the decision rule as a pure function.
 - `lib/agents/orchestrator.py`: `_calibrate_conviction` keeps its signature; it returns the highest level of `CONVICTION_LADDER` whose floors are met, counts only `warn` flags, and builds `conviction_inputs`.
 - `lib/agents/schema.py`: `InsightReport.conviction_inputs`; the win-rate figures leave the field descriptions (V8).
 - `lib/agents/rule_evidence.py` and `gcp/queries/conviction_rule_evidence.sql`: the measurement.
@@ -315,15 +324,59 @@ For N1 and C1 the chosen rows must also pass V5: some stop must be free of both 
 - The measurement: one read of 390 rows (about 780 sides), one round trip through the existing `db-query` job, 5 to 15 seconds as dispatched for this spec; the bootstrap is 10,000 draws over at most 126 sessions in memory.
 - The report grows by one small JSON object. Cost of the measurement in model spend: none.
 
+### 6. Rule N2 judges the average of the plan's targets (owner decision, 2026-11-16)
+
+**The decision.** The reward is judged on the average of the plan's targets, against the stop distance: "what you bank if the plan completes". For four quarters at 25, 50, 75 and 100 percent of ATR the average target is (0.25 + 0.50 + 0.75 + 1.00) / 4 = 0.625 ATR from the trigger. The owner decided what N2 reads. The line it is compared with (1.5R today) is not decided here: like every threshold it comes from the measurement and the owner's choice (V3).
+
+**What the code does today** (**read** on `origin/main` c9a2b984d):
+
+- N2 is text in the neutral reviewer's prompt, `lib/agents/prompts.py:228-233`: "IF len(risk_metrics.target_r_multiples) >= 1 AND risk_metrics.target_r_multiples[0] < 1.5" gives a `warn` whose message reads "T1 only {r:.1f}R". It reads the first target alone.
+- `target_r_multiples` is built by `compute_risk_metrics`, one multiple a target: the target's distance from the entry midpoint over the entry-to-stop distance, signed by direction and rounded to 3 places (`lib/agents/trade_planner.py:382-386`). No mean is stored (`lib/agents/schema.py:177`).
+- `_calibrate_conviction` (`lib/agents/orchestrator.py:887-942`) reads no target and no R multiple. It counts `warn` severities (`:919`); `high` needs none (`:932`) and `medium` at most one (`:938`). The severities come from the reviewers' flags (`:504-506`, `:555`). So N2 reaches conviction only as one counted warning, and the ladder itself needs no change for this decision.
+- The `RiskMetrics` docstring states the old rule as "any t_r_multiple < 1.5" (`lib/agents/schema.py:156`).
+- The predecessor moves N2 into `compute_rule_flags` as "first target under 1.5R" (its Design, **read**; not on `main`).
+
+**What changes.**
+
+- `RISK_RULES`' N2 record names the metric `mean_target_r`: the mean of `risk_metrics.target_r_multiples` over every target the plan holds. Each leg is an equal share (`exit_legs`), so with a target for every leg that mean is the plan's R when every target is reached.
+- `compute_rule_flags` computes that mean and compares it with the table's threshold. It never reads `target_r_multiples[0]` for a rule. `compute_risk_metrics` and `RiskMetrics` do not change: the multiples stay as they are and the mean is derived where the rule is applied, so the report's schema gains nothing for it.
+- N2's message states the mean and the number of targets, and no longer "T1 only".
+- A plan with no target, or with no stop, has no mean: no N2 flag, counted as unmeasurable, never 0 (REQ-DATA-001; the predecessor's D5b already makes the multiples empty for a null stop).
+- The `RiskMetrics` docstring line is rewritten with the win-rate figures V8 removes.
+- The measurement (Design 1) measures N2 on that mean, on its grid, with the first target's multiple beside it for the record. Its verdict follows Design 4 like any rule's.
+- `_calibrate_conviction` is not changed by this decision beyond Design 3.
+
+**Checked on the owner's example** (**run** for this spec with `compute_risk_metrics` on `origin/main` c9a2b984d, ATR 4.874951, the IWM targets of `docs/superpowers/specs/2026-11-16-feat-strat-001-atr-quarter-targets.md`):
+
+| Side | Entry | Stop | Targets | R multiples | First | Mean |
+|---|---|---|---|---|---|---|
+| IWM puts | 275.86 | 277.41 | 274.64, 273.42, 272.20, 270.99 | 0.787, 1.574, 2.361, 3.142 | 0.787 | 1.966 |
+| IWM calls | 278.92 | 275.86 | 280.14, 281.36, 282.58, 283.79 | 0.399, 0.797, 1.196, 1.592 | 0.399 | 0.996 |
+
+Against a 1.5R line the first target fails on both sides; the mean passes on the puts and fails on the calls, whose stop is 0.628 ATR away.
+
+**Measured context.** From the ATR quarter-target spike of 2026-11-16, 3,463 replayed trades of SPY, QQQ and IWM, 2022-01-03 to 2026-11-10. Its files are session files under `/tmp/claude-0/-home-user/fa186a7b-7434-50ad-97db-844fe591fc0f/scratchpad/atr_exp/out/`, not in the repo; the ATR targets spec records the result and its limits. Quoted from `report_v1_side.txt`:
+
+- "from the trigger, risk = trigger to stop: under 1.5R on 93.1% of 3463 trades; under 1.0R on 76.4%; median 0.69R; quartiles 0.49 / 0.98". That is T1 at 0.25 ATR, what N2 reads today.
+- "stop distance in ATR (trigger to stop): median 0.36, quartiles 0.26 / 0.51".
+
+From those numbers: the average of four targets is 0.625 ATR, so at the median stop it is 0.625 / 0.36 = 1.74R, where T1 alone is 0.25 / 0.36 = 0.69R. At the quartile stops it is 0.625 / 0.51 = 1.23R and 0.625 / 0.26 = 2.40R. Computed trade by trade for this spec from the spike's `arms_followup.csv` (0.625 x ATR over the trigger-to-stop distance; **run**): the median is 1.74R, 1,334 of 3,463 trades (38.5%) are under 1.5R and 478 (13.8%) under 1.0R.
+
+**Limits, stated.**
+
+- A plan with fewer targets than legs holds an unsold leg, so the mean of its targets is not what the plan banks. In the spike's replay of today's rule most traded sides were such plans ("arm A targets published per traded side: {0: 586, 1: 1056, 2: 1051, 3: 770}"). The mean is still taken over the targets the plan holds.
+- The stored rows the measurement reads are level-rule rows. Rows built under the ATR marks do not exist yet, so N2 on a four-quarter plan starts with no evidence of its own: by decision 3 it is then shown with its number and not counted, until close-out 5 reruns the measurement on the new rule version.
+- The figures above are from a replay whose limits the ATR targets spec lists (premarket window, the prior-close prints in its triggers). They are context for the decision, not this spec's evidence.
+
 ## Implementation plan: size
 
 9 tasks, one branch, one PR, opened only after the predecessor's PR has merged.
 
 1. The side query and its fixture.
-2. `rule_evidence.py`: measures, summaries, the bootstrap, the verdicts (V1).
+2. `rule_evidence.py`: measures, summaries, the bootstrap, the verdicts (V1), N2's mean among the measures (V11).
 3. The run, the evidence file and its JSON (V2). The PR stops here as a draft for the owner's choices.
 4. The decision block (V3).
-5. `RISK_RULES`, `rule_may_warn`, `compute_rule_flags` on the table, the messages (V4, V5, V8).
+5. `RISK_RULES`, `rule_may_warn`, `compute_rule_flags` on the table, N2 on the mean of the targets, the messages (V4, V5, V8, V11).
 6. `CONVICTION_LADDER` and the monotone `_calibrate_conviction` (V6).
 7. `conviction_inputs` (V7).
 8. The API response test (V9).
@@ -344,7 +397,7 @@ None of these runs from the implementation PR, and none is a `done_when` box. Ea
 
 - **The sample is small.** 162 fills over 67 sessions, all from one half year. Most rules may come back "cannot be judged". V4 makes that an honest outcome: the rule is shown and not counted.
 - **Picking a line from a grid flatters it.** The grid is fixed in this spec and the holdout must agree; a line that passes only on the fitting sessions does not count.
-- **The brief's stops will change.** A separate spec covers the brief's targets, and the brief's rule version is moving. The evidence records the rule version it read, and close-out 5 reruns it (REQ-VALID-001).
+- **The brief's stops will change.** A separate spec covers the brief's targets (`docs/superpowers/specs/2026-11-16-feat-strat-001-atr-quarter-targets.md`: four targets at quarters of ATR, chosen by the owner on 2026-11-16), and the brief's rule version is moving. N2 has no evidence on such plans until rows exist (Design 6). The evidence records the rule version it read, and close-out 5 reruns it (REQ-VALID-001).
 - **`high` may still be rare.** If the measurement keeps a tight-stop rule near where most stops sit, most plans still warn. The evidence file's reach table shows this before the owner chooses.
 - **`high` may become common.** If most rules cannot be judged, few warnings count and the level rests on agreement, FTFC and confidence. Decision 3 is where the owner accepts or refuses that.
 - **Sizes change with the level** (decision 9).
@@ -354,6 +407,9 @@ None of these runs from the implementation PR, and none is a `done_when` box. Ea
 
 ## What was not verified
 
+- The owner's words of 2026-11-16: relayed; the chat was not read.
+- The spike's figures in Design 6: quoted from its report file and computed from its per-trade file; the spike was not run again, and its files are not in the repo.
+- N2 on the mean for the 750 stored brief sides and the 162 fills: not computed; the counts in Problem 2 and Design 1 are for the first target.
 - The predecessor's code: `compute_rule_flags` and the reordered `_calibrate_conviction` do not exist on `origin/main` 133717b1a. Their shapes are taken from the predecessor's spec and plan, **read**, not run.
 - That the stop on `main` today is a multiple of ATR from an entry midpoint: taken from the predecessor's Problem table (`lib/agents/trade_planner.py:279-281`), not read again.
 - Whether the brief's structured stop and target columns equal the side records in `level_basis` that the predecessor will read: not compared.
