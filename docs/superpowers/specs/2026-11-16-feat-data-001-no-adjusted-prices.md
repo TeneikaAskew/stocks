@@ -20,7 +20,7 @@ done_when:
   - "The implementation PR body lists every Cloud Run job and service whose entrypoint, deployed by gcp/deploy.sh, reaches lib/data_loader.py, lib/strat.py or a module naming adjusted_close through its imports (an ast walk of the import graph, its output pasted), each with its deploy target; Close-out steps 1 and 2 deploy and verify exactly that list"
   - "make test passes on the PR head, and the generated inventory blocks are re-rendered with scripts/maintenance/doc_inventory.py with tests/scripts/test_check_generated_docs.py passing"
   - "02-FEATURE-CATALOG FEAT-DATA-001 record shows Status and Last reviewed for this PR, 12-PR-ISSUE-TRACEABILITY lists it, the implementation-source notes of 03-SITE-TRACEABILITY.md hold a (FEAT-DATA-001, component) row for each of the twelve declared components beginning with the current source hash (a row an earlier change left is extended: the new hash and this change's prose first, then 'Earlier:' and the earlier prose unchanged), docs/review-evidence/site-source-snapshot.json is regenerated and scripts/maintenance/doc_source_snapshot.py verify accepts it, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing that origin/main does not, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: superseded
 supersedes: null
 ---
 
