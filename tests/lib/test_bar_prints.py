@@ -7,12 +7,21 @@ code under test computed.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from lib.bar_prints import PARAMS, RULE_VERSION, isolated_prints, print_geometry
+from lib.eastern_time import session_schedule, utc_to_eastern_naive
 from lib.level_calibration import wick_excesses
+
+# tests/lib/ is two levels below the repo root.
+FIXTURES = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "bar_prints"
+SESSION_COLUMNS = ["ts", "open", "high", "low", "close", "volume", "inserted_at"]
 
 GEOMETRY_COLUMNS = [
     "ts", "reference_high", "excess_high", "reference_low", "excess_low", "judged",
@@ -330,3 +339,132 @@ def test_short_input():
     flags, judged = isolated_prints(bars)
     assert len(flags) == 0
     assert list(judged) == [False, False, False, False]
+
+
+# Task 3: the labelled sessions. The files under tests/fixtures/bar_prints/
+# are stored bars exported read-only on 2026-11-16, each one Eastern day of
+# one ticker plus the 40 stored bars before and the 40 after it; sources.json
+# names the db-query execution and the SQL of each. A failure below is a
+# finding about the rule, never a reason to change an expected row.
+
+KNOWN_SESSIONS = {
+    ("SPY", "2017-11-28"): [("15:16", "low")],
+    ("SPY", "2018-02-06"): [
+        ("15:13", "low"), ("15:20", "low"), ("15:21", "low"), ("15:22", "low"),
+        ("15:23", "low"), ("15:24", "low"), ("15:25", "low"), ("15:26", "low"),
+        ("15:27", "low"), ("15:28", "low"), ("15:29", "low"), ("15:30", "low"),
+        ("15:31", "low"), ("15:33", "low"), ("15:34", "low"), ("15:35", "low"),
+        ("15:36", "low"), ("15:37", "low"), ("15:38", "low"), ("15:39", "low"),
+        ("15:40", "low"), ("15:42", "low"),
+    ],
+    ("SPY", "2018-02-20"): [("09:31", "low")],
+    ("SPY", "2018-04-05"): [("11:37", "low")],
+    ("SPY", "2023-05-25"): [
+        ("10:48", "low"), ("11:05", "low"), ("11:34", "low"), ("12:07", "low"),
+        ("12:21", "low"), ("12:30", "low"), ("13:01", "low"), ("13:34", "low"),
+        ("14:15", "low"), ("14:32", "low"), ("14:53", "low"), ("15:09", "low"),
+        ("15:24", "low"), ("15:29", "low"), ("15:50", "low"), ("15:54", "low"),
+    ],
+    ("QQQ", "2018-02-06"): [
+        ("15:30", "low"), ("15:32", "low"), ("15:39", "low"), ("15:40", "low"),
+        ("15:41", "low"),
+    ],
+    ("QQQ", "2021-12-14"): [("11:16", "low")],
+    ("QQQ", "2023-05-25"): [
+        ("14:15", "low"), ("14:16", "low"), ("14:49", "low"), ("15:53", "low"),
+    ],
+    ("IWM", "2018-02-06"): [("15:22", "low"), ("15:35", "low"), ("15:37", "low")],
+    ("IWM", "2023-05-25"): [
+        ("12:00", "high"), ("13:22", "high"), ("14:42", "high"), ("14:57", "high"),
+        ("15:08", "high"), ("15:31", "high"), ("15:37", "high"), ("15:49", "high"),
+        ("15:50", "high"), ("15:59", "high"),
+    ],
+}
+CLEAN_DAYS = ("2019-06-17", "2020-03-12", "2022-09-13", "2024-08-05")
+CLEAN_SESSIONS = [(ticker, day) for day in CLEAN_DAYS for ticker in ("SPY", "QQQ", "IWM")]
+HALF_DAYS = [
+    ("SPY", "2025-07-03"), ("SPY", "2025-12-24"), ("IWM", "2018-12-24"),
+    ("IWM", "2025-11-28"),
+]
+
+
+def load_session(ticker: str, day: str) -> pd.DataFrame:
+    """The stored bars of one fixture file, in the columns of the pass's read:
+    ts (tz-aware UTC), open, high, low, close, volume, inserted_at."""
+    bars = pd.read_csv(FIXTURES / f"{ticker}_{day}.csv")
+    assert list(bars.columns) == SESSION_COLUMNS
+    for column in ("ts", "inserted_at"):
+        bars[column] = pd.to_datetime(bars[column], utc=True)
+    return bars
+
+
+def regular_hours_flags(ticker: str, day: str) -> tuple[list[tuple[str, str]], int]:
+    """The flags of the day's regular session as (HH:MM ET, side), and the
+    count of flags the file holds at any hour."""
+    flags, _ = isolated_prints(load_session(ticker, day))
+    session = session_schedule(day, day).iloc[0]
+    regular = flags[(flags.ts >= session.market_open) & (flags.ts < session.market_close)]
+    minute = utc_to_eastern_naive(regular.ts).dt.strftime("%H:%M")
+    return list(zip(minute, regular.side)), len(flags)
+
+
+def test_sources_json_matches_the_files():
+    sources = json.loads((FIXTURES / "sources.json").read_text())["files"]
+    expected = {
+        f"{ticker}_{day}.csv"
+        for ticker, day in [*KNOWN_SESSIONS, *CLEAN_SESSIONS, *HALF_DAYS]
+    }
+    assert len(expected) == 26
+    assert set(sources) == expected
+    assert {p.name for p in FIXTURES.iterdir()} == expected | {"sources.json"}
+    for name, entry in sources.items():
+        data = (FIXTURES / name).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == entry["sha256"], name
+        ticker, day = name.removesuffix(".csv").split("_")
+        assert len(load_session(ticker, day)) == entry["rows"], name
+        assert entry["execution"].startswith("db-query-"), name
+        assert f"ticker = '{ticker}'" in entry["sql"], name
+        assert f"'{day} 00:00:00'" in entry["sql"], name
+        assert entry["sql"].lstrip("(").startswith("SELECT"), name
+
+
+@pytest.mark.parametrize(
+    "ticker, day", list(KNOWN_SESSIONS), ids=[f"{t}-{d}" for t, d in KNOWN_SESSIONS]
+)
+def test_known_sessions(ticker, day):
+    found, _ = regular_hours_flags(ticker, day)
+    assert found == KNOWN_SESSIONS[(ticker, day)]
+
+
+def test_known_sessions_hold_64_flags():
+    # The spec's count, first, last and named members (done_when item 3).
+    counts = {key: len(rows) for key, rows in KNOWN_SESSIONS.items()}
+    assert counts == {
+        ("SPY", "2017-11-28"): 1, ("SPY", "2018-02-06"): 22, ("SPY", "2018-02-20"): 1,
+        ("SPY", "2018-04-05"): 1, ("SPY", "2023-05-25"): 16, ("QQQ", "2018-02-06"): 5,
+        ("QQQ", "2021-12-14"): 1, ("QQQ", "2023-05-25"): 4, ("IWM", "2018-02-06"): 3,
+        ("IWM", "2023-05-25"): 10,
+    }
+    assert sum(counts.values()) == 64
+
+    spy_2018 = KNOWN_SESSIONS[("SPY", "2018-02-06")]
+    assert spy_2018[0] == ("15:13", "low")
+    assert spy_2018[-1] == ("15:42", "low")
+    assert {side for _, side in spy_2018} == {"low"}
+
+    spy_2023 = KNOWN_SESSIONS[("SPY", "2023-05-25")]
+    assert ("15:29", "low") in spy_2023
+    assert {side for _, side in spy_2023} == {"low"}
+
+    iwm_2023 = KNOWN_SESSIONS[("IWM", "2023-05-25")]
+    assert ("13:22", "high") in iwm_2023
+    assert {side for _, side in iwm_2023} == {"high"}
+
+
+def test_clean_sample():
+    assert len(CLEAN_SESSIONS) == 12
+    for ticker, day in CLEAN_SESSIONS:
+        regular, at_any_hour = regular_hours_flags(ticker, day)
+        assert regular == [], (ticker, day)
+        if day == "2019-06-17":
+            assert at_any_hour == 0, ticker

@@ -1,0 +1,163 @@
+{
+  "exported": "2026-11-16",
+  "command": "env -u CLOUDSDK_AUTH_ACCESS_TOKEN ./scripts/db_query_cr.sh -q \"<sql>\" (no --commit; every statement rolled back)",
+  "result": "gs://adept-mountain-474619-d4-trading-data/query-results/<execution>/result_001.csv, copied byte for byte",
+  "files": {
+    "SPY_2017-11-28.csv": {
+      "execution": "db-query-z7f8z",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts < TIMESTAMP '2017-11-28 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2017-11-28 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2017-11-29 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2017-11-29 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 812,
+      "sha256": "12ac571d760a8e77a8717c5c2bc6ffab27fa3e89031749be52e25d78fd0c5d11"
+    },
+    "SPY_2018-02-06.csv": {
+      "execution": "db-query-g8wsm",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts < TIMESTAMP '2018-02-06 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2018-02-06 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2018-02-07 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2018-02-07 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 1053,
+      "sha256": "3e1d9034f19a863e3f4ecd8763e5d163efcc81f4f199188141665347eb40bb95"
+    },
+    "SPY_2018-02-20.csv": {
+      "execution": "db-query-k46ps",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts < TIMESTAMP '2018-02-20 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2018-02-20 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2018-02-21 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2018-02-21 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 911,
+      "sha256": "350473a391feef996428c2983a090787629439c05b61e9eeef4d121ddf665fcf"
+    },
+    "SPY_2018-04-05.csv": {
+      "execution": "db-query-6hzvn",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts < TIMESTAMP '2018-04-05 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2018-04-05 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2018-04-06 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2018-04-06 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 963,
+      "sha256": "3f358046e41e4b68208274f3d028d0d66d02dea36006aecd1fa62841e7d6d5e6"
+    },
+    "SPY_2023-05-25.csv": {
+      "execution": "db-query-lv86c",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts < TIMESTAMP '2023-05-25 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2023-05-25 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2023-05-26 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2023-05-26 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 1029,
+      "sha256": "109b4e77b5020fd170193e12ae600b2de91d1bfc59f52bad7f80cd81b2153f37"
+    },
+    "QQQ_2018-02-06.csv": {
+      "execution": "db-query-tnzz9",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts < TIMESTAMP '2018-02-06 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2018-02-06 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2018-02-07 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2018-02-07 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 954,
+      "sha256": "c4ec5856ff9ed6f5e19264f6f1f163b16eef37b903e0ce90f042a6fde95c7142"
+    },
+    "QQQ_2021-12-14.csv": {
+      "execution": "db-query-qqlwp",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts < TIMESTAMP '2021-12-14 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2021-12-14 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2021-12-15 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2021-12-15 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 946,
+      "sha256": "65d2127d4dd421190dc2c24b02ef2f934a0e60e92fe0d0ccf2088ed2792191ed"
+    },
+    "QQQ_2023-05-25.csv": {
+      "execution": "db-query-bftwp",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts < TIMESTAMP '2023-05-25 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2023-05-25 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2023-05-26 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2023-05-26 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 1036,
+      "sha256": "2938b3d79acf242f583691bc68d43dae98c60549d76d2daa761162025a19924b"
+    },
+    "IWM_2018-02-06.csv": {
+      "execution": "db-query-865wz",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts < TIMESTAMP '2018-02-06 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2018-02-06 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2018-02-07 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2018-02-07 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 811,
+      "sha256": "92cab1c8a37a8c2fb1cce2d43b1f76d85a1b5c08c7c0498bd57ab7a017561a2d"
+    },
+    "IWM_2023-05-25.csv": {
+      "execution": "db-query-whqvq",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts < TIMESTAMP '2023-05-25 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2023-05-25 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2023-05-26 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2023-05-26 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 868,
+      "sha256": "cb16e67bf277e343aad65f69fed8aa0277a42fadbfefaba6e4717677f952ce9b"
+    },
+    "SPY_2019-06-17.csv": {
+      "execution": "db-query-hjrvl",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts < TIMESTAMP '2019-06-17 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2019-06-17 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2019-06-18 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2019-06-18 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 816,
+      "sha256": "88454f4fd9501c6352fc44353a01d95994137a7c964907c156397bdfbc0eb5d6"
+    },
+    "QQQ_2019-06-17.csv": {
+      "execution": "db-query-cjbtm",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts < TIMESTAMP '2019-06-17 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2019-06-17 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2019-06-18 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2019-06-18 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 817,
+      "sha256": "035e678bdffee14f139890d1aea96c1a261ceae4a102b45419f9e7a104d3a678"
+    },
+    "IWM_2019-06-17.csv": {
+      "execution": "db-query-mtbg6",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts < TIMESTAMP '2019-06-17 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2019-06-17 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2019-06-18 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2019-06-18 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 550,
+      "sha256": "150630a9b4ea5987db46687b8c83bc133ceca458a379ddbecddf567912fd2e3a"
+    },
+    "SPY_2020-03-12.csv": {
+      "execution": "db-query-mfgfq",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts < TIMESTAMP '2020-03-12 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2020-03-12 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2020-03-13 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2020-03-13 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 1023,
+      "sha256": "036695f37bd9a27cd95a055edfd31b5c75436618450eaa6b4916dcba30bed43c"
+    },
+    "QQQ_2020-03-12.csv": {
+      "execution": "db-query-qp9hz",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts < TIMESTAMP '2020-03-12 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2020-03-12 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2020-03-13 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2020-03-13 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 1006,
+      "sha256": "8fe55d74e9f4a24e45d40dd93ce6ea2786327f6f9eef0a1d7d178d002aedd406"
+    },
+    "IWM_2020-03-12.csv": {
+      "execution": "db-query-m5tf7",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts < TIMESTAMP '2020-03-12 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2020-03-12 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2020-03-13 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2020-03-13 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 798,
+      "sha256": "bf12ea2aa22f4d006cce3b92daaeb53ee85a0726e15dc8471be75b63f7a1cef0"
+    },
+    "SPY_2022-09-13.csv": {
+      "execution": "db-query-tswn5",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts < TIMESTAMP '2022-09-13 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2022-09-13 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2022-09-14 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2022-09-14 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 936,
+      "sha256": "87eef6efa3404476992068a1c1abfaa79e4dd33f7d78b99696534af62695c02d"
+    },
+    "QQQ_2022-09-13.csv": {
+      "execution": "db-query-kbvmn",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts < TIMESTAMP '2022-09-13 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2022-09-13 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2022-09-14 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2022-09-14 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 950,
+      "sha256": "03cafdefdc9d9f557397be5fee3f905eb757cba580dbec6f6621a95e8fa82d34"
+    },
+    "IWM_2022-09-13.csv": {
+      "execution": "db-query-gdlxn",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts < TIMESTAMP '2022-09-13 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2022-09-13 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2022-09-14 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2022-09-14 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 858,
+      "sha256": "72eecdb8541e656f711c3c8116e6c60ba74ed59818f21ad65f59ac50b2c03048"
+    },
+    "SPY_2024-08-05.csv": {
+      "execution": "db-query-xlqxp",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts < TIMESTAMP '2024-08-05 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2024-08-05 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2024-08-06 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2024-08-06 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 1041,
+      "sha256": "80d89caceb2bb18b311824f34e9c96e489cbd7c27d396e3a80f64b5c377113f3"
+    },
+    "QQQ_2024-08-05.csv": {
+      "execution": "db-query-92kbq",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts < TIMESTAMP '2024-08-05 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2024-08-05 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2024-08-06 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= TIMESTAMP '2024-08-06 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 1040,
+      "sha256": "558b3817eeafc48bda510c960dd12c674616c4b5f0a4eb8e3bb1db57f59ed3e9"
+    },
+    "IWM_2024-08-05.csv": {
+      "execution": "db-query-5p5zh",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts < TIMESTAMP '2024-08-05 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2024-08-05 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2024-08-06 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2024-08-06 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 1040,
+      "sha256": "20248b7b3cd5db6ffd1aee28d9858409ff8b5a02e0adca7a4cf3025feef45dfe"
+    },
+    "SPY_2025-07-03.csv": {
+      "execution": "db-query-zjjmm",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts < TIMESTAMP '2025-07-03 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2025-07-03 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2025-07-04 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2025-07-04 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 858,
+      "sha256": "37308216c3f7db7fcd90c8d7c810bc01aaa39e436067af5922cfd335177c824b"
+    },
+    "SPY_2025-12-24.csv": {
+      "execution": "db-query-bxxnj",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts < TIMESTAMP '2025-12-24 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2025-12-24 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2025-12-25 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= TIMESTAMP '2025-12-25 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 861,
+      "sha256": "0cccc66c23f6b4ffdf23e8162bd8b2b69d56926748cb61da66d078166377082a"
+    },
+    "IWM_2018-12-24.csv": {
+      "execution": "db-query-gb6xb",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts < TIMESTAMP '2018-12-24 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2018-12-24 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2018-12-25 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2018-12-25 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 462,
+      "sha256": "d08b212b95dd27dfede0420466ce6fb8846c383e0dfe7612a91268203f4b5687"
+    },
+    "IWM_2025-11-28.csv": {
+      "execution": "db-query-qdrxx",
+      "sql": "(SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts < TIMESTAMP '2025-11-28 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts DESC LIMIT 40) UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2025-11-28 00:00:00' AT TIME ZONE 'America/New_York' AND ts < TIMESTAMP '2025-11-29 00:00:00' AT TIME ZONE 'America/New_York') UNION ALL (SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= TIMESTAMP '2025-11-29 00:00:00' AT TIME ZONE 'America/New_York' ORDER BY ts LIMIT 40) ORDER BY ts",
+      "rows": 762,
+      "sha256": "ee211f37679f47276dd0c451040db7a18b54e7fbb1ce54704e6e0f0ac43629c0"
+    }
+  }
+}
