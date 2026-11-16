@@ -8,6 +8,7 @@ done_when:
   - "tests/scripts/test_run_historical_signals_plan.py::test_attach_query_shape passes: for one ticker with N signals over K sessions (N 2,500, K 20) the attach step issues exactly 5 read queries and ceil(N / 1000) writes; the 5 reads are the bars for the window, the stored signals' keys, the daily rows with their premarket fields, the parameters in force over the range (one query of the range read beside load_level_params) and the open basis over the range (one query of the range form of read_open_level_basis)"
   - "tests/scripts/test_run_historical_signals_plan.py::test_attach_plans passes: --attach-plans --start-date D updates plan and outcome columns of stored rows from D on, changes no other column and no row before D, never deletes, and a second run changes nothing; a stored row whose entry_time has no bar in the frame, or whose entry_price differs from that bar's close by more than half a cent, gets plan_status bar_mismatch and NULL plan prices; a stored row on its session's last regular-hours bar gets plan_r_status no_fill with plan_fill_price and plan_r NULL; --attach-plans with --dry-run writes nothing"
   - "tests/gcp/test_signal_plan_level_source.py::TestOpenBasisAttach passes: for a session with an early live brief write at 08:30, a late write at 09:22 and the canonical live row overwritten at 10:32, --attach-plans gives that session's stored signals at 09:35 and 14:00 plan_status basis_replaced with every plan price NULL, never the 10:32 levels and never a rebuild; without the 10:32 overwrite, the same two signals both get the 09:22 basis"
+  - "tests/lib/test_level_params_loader.py::test_range_read_matches_the_per_session_loader passes: over a window holding a parameter version effective before the window, a second version and a policy row (atr_basis) both effective inside it, and a ticker with no row in force on the first sessions, the range read returns for every session and ticker exactly what load_level_params returns for that session alone (the row with the greatest effective_from on or before the session, never a later one; params_basis_mismatch and params_unavailable alike), and --attach-plans over that window builds the signals on each side of the inner effective date from their own session's parameters (on main the range read does not exist)"
   - "Source identity (DASHBOARD-05): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-SIGNAL-001, DASHBOARD-05) note row carries that source_identity_sha256"
   - "The FEAT-SIGNAL-001 catalog record (Status, Last reviewed) and the PR traceability entry are updated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
   - "The PR body carries the Capacity section of this spec with the attach run's measured numbers from a --dry-run on one ticker (signals, read queries, seconds per stage), next to the estimates"
@@ -155,8 +156,10 @@ outcome over a chosen window. It runs the parent's history step, the one the gen
   no stored live basis is built by the builder (Design 2).
 - **Parameters.** A plan needs the ticker's level parameters in force on the session (decision 6). The
   range read of parameters is a new one-query function beside `load_level_params`
-  (`lib/strat_levels.py:1304`, read), which reads one session per call. A session with no parameters
-  in force gives `params_unavailable` (decision 4).
+  (`lib/strat_levels.py:1395` on main a34bbd40, read), which reads one session per call. For each session it selects
+  what `load_level_params` selects for that session alone: the row with the greatest `effective_from` on
+  or before the session, never a later one, so no plan reads a calibration from its future. A session
+  with no parameters in force gives `params_unavailable` (decision 4).
 
 Files this spec would touch: `lib/strat_levels.py` (the range parameter read),
 `scripts/run_historical_signals.py` (`--attach-plans`), their tests, the FEAT-SIGNAL-001 catalog
@@ -168,7 +171,7 @@ record and traceability entry, and the `(FEAT-SIGNAL-001, DASHBOARD-05)` note ro
   with their premarket fields, parameters in force over the range, the open basis over the range)
   and one multi-row UPDATE per 1,000 signals, committed per chunk, with a progress line per chunk.
   The range read of parameters is a new one-query function beside `load_level_params`
-  (`lib/strat_levels.py:1304`, read), which reads one session per call.
+  (`lib/strat_levels.py:1395` on main a34bbd40, read), which reads one session per call.
 
 ## Order against work in progress
 
