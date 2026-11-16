@@ -1425,6 +1425,10 @@ class TestAtrRungsDisplayOnly:
             assert hb['plan_target_level_types_status'] == 'ok', t
             assert hparams.pop('plan_target_level_types')['extra'] == {
                 'level_types': ['gap_high', 'gap_low']}, t
+            # Target hit rates spec: the policy-wide row is recorded with
+            # the other parameters; it changes nothing else in the basis.
+            assert hparams.pop('target_reach_rate')['extra'] == {
+                'since': '2022-01-03', 'measure': 'touch'}, t
             assert hparams == bb['params'], t
             assert {k: v for k, v in hb.items() if k not in rung_keys | {'params'}} == {
                 k: v for k, v in bb.items() if k != 'params'}, t

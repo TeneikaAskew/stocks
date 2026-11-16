@@ -1011,8 +1011,13 @@ POLICY_SEEDED_KEYS = (TARGET_SPACING_KEY, GAP_FILL_FLAG_KEY, ATR_RUNG_STEP_KEY,
 # target walk may use. Never a trigger, stop, gate target or ladder rung.
 PLAN_TARGET_LEVEL_TYPES_KEY = 'plan_target_level_types'
 PLAN_TARGET_LEVEL_TYPE_CHOICES = ('gap_high', 'gap_low')
+# FEAT-STRAT-001 target hit rates (2026-11-16 spec). Policy-wide: the past
+# trades (plan_excursions) a ladder rung's hit rate is read from, the stored
+# measure, and the least trade count printed as a rate. Display only.
+TARGET_REACH_RATE_KEY = 'target_reach_rate'
+TARGET_REACH_MEASURES = ('touch', 'held_5m')
 POLICY_WIDE_KEYS = (EXIT_LEGS_KEY, ENTRY_CUTOFF_KEY, ATR_RUNG_ANCHORS_KEY,
-                    PLAN_TARGET_LEVEL_TYPES_KEY)
+                    PLAN_TARGET_LEVEL_TYPES_KEY, TARGET_REACH_RATE_KEY)
 
 
 def target_key(persona: str, k: int) -> str:
@@ -1385,11 +1390,45 @@ def policy_wide_param(key: str, pol: dict, ticker: str, atr_basis: str) -> Level
         # types are the extra.
         types = plan_target_level_types(extra)
         value = float(len(types)) if types is not None else None
+    elif key == TARGET_REACH_RATE_KEY:
+        # The value is the least trade count printed as a rate; the window
+        # (since, lookback_sessions) and the measure ride on the param.
+        if target_reach_policy_usable(pol.get('min_sample'), pol.get('lookback_sessions'), extra):
+            value = float(pol['min_sample'])
+        return LevelParam(
+            key=key, status=PARAM_OK if value is not None else 'input_unavailable',
+            value=value, ticker=ticker, effective_from=pol.get('effective_from'),
+            method_id=pol.get('method_id'), min_sample=pol.get('min_sample'),
+            lookback_sessions=pol.get('lookback_sessions'), atr_basis=atr_basis,
+            policy_effective_from=pol.get('effective_from'), source='policy', extra=extra)
     return LevelParam(
         key=key, status=PARAM_OK if value is not None else 'input_unavailable',
         value=value, ticker=ticker, effective_from=pol.get('effective_from'),
         method_id=pol.get('method_id'), atr_basis=atr_basis,
         policy_effective_from=pol.get('effective_from'), source='policy', extra=extra)
+
+
+def _positive_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 1
+
+
+def target_reach_policy_usable(min_sample, lookback_sessions, extra) -> bool:
+    """The target_reach_rate row is usable when min_sample is a positive
+    int, lookback_sessions is None or a positive int, extra.since is an ISO
+    date and extra.measure is touch or held_5m."""
+    if not _positive_int(min_sample):
+        return False
+    if lookback_sessions is not None and not _positive_int(lookback_sessions):
+        return False
+    extra = extra if isinstance(extra, dict) else {}
+    since = extra.get('since')
+    if not isinstance(since, str):
+        return False
+    try:
+        date_type.fromisoformat(since)
+    except ValueError:
+        return False
+    return extra.get('measure') in TARGET_REACH_MEASURES
 
 
 def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]:

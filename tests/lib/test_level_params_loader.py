@@ -28,7 +28,7 @@ def test_schema_seeds_the_design_2_policy_and_no_ticker_values():
     policy = seeded_policy()
     assert set(policy) == DESIGN_2_KEYS | {"atr_basis", "calibration_universe",
                                            "exit_legs", "entry_cutoff_et", "atr_rung_anchors",
-                                           "plan_target_level_types"}
+                                           "plan_target_level_types", "target_reach_rate"}
     assert policy["atr_basis"]["extra"] == {"column": "atr_14"}
     assert {p["effective_from"] for p in policy.values()} == {"2015-01-02"}
     assert policy["trigger_window_long_atr"]["statistic_q"] == 0.99
@@ -325,3 +325,46 @@ def test_plan_target_level_types_reads_its_extra(extra, status, value):
                      params={"plan_target_level_types": p})
     expect = tuple(extra["level_types"]) if status == "ok" else None
     assert lp.plan_target_level_types() == expect
+
+
+def test_schema_seeds_the_target_reach_rate_row():
+    """Target hit rates spec, done_when 'Policy': one policy-wide row, ok with
+    value equal to min_sample (30) on the seeded policy, the window and the
+    measure carried on the param."""
+    policy = seeded_policy()
+    row = policy["target_reach_rate"]
+    assert row["method_id"] == "plan_excursion_share" and row["effective_from"] == "2015-01-02"
+    assert row["min_sample"] == 30 and row["lookback_sessions"] is None
+    assert row["extra"] == {"since": "2022-01-03", "measure": "touch"}
+    p = policy_wide_param("target_reach_rate", row, "SPY", "atr_14")
+    assert (p.status, p.value, p.source) == ("ok", 30.0, "policy")
+    assert p.min_sample == 30 and p.lookback_sessions is None
+    assert p.extra == {"since": "2022-01-03", "measure": "touch"}
+    schema = (Path(__file__).resolve().parents[2] / "gcp" / "schema.sql").read_text()
+    block = schema[schema.index("('target_reach_rate'"):]
+    assert block.index("ON CONFLICT (param_key, effective_from) DO NOTHING") < block.index(";")
+
+
+_REACH_OK = {"min_sample": 30, "lookback_sessions": None,
+             "extra": {"since": "2022-01-03", "measure": "touch"}}
+
+
+@pytest.mark.parametrize("change, status, value", [
+    ({}, "ok", 30.0),
+    ({"lookback_sessions": 500}, "ok", 30.0),
+    ({"extra": {"since": "2022-01-03", "measure": "held_5m"}}, "ok", 30.0),
+    ({"min_sample": 0}, "input_unavailable", None),
+    ({"min_sample": None}, "input_unavailable", None),
+    ({"min_sample": True}, "input_unavailable", None),
+    ({"lookback_sessions": 0}, "input_unavailable", None),
+    ({"lookback_sessions": -1}, "input_unavailable", None),
+    ({"extra": {"since": "2022-13-01", "measure": "touch"}}, "input_unavailable", None),
+    ({"extra": {"measure": "touch"}}, "input_unavailable", None),
+    ({"extra": {"since": "2022-01-03", "measure": "close"}}, "input_unavailable", None),
+    ({"extra": {"since": "2022-01-03"}}, "input_unavailable", None),
+])
+def test_target_reach_rate_reads_its_row(change, status, value):
+    row = {"param_key": "target_reach_rate", "method_id": "plan_excursion_share",
+           "effective_from": "2015-01-02", **_REACH_OK, **change}
+    p = policy_wide_param("target_reach_rate", row, "SPY", "atr_14")
+    assert (p.status, p.value) == (status, value)

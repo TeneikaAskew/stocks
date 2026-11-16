@@ -2316,7 +2316,14 @@ INSERT INTO level_param_policy (
     -- Policy-wide: the level types, beyond the trigger candidates, the exits
     -- plan's spaced target walk may use. An empty list turns gap edges off.
     ('plan_target_level_types', 'policy', NULL, NULL, NULL, '{"level_types": ["gap_high", "gap_low"]}', '2015-01-02',
-     'level types, beyond the trigger candidates, the exits plan''s spaced target walk may use')
+     'level types, beyond the trigger candidates, the exits plan''s spaced target walk may use'),
+    -- Target hit rates (docs/superpowers/specs/2026-11-16-feat-strat-001-target-hit-rates.md).
+    -- Policy-wide: the past trades a ladder rung's hit rate is read from
+    -- (plan_excursions, since a date or the last lookback_sessions), the
+    -- stored measure (touch or held_5m), and the least trade count printed
+    -- as a rate.
+    ('target_reach_rate', 'plan_excursion_share', NULL, NULL, 30, '{"since": "2022-01-03", "measure": "touch"}',
+     '2015-01-02', 'trades a target hit rate is read from: since a date or the last lookback_sessions, touch or held_5m, at least min_sample')
 ON CONFLICT (param_key, effective_from) DO NOTHING;
 
 
