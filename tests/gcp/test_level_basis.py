@@ -459,7 +459,7 @@ def _exit_picks(sl):
 def test_v3_basis_records_the_exit_parameters():
     from tests.lib.session_levels_helpers import d8_basis
     stored = json.loads(json.dumps(SessionLevels.from_basis(d8_basis()).to_basis()))
-    assert LEVEL_RULE_VERSION == stored["rule_version"] == "feat-strat-001.v3"
+    assert LEVEL_RULE_VERSION == stored["rule_version"] == "feat-strat-001.v4"
     for key in EXIT_KEYS:
         p = stored["params"][key]
         assert p["status"] == "ok" and p["value"] is not None

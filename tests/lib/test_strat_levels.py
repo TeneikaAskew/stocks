@@ -1441,8 +1441,14 @@ class TestAtrRungsDisplayOnly:
             assert hparams.pop('plan_target_level_types')['extra'] == {
                 'level_types': ['gap_high', 'gap_low']}, t
             assert hparams == bb['params'], t
-            assert {k: v for k, v in hb.items() if k not in rung_keys | {'params'}} == {
-                k: v for k, v in bb.items() if k != 'params'}, t
+            # The base is a stored v3 basis; a brief built now records v4
+            # (FEAT-PLAYBOOK-001 B8b). The two share the pick rule, so every
+            # other key is still the base's.
+            assert bb['rule_version'] == 'feat-strat-001.v3', t
+            assert hb['rule_version'] == 'feat-strat-001.v4', t
+            assert {k: v for k, v in hb.items()
+                    if k not in rung_keys | {'params', 'rule_version'}} == {
+                k: v for k, v in bb.items() if k not in ('params', 'rule_version')}, t
             # The session of the gamma snapshot (FEAT-PLAYBOOK-001 B1) is a key the
             # brief gained after the base was taken; the fixture run has no gamma
             # snapshot, so it is None, and every other key is still the base's.
@@ -1500,7 +1506,7 @@ class TestAtrRungsDisplayOnly:
     def test_the_rule_version_and_persisted_levels_are_unchanged(self):
         from lib.strat_levels import LEVEL_RULE_VERSION
         sl = d8_session()
-        assert LEVEL_RULE_VERSION == sl.rule_version == 'feat-strat-001.v3'
+        assert LEVEL_RULE_VERSION == sl.rule_version == 'feat-strat-001.v4'
         lm = sl.to_level_map()
         assert sorted(lv.name for lv in lm.levels) == sorted(list(D8_LEVELS) + ['PMK_H', 'PMK_L'])
         assert [(r['price'], r['name']) for r in lm.call_levels] == [(252.10, 'PMK_H'), (253.00, 'PDH')]
@@ -1816,3 +1822,87 @@ class TestPlanGapEdges:
     def test_the_design_8_goldens_are_unchanged(self):
         text = format_levels_for_brief(_gap_session().to_level_map(), 'neutral')
         assert D8_CALLS in text and D8_PUTS in text
+
+
+# ── FEAT-PLAYBOOK-001 B8b: the level rule is v4, and v3 reads as before ─
+# The picks below were printed by SessionLevels.from_basis(d8_basis()) on the
+# unchanged code (head 219a4c0c3, where the fixture and the current version
+# were both v3), and pasted here.
+
+V3 = 'feat-strat-001.v3'
+V3_D8_PICKS = {
+    'long': {'trigger': ('PMK_H', 252.1), 'stop': ('PMK_L', 248.2),
+             'targets': [('PMH', 275.0), ('PQH', 280.0), ('PYH', 285.0)],
+             'gate_targets': [('PDH', 253.0), ('PMH', 275.0), ('PQH', 280.0)]},
+    'short': {'trigger': ('PMK_L', 248.2), 'stop': ('PMK_H', 252.1),
+              'targets': [('PML', 225.0), ('PQL', 220.0), ('PYL', 215.0)],
+              'gate_targets': [('PDL', 247.5), ('PDC', 247.0), ('PML', 225.0)]},
+}
+V3_D8_PLAN = {'spacing_atr': 0.25, 'spacing_price': 3.5, 'atr_basis': 'atr_14', 'legs': 3,
+              'entry_cutoff_et': '16:00', 'entry_cutoff_status': 'ok',
+              'gap_fill_flag_atr': 0.5, 'gap_fill_flag_status': 'ok'}
+
+
+def _picks_of(sl):
+    def rung(r):
+        return (r['name'], r['price'])
+    return {name: {'trigger': rung(s.trigger), 'stop': rung(s.stop),
+                   'targets': [rung(r) for r in s.targets],
+                   'gate_targets': [rung(r) for r in s.gate_targets]}
+            for name, s in (('long', sl.long), ('short', sl.short))}
+
+
+def _v3_d8_basis():
+    from tests.lib.session_levels_helpers import d8_basis
+    return {**d8_basis(), 'rule_version': V3}
+
+
+def test_v3_basis_rebuilds_as_on_main():
+    from lib.strat_levels import LEVEL_RULE_VERSION, SessionLevels
+    sl = SessionLevels.from_basis(_v3_d8_basis())
+    assert LEVEL_RULE_VERSION != V3
+    assert sl.rule_version == V3
+    assert _picks_of(sl) == V3_D8_PICKS
+    assert sl.long.plan == V3_D8_PLAN and sl.short.plan == V3_D8_PLAN
+    assert sl.long.target_status == sl.short.target_status == 'ok'
+    assert sl.to_basis()['rule_version'] == V3
+
+
+def test_a_new_build_records_v4():
+    from lib.strat_levels import LEVEL_RULE_VERSION, SessionLevels
+    from tests.lib.session_levels_helpers import d8_basis
+    assert LEVEL_RULE_VERSION == 'feat-strat-001.v4'
+    assert SessionLevels(ticker='TST', session_date=None).rule_version == 'feat-strat-001.v4'
+    built = SessionLevels.from_basis(d8_basis())
+    assert built.rule_version == built.to_basis()['rule_version'] == 'feat-strat-001.v4'
+    # v3 and v4 share the pick rule: the same levels give the same picks.
+    assert _picks_of(built) == V3_D8_PICKS
+
+
+def test_v3_basis_keeps_its_rule_under_a_new_premarket_snapshot():
+    """The first v4 morning: a stored v3 basis given a new premarket snapshot
+    stays v3 with its targets spaced, and never falls to the v2 branch."""
+    from lib.strat_levels import SessionLevels
+    v3 = _v3_d8_basis()
+    snap = {**v3['premarket'], 'pre_high': 252.50}
+    sl = SessionLevels.from_basis(v3).with_premarket(snap)
+    assert sl.rule_version == V3
+    assert sl.long.trigger['price'] == 252.50
+    assert [r['price'] for r in sl.long.targets] == [275.0, 280.0, 285.0]
+    assert [r['price'] for r in sl.long.gate_targets] == [253.0, 275.0, 280.0]
+    assert sl.long.targets != sl.long.gate_targets      # the v2 rule makes them equal
+    assert sl.long.plan == V3_D8_PLAN
+
+
+def test_is_current_pick_rule():
+    from lib.strat_levels import (
+        LEVEL_RULE_V2, LEVEL_RULE_V3, LEVEL_RULE_VERSION, PICK_RULE_VERSIONS,
+        is_current_pick_rule,
+    )
+    assert LEVEL_RULE_V3 == V3 and PICK_RULE_VERSIONS == (V3, 'feat-strat-001.v4')
+    assert is_current_pick_rule(V3) and is_current_pick_rule(LEVEL_RULE_VERSION)
+    assert is_current_pick_rule(None) is False
+    assert is_current_pick_rule('feat-strat-001.v1') is False
+    assert is_current_pick_rule('feat-strat-001.v2') is False
+    assert is_current_pick_rule(LEVEL_RULE_V2) is False
+    assert is_current_pick_rule('') is False

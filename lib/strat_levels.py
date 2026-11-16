@@ -1512,8 +1512,21 @@ def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]
 # target_min_spacing_atr and planned in exit_legs legs; gate_targets keep the
 # v2 targets for the signal monitor and the structured t1..t3 columns. A
 # stored v2 basis is rebuilt with the v2 rule.
+# v4 (2026-11-16 premarket extremes): the pick rule is v3's. Only how the
+# premarket high and low were taken differs (a confirmed print, not a thin
+# bar, not a stale closing-price report), so the version marks which
+# extremes a basis was built on and reach rates count one version at a time.
 LEVEL_RULE_V2 = 'feat-strat-001.v2'
-LEVEL_RULE_VERSION = 'feat-strat-001.v3'
+LEVEL_RULE_V3 = 'feat-strat-001.v3'
+LEVEL_RULE_VERSION = 'feat-strat-001.v4'
+PICK_RULE_VERSIONS = (LEVEL_RULE_V3, LEVEL_RULE_VERSION)
+
+
+def is_current_pick_rule(version) -> bool:
+    """True when `version` names a rule that picks as the current one does
+    (v3 or v4). Every reader that asks "is this basis under the pick rule"
+    asks here; only the reach-rate population filters on one exact version."""
+    return isinstance(version, str) and version in PICK_RULE_VERSIONS
 
 # Trigger candidates in tie-break priority: at one price to the cent the
 # earlier name wins, so a structural level beats the parent bar and both beat
@@ -1962,11 +1975,12 @@ class SessionLevels:
             atr_14 = _opt_float(basis.get('atr'))
         atrs = {'atr_14': atr_14, 'atr_5': atr_5}
         basis_atr = atrs.get(atr_basis) if atr_basis else None
-        # A v3 basis is rebuilt with the v3 rule and its recorded values; any
-        # earlier basis with the v2 rule (no spacing, three targets), so a
-        # stored brief and its replay do not change.
-        rule = (LEVEL_RULE_VERSION if basis.get('rule_version') == LEVEL_RULE_VERSION
-                else LEVEL_RULE_V2)
+        # A v3 or v4 basis is rebuilt with the pick rule they share, under
+        # its own recorded version and values; any earlier basis with the v2
+        # rule (no spacing, three targets), so a stored brief and its replay
+        # do not change.
+        recorded_rule = basis.get('rule_version')
+        rule = recorded_rule if is_current_pick_rule(recorded_rule) else LEVEL_RULE_V2
         base = cls(
             ticker=ticker,
             session_date=session,
@@ -2431,7 +2445,8 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
               reference: Optional[float], reference_source: Optional[str]) -> SessionLevels:
     """Recompute reference, cleared marks, broken status and picks from a
     SessionLevels' structural levels plus a premarket snapshot."""
-    rule = base.rule_version if base.rule_version == LEVEL_RULE_V2 else LEVEL_RULE_VERSION
+    keeps = base.rule_version == LEVEL_RULE_V2 or is_current_pick_rule(base.rule_version)
+    rule = base.rule_version if keeps else LEVEL_RULE_VERSION
     out = SessionLevels(
         ticker=base.ticker, session_date=base.session_date, status=base.status,
         rule_version=rule, built_at=base.built_at,
