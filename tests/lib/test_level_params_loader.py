@@ -15,7 +15,7 @@ import pytest
 
 from lib.strat_levels import (
     PARAMS_BASIS_MISMATCH, PARAMS_UNAVAILABLE, LevelParamsUnavailable,
-    LevelParamUnavailable, load_level_params,
+    LevelParams, LevelParamUnavailable, load_level_params, policy_wide_param,
 )
 from tests.lib.level_params_fixtures import LEGACY_1753_VALUES, ParamsDb, legacy_db, seeded_policy
 
@@ -27,7 +27,8 @@ def test_schema_seeds_the_design_2_policy_and_no_ticker_values():
     db = ParamsDb()
     policy = seeded_policy()
     assert set(policy) == DESIGN_2_KEYS | {"atr_basis", "calibration_universe",
-                                           "exit_legs", "entry_cutoff_et", "atr_rung_anchors"}
+                                           "exit_legs", "entry_cutoff_et", "atr_rung_anchors",
+                                           "plan_target_level_types"}
     assert policy["atr_basis"]["extra"] == {"column": "atr_14"}
     assert {p["effective_from"] for p in policy.values()} == {"2015-01-02"}
     assert policy["trigger_window_long_atr"]["statistic_q"] == 0.99
@@ -278,3 +279,49 @@ def test_a_later_anchor_row_of_the_prior_close_builds_prior_close_rungs():
     assert after == {"PDC"}
     assert sorted(r["price"] for r in sl.atr_rungs + sl.atr_rungs_dropped) == [
         219.0, 226.0, 233.0, 240.0, 254.0, 261.0, 268.0, 275.0]
+
+
+def test_the_seeded_entry_cutoff_is_the_regular_close():
+    """Drop-entry-cutoff spec, Design 1: the policy seeded in gcp/schema.sql
+    gives entry_cutoff_et 16:00 ET, 960 minutes after midnight."""
+    from lib.strat_levels import policy_wide_param
+    from tests.lib.level_params_fixtures import seeded_policy
+
+    p = policy_wide_param("entry_cutoff_et", seeded_policy()["entry_cutoff_et"], "SPY", "atr_14")
+    assert p.status == "ok" and p.value == 960.0
+    assert p.extra == {"time_et": "16:00"}
+
+
+def test_schema_seeds_the_plan_target_level_types_row():
+    """Gap-edge plan targets spec, done_when 'Policy': one policy-wide row,
+    read like atr_rung_anchors, ok with value 2 on the seeded policy."""
+    policy = seeded_policy()
+    row = policy["plan_target_level_types"]
+    assert row["method_id"] == "policy" and row["effective_from"] == "2015-01-02"
+    assert row["extra"] == {"level_types": ["gap_high", "gap_low"]}
+    p = policy_wide_param("plan_target_level_types", row, "SPY", "atr_14")
+    assert (p.status, p.value, p.source) == ("ok", 2.0, "policy")
+    schema = (Path(__file__).resolve().parents[2] / "gcp" / "schema.sql").read_text()
+    block = schema[schema.index("('plan_target_level_types'"):]
+    assert block.index("ON CONFLICT (param_key, effective_from) DO NOTHING") < block.index(";")
+
+
+@pytest.mark.parametrize("extra, status, value", [
+    ({"level_types": ["gap_high", "gap_low"]}, "ok", 2.0),
+    ({"level_types": ["gap_low"]}, "ok", 1.0),
+    ({"level_types": []}, "ok", 0.0),
+    ({}, "input_unavailable", None),
+    ({"level_types": "gap_high"}, "input_unavailable", None),
+    ({"level_types": ["gap_high", "open"]}, "input_unavailable", None),
+    ({"level_types": ["gap_high", "gap_high"]}, "input_unavailable", None),
+])
+def test_plan_target_level_types_reads_its_extra(extra, status, value):
+    row = {"param_key": "plan_target_level_types", "method_id": "policy", "extra": extra,
+           "effective_from": "2015-01-02"}
+    p = policy_wide_param("plan_target_level_types", row, "SPY", "atr_14")
+    assert (p.status, p.value) == (status, value)
+    lp = LevelParams(ticker="SPY", session_date=D, atr_basis="atr_14",
+                     policy_effective_from="2015-01-02",
+                     params={"plan_target_level_types": p})
+    expect = tuple(extra["level_types"]) if status == "ok" else None
+    assert lp.plan_target_level_types() == expect

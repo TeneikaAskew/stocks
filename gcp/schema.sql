@@ -2297,8 +2297,8 @@ INSERT INTO level_param_policy (
      '|reference - prior close| / ATR at which a prior-close target is labelled a gap fill'),
     ('exit_legs', 'policy', NULL, NULL, NULL, '{"legs": 3}', '2015-01-02',
      'equal legs the exit plan sells, one at each spaced target'),
-    ('entry_cutoff_et', 'policy', NULL, NULL, NULL, '{"time_et": "10:00"}', '2015-01-02',
-     'last minute (ET, exclusive) a first cross of the trigger is an entry'),
+    ('entry_cutoff_et', 'policy', NULL, NULL, NULL, '{"time_et": "16:00"}', '2015-01-02',
+     'last minute (ET, exclusive) a first cross of the trigger is an entry; 16:00 is the regular close, so every first cross in the session is one'),
     -- ATR levels (docs/superpowers/specs/2026-11-11-feat-strat-001-brief-atr-levels.md).
     -- Display only: the brief's NEXT LEVELS ATR line; never a trigger, stop
     -- or target. The anchor list is policy-wide (it names levels, in name
@@ -2311,7 +2311,12 @@ INSERT INTO level_param_policy (
     ('atr_rung_max_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 2.0}', '2015-01-02',
      'farthest ATR rung from its anchor / ATR'),
     ('atr_rung_stretch_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 1.5}', '2015-01-02',
-     'distance from its anchor / ATR at which an ATR rung is marked stretch')
+     'distance from its anchor / ATR at which an ATR rung is marked stretch'),
+    -- Gap-edge plan targets (docs/superpowers/specs/2026-11-15-feat-strat-001-plan-targets-gap-edges.md).
+    -- Policy-wide: the level types, beyond the trigger candidates, the exits
+    -- plan's spaced target walk may use. An empty list turns gap edges off.
+    ('plan_target_level_types', 'policy', NULL, NULL, NULL, '{"level_types": ["gap_high", "gap_low"]}', '2015-01-02',
+     'level types, beyond the trigger candidates, the exits plan''s spaced target walk may use')
 ON CONFLICT (param_key, effective_from) DO NOTHING;
 
 

@@ -669,8 +669,8 @@ def test_resolve_one_sets_and_binds_the_new_outcome_columns(monkeypatch):
     assert bound['puts_eod_pnl_pct'] is None
     assert bound['puts_eod_pnl_dollar'] is None
     assert bound['puts_trigger_hit_ts'] == pd.Timestamp(_ts(0))
-    assert mod.RESOLVER_VERSION == '2026-11-12.v3'
-    assert bound['outcome_resolver_version'] == '2026-11-12.v3'
+    assert mod.RESOLVER_VERSION == '2026-11-15.v4'
+    assert bound['outcome_resolver_version'] == '2026-11-15.v4'
     assert bound['d'] == '2026-05-06' and bound['t'] == 'SPY'
 
 
@@ -693,6 +693,9 @@ def test_schema_adds_the_traded_outcome_columns_nullable_without_default():
 from gcp.premarket_playbook_resolver import PlanInputs, resolve_plan  # noqa: E402
 
 CUTOFF_10_ET = 10 * 60
+# The seeded policy's cutoff (drop-entry-cutoff spec, Design 1): 16:00 ET, the
+# regular close, so every first cross in the session is an entry.
+CUTOFF_SEEDED = 16 * 60
 
 
 def _plan(**kw) -> PlanInputs:
@@ -914,7 +917,7 @@ class TestPlanInputs:
         assert calls.trigger_price == pytest.approx(252.10)
         assert calls.stop_price == pytest.approx(248.20)
         assert calls.targets == pytest.approx((275.00, 280.00, 285.00))
-        assert calls.legs == 3 and calls.cutoff_minutes == CUTOFF_10_ET
+        assert calls.legs == 3 and calls.cutoff_minutes == CUTOFF_SEEDED
         assert calls.target_status == 'ok' and calls.plan_available
         puts = mod.plan_inputs('puts', {}, basis, policy_fn=lambda: pytest.fail('no policy read'))
         assert puts.trigger_price == pytest.approx(248.20)
@@ -960,7 +963,7 @@ class TestPlanInputs:
                'calls_t1_price': 253.00, 'calls_t2_price': 275.00, 'calls_t3_price': None}
         calls = mod.plan_inputs('calls', row, basis, policy_fn=lambda: fixture_params('TST'))
         assert calls.targets == pytest.approx((253.00, 275.00))
-        assert calls.legs == 3 and calls.cutoff_minutes == CUTOFF_10_ET
+        assert calls.legs == 3 and calls.cutoff_minutes == CUTOFF_SEEDED
         assert calls.plan_available
 
     @pytest.mark.parametrize('rule_version', ['feat-strat-001.v1', None])
@@ -1094,3 +1097,110 @@ def test_schema_adds_the_plan_columns_nullable_without_default():
                          ('t2_hit_ts', 'TIMESTAMPTZ'), ('t3_hit_ts', 'TIMESTAMPTZ'),
                          ('exit', 'TEXT')):
             assert re.search(rf'ADD COLUMN IF NOT EXISTS {side}_plan_{col}\s+{typ}\s*,', sql), (side, col)
+
+
+# ─── Drop the entry cutoff (2026-11-15) ─────────────────────────────────
+# docs/superpowers/specs/2026-11-15-feat-strat-001-drop-entry-cutoff.md
+
+
+class TestSeededCutoff:
+    """The plan built from a v2 row and the policy seeded in gcp/schema.sql
+    takes a first cross anywhere in the regular session."""
+
+    @staticmethod
+    def _inputs():
+        import gcp.premarket_playbook_resolver as mod
+        from lib.strat_levels import LEVEL_RULE_V2
+        from tests.lib.level_params_fixtures import fixture_params
+        from tests.lib.session_levels_helpers import d8_basis
+
+        basis = {**d8_basis(), 'rule_version': LEVEL_RULE_V2}
+        row = {'calls_trigger_price': 100.00, 'calls_stop_price': 99.00,
+               'calls_t1_price': 101.00, 'calls_t2_price': 102.00, 'calls_t3_price': 103.00}
+        return mod.plan_inputs('calls', row, basis, policy_fn=lambda: fixture_params('TST'))
+
+    @pytest.mark.parametrize('cross_minute', [30, 389])   # the 10:00 and 15:59 bars
+    def test_a_first_cross_after_10_is_an_entry(self, cross_minute):
+        plan = self._inputs()
+        assert plan.cutoff_minutes == CUTOFF_SEEDED and plan.plan_available
+        quiet = [_bar(_ts(m), 99.50, 99.80, 99.40, 99.70) for m in range(0, cross_minute)]
+        bars = _bars(quiet + [_bar(_ts(cross_minute), 99.70, 100.20, 99.60, 100.10)])
+        out = resolve_plan('call', plan, bars)
+        assert out.entry_status == 'entered', cross_minute
+        assert out.fill_price == pytest.approx(100.00)
+        assert out.fill_ts == bars.iloc[-1]['time']
+
+
+# 2026-11-27 is a half day: 09:30 ET is 14:30 UTC and the close is 13:00 ET
+# (18:00 UTC), from the NYSE calendar.
+HALF_DAY = datetime(2026, 11, 27, 14, 30, tzinfo=timezone.utc)
+
+
+def _hd(minute_offset: int) -> datetime:
+    return HALF_DAY + timedelta(minutes=minute_offset)
+
+
+def _half_day_row():
+    return pd.DataFrame([{
+        'calls_trigger_price': 100.0, 'calls_stop_price': 99.0,
+        'calls_t1_price': 101.0, 'calls_t2_price': 102.0, 'calls_t3_price': 103.0,
+        'puts_trigger_price': 95.0, 'puts_stop_price': 96.0,
+        'puts_t1_price': 94.0, 'puts_t2_price': 93.0, 'puts_t3_price': 92.0,
+        'level_basis': None, 'outcome_resolved_at': None,
+    }])
+
+
+def _resolve_half_day(monkeypatch, bars):
+    """resolve_one on the half day with the seeded cutoff, reading `bars` as
+    the 09:30 to 15:59 ET query returns them."""
+    import gcp.premarket_playbook_resolver as mod
+
+    plans = {'calls': _plan(cutoff_minutes=CUTOFF_SEEDED),
+             'puts': _plan(trigger_price=95.0, stop_price=96.0, targets=(94.0, 93.0, 92.0),
+                           cutoff_minutes=CUTOFF_SEEDED)}
+    monkeypatch.setattr(mod, 'plan_inputs', lambda side, *a, **k: plans[side])
+    reads = iter([_half_day_row(), bars])
+    monkeypatch.setattr(mod.pd, 'read_sql', lambda *a, **k: next(reads))
+    engine = _RecordingEngine()
+    updates, reason = mod.resolve_one(_date(2026, 11, 27), 'tst', engine)
+    assert reason == 'resolved'
+    return mod, _plan_set_and_bound(engine)[1]
+
+
+def test_a_cross_after_a_half_day_close_is_no_plan_entry(monkeypatch):
+    bars = pd.DataFrame([
+        {'time': _hd(0), 'open': 99.50, 'high': 99.80, 'low': 99.40, 'close': 99.70},
+        {'time': _hd(209), 'open': 99.70, 'high': 99.80, 'low': 99.60, 'close': 99.75},  # 12:59
+        {'time': _hd(240), 'open': 99.75, 'high': 100.40, 'low': 99.70, 'close': 100.30},  # 13:30
+    ])
+    mod, bound = _resolve_half_day(monkeypatch, bars)
+    assert bound['calls_plan_entry_status'] == 'no_cross'
+    assert bound['calls_plan_r'] is None and bound['calls_plan_fill_price'] is None
+    # The existing columns read every bar to 15:59, as on origin/main.
+    want = mod.resolve_leg('call', trigger_price=100.0, stop_price=99.0,
+                           target_prices=[101.0, 102.0, 103.0],
+                           bars=bars.assign(time=pd.to_datetime(bars['time'], utc=True)))
+    assert bound['calls_trigger_hit_ts'] == want.trigger_hit_ts == pd.Timestamp(_hd(240))
+    assert bound['calls_eod_pnl_pct'] == want.eod_pnl_pct
+    assert bound['outcome_resolver_version'] == mod.RESOLVER_VERSION
+
+
+def test_a_half_day_close_leg_books_the_last_bar_before_the_close(monkeypatch):
+    bars = pd.DataFrame([
+        {'time': _hd(0), 'open': 99.50, 'high': 99.80, 'low': 99.40, 'close': 99.70},
+        {'time': _hd(15), 'open': 99.70, 'high': 100.20, 'low': 99.60, 'close': 100.10},  # 09:45
+        {'time': _hd(209), 'open': 100.40, 'high': 100.60, 'low': 100.30, 'close': 100.50},  # 12:59
+        {'time': _hd(240), 'open': 100.70, 'high': 100.90, 'low': 100.60, 'close': 100.80},  # 13:30
+    ])
+    mod, bound = _resolve_half_day(monkeypatch, bars)
+    assert bound['calls_plan_entry_status'] == 'entered'
+    assert bound['calls_plan_fill_ts'] == pd.Timestamp(_hd(15))
+    assert bound['calls_plan_exit'] == 'close,close,close'
+    assert bound['calls_plan_r'] == pytest.approx(0.5)     # 100.50, not the 13:30 print's 0.8
+    want = mod.resolve_leg('call', trigger_price=100.0, stop_price=99.0,
+                           target_prices=[101.0, 102.0, 103.0],
+                           bars=bars.assign(time=pd.to_datetime(bars['time'], utc=True)))
+    for col in ('trigger_hit_ts', 't1_hit_ts', 't2_hit_ts', 't3_hit_ts', 'stop_hit_ts',
+                'eod_pnl_pct', 'exit_reason', 'fill_price'):
+        assert bound[f'calls_{col}'] == getattr(want, col), col
+    assert bound['calls_eod_pnl_pct'] == pytest.approx(0.8)

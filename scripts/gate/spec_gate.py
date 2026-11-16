@@ -1125,7 +1125,15 @@ def is_process_file(path: str, trees=()) -> bool:
             or path in RENDERER_FILES or path == "tests/scripts/measure_inventory_render.py"
             or path.startswith(LOCAL_SKILLS) or path.startswith((".claude/", ".githooks/"))
             or path.rsplit("/", 1)[-1] in ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md") or is_pytest_config(path)
-            or is_suite_path_input(path))
+            or is_suite_path_input(path) or is_package_metadata(path))
+
+
+def is_package_metadata(path: str) -> bool:
+    """`python3 -m pytest` puts the checkout first on sys.path and pytest loads every `pytest11` entry point
+    importlib.metadata finds there, so a root `*.dist-info` or `*.egg-info` folder (or file) registers a plugin
+    in both gate suites (FEAT-CICD-001 Part A follow-up: folders the gate suites import from the checkout).
+    importlib.metadata matches the two suffixes in any case, so the name is compared folded."""
+    return path.split("/", 1)[0].lower().endswith((".dist-info", ".egg-info"))
 # pytest takes its options (`addopts = --co` runs nothing and passes) from the first of these files in the
 # gate suites' directory or a parent up to the checkout (FEAT-CICD-001 Part A pin prerequisite)
 PYTEST_CONFIG_NAMES = ("pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml", "tox.ini", "setup.cfg", "pyproject.toml")
@@ -1166,6 +1174,34 @@ SOURCE_IMPORT_NAMES = frozenset(sys.stdlib_module_names) | {
 SOURCE_IMPORT_SUFFIXES = tuple(dict.fromkeys((".py", ".pyc", ".pyw", ".so", ".pyd",
                                              *importlib.machinery.EXTENSION_SUFFIXES)))
 SOURCE_ROOT_IMPORT_NAMES = SOURCE_IMPORT_NAMES | {"scripts", "tests"}
+
+
+@functools.lru_cache(maxsize=None)
+def namespace_import_runs(name: str) -> bool:
+    """Whether a folder named `name` with no initializer would be imported from the checkout.
+
+    A namespace package is used only when no regular module or package of that name is found anywhere on
+    sys.path, so a folder of a third-party name the suites import when present (pytest-xdist's optional
+    setproctitle and psutil, for one) runs when that package is not installed, and so does a folder of a
+    standard-library name the interpreter does not have (`nt`, which `ntpath` imports on Linux). A folder
+    named after a standard-library module this interpreter finds outside the checkout stays application
+    code (FEAT-CICD-001 Part A follow-up: folders the gate suites import from the checkout).
+    """
+    if name not in sys.stdlib_module_names:
+        return True
+    if name in sys.builtin_module_names or importlib.machinery.FrozenImporter.find_spec(name) is not None:
+        return False
+    outside = []
+    for entry in sys.path:
+        try:
+            resolved = pathlib.Path(entry or ".").resolve()
+        except OSError:
+            continue
+        if resolved == ROOT or ROOT in resolved.parents or resolved == pathlib.Path.cwd().resolve():
+            continue
+        outside.append(entry)
+    spec = importlib.machinery.PathFinder.find_spec(name, outside)
+    return spec is None or spec.origin is None or spec.loader is None
 
 
 def source_backed_cache(path: str, *, trees=(), present=None) -> str | None:
@@ -1233,6 +1269,10 @@ def source_import_shadow(path: str, *, trees=(), present=None) -> bool:
             if tail in initializers:
                 return True
             if component not in ("scripts", "tests") and any(exists(parent + component + "/" + init) for init in initializers):
+                return True
+            # Without an initializer the folder is a namespace package; every path under it counts when
+            # the import would find nothing else (FEAT-CICD-001 Part A follow-up)
+            if component not in ("scripts", "tests") and namespace_import_runs(component):
                 return True
     return False
 

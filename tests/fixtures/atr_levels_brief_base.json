@@ -392,7 +392,7 @@
     ],
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -561,7 +561,7 @@
      "atr_basis": "atr_14",
      "effective_from": "2015-01-02",
      "extra": {
-      "time_et": "10:00"
+      "time_et": "16:00"
      },
      "input_from": null,
      "input_to": null,
@@ -573,7 +573,7 @@
      "source": "policy",
      "statistic_q": null,
      "status": "ok",
-     "value": 600.0
+     "value": 960.0
     },
     "exit_legs": {
      "atr_basis": "atr_14",
@@ -1086,7 +1086,7 @@
     ],
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -1151,7 +1151,7 @@
   "macd": -0.8866582950830093,
   "macd_cross": "Bullish",
   "macd_signal_val": -1.2871908821408782,
-  "playbook": "  CALLS above 272.50 (PMK_H) -- only if bias denied, new entries 09:30 to 10:00 ET\n    No entry if the open is at or above 272.50.\n    Stop: 270.98 (PDC)\n    T1: 276.00 (PWL), sell 1/3\n    T2: 277.41 (PQL), sell 1/3\n    T3: 277.89 (PQC), sell the last 1/3, or hold to the close or the stop\n    Room to trigger: 0.34%\n\n  PUTS below 269.13 (PMK_L), new entries 09:30 to 10:00 ET\n    No entry if the open is at or below 269.13.\n    Stop: 272.50 (PMK_H)\n    T1: 258.20 (PYH), sell 1/3, hold the last 2/3 to the close or the stop\n    Room to trigger: 0.90%\n\n  NEXT LEVELS:\n    Calls (up):  272.50 PMK_H (intraday) +0.34%, 276.00 PWL (week) +1.63%\n    Puts (down): 269.13 PMK_L (intraday) -0.90%, 258.20 PYH (year) -4.93%\n\n  PMG ZONES:\n    285.07 (PDH, PWH, PMH) [strength: 4.0]\n    270.20 (PML, PDL) [strength: 2.5]\n    279.33 (PWC, PMC) [strength: 2.5]",
+  "playbook": "  CALLS above 272.50 (PMK_H) -- only if bias denied, new entries 09:30 to 16:00 ET\n    No entry if the open is at or above 272.50.\n    Stop: 270.98 (PDC)\n    T1: 276.00 (PWL), sell 1/3\n    T2: 277.41 (PQL), sell 1/3\n    T3: 277.89 (PQC), sell the last 1/3, or hold to the close or the stop\n    Room to trigger: 0.34%\n\n  PUTS below 269.13 (PMK_L), new entries 09:30 to 16:00 ET\n    No entry if the open is at or below 269.13.\n    Stop: 272.50 (PMK_H)\n    T1: 258.20 (PYH), sell 1/3, hold the last 2/3 to the close or the stop\n    Room to trigger: 0.90%\n\n  NEXT LEVELS:\n    Calls (up):  272.50 PMK_H (intraday) +0.34%, 276.00 PWL (week) +1.63%\n    Puts (down): 269.13 PMK_L (intraday) -0.90%, 258.20 PYH (year) -4.93%\n\n  PMG ZONES:\n    285.07 (PDH, PWH, PMH) [strength: 4.0]\n    270.20 (PML, PDL) [strength: 2.5]\n    279.33 (PWC, PMC) [strength: 2.5]",
   "premarket_status": "ok",
   "prev_day_close": 270.98,
   "prev_day_high": 284.7,
@@ -1719,7 +1719,7 @@
     ],
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -1892,7 +1892,7 @@
      "atr_basis": "atr_14",
      "effective_from": "2015-01-02",
      "extra": {
-      "time_et": "10:00"
+      "time_et": "16:00"
      },
      "input_from": null,
      "input_to": null,
@@ -1904,7 +1904,7 @@
      "source": "policy",
      "statistic_q": null,
      "status": "ok",
-     "value": 600.0
+     "value": 960.0
     },
     "exit_legs": {
      "atr_basis": "atr_14",
@@ -2426,7 +2426,7 @@
     ],
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -2511,7 +2511,7 @@
   "macd": -14.55193345742714,
   "macd_cross": "Bearish",
   "macd_signal_val": -8.332427256050707,
-  "playbook": "  CALLS above 660.40 (PMK_H) -- only if bias denied, new entries 09:30 to 10:00 ET\n    No entry if the open is at or above 660.40.\n    Stop: 649.62 (PMK_L)\n    T1: 661.14 (PQL), sell 1/3\n    T2: 683.45 (PWL), sell 1/3\n    T3: 683.65 (PDH), sell the last 1/3, or hold to the close or the stop\n    Room to trigger: 0.49%\n\n  PUTS below 649.62 (PMK_L), new entries 09:30 to 10:00 ET\n    No entry if the open is at or below 649.62.\n    Stop: 660.40 (PMK_H)\n    T1: 647.05 (PDL, gap fill: gap 0.66 x ATR), sell 1/3\n    T2: 637.01 (PYH), sell 1/3\n    T3: 614.31 (PYC), sell the last 1/3, or hold to the close or the stop\n    Room to trigger: 1.15%\n\n  NEXT LEVELS:\n    Calls (up):  660.40 PMK_H (intraday) +0.49%, 661.14 PQL (quarter) +0.60%\n    Puts (down): 649.62 PMK_L (intraday) -1.15%, 647.05 PDL (day) -1.54%\n\n  PMG ZONES:\n    683.46 (PDO, PWL, PML, PDH, 11/5 Gap Low) [strength: 6.0]\n    690.49 (PWC, PMC) [strength: 2.5]\n    695.32 (CWO, CMO) [strength: 2.5]",
+  "playbook": "  CALLS above 660.40 (PMK_H) -- only if bias denied, new entries 09:30 to 16:00 ET\n    No entry if the open is at or above 660.40.\n    Stop: 649.62 (PMK_L)\n    T1: 661.14 (PQL), sell 1/3\n    T2: 683.45 (PWL), sell 1/3\n    T3: 683.65 (PDH), sell the last 1/3, or hold to the close or the stop\n    Room to trigger: 0.49%\n\n  PUTS below 649.62 (PMK_L), new entries 09:30 to 16:00 ET\n    No entry if the open is at or below 649.62.\n    Stop: 660.40 (PMK_H)\n    T1: 647.05 (PDL, gap fill: gap 0.66 x ATR), sell 1/3\n    T2: 637.01 (PYH), sell 1/3\n    T3: 614.31 (PYC), sell the last 1/3, or hold to the close or the stop\n    Room to trigger: 1.15%\n\n  NEXT LEVELS:\n    Calls (up):  660.40 PMK_H (intraday) +0.49%, 661.14 PQL (quarter) +0.60%\n    Puts (down): 649.62 PMK_L (intraday) -1.15%, 647.05 PDL (day) -1.54%\n\n  PMG ZONES:\n    683.46 (PDO, PWL, PML, PDH, 11/5 Gap Low) [strength: 6.0]\n    690.49 (PWC, PMC) [strength: 2.5]\n    695.32 (CWO, CMO) [strength: 2.5]",
   "premarket_status": "ok",
   "prev_day_close": 647.05,
   "prev_day_high": 683.65,
@@ -2995,7 +2995,7 @@
     ],
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -3168,7 +3168,7 @@
      "atr_basis": "atr_14",
      "effective_from": "2015-01-02",
      "extra": {
-      "time_et": "10:00"
+      "time_et": "16:00"
      },
      "input_from": null,
      "input_to": null,
@@ -3180,7 +3180,7 @@
      "source": "policy",
      "statistic_q": null,
      "status": "ok",
-     "value": 600.0
+     "value": 960.0
     },
     "exit_legs": {
      "atr_basis": "atr_14",
@@ -3690,7 +3690,7 @@
     ],
     "plan": {
      "atr_basis": "atr_14",
-     "entry_cutoff_et": "10:00",
+     "entry_cutoff_et": "16:00",
      "entry_cutoff_status": "ok",
      "gap_fill_flag_atr": 0.5,
      "gap_fill_flag_status": "ok",
@@ -3755,7 +3755,7 @@
   "macd": -4.530288621873865,
   "macd_cross": "Bearish",
   "macd_signal_val": -1.796200932827488,
-  "playbook": "  CALLS above 738.04 (PMK_H) -- only if bias denied, new entries 09:30 to 10:00 ET\n    No entry if the open is at or above 738.04.\n    Stop: 733.00 (PDC)\n    T1: 750.36 (PWL), sell 1/3\n    T2: 755.72 (PWC), sell 1/3\n    T3: 762.63 (PQC), sell the last 1/3, or hold to the close or the stop\n    Room to trigger: 0.43%\n\n  PUTS below 730.64 (PMK_L), new entries 09:30 to 10:00 ET\n    No entry if the open is at or below 730.64.\n    Stop: 738.04 (PMK_H)\n    T1: 729.10 (PQL), sell 1/3, hold the last 2/3 to the close or the stop\n    Room to trigger: 0.57%\n\n  NEXT LEVELS:\n    Calls (up):  738.04 PMK_H (intraday) +0.43%, 750.36 PWL (week) +2.11%\n    Puts (down): 730.64 PMK_L (intraday) -0.58%, 729.10 PQL (quarter) -0.78%\n\n  PMG ZONES:\n    750.36 (PWL, PML) [strength: 2.5]\n    755.72 (PWC, PMC) [strength: 2.5]\n    759.45 (CWO, CMO) [strength: 2.5]",
+  "playbook": "  CALLS above 738.04 (PMK_H) -- only if bias denied, new entries 09:30 to 16:00 ET\n    No entry if the open is at or above 738.04.\n    Stop: 733.00 (PDC)\n    T1: 750.36 (PWL), sell 1/3\n    T2: 755.72 (PWC), sell 1/3\n    T3: 762.63 (PQC), sell the last 1/3, or hold to the close or the stop\n    Room to trigger: 0.43%\n\n  PUTS below 730.64 (PMK_L), new entries 09:30 to 16:00 ET\n    No entry if the open is at or below 730.64.\n    Stop: 738.04 (PMK_H)\n    T1: 729.10 (PQL), sell 1/3, hold the last 2/3 to the close or the stop\n    Room to trigger: 0.57%\n\n  NEXT LEVELS:\n    Calls (up):  738.04 PMK_H (intraday) +0.43%, 750.36 PWL (week) +2.11%\n    Puts (down): 730.64 PMK_L (intraday) -0.58%, 729.10 PQL (quarter) -0.78%\n\n  PMG ZONES:\n    750.36 (PWL, PML) [strength: 2.5]\n    755.72 (PWC, PMC) [strength: 2.5]\n    759.45 (CWO, CMO) [strength: 2.5]",
   "premarket_status": "ok",
   "prev_day_close": 733.0,
   "prev_day_high": 765.97,

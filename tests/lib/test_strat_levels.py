@@ -1106,7 +1106,7 @@ class TestTargetSpacing:
             assert cols['calls_trigger_price'] == 252.10 and cols['calls_stop_price'] == 248.20
 
 
-D8_CALLS = """  CALLS above 252.10 (PMK_H), new entries 09:30 to 10:00 ET
+D8_CALLS = """  CALLS above 252.10 (PMK_H), new entries 09:30 to 16:00 ET
     No entry if the open is at or above 252.10.
     Stop: 248.20 (PMK_L)
     T1: 275.00 (PMH), sell 1/3
@@ -1115,7 +1115,7 @@ D8_CALLS = """  CALLS above 252.10 (PMK_H), new entries 09:30 to 10:00 ET
     Skipped, closer than 0.25 x ATR(14) = 3.50: 253.00 (PDH)
     Room to trigger: 0.84%"""
 
-D8_PUTS = """  PUTS below 248.20 (PMK_L), new entries 09:30 to 10:00 ET
+D8_PUTS = """  PUTS below 248.20 (PMK_L), new entries 09:30 to 16:00 ET
     No entry if the open is at or below 248.20.
     Stop: 252.10 (PMK_H)
     T1: 225.00 (PML), sell 1/3
@@ -1333,22 +1333,63 @@ class TestAtrRungs:
         assert sl.atr_rung_status == status
 
 
+def _gap_edges_off(monkeypatch):
+    """Read every plan_target_level_types row as {"level_types": []}, the
+    gap-edge spec's one-row way to turn gap edges off."""
+    import lib.strat_levels as sl_mod
+    monkeypatch.setattr(sl_mod, 'plan_target_level_types', lambda extra: ())
+
+
 class TestAtrRungsDisplayOnly:
     """ATR levels spec, done_when 'Display only' and 'Unchanged': the plan
     decisions, the NEXT LEVELS ladders and the brief's structured columns
     are the base's for every case (tests/lib/atr_levels_display_only.py,
     golden written on the base)."""
 
-    def test_every_case_matches_the_base(self):
+    def test_every_case_matches_the_base(self, monkeypatch):
+        """With gap-edge plan targets off (plan_target_level_types read as an
+        empty list, the gap-edge spec's 'turn off' row), every case is the
+        base's byte for byte."""
         import json
         from pathlib import Path
         from tests.lib.atr_levels_display_only import projections
+        _gap_edges_off(monkeypatch)
         golden = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
                              / 'atr_levels_display_only_base.json').read_text())
         head = projections()
         assert sorted(head) == sorted(golden)
         for name in golden:
             assert head[name] == golden[name], name
+
+    def test_gap_edges_move_only_plan_targets(self):
+        """Gap-edge plan targets spec, done_when 'Never anything but a plan
+        target': with the seeded row (gap edges on) every projected decision
+        but the plan's targets and skipped list (and the brief's plan_t
+        columns that print them) is the base's; the build_session_levels case
+        has gap edges in reach and its plan does change."""
+        import json
+        from pathlib import Path
+        from tests.lib.atr_levels_display_only import projections
+        golden = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
+                             / 'atr_levels_display_only_base.json').read_text())
+        head = projections()
+        plan_only = ('targets', 'skipped')
+        for name in golden:
+            h, b = json.loads(json.dumps(head[name])), json.loads(json.dumps(golden[name]))
+            for side in ('long', 'short'):
+                for k in plan_only:
+                    h[side].pop(k), b[side].pop(k)
+            for trig in ('calls_trigger', 'puts_trigger'):
+                for k in ('plan_targets', 'skipped'):
+                    (h['level_map'][trig] or {}).pop(k, None)
+                    (b['level_map'][trig] or {}).pop(k, None)
+            for col in [c for c in b['columns'] if '_plan_t' in c]:
+                h['columns'].pop(col), b['columns'].pop(col)
+            assert h == b, name
+        built = head['build_session_levels']
+        assert any(t['level_type'] in ('gap_high', 'gap_low')
+                   for side in ('long', 'short') for t in built[side]['targets'])
+        assert built != golden['build_session_levels']
 
     def test_the_brief_writes_the_base_columns(self, monkeypatch):
         """gcp.premarket_brief on the committed 2026-11-06 fixture (SPY, QQQ,
@@ -1366,7 +1407,9 @@ class TestAtrRungsDisplayOnly:
         head = brief_entries(monkeypatch)
         assert sorted(head) == sorted(golden) == sorted(BRIEF_TICKERS)
         rung_keys = {'atr_rungs', 'atr_rungs_dropped', 'atr_rung_status', 'atr_rung_anchors',
-                     'atr_rung_params'}
+                     'atr_rung_params',
+                     # Gap-edge plan targets spec: the rule's marker and types.
+                     'plan_target_level_types_status', 'plan_target_level_types'}
         for t in BRIEF_TICKERS:
             h, b = dict(head[t]), dict(golden[t])
             hp, bp = h.pop('playbook').split('\n'), b.pop('playbook').split('\n')
@@ -1379,6 +1422,9 @@ class TestAtrRungsDisplayOnly:
             hparams = dict(hb['params'])
             for k in D8_RUNG_PARAMS:
                 hparams.pop(k)
+            assert hb['plan_target_level_types_status'] == 'ok', t
+            assert hparams.pop('plan_target_level_types')['extra'] == {
+                'level_types': ['gap_high', 'gap_low']}, t
             assert hparams == bb['params'], t
             assert {k: v for k, v in hb.items() if k not in rung_keys | {'params'}} == {
                 k: v for k, v in bb.items() if k != 'params'}, t
@@ -1570,3 +1616,177 @@ class TestAtrLevelsCopy:
         assert old.atr_rungs == [] and old.atr_rung_status is None
         text = format_levels_for_brief(old.to_level_map(), 'neutral')
         assert text == D8_CALLS + "\n\n" + D8_PUTS + "\n\n" + D8_NEXT_LEVELS
+
+
+# ── Gap-edge plan targets spec (2026-11-15) ─────────────────────────────
+
+D4_CALLS = """  CALLS above 252.10 (PMK_H), new entries 09:30 to 16:00 ET
+    No entry if the open is at or above 252.10.
+    Stop: 248.20 (PMK_L)
+    T1: 262.40 (10/20 Gap High), sell 1/3
+    T2: 275.00 (PMH), sell 1/3
+    T3: 280.00 (PQH), sell the last 1/3, or hold to the close or the stop
+    Skipped, closer than 0.25 x ATR(14) = 3.50: 253.00 (PDH)
+    Room to trigger: 0.84%"""
+
+
+def _gap(name, price):
+    return {'name': name, 'price': float(price), 'timeframe': 'day',
+            'level_type': 'gap_high' if name.startswith('GAP_H_') else 'gap_low',
+            'period_label': name[6:]}
+
+
+def _gap_basis(gaps=(), *, params=None, marker=True, **kw):
+    """The Design 8 basis plus these gap edges, carrying the Design 3 marker
+    a basis built under the gap-edge rule records."""
+    from tests.lib.session_levels_helpers import d8_basis
+    b = d8_basis(params=params, **kw)
+    b['levels'] = b['levels'] + [_gap(n, p) for n, p in gaps]
+    if marker:
+        b['plan_target_level_types_status'] = None
+    return b
+
+
+def _gap_session(gaps=(), **kw):
+    from lib.strat_levels import SessionLevels
+    return SessionLevels.from_basis(_gap_basis(gaps, **kw))
+
+
+def _types_params(types, status='ok'):
+    from dataclasses import replace
+    from tests.lib.session_levels_helpers import d8_params
+    lp = d8_params()
+    p = lp.params['plan_target_level_types']
+    lp.params['plan_target_level_types'] = replace(
+        p, value=float(len(types)) if types is not None else None, status=status,
+        extra={'level_types': list(types)} if types is not None else {})
+    return lp
+
+
+def _side_keys(side):
+    """Everything on a side but its plan targets and skipped list."""
+    import json
+    d = {k: v for k, v in vars(side).items() if k not in ('targets', 'skipped')}
+    return json.loads(json.dumps(d, default=str))
+
+
+class TestPlanGapEdges:
+    """Gap-edge plan targets spec, done_when 'Plan walk' (a) to (e), 'Never
+    anything but a plan target' and 'Brief copy', on the exits spec's Design 8
+    fixture (spacing 0.25 x 14.00 = 3.50, both windows 2.6 x ATR from 250.00,
+    so 213.60 to 286.40)."""
+
+    def test_the_seeded_row_is_ok(self):
+        sl = _gap_session()
+        assert sl.plan_target_level_types_status == 'ok'
+        assert sl.plan_target_level_types == ['gap_high', 'gap_low']
+
+    def test_a_gap_edge_in_reach_is_a_target(self):
+        """(a): a gap high past the calls trigger and a gap low past the puts
+        trigger join the targets in price order, under their own names."""
+        sl = _gap_session([('GAP_H_2026-10-20', 262.40), ('GAP_L_2026-10-20', 235.00)])
+        assert _prices(sl.long.targets) == [262.40, 275.00, 280.00]
+        assert sl.long.targets[0]['name'] == 'GAP_H_2026-10-20'
+        assert sl.long.targets[0]['level_type'] == 'gap_high'
+        assert _prices(sl.long.skipped) == [253.00]
+        assert _prices(sl.short.targets) == [235.00, 225.00, 220.00]
+        assert sl.short.targets[0]['name'] == 'GAP_L_2026-10-20'
+        assert _prices(sl.short.skipped) == [247.50, 247.00]
+        assert sl.long.target_status == sl.short.target_status == 'ok'
+
+    def test_a_gap_edge_too_close_is_skipped(self):
+        """(b): 254.00 is 1.90 past the trigger; 273.00 is kept and then
+        pushes 275.00 (2.00 past it) into skipped."""
+        sl = _gap_session([('GAP_H_2026-10-20', 254.00)])
+        assert _prices(sl.long.targets) == [275.00, 280.00, 285.00]
+        assert _prices(sl.long.skipped) == [253.00, 254.00]
+        sl = _gap_session([('GAP_H_2026-10-20', 273.00)])
+        assert _prices(sl.long.targets) == [273.00, 280.00, 285.00]
+        assert _prices(sl.long.skipped) == [253.00, 275.00]
+
+    @pytest.mark.parametrize('price', [251.00, 252.10, 290.00, 275.00, 253.00])
+    def test_a_gap_edge_out_of_reach_adds_nothing(self, price):
+        """(c): before the trigger, on the trigger's cent, past the window, or
+        on a candidate's cent: the side is the no-gap side byte for byte, the
+        candidate's record (name, aliases) included."""
+        base = _gap_session()
+        sl = _gap_session([('GAP_H_2026-10-20', price)])
+        for side in ('long', 'short'):
+            assert getattr(sl, side).targets == getattr(base, side).targets
+            assert getattr(sl, side).skipped == getattr(base, side).skipped
+
+    @pytest.mark.parametrize('gaps, name', [
+        ([('GAP_H_2026-10-20', 262.40), ('GAP_L_2026-10-21', 262.40)], 'GAP_L_2026-10-21'),
+        ([('GAP_L_2026-10-21', 262.40), ('GAP_H_2026-10-20', 262.40)], 'GAP_L_2026-10-21'),
+        ([('GAP_L_2026-10-20', 262.40), ('GAP_H_2026-10-20', 262.40)], 'GAP_H_2026-10-20'),
+    ])
+    def test_two_gap_edges_on_one_cent(self, gaps, name):
+        """(c): one rung, the most recent gap's, high before low."""
+        sl = _gap_session(gaps)
+        assert _prices(sl.long.targets) == [262.40, 275.00, 280.00]
+        assert sl.long.targets[0]['name'] == name
+
+    def test_an_empty_list_is_the_old_walk(self):
+        """(d): the row's 'turn off' value gives the no-gap targets."""
+        base = _gap_session()
+        sl = _gap_session([('GAP_H_2026-10-20', 262.40)], params=_types_params([]))
+        assert sl.plan_target_level_types_status == 'ok'
+        assert sl.long.targets == base.long.targets and sl.long.skipped == base.long.skipped
+        assert _prices(sl.long.targets) == [275.00, 280.00, 285.00]
+
+    @pytest.mark.parametrize('status', ['input_unavailable', 'params_unavailable'])
+    def test_an_unusable_or_missing_row_publishes_no_target(self, status):
+        """(e): as for the spacing, leg and cutoff keys."""
+        if status == 'params_unavailable':
+            from tests.lib.session_levels_helpers import d8_params
+            lp = d8_params()
+            del lp.params['plan_target_level_types']
+        else:
+            lp = _types_params(None, status=status)
+        sl = _gap_session([('GAP_H_2026-10-20', 262.40)], params=lp)
+        for side in (sl.long, sl.short):
+            assert side.targets == []
+            assert side.target_status == status
+        assert sl.long.trigger['price'] == 252.10 and sl.short.trigger['price'] == 248.20
+
+    def test_never_anything_but_a_plan_target(self):
+        """Trigger, stop, gate targets, ladder, room, distance and every other
+        side field, and the level map's legacy targets, are the no-gap
+        session's; only the plan's targets and skipped list move."""
+        base = _gap_session()
+        sl = _gap_session([('GAP_H_2026-10-20', 262.40), ('GAP_L_2026-10-20', 235.00)])
+        assert sl.long.targets != base.long.targets and sl.short.targets != base.short.targets
+        for side in ('long', 'short'):
+            assert _side_keys(getattr(sl, side)) == _side_keys(getattr(base, side)), side
+        lm, blm = sl.to_level_map(), base.to_level_map()
+        for trig in ('calls_trigger', 'puts_trigger'):
+            a = {k: v for k, v in (getattr(lm, trig) or {}).items()
+                 if k not in ('plan_targets', 'skipped')}
+            b = {k: v for k, v in (getattr(blm, trig) or {}).items()
+                 if k not in ('plan_targets', 'skipped')}
+            assert a == b, trig
+
+    def test_build_session_levels_uses_the_gap_edges(self):
+        """The same rule through build_session_levels, the live builder: a
+        gap edge from the daily bars, in reach, is a plan target and never a
+        trigger, gate target or ladder rung."""
+        from tests.lib.atr_levels_display_only import projections
+        gap = ('gap_high', 'gap_low')
+        built = projections()['build_session_levels']
+        assert any(t['level_type'] in gap for t in built['long']['targets'])
+        assert any(t['level_type'] in gap for t in built['short']['targets'])
+        for side in ('long', 'short'):
+            s = built[side]
+            assert s['trigger']['level_type'] not in gap
+            for key in ('gate_targets', 'candidates', 'ladder'):
+                assert all(t.get('level_type') not in gap for t in s[key] or []), (side, key)
+
+    def test_design_4_text(self):
+        text = format_levels_for_brief(
+            _gap_session([('GAP_H_2026-10-20', 262.40)]).to_level_map(), 'neutral')
+        assert D4_CALLS in text
+        assert D8_PUTS in text
+
+    def test_the_design_8_goldens_are_unchanged(self):
+        text = format_levels_for_brief(_gap_session().to_level_map(), 'neutral')
+        assert D8_CALLS in text and D8_PUTS in text
