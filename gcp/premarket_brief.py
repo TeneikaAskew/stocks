@@ -25,7 +25,7 @@ from lib.earnings_reactions import earnings_not_retired_sql
 from gcp.brief_explanations import format_tf_bias
 
 from lib.data_loader import DataLoader
-from lib.indicators import add_brief_indicators
+from lib.indicators import add_brief_indicators, relative_volume
 from lib.strat import (CONTINUITY_DISPLAY_ORDER, StratClassifier, compute_strat_status,
                        timeframe_continuity_record)
 from lib.strat_levels import (
@@ -1168,10 +1168,11 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         if prev_close and curr_close and prev_close > 0:
             change_pct = (curr_close - prev_close) / prev_close * 100
 
-        # Volume vs 20-day average
-        vol_sma20 = _safe_float(df['Volume'].rolling(20).mean().iloc[-1])
+        # Relative volume: the last session's volume over the mean of the 20
+        # sessions before it (lib.indicators.relative_volume, the one
+        # definition). No value with fewer than 20 prior sessions.
         latest_vol = _safe_float(latest.get('Volume'))
-        rvol = (latest_vol / vol_sma20) if (vol_sma20 and vol_sma20 > 0) else None
+        rvol = _safe_float(relative_volume(df['Volume'], 20).iloc[-1])
 
         # ── Key levels ──────────────────────────────────────────────────
         sma200 = _safe_float(latest.get('SMA200'))

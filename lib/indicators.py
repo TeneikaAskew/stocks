@@ -212,6 +212,24 @@ def calculate_vwap(
     return vwap
 
 
+def relative_volume(volume: pd.Series, period: int = 20) -> pd.Series:
+    """Relative volume (RVOL): a bar's volume divided by the mean volume of
+    the `period` bars before it.
+
+    The owner's definition (2026-11-16, FEAT-PLAYBOOK-001): the bar being
+    measured is not in its own average. With fewer than `period` prior bars,
+    or a prior mean that is not positive, there is no value: the result is
+    NaN there, never 1.0 and never 0.
+
+    This is the only computation in the codebase that may be called relative
+    volume or RVOL. The other volume ratios in this module are older measures
+    that keep their formulas until each reader switches in its own change;
+    tests/meta/test_one_rvol_definition.py lists them and lets no new one in.
+    """
+    prior_mean = volume.shift(1).rolling(period, min_periods=period).mean()
+    return volume / prior_mean.where(prior_mean > 0, np.nan)
+
+
 def calculate_rvol(volume: pd.Series, period: int = 20) -> pd.Series:
     """Relative Volume — current volume / rolling average volume."""
     rolling_avg = volume.rolling(window=period, min_periods=1).mean()

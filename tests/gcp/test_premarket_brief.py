@@ -4219,3 +4219,33 @@ class TestLiveDateIsTheExchangeDate:
         assert seen['events'] == [(date(2026, 11, 10), 5)]
         assert sorted(tables['premarket_analysis']) == [
             ('2026-11-10', ticker) for ticker in self.TICKERS]
+
+
+def _volume_frame(rows):
+    """A daily frame ending 2026-10-08 whose volumes all differ."""
+    index = pd.bdate_range(end='2026-10-08', periods=rows)
+    frame = pd.DataFrame({'Open': 100.0, 'High': 110.0, 'Low': 90.0, 'Close': 105.0},
+                         index=index)
+    frame['Volume'] = [float(1_000_000 + 37_000 * ((i * 7) % 11)) for i in range(rows)]
+    frame.iloc[-1, frame.columns.get_loc('Volume')] = 700_000.0
+    return frame
+
+
+def test_brief_rvol_is_relative_volume(monkeypatch, no_network):
+    """FEAT-PLAYBOOK-001 B6: the brief's rvol is lib.indicators.relative_volume."""
+    from lib.indicators import relative_volume
+    from tests.gcp.test_strat_snapshot_parity import _brief
+
+    frame = _volume_frame(25)
+    pb, cfg = _brief(monkeypatch, frame)
+    rvol = pb.generate_premarket_brief(cfg=cfg)['tickers']['IWM']['rvol']
+    assert rvol == relative_volume(frame['Volume'], 20).iloc[-1]
+    assert rvol == 700_000.0 / frame['Volume'].iloc[-21:-1].mean()
+    old = frame['Volume'].iloc[-1] / frame['Volume'].rolling(20).mean().iloc[-1]
+    assert rvol != old
+
+    short = _volume_frame(15)
+    pb, cfg = _brief(monkeypatch, short)
+    brief = pb.generate_premarket_brief(cfg=cfg)
+    assert brief['tickers']['IWM']['rvol'] is None
+    assert 'RVOL' not in pb._build_overview_embed(brief)['description']

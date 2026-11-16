@@ -10,6 +10,9 @@ from lib.indicators import (
     calculate_ema,
     calculate_vwap,
     calculate_rvol,
+    calculate_rvol_recent,
+    calculate_rvol_vs_baseline,
+    calculate_rvol_minute_of_day,
     calculate_obv,
     calculate_stoch_rsi,
     calculate_bollinger_bands,
@@ -317,6 +320,82 @@ class TestRVOL:
         assert len(rvol) == len(sample_ohlcv)
         valid = rvol.dropna()
         assert (valid > 0).all()
+
+
+# FEAT-PLAYBOOK-001 B6. The inputs of test_other_volume_ratios_are_unchanged and
+# what the four older volume ratios returned for them on the unchanged code
+# (printed on the branch before relative_volume was added; hermetic pin).
+_PIN_VOLUME = [1200, 900, 1500, 0, 800, 2100, 1000, 950, 1300, 700, 1600, 1100, 400, 2500, 1250,
+               980, 1020, 1750, 600, 1400, 3000, 1150, 870, 1900, 1050, 2200, 760, 1340, 1480, 990]
+_NAN = float('nan')
+_PIN_RVOL = [
+    1.0, 0.8571428571428571, 1.25, 0.0, 0.9090909090909091, 1.9384615384615387,
+    0.9333333333333335, 0.8994082840236687, 1.2000000000000002, 0.6698564593301436,
+    1.4605809128630705, 1.0038022813688214, 0.38376383763837635, 2.180685358255452,
+    1.083815028901734, 0.8577680525164114, 0.8984455958549223, 1.496437054631829,
+    0.5265588914549654, 1.2147505422993492, 2.414486921529175, 0.9163346613545816,
+    0.7110747854515733, 1.441031475161168, 0.7888805409466566, 1.6467065868263473,
+    0.5740181268882175, 0.997394864160774, 1.0942698706099816, 0.7242136064374542]
+_PIN_RVOL_RECENT = [
+    1.0, 0.8571428571428571, 1.25, 0.0, 0.8888888888888888, 2.0, 1.0, 0.9743589743589743, 1.3,
+    0.717948717948718, 1.6, 1.0476190476190477, 0.4, 2.380952380952381, 1.1363636363636365,
+    0.9333333333333333, 1.0, 1.650943396226415, 0.5882352941176471, 1.320754716981132,
+    2.830188679245283, 1.0222222222222221, 0.8207547169811321, 1.6888888888888889,
+    0.9333333333333333, 1.9555555555555555, 0.6755555555555556, 1.1166666666666667,
+    1.2333333333333334, 0.825]
+_PIN_RVOL_VS_BASELINE = [
+    2.4, 1.5, 2.142857142857143, _NAN, 0.8888888888888888, 2.1, 0.9090909090909091,
+    0.7916666666666666, 1.0, 0.5, 1.0666666666666667, 0.6875, _NAN, _NAN, _NAN, 1.96, 1.7, 2.5,
+    _NAN, 1.5555555555555556, 3.0, 1.0454545454545454, 0.725, 1.4615384615384615, 0.75,
+    1.4666666666666666, 0.475, _NAN, _NAN, _NAN]
+_PIN_RVOL_MINUTE_OF_DAY = [
+    1.1009174311926606, 0.9375, 0.9230769230769231, 0.0, 0.7272727272727273, 0.8235294117647058,
+    0.9302325581395349, 1.043956043956044, 0.8125, 0.8, 0.8421052631578947, 1.1827956989247312,
+    0.45977011494252873, 1.256281407035176, 1.1160714285714286, 0.8990825688073395, 1.0625,
+    1.0769230769230769, 2.0, 1.2727272727272727, 1.1764705882352942, 1.069767441860465,
+    0.9560439560439561, 1.1875, 1.2, 1.1578947368421053, 0.8172043010752689, 1.5402298850574712,
+    0.7437185929648241, 0.8839285714285714]
+
+
+class TestRelativeVolume:
+    """FEAT-PLAYBOOK-001 B6: the one relative volume (spec Problem 3, Design 3)."""
+
+    def test_definition(self):
+        from lib.indicators import relative_volume
+        volume = pd.Series([float(1000 + 37 * i) for i in range(25)])
+        out = relative_volume(volume, 20)
+        assert out.iloc[:20].isna().all()
+        assert out.iloc[20] == volume.iloc[20] / volume.iloc[0:20].mean()
+        # The bar's own volume is not in its mean.
+        doubled = volume.copy()
+        doubled.iloc[20] = 2 * volume.iloc[20]
+        assert relative_volume(doubled, 20).iloc[20] == 2 * out.iloc[20]
+
+    def test_fewer_than_period_prior_bars_is_nan(self):
+        from lib.indicators import relative_volume
+        out = relative_volume(pd.Series([1000.0] * 20), 20)
+        assert len(out) == 20
+        assert out.isna().all()
+
+    def test_non_positive_mean_is_nan(self):
+        from lib.indicators import relative_volume
+        out = relative_volume(pd.Series([0.0] * 20 + [5.0]), 20)
+        assert np.isnan(out.iloc[20])
+
+    def test_other_volume_ratios_are_unchanged(self):
+        volume = pd.Series(_PIN_VOLUME, dtype=float)
+        times = pd.Series(
+            list(pd.date_range('2026-11-12 09:30', periods=15, freq='min'))
+            + list(pd.date_range('2026-11-13 09:30', periods=15, freq='min')))
+        baseline = {570 + i: float(500 + 100 * i) for i in range(12)}
+        baseline[573] = 0.0
+        for got, pinned in (
+                (calculate_rvol(volume, 20), _PIN_RVOL),
+                (calculate_rvol_recent(volume, 20), _PIN_RVOL_RECENT),
+                (calculate_rvol_vs_baseline(times, volume, baseline), _PIN_RVOL_VS_BASELINE),
+                (calculate_rvol_minute_of_day(times, volume), _PIN_RVOL_MINUTE_OF_DAY)):
+            np.testing.assert_allclose(np.asarray(got, dtype=float), np.asarray(pinned),
+                                       rtol=0, atol=0, equal_nan=True)
 
 
 class TestOBV:
