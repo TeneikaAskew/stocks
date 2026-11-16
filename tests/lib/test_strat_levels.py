@@ -1794,3 +1794,127 @@ class TestPlanGapEdges:
     def test_the_design_8_goldens_are_unchanged(self):
         text = format_levels_for_brief(_gap_session().to_level_map(), 'neutral')
         assert D8_CALLS in text and D8_PUTS in text
+
+
+class TestTargetHitRates:
+    """FEAT-STRAT-001 target hit rates spec, Design 5 (done_when 'Brief
+    copy'): the combined ladder under each side's plan, rated from the
+    ticker's past trades. IWM 2025-10-22 is the stored v3 basis of that
+    session; the reach table is the Experiment's 906 IWM trades before it."""
+
+    PUTS_LINES = [
+        "    Hit rates, IWM trades 2022-01-03 to 2025-10-21 that reached each price before the stop (906 trades):",
+        "      245.50 (PDL), 0.12 stop distances: 87%",
+        "      244.98 (PYH), 0.51 stop distances: 62%",
+        "      243.41 (PWC), 1.69 stop distances, plan T1: 22%",
+        "      241.96 (PMC), 2.78 stop distances, plan T2: 9%",
+        "      240.36 (PWL), 3.98 stop distances, plan T3: 4%",
+    ]
+
+    @staticmethod
+    def _level_map():
+        import json
+        from pathlib import Path
+        from lib.strat_levels import SessionLevels
+        basis = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
+                            / 'iwm_2025_10_22_level_basis.json').read_text())
+        return SessionLevels.from_basis(basis).to_level_map()
+
+    @staticmethod
+    def _reach(n=None):
+        import json
+        from pathlib import Path
+        from lib.target_reach import ReachTable
+        r = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
+                        / 'iwm_reach_before_2025_10_22.json').read_text())
+        values = tuple(r['excursion_r'])[:n] if n is not None else tuple(r['excursion_r'])
+        return ReachTable('IWM', len(values), r['first'], r['last'], values)
+
+    @staticmethod
+    def _side(text, label):
+        lines = text.split('\n')
+        start = next(i for i, ln in enumerate(lines) if ln.startswith(f'  {label} '))
+        end = next((i for i in range(start + 1, len(lines)) if not lines[i]), len(lines))
+        return lines[start:end]
+
+    def test_the_puts_ladder_is_design_5_byte_for_byte(self):
+        from lib.strat_levels import format_levels_for_brief
+        lm = self._level_map()
+        base = format_levels_for_brief(lm, 'neutral')
+        head = format_levels_for_brief(lm, 'neutral', reach=self._reach(), reach_min_sample=30)
+        puts = self._side(head, 'PUTS')
+        i = puts.index(self.PUTS_LINES[0])
+        assert puts[i:i + len(self.PUTS_LINES)] == self.PUTS_LINES
+        assert puts[i - 1].startswith('    Skipped, closer than ')
+        assert puts[i + len(self.PUTS_LINES)].startswith('    Room to trigger: ')
+        # Every other line is the base's: the ladders are the only addition.
+        added = [ln for ln in head.split('\n')
+                 if ln.startswith('    Hit rates') or ' stop distances' in ln]
+        assert [ln for ln in head.split('\n') if ln not in added] == base.split('\n')
+
+    def test_the_calls_side_is_rated_the_same_way(self):
+        from lib.strat_levels import format_levels_for_brief
+        head = format_levels_for_brief(self._level_map(), 'neutral', reach=self._reach(),
+                                       reach_min_sample=30)
+        calls = self._side(head, 'CALLS')
+        i = calls.index(self.PUTS_LINES[0])
+        # 248.37 (PDH) is skipped from the plan for the spacing, so it is a
+        # rung with no plan mark; 252.77 (PWH) is plan T1.
+        assert calls[i + 1:i + 3] == [
+            '      248.37 (PDH), 0.50 stop distances: 63%',
+            '      252.77 (PWH), 2.95 stop distances, plan T1: 8%']
+        assert calls[i + 3].startswith('    Room to trigger: ')
+
+    def _other_lines(self, reach, min_sample=30, lm=None, side='PUTS'):
+        from lib.strat_levels import format_levels_for_brief
+        lm = lm or self._level_map()
+        base = format_levels_for_brief(lm, 'neutral').split('\n')
+        head = format_levels_for_brief(lm, 'neutral', reach=reach,
+                                       reach_min_sample=min_sample).split('\n')
+        added = [ln for ln in head if ln not in base]
+        assert [ln for ln in head if ln not in added] == base
+        side_added = [ln for ln in self._side('\n'.join(head), side) if ln in added]
+        assert len(side_added) <= 1 and not any('%' in ln for ln in side_added)
+        return added
+
+    def test_the_thin_line(self):
+        added = self._other_lines(self._reach(n=12))
+        assert added == ["    Hit rates: too few IWM trades so far (12, at least 30 needed)."] * 2
+
+    def test_the_unavailable_line(self):
+        from lib.strat_levels import REACH_UNAVAILABLE
+        added = self._other_lines(REACH_UNAVAILABLE, min_sample=None)
+        assert added == ["    Hit rates unavailable (input_unavailable)."] * 2
+
+    def test_the_no_stop_line(self):
+        import dataclasses
+        lm = self._level_map()
+        puts = dict(lm.puts_trigger)
+        for stop in (None, 245.00):                # none, and one on the winning side
+            puts['stop'] = stop
+            changed = dataclasses.replace(lm, puts_trigger=puts)
+            added = self._other_lines(self._reach(), lm=changed)
+            assert "    Hit rates unavailable (no stop to measure from)." in added
+            assert len(added) == 1 + 2 + 1           # the calls ladder, then the puts line
+
+    def test_a_side_with_no_plan_prints_no_ladder(self):
+        import dataclasses
+        lm = self._level_map()
+        puts = dict(lm.puts_trigger)
+        puts.pop('plan')
+        added = self._other_lines(self._reach(), lm=dataclasses.replace(lm, puts_trigger=puts))
+        assert not any('(PDL)' in ln for ln in added) and len(added) == 1 + 2
+
+    def test_combined_ladder_one_rung_per_cent_nearest_first_at_most_six(self):
+        from lib.strat_levels import LADDER_MAX_RUNGS, combined_ladder
+        trig = {'trigger_level': 100.0,
+                'targets': [{'price': 101.004, 'name': 'A'}, {'price': 102.0, 'name': 'B'},
+                            {'price': 99.0, 'name': 'BEHIND'}],
+                'plan_targets': [{'price': 101.0, 'name': 'P1'}, {'price': 103.0, 'name': 'P2'},
+                                 {'price': 104.0, 'name': 'P3'}, {'price': 105.0, 'name': 'P4'},
+                                 {'price': 106.0, 'name': 'P5'}, {'price': 107.0, 'name': 'P6'}]}
+        rungs = combined_ladder('long', trig)
+        assert LADDER_MAX_RUNGS == 6
+        assert [(r.price, r.name, r.plan_k) for r in rungs] == [
+            (101.0, 'P1', 1), (102.0, 'B', None), (103.0, 'P2', 2), (104.0, 'P3', 3),
+            (105.0, 'P4', 4), (106.0, 'P5', 5)]

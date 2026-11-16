@@ -3114,8 +3114,16 @@ def format_levels_for_brief(
     regime_short: Optional[str] = None,
     regime_compute_error: Optional[str] = None,
     atr: Optional[float] = None,
+    reach=None,
+    reach_min_sample: Optional[int] = None,
 ) -> str:
     """Format a SessionLevels' LevelMap projection into the playbook block.
+
+    `reach` (target hit rates spec, Design 5): None prints no hit-rate
+    ladder (every caller but the brief); a lib.target_reach.ReachTable for
+    the ticker prints, under each side's plan, the combined ladder rated
+    from it (the thin line below `reach_min_sample` trades); REACH_UNAVAILABLE
+    prints the unavailable line.
 
     Output (a side with a trigger):
       CALLS above 215.85 (PDH)
@@ -3159,7 +3167,8 @@ def format_levels_for_brief(
             line += ' -- only if bias denied'
         plan = trig.get('plan')
         if plan is not None:
-            return _plan_block(line, side, trig, plan, room, plan.get('atr_basis') or atr_basis)
+            return _plan_block(line, side, trig, plan, room, plan.get('atr_basis') or atr_basis,
+                               reach=reach, reach_min_sample=reach_min_sample)
         out = [line]
         if trig.get('stop') is not None:
             out.append(f"    Stop: {trig['stop']:.2f} ({_display_level_name(trig['stop_name'])})")
@@ -3210,7 +3219,8 @@ def _clock_text(t) -> str:
 
 
 def _plan_block(line: str, side: str, trig: dict, plan: dict, room: Optional[float],
-                atr_basis: Optional[str]) -> list:
+                atr_basis: Optional[str], reach=None,
+                reach_min_sample: Optional[int] = None) -> list:
     """A side's exit plan (exits in thirds spec, Design 8): the entry
     window, the opened-through rule, the stop, up to `legs` spaced targets
     each selling 1/legs, the legs left over held to the close or the stop,
@@ -3261,8 +3271,72 @@ def _plan_block(line: str, side: str, trig: dict, plan: dict, room: Optional[flo
         if skipped:
             out.append(f"    Skipped, closer than {spacing_text}: " + ', '.join(
                 f"{s['price']:.2f} ({_display_level_name(s['name'])})" for s in skipped))
+        if reach is not None:
+            out.extend(hit_rate_lines(side, trig, reach, reach_min_sample))
     if room is not None:
         out.append(f"    Room to trigger: {room:.2f}%")
+    return out
+
+
+# FEAT-STRAT-001 target hit rates (2026-11-16 spec, Design 5): the most rungs
+# the brief's hit-rate ladder prints, nearest the trigger first.
+LADDER_MAX_RUNGS = 6
+# The reach argument of format_levels_for_brief when the read failed.
+REACH_UNAVAILABLE = 'input_unavailable'
+
+
+@dataclass(frozen=True)
+class Rung:
+    """One rung of a side's hit-rate ladder: a price past the trigger,
+    its level name, and the plan target it is (k, from 1) or None."""
+    price: float
+    name: str
+    plan_k: Optional[int]
+
+
+def combined_ladder(side: str, trig: dict) -> list:
+    """The side's current-rule targets (trig['targets']) and plan targets
+    (trig['plan_targets']), one rung per cent (price_cents), past the
+    trigger, from the trigger outward, at most LADDER_MAX_RUNGS. A cent in
+    both lists is one rung, the plan target's."""
+    trigger = trig['trigger_level']
+    sign = 1 if side == 'long' else -1
+    rungs: Dict[int, Rung] = {}
+    for t in trig.get('targets') or []:
+        rungs.setdefault(price_cents(t['price']), Rung(float(t['price']), t['name'], None))
+    for k, t in enumerate(trig.get('plan_targets') or [], 1):
+        rungs[price_cents(t['price'])] = Rung(float(t['price']), t['name'], k)
+    past = [r for r in rungs.values() if sign * (r.price - trigger) > 0]
+    past.sort(key=lambda r: sign * (r.price - trigger))
+    return past[:LADDER_MAX_RUNGS]
+
+
+def _pct_half_up(hit: int, n: int) -> int:
+    return (200 * hit + n) // (2 * n)
+
+
+def hit_rate_lines(side: str, trig: dict, reach, min_sample: Optional[int]) -> list:
+    """The hit-rate ladder lines under one side's plan (Design 5)."""
+    if reach is None:
+        return []
+    if isinstance(reach, str) or min_sample is None:
+        return ["    Hit rates unavailable (input_unavailable)."]
+    trigger, stop = trig['trigger_level'], trig.get('stop')
+    sign = 1 if side == 'long' else -1
+    if stop is None or not sign * (trigger - stop) > 0:
+        return ["    Hit rates unavailable (no stop to measure from)."]
+    if reach.n < min_sample:
+        return [f"    Hit rates: too few {reach.ticker} trades so far "
+                f"({reach.n}, at least {min_sample} needed)."]
+    risk = abs(trigger - stop)
+    out = [f"    Hit rates, {reach.ticker} trades {reach.first} to {reach.last} that reached "
+           f"each price before the stop ({reach.n} trades):"]
+    for r in combined_ladder(side, trig):
+        d = sign * (r.price - trigger) / risk
+        plan = f", plan T{r.plan_k}" if r.plan_k is not None else ''
+        pct = _pct_half_up(reach.count_at_least(d), reach.n)
+        out.append(f"      {r.price:.2f} ({_display_level_name(r.name)}), "
+                   f"{d:.2f} stop distances{plan}: {pct}%")
     return out
 
 

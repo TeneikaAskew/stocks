@@ -59,13 +59,17 @@ class ReachTable:
     last: Optional[str]
     values: Tuple[Optional[float], ...]
 
+    def count_at_least(self, d: float) -> int:
+        """How many of the n trades' excursions are at least d (a 1e-9
+        tolerance for a distance computed from prices)."""
+        return sum(1 for v in self.values if v is not None and v >= d - 1e-9)
+
     def share_at_least(self, d: float) -> Optional[float]:
         """The share of the n trades whose excursion is at least d; None
         with no trades."""
         if self.n == 0:
             return None
-        hit = sum(1 for v in self.values if v is not None and v >= d - 1e-9)
-        return hit / self.n
+        return self.count_at_least(d) / self.n
 
 
 def _iso(v) -> Optional[str]:
