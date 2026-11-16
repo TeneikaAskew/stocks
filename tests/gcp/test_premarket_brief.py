@@ -2822,12 +2822,13 @@ class TestCalibrationOptionsLoaderObservable:
 
 
 class TestBuildGammaFooter:
-    """`_build_gamma_footer` aggregates per-ticker gamma_data_source.
+    """`_build_gamma_footer` describes the oldest snapshot in the brief.
 
-    The brief embed uses worst-case-across-tickers severity to drive
-    the user-visible footer wording, so a single ticker on stale data
-    can demote a brief where the other two are live.
+    The text is `format_gamma_footer`'s, so a single ticker on an older
+    chain is what the reader is told about, by its own date.
     """
+
+    SESSION = date(2026, 5, 22)
 
     def _brief_with(self, **per_ticker_kwargs) -> dict:
         """Build a minimal brief dict with the gamma metadata fields
@@ -2839,8 +2840,9 @@ class TestBuildGammaFooter:
                 'gamma_snapshot_ts': kwargs.get('ts'),
                 'gamma_snapshot_date': kwargs.get('sd'),
                 'gamma_days_behind': kwargs.get('days'),
+                'gamma_market_session': kwargs.get('ms'),
             }
-        return {'tickers': tickers}
+        return {'analysis_date': self.SESSION, 'tickers': tickers}
 
     def test_returns_none_when_no_tickers_have_gamma(self):
         from gcp.premarket_brief import _build_gamma_footer
@@ -2862,9 +2864,9 @@ class TestBuildGammaFooter:
     def test_all_realtime_renders_green_live_line(self):
         from gcp.premarket_brief import _build_gamma_footer
         brief = self._brief_with(
-            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
-            IWM={'ds': 'realtime', 'ts': '2026-05-22T19:50:00+00:00'},
-            QQQ={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            SPY={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:50:00+00:00'},
+            QQQ={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:55:00+00:00'},
         )
         out = _build_gamma_footer(brief)
         assert out is not None
@@ -2872,81 +2874,173 @@ class TestBuildGammaFooter:
         # Green circle marker so phone-only readers see status at a
         # glance (matches the existing 📊 freshness-line convention).
         assert '🟢' in out
+        # The oldest of the three session snapshots is the one named.
+        assert out == '🟢 Live gamma · 15:50 ET'
 
-    def test_any_eod_fallback_demotes_to_amber(self):
-        """One EOD fallback among realtime peers → footer reflects
-        worst case (EOD), not the cheerful 'Live' wording."""
+    def test_an_eod_chain_among_live_peers_is_the_one_named(self):
+        """One ticker on yesterday's close among live peers: the footer
+        names that chain by its date, not the cheerful 'Live' wording."""
         from gcp.premarket_brief import _build_gamma_footer
         brief = self._brief_with(
-            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
-            IWM={'ds': 'eod_fallback', 'ts': '2026-05-21T20:00:00+00:00', 'days': 1},
-            QQQ={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            SPY={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'eod_fallback', 'ms': 'EOD', 'ts': '2026-05-21T20:00:00+00:00', 'days': 1},
+            QQQ={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:55:00+00:00'},
         )
         out = _build_gamma_footer(brief)
-        assert out is not None
-        assert '⚠️' in out
-        assert 'EOD gamma' in out
-        assert "realtime fetcher missed today's session" in out
+        assert out == 'Gamma as of Thu 05/21 close'
+        assert 'Live' not in out
 
-    def test_any_stale_fallback_demotes_to_red(self):
-        """Stale (3-5 trading days) beats EOD beats realtime in severity."""
+    def test_an_older_chain_carries_its_age_and_the_warning_mark(self):
+        """The oldest snapshot wins over newer ones, with its age in sessions."""
         from gcp.premarket_brief import _build_gamma_footer
         brief = self._brief_with(
-            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
-            IWM={'ds': 'eod_fallback', 'ts': '2026-05-21T20:00:00+00:00', 'days': 1},
-            QQQ={'ds': 'stale_fallback', 'ts': '2026-05-15T20:00:00+00:00', 'days': 4},
+            SPY={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'eod_fallback', 'ms': 'EOD', 'ts': '2026-05-21T20:00:00+00:00', 'days': 1},
+            QQQ={'ds': 'stale_fallback', 'ms': 'EOD', 'ts': '2026-05-15T20:00:00+00:00', 'days': 5},
         )
         out = _build_gamma_footer(brief)
-        assert out is not None
-        assert '⚠️' in out
-        assert 'Stale gamma' in out
-        assert '4 trading days old' in out
+        assert out == '⚠️ Gamma as of Fri 05/15 close (5 sessions old)'
 
     def test_unavailable_alongside_realtime_still_renders_live(self):
-        """An UNAVAILABLE ticker shouldn't drag the footer down when
-        live data exists for others — the unavailable one is recorded
-        but the live ticker's data is still useful to the reader."""
+        """An UNAVAILABLE ticker has no snapshot to describe, so the
+        footer describes the tickers that have one."""
         from gcp.premarket_brief import _build_gamma_footer
         brief = self._brief_with(
-            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            SPY={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:55:00+00:00'},
             IWM={'ds': 'unavailable'},
         )
-        # Per the severity table, 'unavailable' currently outranks
-        # 'realtime' so the footer is suppressed. This documents the
-        # current behavior; revisit if the user wants partial-coverage
-        # footers (e.g. "Live gamma · SPY only").
+        assert _build_gamma_footer(brief) == '🟢 Live gamma · 15:55 ET'
+
+
+class TestGammaFooter:
+    """The footer names the snapshot it describes (FEAT-PLAYBOOK-001 B1, B2)."""
+
+    MON = date(2026, 11, 16)
+    REALTIME_TS = pd.Timestamp('2026-11-13 20:55:30', tz='UTC')
+    EOD_TS = pd.Timestamp('2026-11-13 23:00:00', tz='UTC')
+
+    def test_same_session_snapshot_is_live(self):
+        from gcp.premarket_brief import format_gamma_footer
+        assert format_gamma_footer('2026-11-16T14:35:00+00:00', 'REALTIME',
+                                   date(2026, 11, 16)) == 'Live gamma · 09:35 ET'
+
+    def test_earlier_realtime_snapshot_names_its_day(self):
+        from gcp.premarket_brief import format_gamma_footer
+        out = format_gamma_footer('2026-11-13T20:55:30+00:00', 'REALTIME', date(2026, 11, 16))
+        assert out == 'Gamma as of Fri 11/13 15:55 ET'
+        assert 'Live' not in out
+
+    @pytest.mark.parametrize('market_session', ['EOD', None])
+    def test_eod_snapshot_reads_close(self, market_session):
+        from gcp.premarket_brief import format_gamma_footer
+        assert format_gamma_footer('2026-11-13T23:00:00+00:00', market_session,
+                                   date(2026, 11, 16)) == 'Gamma as of Fri 11/13 close'
+
+    def test_older_snapshot_gives_its_age_in_sessions(self):
+        from gcp.premarket_brief import format_gamma_footer
+        assert format_gamma_footer('2026-11-12T23:00:00+00:00', 'EOD', date(2026, 11, 16)) == (
+            'Gamma as of Thu 11/12 close (2 sessions old)')
+
+    def test_a_holiday_is_not_a_missed_session(self):
+        from gcp.premarket_brief import format_gamma_footer
+        # Wednesday's chain read on Friday, Thanksgiving between: one session back.
+        assert format_gamma_footer('2026-11-25T23:00:00+00:00', 'EOD', date(2026, 11, 27)) == (
+            'Gamma as of Wed 11/25 close')
+
+    def _probe(self, monkeypatch, *, realtime, eod, raises=None):
+        """Answer the two probe statements by whether the text holds 'REALTIME'."""
+        import gcp.database as database
+        from gcp import premarket_brief as pb
+        issued = []
+
+        class _Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def execute(self, statement, *a, **k):
+                return None
+
+        class _Engine:
+            def connect(self):
+                return _Conn()
+
+        def read_sql(statement, conn, params=None):
+            text = str(statement)
+            issued.append(text)
+            if raises is not None:
+                raise raises
+            row = realtime if "'REALTIME'" in text else eod
+            if row is None:
+                return pd.DataFrame(columns=['snapshot_ts', 'snapshot_date'])
+            return pd.DataFrame([{'snapshot_ts': row, 'snapshot_date': date(2026, 11, 13)}])
+
+        monkeypatch.setattr(database, 'get_engine', lambda: _Engine())
+        monkeypatch.setattr(pb.pd, 'read_sql', read_sql)
+        return pb, issued
+
+    def test_probe_takes_the_newest_snapshot(self, monkeypatch):
+        pb, issued = self._probe(monkeypatch, realtime=self.REALTIME_TS, eod=self.EOD_TS)
+        out = pb._load_gamma_freshness('IWM', self.MON)
+        assert out['market_session'] == 'EOD'
+        assert pd.Timestamp(out['snapshot_ts']) == self.EOD_TS
+        assert out['days_behind'] == 1
+        assert out['data_source'] == 'eod_fallback'
+        # Two statements a ticker: the Capacity figure.
+        assert len(issued) == 2
+        assert sum("'REALTIME'" in s for s in issued) == 1
+
+        pb, issued = self._probe(monkeypatch, realtime=self.REALTIME_TS, eod=None)
+        out = pb._load_gamma_freshness('IWM', self.MON)
+        assert out['market_session'] == 'REALTIME'
+        assert pd.Timestamp(out['snapshot_ts']) == self.REALTIME_TS
+        assert out['days_behind'] == 1
+        assert out['data_source'] == 'realtime'
+        assert len(issued) == 2
+        assert sum("'REALTIME'" in s for s in issued) == 1
+
+    def test_probe_failure_is_unavailable_as_today(self, monkeypatch, caplog):
+        import logging
+        pb, _issued = self._probe(monkeypatch, realtime=None, eod=None,
+                                  raises=RuntimeError('probe down'))
+        with caplog.at_level(logging.WARNING, logger=pb.logger.name):
+            out = pb._load_gamma_freshness('IWM', self.MON)
+        assert out == {'data_source': 'unavailable', 'snapshot_ts': None,
+                       'snapshot_date': None, 'days_behind': None}
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert 'gamma freshness probe failed' in warnings[0].getMessage()
+
+    @staticmethod
+    def _ticker(ts, market_session='EOD', ds='eod_fallback', days=1):
+        return {'gamma_data_source': ds, 'gamma_snapshot_ts': ts,
+                'gamma_market_session': market_session, 'gamma_days_behind': days}
+
+    def test_footer_describes_the_oldest_snapshot(self):
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = {'analysis_date': self.MON, 'tickers': {
+            'SPY': self._ticker('2026-11-13T23:00:00+00:00'),
+            'QQQ': self._ticker('2026-11-12T23:00:00+00:00', days=2),
+            'IWM': self._ticker('2026-11-13T23:00:00+00:00')}}
         out = _build_gamma_footer(brief)
-        assert out is None
+        assert out.endswith('Gamma as of Thu 11/12 close (2 sessions old)')
+        dark = {'gamma_data_source': 'unavailable', 'gamma_snapshot_ts': None,
+                'gamma_days_behind': None}
+        assert _build_gamma_footer({'analysis_date': self.MON, 'tickers': {
+            'SPY': dict(dark), 'QQQ': dict(dark), 'IWM': dict(dark)}}) is None
 
+    def test_naive_timestamp_is_utc(self):
+        from gcp.premarket_brief import format_gamma_footer
+        assert format_gamma_footer('2026-11-13 20:55:30', 'REALTIME', date(2026, 11, 16)) == (
+            'Gamma as of Fri 11/13 15:55 ET')
 
-class TestFmtGammaTs:
-    """`_fmt_gamma_ts` converts ISO timestamps for the footer."""
-
-    def test_formats_utc_iso_as_et_short(self):
-        from gcp.premarket_brief import _fmt_gamma_ts
-        # 2026-05-22 19:55 UTC = 15:55 ET (EDT, UTC-4). Within RTH so
-        # we expect HH:MM ET format (no weekday prefix).
-        out = _fmt_gamma_ts('2026-05-22T19:55:00+00:00')
-        assert out == '15:55 ET'
-
-    def test_overnight_timestamp_gets_weekday_prefix(self):
-        from gcp.premarket_brief import _fmt_gamma_ts
-        # 2026-05-22 03:00 UTC = 23:00 ET previous day (Thu) — out-of-RTH
-        # hours get a weekday prefix so the reader doesn't mistake an
-        # overnight EOD timestamp for an intraday one.
-        out = _fmt_gamma_ts('2026-05-22T03:00:00+00:00')
-        # Either 'Thu 23:00 ET' or 'Fri 23:00 ET' depending on what the
-        # helper picks; assert the format shape rather than the literal.
-        assert 'ET' in out
-        assert ':' in out
-
-    def test_handles_none_and_invalid_gracefully(self):
-        from gcp.premarket_brief import _fmt_gamma_ts
-        assert _fmt_gamma_ts(None) == ''
-        assert _fmt_gamma_ts('') == ''
-        # Garbage input falls through to the original string rather
-        # than crashing the brief embed builder.
-        assert _fmt_gamma_ts('not-an-iso-string') == 'not-an-iso-string'
+    def test_unparseable_timestamp_gives_no_footer(self):
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = {'analysis_date': self.MON, 'tickers': {
+            'IWM': self._ticker('not-an-iso-string')}}
+        assert _build_gamma_footer(brief) is None
 
 
 class TestDeleteNullCloseRows:
