@@ -170,36 +170,101 @@ def _ftfc_state(d: dict) -> str:
     return f"{state} ({detail})" if detail else state
 
 
+# Candle labels and timeframes in words, as the overview is told them.
+LABEL_WORDS = {'2U': 'up', '2D': 'down', '1': 'inside and neutral',
+               '3': 'outside and neutral in the score'}
+TIMEFRAME_WORDS = {'1d': 'daily', '1w': 'weekly', '1mo': 'monthly'}
+
+
 _OVERVIEW_PROMPT = (
     "You are a trading-desk analyst writing the daily pre-market summary. "
-    "You'll receive, per name, the TF bias (a weighted vote of daily and "
-    "weekly candle types, -1 to +1) and the FTFC state (whether price is "
-    "above or below each current period open listed with it: bullish "
-    "means above all of them, bearish below all, mixed otherwise). Write "
+    "You'll receive, per name, the TF bias, the candle type of each "
+    "timeframe with its meaning, the MACD cross, and the FTFC state "
+    "(whether price is above or below each current period open listed "
+    "with it: bullish means above all of them, bearish below all, mixed "
+    "otherwise). {weights} "
+    "A 2U candle adds its timeframe's weight to the score, a 2D candle "
+    "subtracts it, and an inside (1) or outside (3) bar adds nothing to the "
+    "score. The score's sign is not a statement about any one timeframe: "
+    "say a timeframe is bullish or bearish only when its own candle is 2U "
+    "or 2D. Write "
     "ONE or TWO sentences explaining what this collective picture implies "
     "for today's tape. Concrete language, no hedging. Say 'every timeframe "
     "agrees' only when the FTFC state is bullish or bearish for every name; "
     "then expect trend-continuation setups, and counter-trend trades have "
     "the weakest setup. If names are mixed, or TF bias and FTFC disagree, "
     "call out which names and what that means. "
-    "Plain text only — NO emojis, NO markdown formatting, NO bullet lists."
+    "Plain text only: NO emojis, NO markdown formatting, NO bullet lists."
 )
 
 
-async def explain_overview_setup(tickers: dict[str, dict]) -> Optional[str]:
-    """Explain the day's setup from the watchlist's TF bias and FTFC."""
+def overview_system_prompt(weights: Optional[dict[str, float]]) -> str:
+    """The overview's system prompt, stating the weights the score used.
+
+    The weight sentence is built from the dict over the timeframes in
+    TIMEFRAME_WORDS: a timeframe absent from it, or with weight 0, reads
+    'none'. No weights at all is said, never a default (CLAUDE.md 3.7).
+    """
+    if weights is None:
+        sentence = ("The TF bias is a weighted vote of the candle types, "
+                    "from minus one to plus one; weights unavailable for this run.")
+    else:
+        parts = []
+        for timeframe, word in TIMEFRAME_WORDS.items():
+            weight = weights.get(timeframe)
+            parts.append(f"{word} {weight:.2f}" if weight else f"{word} none")
+        sentence = ("The TF bias is a weighted vote of the candle types, "
+                    "from minus one to plus one, with these weights: "
+                    + ", ".join(parts)
+                    + ". A timeframe listed as none is shown and carries no weight.")
+    return _OVERVIEW_PROMPT.format(weights=sentence)
+
+
+def _candles_text(d: dict) -> str:
+    """Each timeframe's candle label with its meaning, or unavailable."""
+    labels = d.get('ftfc_labels')
+    if not isinstance(labels, dict) or not labels:
+        return 'candles unavailable'
+    parts = []
+    for timeframe, word in TIMEFRAME_WORDS.items():
+        label = labels.get(timeframe)
+        if label in LABEL_WORDS:
+            parts.append(f"{word} {label} ({LABEL_WORDS[label]})")
+        else:
+            parts.append(f"{word} unavailable")
+    return ', '.join(parts)
+
+
+def overview_user_text(tickers: dict[str, dict]) -> Optional[str]:
+    """One line a ticker for the overview model; None when no ticker has data."""
     parts = []
     for tk, d in tickers.items():
         if d.get('status') == 'NO DATA':
             continue
+        macd_cross = d.get('macd_cross')
         parts.append(
             f"{tk}: TF bias {_tf_bias(d)}; FTFC {_ftfc_state(d)}; "
+            f"candles: {_candles_text(d)}; "
+            f"MACD cross {macd_cross if macd_cross else 'unavailable'}; "
+            # AUDIT-2026-05-13: silent fallback. Reachable for a
+            # STALE_DAILY_DATA ticker, which is not skipped above and
+            # carries no price or rsi: the model is then told $0.00, RSI 0.
             f"price ${d.get('price', 0):.2f}, RSI {d.get('rsi', 0):.0f}"
         )
     if not parts:
         return None
-    user = "Watchlist TF bias and FTFC snapshot:\n" + "\n".join(parts)
-    return await _call(_OVERVIEW_PROMPT, user)
+    return "\n".join(parts)
+
+
+async def explain_overview_setup(
+    tickers: dict[str, dict], weights: Optional[dict[str, float]] = None,
+) -> Optional[str]:
+    """Explain the day's setup from the watchlist's TF bias, candles and FTFC."""
+    lines = overview_user_text(tickers)
+    if lines is None:
+        return None
+    user = "Watchlist TF bias and FTFC snapshot:\n" + lines
+    return await _call(overview_system_prompt(weights), user)
 
 
 _TICKER_PROMPT = (
@@ -355,7 +420,7 @@ async def generate_explanations(brief: dict) -> dict:
     # Per-ticker tasks live alongside the overview/orb tasks so a single
     # asyncio.gather kicks every Gemini call in parallel.
     tasks: list[tuple[Any, Any]] = [
-        (('overview',), explain_overview_setup(tickers)),
+        (('overview',), explain_overview_setup(tickers, brief.get('ftfc_weights'))),
         (('orb',), explain_orb_choice(orb_window, orb_reason, events_today)),
     ]
     for ticker, data in tickers.items():

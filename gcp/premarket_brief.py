@@ -1046,6 +1046,8 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         'date': analysis_date.strftime('%a %b %d, %Y'),
         'analysis_date': analysis_date,
         'tickers': {},
+        # The weights the TF bias was scored with, for the overview prompt.
+        'ftfc_weights': strat.ftfc_weights,
     }
 
     for ticker in tickers:
