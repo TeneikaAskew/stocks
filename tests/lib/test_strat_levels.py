@@ -1401,6 +1401,8 @@ class TestAtrRungsDisplayOnly:
         added and nothing else changed."""
         import json
         from pathlib import Path
+        from lib.indicators import relative_volume
+        from tests.lib import strat_2026_11_06 as fx
         from tests.lib.atr_levels_display_only import BRIEF_TICKERS, brief_entries
         golden = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
                              / 'atr_levels_brief_base.json').read_text())
@@ -1432,6 +1434,13 @@ class TestAtrRungsDisplayOnly:
             # brief gained after the base was taken; the fixture run has no gamma
             # snapshot, so it is None, and every other key is still the base's.
             assert h.pop('gamma_market_session') is None, t
+            # RVOL is the one relative volume (FEAT-PLAYBOOK-001 B6): the last
+            # session's volume over the mean of the 20 sessions before it. The
+            # base holds the earlier form, with that session in its own mean.
+            volume = fx.daily(t)['Volume'].astype(float)
+            assert h.pop('rvol') == pytest.approx(relative_volume(volume, 20).iloc[-1]), t
+            assert b.pop('rvol') == pytest.approx(
+                volume.iloc[-1] / volume.rolling(20).mean().iloc[-1]), t
             assert h == b, t
             for side in ('calls', 'puts'):
                 for k in (1, 2, 3):
