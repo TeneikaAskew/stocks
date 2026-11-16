@@ -128,20 +128,22 @@ Spec: § Design 5. Advances done_when[8].
 Spec: § Design 4 ("History, once"), § Design 6. Advances done_when[5].
 - [ ] `generate_premarket_brief` gains the keyword-only `persist_levels: bool = True`. With False it skips `persist_level_map` (`:1440-1500`) and `_delete_null_close_rows` and changes nothing else. Every current caller keeps the default, so the live brief and `/replay` are unchanged.
 - [ ] New `gcp/backfill_plan_excursions.py` (`--tickers`, `--start` defaulting to the policy row's `since`, `--end`). For each session and ticker:
-  - run `generate_premarket_brief` with BRIEF_AS_OF set to the session, BRIEF_TICKERS set to the ticker, `persist_levels=False` and `BRIEF_AMC_REACTIONS=0`, and take `level_basis` from the returned entry. It never writes `premarket_analysis`, `premarket_analysis_history` or `strat_levels`.
+  - run `generate_premarket_brief` with BRIEF_AS_OF set to the session, BRIEF_TICKERS set to the ticker, `persist_levels=False`, `BRIEF_AMC_REACTIONS=0` and `BRIEF_LLM_DISABLE=1` (the only switch `gcp/brief_explanations.py:96` honors, so no session makes a model call), and take `level_basis` from the returned entry. It never writes `premarket_analysis`, `premarket_analysis_history` or `strat_levels`.
   - Read one ticker-month of `market_data_intraday` 1-minute bars per query and cut each session at `session_close`.
   - Score both sides with `plan_inputs` (v3 basis) and `plan_excursion`, then pick with `trade_of_day`.
   - Upsert `source = 'history'` rows with `ON CONFLICT ... DO UPDATE ... WHERE plan_excursions.source = 'history'`, so a resolver row is never replaced.
   - Delete its own history row for a session that now gives no trade.
-  - Resume from the last session written per ticker.
+  - Resume from the last session written per ticker only when no range is given. An explicit `--start`/`--end` reprocesses every session in it, written or not, so a session whose corrected bars or rebuilt basis now give no trade has its history row deleted.
   - Print per ticker the sessions read, rows written, rows deleted and the wall-clock.
 - [ ] Tests:
-  - resume skips written sessions;
+  - with no range, resume skips written sessions;
+  - a second run with an explicit range over a session whose stored trade now gives no trade (changed bars) deletes that history row;
   - a session that now gives no trade deletes only a history row;
   - a resolver row is never replaced;
   - a re-run over the same span writes the same rows;
   - one bar query per ticker-month;
-  - nothing is written outside `plan_excursions`, checked by recording every SQL statement issued.
+  - nothing is written outside `plan_excursions`, checked by recording every SQL statement issued;
+  - the replay never reaches the model client (`generate_explanations` patched to fail the test if called).
 - [ ] `gcp/deploy.sh`: a `deploy_backfill_plan_excursions` function beside `deploy_premarket_playbook_resolver` (`:1532`), creating a Cloud Run job `backfill-plan-excursions` (`python -m gcp.backfill_plan_excursions`) with no schedule. Its `--task-timeout` is Task 10's measured wall-clock per ticker times four or more. `gcp/deploy.sh` is not run in this PR.
 - [ ] Commit: `feat(resolver): add the plan excursions history job`.
 
@@ -164,9 +166,11 @@ Spec: § Source identity and close-out, Done when. Advances done_when[9], done_w
 - [ ] done_when[9]: list in the PR body the existing tests that pin each unchanged behavior in Global Constraints. Run them on `origin/main` and on the head, and show both passing.
 - [ ] `docs/product/02-FEATURE-CATALOG.md`, `### FEAT-STRAT-001` (`:233`): append to its Status cell the hit-rate ladder under each plan, read from `plan_excursions` (written by the resolver and a one-off history job), with the PR link; note it is under review and not deployed. Set Last reviewed to the head commit's date.
 - [ ] `docs/product/12-PR-ISSUE-TRACEABILITY.md`, `### FEAT-STRAT-001` (`:547`): append the PR to its `**PR lineage:**` line, naming spec PR #1996.
-- [ ] Site note, step 1: with a clean tree, `python3 scripts/maintenance/doc_source_snapshot.py produce --policy-ref origin/main --source-ref HEAD --output docs/review-evidence/site-source-snapshot.json`.
-- [ ] Site note, step 2: in `docs/product/03-SITE-TRACEABILITY.md`, the `| FEAT-STRAT-001 | DASHBOARD-01 |` row (`:1350`) and no other byte: the new `source_identity_sha256`, then this change's prose (backend source and local tests only), then ` Earlier: ` and the earlier prose unchanged.
-- [ ] Site note, steps 3 and 4: `produce` again, then `verify --policy-ref origin/main --source-ref HEAD --record docs/review-evidence/site-source-snapshot.json --max-seconds 5 --max-input-bytes 12582912 --max-entries 20000` (exit 0). Once these start, any change under `gcp/`, `lib/`, `scripts/` or `tests/` means redoing them.
+- [ ] Commit the catalog and traceability edits: `docs(product): record the target hit rates under FEAT-STRAT-001`.
+- [ ] Site note, step 1: with a clean tree, `python3 scripts/maintenance/doc_source_snapshot.py produce --policy-ref origin/main --source-ref HEAD --output docs/review-evidence/site-source-snapshot.json`; copy its `source_identity_sha256`.
+- [ ] Site note, step 2: in `docs/product/03-SITE-TRACEABILITY.md`, the `| FEAT-STRAT-001 | DASHBOARD-01 |` row (`:1350`) and no other byte: the new hash, then this change's prose (backend source and local tests only), then ` Earlier: ` and the earlier prose unchanged. Commit it (`docs(site): note the target hit rates on DASHBOARD-01`) before the next step, because `produce` refuses a tree whose SITE file is not committed.
+- [ ] Site note, step 3: run `produce` again and commit the regenerated `docs/review-evidence/site-source-snapshot.json` (`docs(site): regenerate the source snapshot`), because `verify --source-ref HEAD` reads the record committed at HEAD, not the working-tree file.
+- [ ] Site note, step 4: `python3 scripts/maintenance/doc_source_snapshot.py verify --policy-ref origin/main --source-ref HEAD --record docs/review-evidence/site-source-snapshot.json --max-seconds 5 --max-input-bytes 12582912 --max-entries 20000` (expect exit 0). Once these steps start, any change under `gcp/`, `lib/`, `scripts/` or `tests/` means redoing all four; if `origin/main` moves, update the branch and redo them.
 - [ ] `python3 scripts/gate/spec_gate.py --pr origin/main` passes. The PR body says that the owner's merge is the yes for the table and the policy row (apply-schema creates both on that merge), and that the deploy and the history run each wait for their own yes.
 
 ## Close-out, after the merge (never a pre-merge box)
