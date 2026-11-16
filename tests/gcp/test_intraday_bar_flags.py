@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
 
 import gcp.database as database
+import gcp.fetchers.export_intraday_bars as xb
+import gcp.fetchers.fetch_alphavantage_intraday as fai
 import gcp.fetchers.intraday_bar_flags as ibf
 from gcp.bar_recompute import UnprovenRows, bars_basis
 from lib.bar_prints import isolated_prints
@@ -716,3 +719,228 @@ def test_short_read_judges_nothing(engine_for):
     assert written["bars_in_month"] == 4 and written["bars_judged"] == 0
     assert written["first_judged_ts"] is None and written["last_judged_ts"] is None
     assert out["flags"] == 0
+
+
+# Task 7: the nightly pass
+
+
+NIGHTLY_ARGS = ["--symbol=ALL", "--force"]
+PASS_RESULT = {"months": 6, "flags": 41, "changed": 2, "seconds": 9.8}
+
+
+def run_main(monkeypatch, argv, *, flags=None, env=None, configured=True, fetch=None,
+             real_pass=False):
+    """Run fai.main() as the job would, with the fetch and the export stubbed.
+
+    Returns (exit code, calls): the calls are ("fetch", symbol),
+    ("flags", tickers, months, kwargs) and ("export", tickers, months), in
+    the order main() made them. flags: what the pass returns, or an exception
+    it raises. fetch: called with each symbol in place of the vendor fetch.
+    real_pass: leave flag_months as it is (the test installs an engine).
+    """
+    calls: list = []
+
+    def fake_process(symbol, start, end, keys, force):
+        calls.append(("fetch", symbol))
+        if fetch is not None:
+            fetch(symbol)
+        return fai.OUTCOME_OK
+
+    def fake_flags(tickers, months, **kwargs):
+        calls.append(("flags", tickers, months, kwargs))
+        if isinstance(flags, BaseException):
+            raise flags
+        return dict(flags or PASS_RESULT)
+
+    def fake_export(tickers, months, **kwargs):
+        calls.append(("export", tickers, months))
+        return {"months": 6, "rows": 123456, "seconds": 4.2}
+
+    monkeypatch.setattr(fai, "get_api_keys", lambda: ["k"])
+    monkeypatch.setattr(fai, "resolve_all_symbols", lambda: ["SPY", "QQQ", "IWM", "AMD"])
+    monkeypatch.setattr(fai, "process_symbol", fake_process)
+    monkeypatch.setattr(fai, "is_cloud_sql_configured", lambda: configured)
+    monkeypatch.setattr(fai, "market_today", lambda: date(2026, 10, 31))
+    monkeypatch.setattr(xb, "export_window", fake_export)
+    if not real_pass:
+        monkeypatch.setattr(ibf, "flag_months", fake_flags)
+    for name in ("CLOUD_RUN_TASK_COUNT", "CLOUD_RUN_TASK_INDEX", "INTRADAY_BARS_EXPORT",
+                 "INTRADAY_BAR_FLAGS"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in (env or {}).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(sys, "argv", ["fetch_alphavantage_intraday", *argv])
+    try:
+        fai.main()
+        code = 0
+    except SystemExit as stop:
+        code = stop.code
+    return code, calls
+
+
+def flag_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("bar flags")]
+
+
+def kinds(calls) -> list[str]:
+    return [call[0] for call in calls]
+
+
+def test_nightly_runs_the_pass_after_the_fetch_and_before_the_export(monkeypatch):
+    code, calls = run_main(monkeypatch, NIGHTLY_ARGS)
+
+    assert code == 0
+    assert calls == [
+        ("fetch", "SPY"), ("fetch", "QQQ"), ("fetch", "IWM"), ("fetch", "AMD"),
+        ("flags", ("SPY", "QQQ", "IWM"), [(2026, 9), (2026, 10)], {"commit": True}),
+        ("export", ("SPY", "QQQ", "IWM"), [(2026, 9), (2026, 10)]),
+    ]
+    assert calls[4][2] == xb.nightly_months(date(2026, 10, 31))
+
+
+def test_run_bar_flags_is_true_only_when_the_pass_returned(monkeypatch):
+    monkeypatch.setattr(ibf, "flag_months", lambda *a, **k: dict(PASS_RESULT))
+    assert fai._run_bar_flags(("SPY",), [(2026, 10)]) is True
+
+    def refuse(*_args, **_kwargs):
+        raise ValueError("ts is not strictly increasing at 2026-10-14 14:03:00+00:00")
+
+    monkeypatch.setattr(ibf, "flag_months", refuse)
+    assert fai._run_bar_flags(("SPY",), [(2026, 10)]) is False
+
+
+def test_switch_off(monkeypatch, caplog):
+    with caplog.at_level(logging.INFO):
+        code, calls = run_main(monkeypatch, NIGHTLY_ARGS, env={"INTRADAY_BAR_FLAGS": "off"})
+
+    assert code == 0
+    assert kinds(calls) == ["fetch"] * 4 + ["export"]
+    assert flag_lines(caplog) == ["bar flags skipped: INTRADAY_BAR_FLAGS is off"]
+
+
+@pytest.mark.parametrize("value", ["OFF", " Off "])
+def test_switch_letter_case(monkeypatch, caplog, value):
+    with caplog.at_level(logging.INFO):
+        code, calls = run_main(monkeypatch, NIGHTLY_ARGS, env={"INTRADAY_BAR_FLAGS": value})
+
+    assert code == 0
+    assert kinds(calls) == ["fetch"] * 4 + ["export"]
+    assert flag_lines(caplog) == ["bar flags skipped: INTRADAY_BAR_FLAGS is off"]
+
+
+def test_any_other_value_of_the_switch_runs_the_pass(monkeypatch):
+    code, calls = run_main(monkeypatch, NIGHTLY_ARGS, env={"INTRADAY_BAR_FLAGS": "on"})
+    assert code == 0 and kinds(calls) == ["fetch"] * 4 + ["flags", "export"]
+
+
+def test_database_not_configured_skips_the_pass(monkeypatch, caplog):
+    with caplog.at_level(logging.INFO):
+        code, calls = run_main(monkeypatch, NIGHTLY_ARGS, configured=False)
+
+    assert code == 0
+    assert kinds(calls) == ["fetch"] * 4
+    assert flag_lines(caplog) == ["bar flags skipped: the database is not configured"]
+
+
+@pytest.mark.parametrize("argv,env", [
+    (["--symbol=ALL"], None),                                             # no --force
+    (["--symbol=ALL", "--force", "--start-date", "2026-10-01"], None),
+    (["--symbol=ALL", "--force", "--end-date", "2026-10-31"], None),
+    (["--symbols-file", "<file>", "--force"], None),
+    (["--symbol", "SPY", "--force"], None),
+    (NIGHTLY_ARGS, {"CLOUD_RUN_TASK_COUNT": "2"}),                        # two tasks
+])
+def test_other_shapes_flag_nothing(monkeypatch, tmp_path, caplog, argv, env):
+    listed = tmp_path / "symbols.txt"
+    listed.write_text("SPY\nQQQ\n")
+    argv = [str(listed) if arg == "<file>" else arg for arg in argv]
+    with caplog.at_level(logging.INFO):
+        code, calls = run_main(monkeypatch, argv, env=env)
+
+    assert code == 0
+    assert "fetch" in kinds(calls)
+    assert "flags" not in kinds(calls)
+    assert flag_lines(caplog) == []
+
+
+@pytest.mark.parametrize("error,kind", [
+    (ConnectionError("connection refused"), "outage"),
+    (KeyError("high"), "defect"),
+])
+def test_outage_and_defect(monkeypatch, caplog, error, kind):
+    with caplog.at_level(logging.INFO):
+        code, calls = run_main(monkeypatch, NIGHTLY_ARGS, flags=error)
+
+    assert code == 1
+    assert kinds(calls) == ["fetch"] * 4 + ["flags", "export"]
+    (line,) = flag_lines(caplog)
+    assert line.startswith(f"bar flags failed ({kind})")
+    (record,) = [r for r in caplog.records if r.getMessage() == line]
+    assert record.levelno == logging.ERROR and record.exc_info[1] is error
+
+
+def test_flag_tables_absent(monkeypatch, caplog):
+    # What a nightly that runs before apply-schema meets on its first read.
+    import sqlalchemy.exc
+
+    absent = sqlalchemy.exc.ProgrammingError(
+        "SELECT month, checked_at, session_sha256 FROM intraday_bar_flag_coverage", {},
+        Exception({"S": "ERROR", "C": "42P01",
+                   "M": 'relation "intraday_bar_flag_coverage" does not exist'}))
+    with caplog.at_level(logging.INFO):
+        code, calls = run_main(monkeypatch, NIGHTLY_ARGS, flags=absent)
+
+    assert code == 1
+    assert kinds(calls) == ["fetch"] * 4 + ["flags", "export"]
+    (line,) = flag_lines(caplog)
+    assert line.startswith("bar flags failed (defect)")
+
+
+def test_summary_line(monkeypatch, caplog):
+    with caplog.at_level(logging.INFO):
+        code, _calls = run_main(monkeypatch, NIGHTLY_ARGS, flags=PASS_RESULT)
+
+    assert code == 0
+    assert flag_lines(caplog) == ["bar flags: 6 months, 41 flags, 2 changed, 9.8 s"]
+
+
+def _session(close: float) -> pd.DataFrame:
+    """The session of 2026-10-14, its 14:20Z close as given."""
+    bars = minutes("2026-10-14 14:00", 60)
+    bars.loc[20, "close"] = close
+    return bars
+
+
+@pytest.mark.parametrize("refetched,changed", [(100.0, False), (100.02, True)])
+def test_the_pass_reads_what_the_refetch_left(engine_for, monkeypatch, caplog,
+                                              refetched, changed):
+    values_a = _session(100.0)       # what the last pass judged
+    values_b = _session(100.01)      # what the 23:00 writer left
+    engine = engine_for(values_b, coverage=coverage_rows((
+        date(2026, 10, 1), pd.Timestamp("2026-10-15 01:00:05", tz="UTC"),
+        {"2026-10-14": bars_basis(values_a)["sha256"]})))
+    assert bars_basis(values_b)["sha256"] != bars_basis(values_a)["sha256"]
+
+    def upsert(symbol):
+        # The night's fetch: every bar the vendor returns, written unconditionally.
+        engine.bars = _session(refetched)
+
+    with caplog.at_level(logging.INFO):
+        code, calls = run_main(monkeypatch, NIGHTLY_ARGS, fetch=upsert, real_pass=True)
+
+    assert code == 0
+    assert kinds(calls) == ["fetch"] * 4 + ["export"]
+    # Every read came after the last fetch, and found what it wrote.
+    assert len(engine.reads()) == 6
+    assert [w["bars_basis"] for w in engine.writes() if w["month"] == date(2026, 10, 1)] \
+        == [bars_basis(_session(refetched))] * 3
+    lines = changed_messages(caplog)
+    if changed:
+        assert lines == [
+            f"BARS-CHANGED {ticker} 2026-10 sessions=2026-10-14 "
+            "since=2026-10-15T01:00:05+00:00 inserted=0 deleted=0"
+            for ticker in ("SPY", "QQQ", "IWM")]
+        assert flag_lines(caplog)[-1].startswith("bar flags: 6 months, 0 flags, 3 changed, ")
+    else:
+        assert lines == []
+        assert flag_lines(caplog)[-1].startswith("bar flags: 6 months, 0 flags, 0 changed, ")

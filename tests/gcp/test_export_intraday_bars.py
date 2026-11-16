@@ -1298,6 +1298,15 @@ def nightly(monkeypatch, argv, *, configured=True, export=None, process=None, en
     monkeypatch.setattr(fai, "market_today", lambda: date(2026, 10, 31))
     if not real_export:
         monkeypatch.setattr(xb, "export_window", recorder)
+    # The nightly bar flag pass runs before the export and has its own suite
+    # (tests/gcp/test_intraday_bar_flags.py). Here it is a stand-in that
+    # succeeds, so these tests keep exercising the export alone and never
+    # reach for a database.
+    from gcp.fetchers import intraday_bar_flags
+    monkeypatch.setattr(
+        intraday_bar_flags, "flag_months",
+        lambda tickers, months, commit: {"months": len(months) * len(tickers), "flags": 0,
+                                         "changed": 0, "seconds": 0.0})
     for name in ("CLOUD_RUN_TASK_COUNT", "CLOUD_RUN_TASK_INDEX", "INTRADAY_BARS_EXPORT"):
         monkeypatch.delenv(name, raising=False)
     for name, value in (env or {}).items():

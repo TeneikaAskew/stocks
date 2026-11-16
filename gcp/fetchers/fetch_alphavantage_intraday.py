@@ -1464,6 +1464,30 @@ def _run_bars_export(tickers: Sequence[str], months: Sequence[tuple[int, int]]) 
     return True
 
 
+def _run_bar_flags(tickers: Sequence[str], months: Sequence[tuple[int, int]]) -> bool:
+    """Judge *months* of *tickers* for isolated prints and write their flags
+    and coverage; True only when the pass returned.
+
+    The bars are already in Cloud SQL when this runs, and the pass changes
+    none of them. A pass that raises is never reported as success: the
+    failure is logged with its traceback, as an outage or as a defect
+    (lib.infra_errors), False is returned, and main() exits 1. The months it
+    wrote before it stopped stay written, and a rerun converges.
+    """
+    from gcp.fetchers import intraday_bar_flags  # noqa: PLC0415
+    from lib.infra_errors import is_infrastructure_error  # noqa: PLC0415
+
+    try:
+        done = intraday_bar_flags.flag_months(tickers, months, commit=True)
+    except Exception as exc:
+        kind = "outage" if is_infrastructure_error(exc) else "defect"
+        log.error("bar flags failed (%s): %s", kind, exc, exc_info=True)
+        return False
+    log.info("bar flags: %d months, %d flags, %d changed, %.1f s",
+             done["months"], done["flags"], done["changed"], done["seconds"])
+    return True
+
+
 def run_export_bars_from(first: tuple[int, int], symbol: str) -> int:
     """Write every month from *first* (year, month) to the current Eastern
     month to the bucket, for SPY, QQQ and IWM (*symbol* ``ALL``) or the one of
@@ -1682,32 +1706,47 @@ def main():
             log.error("Failed to file data-quality issue (dead tickers "
                       "already logged above): %s", e)
 
-    # The nightly run also writes the bars of SPY, QQQ and IWM to the bucket,
-    # after its fetch: the current Eastern month and the one before it. The
-    # trigger is the nightly's own argument shape (--symbol=ALL --force, no
-    # dates, no symbols file, one task), so the monthly run, a dated run and
-    # the striped bulk backfill never export. It runs when a ticker failed
-    # too; the exit is 1 if either failed. The months come from the exchange's
-    # date: at 21:00 ET the container's date is already the next day.
+    # The nightly run also judges the bars of SPY, QQQ and IWM for isolated
+    # prints and then writes them to the bucket, both after its fetch and both
+    # over the current Eastern month and the one before it, the two months
+    # the fetch just rewrote. The trigger is the nightly's own argument shape
+    # (--symbol=ALL --force, no dates, no symbols file, one task), so the
+    # monthly run, a dated run and the striped bulk backfill do neither. Both
+    # run when a ticker failed to fetch too, and the export runs when the
+    # flag pass failed; the exit is 1 if any of the three failed. The months
+    # come from the exchange's date: at 21:00 ET the container's date is
+    # already the next day.
+    flags_failed = False
     export_failed = False
     if (args.symbol == 'ALL' and not args.symbols_file and args.force
             and not args.start_date and not args.end_date and task_cnt == 1):
+        from gcp.fetchers.export_intraday_bars import (  # noqa: PLC0415
+            EXPORT_TICKERS,
+            nightly_months,
+        )
+        configured = is_cloud_sql_configured()
+
+        if os.environ.get('INTRADAY_BAR_FLAGS', '').strip().lower() == 'off':
+            log.info("bar flags skipped: INTRADAY_BAR_FLAGS is off")
+        elif not configured:
+            log.info("bar flags skipped: the database is not configured")
+        else:
+            from gcp.fetchers.intraday_bar_flags import FLAG_TICKERS  # noqa: PLC0415
+            flags_failed = not _run_bar_flags(
+                FLAG_TICKERS, nightly_months(market_today()))
+
         if os.environ.get('INTRADAY_BARS_EXPORT', '').strip().lower() == 'off':
             log.info("bars export skipped: INTRADAY_BARS_EXPORT is off")
-        elif not is_cloud_sql_configured():
+        elif not configured:
             log.info("bars export skipped: the database is not configured")
         else:
-            from gcp.fetchers.export_intraday_bars import (  # noqa: PLC0415
-                EXPORT_TICKERS,
-                nightly_months,
-            )
             export_failed = not _run_bars_export(
                 EXPORT_TICKERS, nightly_months(market_today()))
 
     if systemic_errors:
         log.error("Systemic failures: %s", systemic_errors)
         sys.exit(1)
-    if export_failed:
+    if flags_failed or export_failed:
         sys.exit(1)
 
     log.info("Done.")
