@@ -2326,6 +2326,33 @@ INSERT INTO level_param_policy (
      '2015-01-02', 'trades a target hit rate is read from: since a date or the last lookback_sessions, touch or held_5m, at least min_sample')
 ON CONFLICT (param_key, effective_from) DO NOTHING;
 
+-- FEAT-STRAT-001 target hit rates (docs/superpowers/specs/2026-11-16-feat-strat-001-target-hit-rates.md).
+-- One row per ticker-day that had a trade: the side that filled first
+-- (a same-bar fill of both sides, or no entry, has no row). excursion_r is
+-- the furthest the high (calls) or low (puts) went past the trigger on the
+-- bars after the fill bar and before the stop bar, in stop distances;
+-- excursion_held5_r the same for five consecutive closes. Written by
+-- gcp.premarket_playbook_resolver (source resolver) and the one-off
+-- gcp.backfill_plan_excursions (source history); read by lib.target_reach
+-- for the brief's per-rung hit rates. Display only.
+CREATE TABLE IF NOT EXISTS plan_excursions (
+    ticker             VARCHAR(10)      NOT NULL,
+    session_date       DATE             NOT NULL,
+    rule_version       VARCHAR(40)      NOT NULL,
+    side               VARCHAR(5)       NOT NULL CHECK (side IN ('calls', 'puts')),
+    trigger_price      DOUBLE PRECISION NOT NULL,
+    stop_price         DOUBLE PRECISION NOT NULL,
+    fill_price         DOUBLE PRECISION NOT NULL,
+    fill_ts            TIMESTAMPTZ      NOT NULL,
+    stop_ts            TIMESTAMPTZ,
+    excursion_r        DOUBLE PRECISION,
+    excursion_held5_r  DOUBLE PRECISION,
+    source             VARCHAR(10)      NOT NULL CHECK (source IN ('resolver', 'history')),
+    resolver_version   VARCHAR(40)      NOT NULL,
+    written_at         TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, session_date, rule_version)
+);
+
 
 -- FEAT-STRAT-001 (2026-11-05): FTFC in Rob Smith's sense, price above
 -- (green) or below (red) the current period's open on every timeframe,
