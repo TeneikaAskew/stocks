@@ -13,11 +13,11 @@ done_when:
   - "D6 a flag cannot cite a price that is not in the plan: tests/agents/test_agent_orchestrator.py::TestOneVoice::test_flag_naming_a_price_outside_the_plan_is_withheld passes: a critic stub returning 'Target 1 at 272.67 is too conservative' against the IWM fixture publishes that flag with its persona and severity kept and its message replaced by the fixed withheld sentence, failed_section_reasons['risk_flags'] counts it, the severity still counts toward conviction, and a flag citing 277.41 or a key level is published unchanged; fails on origin/main, where the flag is published verbatim (:680)"
   - "D7 one conviction: tests/agents/test_agent_orchestrator.py::TestOneVoice::test_conviction_reaches_the_pm_and_the_header passes: conviction is computed before the portfolio-manager request, that request carries the final direction, conviction, plan and flags, and report.conviction equals it; ::test_thesis_naming_another_conviction_is_replaced passes: a stub thesis saying 'the conviction is tempered to medium' under a computed low is not published, the thesis is the deterministic sentence built from the facts, and failed_sections holds 'thesis' with reason narrative_conflict; a thesis naming the computed level, or none, is published unchanged; fails on origin/main, where conviction is computed after the thesis (:556) and thesis=pm.thesis (:667)"
   - "D8 invalidation is the plan's stop: tests/agents/test_agent_orchestrator.py::TestOneVoice::test_invalidation_is_the_plan_stop passes: on the IWM fixture report.invalidation names 277.41 and no other price, whatever the model returned; on an orb_only side it is the side's orb_only copy and names no price; flat names none; fails on origin/main, where invalidation=pm.invalidation (:672) and the stored text names 282.2"
-  - "D9 max pain is max pain: tests/agents/test_agent_summarizers.py::TestMaxPain passes: summarize_options_flow reads one snapshot (its SQL names snapshot_ts and returns the rows of the latest snapshot_ts of the chosen snapshot_date), and its max_pain is lib.gamma.max_pain over lib.gamma.aggregate_by_strike of the nearest expiration on or after the session date, returned as {strike, expiration, snapshot_ts}; on a frame written in the test, two snapshots of two expirations whose summed open interest peaks at 250 while the nearest expiry's max pain is 280, it returns 280; with no expiration on or after the session date the value is absent with a reason; the key max_pain_strike_proxy is gone from lib/, and _derive_key_levels labels the level 'Max Pain (MM/DD exp)'; fails on origin/main (:710-714)"
+  - "D9 max pain is max pain: tests/agents/test_agent_summarizers.py::TestMaxPain passes: summarize_options_flow reads one snapshot (its SQL names snapshot_ts and returns the rows of the latest snapshot_ts of the chosen snapshot_date), and its max_pain is lib.gamma.max_pain over lib.gamma.aggregate_by_strike of the nearest expiration on or after the session date, returned as {strike, expiration, snapshot_ts}, and its largest_oi_strike is the strike with the most open interest summed over every expiration of that same one snapshot, returned as {strike, scope: 'all_expirations', snapshot_ts}; on a frame written in the test, two snapshots of two expirations whose summed open interest peaks at 250 while the nearest expiry's max pain is 280, max_pain.strike is 280 and largest_oi_strike.strike is the peak of the latest snapshot alone; with no expiration on or after the session date the value is absent with a reason; the key max_pain_strike_proxy is gone from lib/, and _derive_key_levels writes two separately named levels, 'Max Pain (exp MM/DD)' from max_pain and 'Largest OI Strike (all exp)' from largest_oi_strike, and no level named 'Max Pain' alone; fails on origin/main (:710-714)"
   - "D10 key level order, Discord layout unchanged: tests/agents/test_agent_orchestrator.py::test_key_level_order passes (report.key_level_order lists every key of key_levels by distance from the plan's reference price, nearest first, ties by name), and tests/gcp/test_insight_discord_push.py::test_levels_render_in_report_order passes (_fmt_levels_field renders in that order, and in dict order for a stored report without the field); the existing assertions of that file on the embed's fields, their names and their order pass unmodified; fails on origin/main, where the field does not exist"
   - "D11 evidence in the PR body: the three fixtures run through the real run_insight_pipeline with a recorded-response model stub, each printing header, plan, invalidation, flags and key levels beside the stored 2026-11-16 13:46Z report; EXPLAIN (ANALYZE, BUFFERS) of the new options read for SPY 2026-11-13, run read-only through scripts/db_query_cr.sh with its execution id, beside the same for the statement on origin/main, with rows read and rows returned for each"
   - "D12 records: 02-FEATURE-CATALOG FEAT-INSIGHT-001 record shows Status and Last reviewed for this PR, 12-PR-ISSUE-TRACEABILITY lists it, the (FEAT-INSIGHT-001, INSIGHTS-01) implementation-source note begins with the current source hash and scripts/maintenance/doc_source_snapshot.py verify accepts the regenerated record, platform/api/openapi.json is regenerated and its check passes if InsightReport is part of it, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing origin/main does not, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -25,7 +25,7 @@ supersedes: null
 
 ## Authority and status
 
-Draft, 2026-11-16. Not approved; no branch implements it before the owner approves it.
+Approved by the owner (T) on 2026-11-16. After reviewing the fixes the owner said "Continue working, keep it moving", having said "I approve ... any others that need to be approved to move forward". The numbered recommendations under "Decisions for the owner" stand as written unless the owner strikes one.
 
 The owner (T, 2026-11-16), after checking the 11/16 Discord output against market data:
 
@@ -43,6 +43,8 @@ Decided by the owner on 2026-11-16, and written into the design below:
 
 > "where is max pain naming from? Fix display order"
 
+> "I agree with max pain and all but the naming is confusing lol."
+
 The Discord output keeps its layout (owner, same day).
 
 ## Scope
@@ -50,9 +52,9 @@ The Discord output keeps its layout (owner, same day).
 - The insight report reads its levels, trigger, stop, targets, ATR, indicators, timeframe labels and TF bias from the session's `premarket_analysis` row, records which row it read, and recalculates none of them. A brief ticker without a row gets "unavailable", never a rebuilt value.
 - The insight's plan is the brief's plan: same trigger, same stop, same targets.
 - The risk critics review that plan, the numeric risk rules are computed in Python, and no published flag, thesis or invalidation names a price or a conviction the report does not hold.
-- Max pain becomes true max pain with its expiry. Key levels get a stated order.
+- Max pain becomes true max pain with its expiry, and the number that was wrongly shown under that name gets its own name, "Largest open interest strike". Two values, two names. Key levels get a stated order.
 - One spec, one PR, under FEAT-INSIGHT-001. No schema change, no new model call, no Discord layout change.
-- Code references are to `main` 4155a10f (2026-11-16), read for this spec. Every production number has its db-query execution beside it; every read was made without `--commit`.
+- Code references are to `main` 4155a10f (2026-11-16), read for this spec. The max pain references of Design 5 were read again on `main` 060c89a0 the same day. Every production number has its db-query execution beside it; every read was made without `--commit`.
 
 ## Capability
 
@@ -73,7 +75,7 @@ What was shown is the stored report of 2026-11-16 13:46Z (`cloud-scheduler:insig
 | 3 | IWM flag "Stop only 0.95x ATR from entry midpoint" (0.77x in the 13:11 run, SPY 0.88x); the stored neutral plan's `stop_distance_atr` is 0.273 (SPY 0.299, QQQ 0.312) | the ratio the plan has | the prompts tell the critics to read `risk_metrics` (`lib/agents/prompts.py:190`, `:218`); what they are sent is a `TraderOutput` (`lib/agents/schema.py:453`), which has none, so the ratio is invented | the five numeric rules are computed in Python from `risk_metrics` (Design 3) | D5 |
 | 4 | IWM stop 276.94; invalidation "A daily close above the trigger high of 282.2" (QQQ 694.56, SPY 763.04) | the invalidation is the plan's stop | stop is midpoint plus a stop multiple times ATR (`lib/agents/trade_planner.py:279-281`); the invalidation is the PM's prose (`orchestrator.py:672`) echoing the strat section's `trigger_high` (`lib/agents/summarizers.py:480`, from `lib/strat.py:1224-1226`, the high of the bar before the last) | invalidation text is built from the plan's stop; `trigger_high` and `trigger_low` leave the bundle (Design 4) | D8 |
 | 5 | IWM targets 274.85, 274.34, 273.65: gaps 0.51 and 0.69, all within 0.4 ATR of the entry, the first 0.18 above the prior day low 274.665 | the brief's targets for the side: 269.875 (PML), spaced by `spacing_price` 1.22 (0.25 ATR) | targets are midpoint minus R multiples of the stop distance, $1.33 (`trade_planner.py:284-287`), with no spacing and no level; the brief's side targets sit unused in the same report's `level_basis` (`lib/strat_levels.py:991`, `:2821-2830`) | the plan is the brief's plan (owner's decision; Design 2) | D3 |
-| 6 | "Max Pain" 250.0 (IWM), 700.0 (QQQ), 500.0 (SPY) | max pain of the 11/16 expiry from the 11/13 EOD chain: 280, 686, 762 (db-query-xgkkp) | the value is the strike with the most open interest summed over every expiry and every snapshot of the date (`summarizers.py:710-714`); the read has no snapshot filter (`:676-688`) and 11/13 holds 77 snapshots for IWM, 76 REALTIME and one EOD (db-query-xgkkp). The label "Max Pain" is set at `orchestrator.py:1022-1024` | `lib.gamma.max_pain` (`lib/gamma.py:852`) on the nearest expiry of the latest single snapshot, labelled with its expiry (Design 5) | D9 |
+| 6 | "Max Pain" 250.0 (IWM), 700.0 (QQQ), 500.0 (SPY) | max pain of the 11/16 expiry from the 11/13 EOD chain: 280, 686, 762 (db-query-xgkkp) | the value is the strike with the most open interest summed over every expiry and every snapshot of the date (`summarizers.py:710-714`); the read has no snapshot filter (`:676-688`) and 11/13 holds 77 snapshots for IWM, 76 REALTIME and one EOD (db-query-xgkkp). The label "Max Pain" is set at `orchestrator.py:1022-1024`, from the key `max_pain_strike_proxy` (`summarizers.py:734`) | two separately named values (Design 5): "Max Pain (exp 11/16)" from `lib.gamma.max_pain` (`lib/gamma.py:852`) on the nearest expiry of the latest single snapshot, and "Largest OI Strike (all exp)" for the open-interest peak of that same snapshot | D9 |
 | 7 | key levels listed as EMA 20, SMA 200, Max Pain, Prev Day Low, Gamma Balance, ... | nearest to price first | `key_levels` is a dict stored in JSONB, which orders keys by length and then bytes; Discord renders dict order (`gcp/insight_discord_push.py:140-152`) | an explicit `key_level_order` (Design 6) | D10 |
 | 8 | the 13:11Z run (`cron:auto-refresh-top-n`) published IWM stop 278.49 and targets 276.4, 275.89, 275.2; the 13:46Z run 276.94 and 274.85, 274.34, 273.65 | one plan for the session | the brief's row was written at 13:31:23Z (`premarket_analysis_history`, db-query-nrfqn); before it exists `summarize_session_levels` builds its own levels (`summarizers.py:606-615`), and with it applies its own newer premarket snapshot (`:604-605`) | the row is the only source; no row, no plan (Design 1) | D2 |
 
@@ -106,7 +108,7 @@ The brief's row for the session (`premarket_analysis`, unique on `analysis_date,
 
 ## Decisions for the owner
 
-**Decided on 2026-11-16:** the insight's plan uses the brief's level-based targets; everything the brief holds is used and never recalculated; one table of the defects; true naming for max pain; a fixed key level order; the Discord layout stays.
+**Decided on 2026-11-16:** the insight's plan uses the brief's level-based targets; everything the brief holds is used and never recalculated; one table of the defects; true naming for max pain, as two separately named values ("Max pain (exp <date>)" and "Largest open interest strike", Design 5); a fixed key level order; the Discord layout stays.
 
 The rest are written into the text as recommended. Striking one changes only the sections named.
 
@@ -180,8 +182,21 @@ Order in `run_insight_pipeline`: analysts, bull and bear, judge, trader, **plans
 ### 5. Max pain (`lib/agents/summarizers.py`, `lib/agents/orchestrator.py`)
 
 - `summarize_options_flow` reads the rows of the latest `snapshot_ts` of the chosen `snapshot_date`, adding `expiration` and `snapshot_ts` to its columns. Volumes, put/call ratio, top open-interest strikes and weighted IV are then of one snapshot, not of 77 added together.
-- `max_pain` is `lib.gamma.max_pain(lib.gamma.aggregate_by_strike(rows))` over the nearest expiration on or after the session date. Contracts with null open interest are left out and counted in the section; with none left, or no such expiration, the value is absent with a reason.
-- The section returns `max_pain: {strike, expiration, snapshot_ts}`; `max_pain_strike_proxy` is removed with its readers (`orchestrator.py:1022-1024`, the tests that name it). The key level label becomes "Max Pain (11/16 exp)".
+- **Where today's name comes from.** `summarize_options_flow` sums open interest by strike and takes the largest (`summarizers.py:710-714`); its own comment calls that an "approximation" and a "simple proxy" for max pain (`:707-708`). It returns the number under the key `max_pain_strike_proxy` (`:734`), and `_derive_key_levels` drops the word "proxy" and stores it as the key level "Max Pain" (`orchestrator.py:1022-1024`). Discord prints key level names as stored (`gcp/insight_discord_push.py:144-148`). So "Max Pain 250" was never max pain: it was the strike with the most open interest, added across every expiry and all 77 snapshots of the date.
+- **Two values, two names.** Nothing else in the report is called max pain, and neither name is used for the other value.
+
+| | Max pain | Largest open interest strike |
+|---|---|---|
+| Plain meaning | the strike where option holders, calls and puts together, lose the most if the stock closes there at that expiry | the strike with the most contracts open, calls plus puts |
+| Computed by | `lib.gamma.max_pain(lib.gamma.aggregate_by_strike(rows))` (`lib/gamma.py:852`), the function the options API already uses (`platform/api/routers/options.py:823`) | the strike with the largest summed `open_interest` |
+| Scope | the nearest expiration on or after the session date, of one snapshot | every expiration of that same one snapshot |
+| Key in the options section of the stored bundle | `max_pain: {strike, expiration, snapshot_ts}` | `largest_oi_strike: {strike, scope: "all_expirations", snapshot_ts}` |
+| Key in the stored report's `key_levels`, which is the label Discord prints | `Max Pain (exp 11/16)`, as `Max Pain (exp MM/DD)` | `Largest OI Strike (all exp)` |
+| 11/13 EOD chain | IWM 280, QQQ 686, SPY 762 (db-query-xgkkp) | not read for one snapshot; 250, 700 and 500 were the sums over every snapshot |
+
+- **Kept or dropped.** Recommended, and written into D9: keep the largest open interest strike as its own key level, because Design 5 already reads one snapshot, so it is an honest number, and the label carries its scope. If it could only be had by adding snapshots together it would be dropped; a value summed over 77 snapshots is not published under any name. Alternative: drop the key level and leave the strike only in `top_oi_strikes`, which the models already receive.
+- Contracts with null open interest are left out of both values and counted in the section; with none left, or no expiration on or after the session date, max pain is absent with a reason. The largest open interest strike is absent with a reason when no contract has open interest.
+- `max_pain_strike_proxy` is removed with its readers (`orchestrator.py:1022-1024`, the tests that name it). The Discord embed keeps its "Key Levels" field and its format; it gains one line, because the one mislabelled level becomes two labelled ones. A report stored before this change keeps its old "Max Pain" key and is not rewritten.
 - The two `.fillna(0)` on volume and IV (`:704-705`, `:720-721`) are existing fallbacks on adjacent lines: they get the `AUDIT-2026-05-13` marker and are not extended.
 
 ### 6. Key level order
@@ -226,7 +241,7 @@ None of these runs from the implementation PR, and none is a `done_when` box. Ea
    - What it writes, read on main 4155a10f: a row per ticker in `insight_reports` with `run_kind` 'replay' (`gcp/insight_pipeline_job.py:352-370`, `:388-415`), keyed `(ticker, as_of)` with `as_of` midnight UTC of the date, so the day's live rows (13:11Z and 13:46Z) are not overwritten; and a history row (`:317-343`).
    - It does not post: the job has no Discord call, and the scheduled push reads `run_kind = 'live'` only (`gcp/insight_discord_push.py:95-105`).
    - Check, read-only: the three replay rows exist with `brief_ref` naming the 11/16 row; the three live rows are unchanged.
-3. **Check each output against market data**, on the owner's yes, ticker by ticker: entry, stop and targets equal the brief row's; max pain and its expiry against the 11/13 chain; the invalidation price is the stop; every flag's numbers are the plan's; the header's conviction is the thesis's; key levels in order. Recorded on the PR.
+3. **Check each output against market data**, on the owner's yes, ticker by ticker: entry, stop and targets equal the brief row's; max pain and its expiry against the 11/13 chain, and the largest open interest strike against the same snapshot; the invalidation price is the stop; every flag's numbers are the plan's; the header's conviction is the thesis's; key levels in order. Recorded on the PR.
 4. **Browser proof**: the owner's runs against the deployed site, as AGENTS.md defines, for the insights report card.
 5. On a `docs/` branch after the merge: `docs/product/08-AI-AGENT-ARCHITECTURE.md` (tier order, node contract), the plan's status, and the re-cut of #1831 (decision 1).
 
@@ -255,3 +270,5 @@ None of these runs from the implementation PR, and none is a `done_when` box. Ea
 - The cost of one report and of the replay: not read.
 - Whether the insights canvas depicts the tier order: not opened.
 - solyra's rendering of `key_levels` and of an empty target list: not opened.
+- The largest open interest strike of the single 11/13 EOD snapshot for IWM, QQQ and SPY: not read. The 250, 700 and 500 on record are sums over every snapshot of the date.
+- Whether any stored-report reader matches a key level by the exact name "Max Pain": `lib/`, `gcp/` and `platform/api/` were searched on origin/main 060c89a0 and only `orchestrator.py:1024` writes it; solyra was not searched.
