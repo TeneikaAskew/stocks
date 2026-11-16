@@ -114,3 +114,121 @@ def test_brief_carries_the_weights(monkeypatch, no_network):  # noqa: F811
     brief = pb.generate_premarket_brief(cfg=cfg)
     assert brief['ftfc_weights'] == StratClassifier(strat_config=cfg.strat).ftfc_weights
     assert brief['ftfc_weights'] == {'1d': 0.30, '1w': 0.10, '1mo': 0.20}
+
+
+def _three(daily=('2D', '2D', '2D'), weekly=('1', '1', '1'), monthly=('2D', '2D', '2U')):
+    """SPY, QQQ and IWM, in that order, with the labels given per timeframe."""
+    return {name: _iwm(ftfc_labels={'1d': d, '1w': w, '1mo': m})
+            for name, d, w, m in zip(('SPY', 'QQQ', 'IWM'), daily, weekly, monthly)}
+
+
+BEARISH_BOTH = 'strong bearish alignment on the daily and weekly'
+
+
+class TestOverviewCheck:
+    """B5: a claim about a timeframe must hold for every ticker it describes."""
+
+    def test_weekly_claim_against_inside_bars_is_a_conflict(self):
+        conflicts = be.overview_conflicts(BEARISH_BOTH, _three())
+        assert len(conflicts) == 1
+        assert conflicts[0]['timeframe'] == 'weekly'
+        assert conflicts[0]['claim'] == '2D'
+        assert conflicts[0]['tickers'] == ['IWM', 'QQQ', 'SPY']
+        assert conflicts[0]['clause'] == BEARISH_BOTH
+
+    def test_the_same_sentence_with_every_weekly_down_is_none(self):
+        assert be.overview_conflicts(BEARISH_BOTH, _three(weekly=('2D', '2D', '2D'))) == []
+
+    def test_monthly_bullish_with_no_up_monthly_is_a_conflict(self):
+        conflicts = be.overview_conflicts('the monthly is bullish',
+                                          _three(monthly=('2D', '2D', '1')))
+        assert [c['timeframe'] for c in conflicts] == ['monthly']
+        assert conflicts[0]['claim'] == '2U'
+
+    def test_text_naming_no_timeframe_is_none(self):
+        assert be.overview_conflicts('Volume was light into the close.', _three()) == []
+
+    def test_all_three_names_must_each_hold_the_claim(self):
+        text = 'all three names are bearish on the weekly'
+        conflicts = be.overview_conflicts(text, _three(weekly=('2D', '1', '1')))
+        assert len(conflicts) == 1
+        assert conflicts[0]['tickers'] == ['IWM', 'QQQ']
+        assert be.overview_conflicts(text, _three(weekly=('2D', '2D', '2D'))) == []
+
+    def test_named_tickers_are_the_ones_described(self):
+        conflicts = be.overview_conflicts('SPY and QQQ are bearish on the daily',
+                                          _three(daily=('2D', '2U', '2U')))
+        assert len(conflicts) == 1
+        assert conflicts[0]['tickers'] == ['QQQ']
+
+    def test_one_of_needs_one(self):
+        text = 'one of the three is bearish on the weekly'
+        assert be.overview_conflicts(text, _three(weekly=('2D', '1', '1'))) == []
+        conflicts = be.overview_conflicts(text, _three(weekly=('1', '1', '2U')))
+        assert [c['timeframe'] for c in conflicts] == ['weekly']
+
+    @pytest.mark.parametrize('text', ['SPY, QQQ and IWM are bearish on the weekly',
+                                      'SPY, QQQ, and IWM are bearish on the weekly'])
+    def test_a_comma_inside_a_ticker_list_is_not_a_boundary(self, text):
+        conflicts = be.overview_conflicts(text, _three(weekly=('1', '2D', '2D')))
+        assert len(conflicts) == 1
+        assert conflicts[0]['tickers'] == ['SPY']
+        assert be.overview_conflicts(text, _three(weekly=('2D', '2D', '2D'))) == []
+
+    def test_a_comma_between_two_statements_is_still_a_boundary(self):
+        text = 'SPY is bearish on the weekly, QQQ is bullish'
+        assert be.overview_conflicts(text, _three(weekly=('2D', '2U', '1'))) == []
+
+    def test_most_needs_a_strict_majority(self):
+        text = 'most names are bearish on the weekly'
+        conflicts = be.overview_conflicts(text, _three(weekly=('2D', '1', '1')))
+        assert len(conflicts) == 1
+        assert conflicts[0]['tickers'] == ['IWM', 'QQQ']
+        assert be.overview_conflicts(text, _three(weekly=('2D', '2D', '1'))) == []
+        # Half is not a majority: one of the two named.
+        conflicts = be.overview_conflicts('most of SPY and QQQ are bearish on the daily',
+                                          _three(daily=('2D', '2U', '2D')))
+        assert len(conflicts) == 1
+        assert conflicts[0]['timeframe'] == 'daily'
+
+    def test_conflict_returns_the_deterministic_sentence(self, monkeypatch, caplog):
+        import asyncio
+        import logging
+        calls = []
+
+        async def fake_call(system, user):
+            calls.append(user)
+            return BEARISH_BOTH
+        monkeypatch.setattr(be, '_call', fake_call)
+        tickers = _three()
+        with caplog.at_level(logging.WARNING, logger=be.logger.name):
+            out = asyncio.run(be.explain_overview_setup(tickers))
+        assert out == be.deterministic_overview(tickers)
+        iwm = next(part for part in out.split('. ') if part.startswith('IWM:'))
+        assert iwm.rstrip('.') + '.' == (
+            'IWM: daily 2D (down), weekly 1 (inside), monthly 2U (up), TF bias -0.75.')
+        assert out.endswith('IWM: daily 2D (down), weekly 1 (inside), monthly 2U (up), TF bias -0.75.')
+        withheld = [r.getMessage() for r in caplog.records
+                    if r.getMessage().startswith('overview withheld:')]
+        assert len(withheld) == 1
+        assert BEARISH_BOTH in withheld[0]
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize('text, names', [
+        ('Weekly candles are bearish', ['IWM', 'QQQ', 'SPY']),
+        ('WEEKLY CANDLES ARE BEARISH', ['IWM', 'QQQ', 'SPY']),
+        ("IWM's weekly is bearish", ['IWM']),
+    ])
+    def test_capitals_and_a_possessive_are_read(self, text, names):
+        conflicts = be.overview_conflicts(text, _three())
+        assert len(conflicts) == 1
+        assert conflicts[0]['timeframe'] == 'weekly'
+        assert conflicts[0]['tickers'] == names
+
+    def test_a_model_reply_of_none_stays_none(self, monkeypatch):
+        import asyncio
+
+        async def fake_call(system, user):
+            return None
+        monkeypatch.setattr(be, '_call', fake_call)
+        assert asyncio.run(be.explain_overview_setup(_three())) is None

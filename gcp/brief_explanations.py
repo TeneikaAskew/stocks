@@ -52,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -264,7 +265,117 @@ async def explain_overview_setup(
     if lines is None:
         return None
     user = "Watchlist TF bias and FTFC snapshot:\n" + lines
-    return await _call(overview_system_prompt(weights), user)
+    text = await _call(overview_system_prompt(weights), user)
+    if text is None:
+        return None
+    conflicts = overview_conflicts(text, tickers)
+    if conflicts:
+        # The model said something the candle labels do not: print the
+        # labels themselves. No second model call.
+        logger.warning(
+            "overview withheld: %s (contradicts the candle labels: %s)", text,
+            "; ".join(f"{c['timeframe']} {c['claim']} not held by {', '.join(c['tickers'])}"
+                      for c in conflicts))
+        return deterministic_overview(tickers)
+    return text
+
+
+# Words that claim a direction for a timeframe's candle.
+_CLAIM_WORDS = {'bearish': '2D', 'down': '2D', 'lower': '2D',
+                'bullish': '2U', 'up': '2U', 'higher': '2U'}
+# Partial quantifiers and the least number of described tickers that must
+# hold the claim; 'most' is a strict majority, worked out per clause.
+_AT_LEAST = (
+    (re.compile(r"\btwo of (?:the )?three\b"), 2),
+    (re.compile(r"\bone of\b"), 1),
+    (re.compile(r"\bsome\b"), 1),
+)
+_MOST = re.compile(r"\bmost\b")
+_CLAUSE_BOUNDARY = re.compile(r"\.(?!\d)|[;,]|\b(?:but|while|whereas)\b", re.IGNORECASE)
+
+
+def _overview_tickers(tickers: dict[str, dict]) -> list[str]:
+    """The tickers the overview is about: every one that has data."""
+    return [tk for tk, d in tickers.items() if d.get('status') != 'NO DATA']
+
+
+def overview_conflicts(text: str, tickers: dict[str, dict]) -> list[dict]:
+    """Claims in the overview text that the candle labels do not back.
+
+    The text is split into clauses on '.', ';', ',' and the words but,
+    while and whereas; a comma inside a list of brief tickers ('SPY, QQQ
+    and IWM') is not a boundary. A clause that names daily, weekly or
+    monthly with bearish, down or lower claims 2D on that timeframe; with
+    bullish, up or higher, 2U. The claim must hold for every ticker the
+    clause describes: the brief tickers it names, else all of them. A
+    clause with a partial quantifier is held to its count: 'one of' and
+    'some' need one, 'two of three' and 'two of the three' need two, and
+    'most' needs more than half. A clause whose direction words point
+    both ways makes no claim: it cannot be said which timeframe each
+    word is about.
+
+    Returns one dict a conflict: {'timeframe', 'claim', 'tickers' (the
+    described names that do not hold the claim, sorted), 'clause'}. An
+    empty list is no conflict.
+    """
+    names = _overview_tickers(tickers)
+    if not names or not text:
+        return []
+    name_alt = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    one = rf"\b(?:{name_alt})\b(?:'s)?"
+    ticker_run = re.compile(rf"{one}(?:\s*,\s*(?:(?:and|or)\s+)?{one}|\s+(?:and|or)\s+{one})+")
+    # A run of tickers is one subject: its commas are not clause boundaries.
+    joined = ticker_run.sub(lambda m: m.group(0).replace(",", " "), text)
+
+    conflicts: list[dict] = []
+    for raw in _CLAUSE_BOUNDARY.split(joined):
+        clause = raw.strip()
+        if not clause:
+            continue
+        lowered = clause.lower()
+        words = set(re.findall(r"[a-z]+", lowered))
+        claims = {_CLAIM_WORDS[w] for w in words if w in _CLAIM_WORDS}
+        timeframes = [(key, word) for key, word in TIMEFRAME_WORDS.items() if word in words]
+        if len(claims) != 1 or not timeframes:
+            continue
+        claim = next(iter(claims))
+        described = [n for n in names if re.search(rf"\b{re.escape(n)}\b", clause)] or names
+        needed = len(described)
+        if _MOST.search(lowered):
+            needed = len(described) // 2 + 1
+        else:
+            for pattern, count in _AT_LEAST:
+                if pattern.search(lowered):
+                    needed = min(count, len(described))
+                    break
+        for key, word in timeframes:
+            missing = sorted(
+                n for n in described
+                if (tickers[n].get('ftfc_labels') or {}).get(key) != claim)
+            if len(described) - len(missing) < needed:
+                conflicts.append({'timeframe': word, 'claim': claim,
+                                  'tickers': missing, 'clause': clause})
+    return conflicts
+
+
+def deterministic_overview(tickers: dict[str, dict]) -> str:
+    """The overview built from the labels alone, one sentence a ticker:
+    'IWM: daily 2D (down), weekly 1 (inside), monthly 2U (up), TF bias -0.75.'
+    A missing label or score reads unavailable."""
+    sentences = []
+    for tk in _overview_tickers(tickers):
+        d = tickers[tk]
+        labels = d.get('ftfc_labels')
+        labels = labels if isinstance(labels, dict) else {}
+        parts = []
+        for key, word in TIMEFRAME_WORDS.items():
+            label = labels.get(key)
+            if label in LABEL_WORDS:
+                parts.append(f"{word} {label} ({LABEL_WORDS[label].split(' and ')[0]})")
+            else:
+                parts.append(f"{word} unavailable")
+        sentences.append(f"{tk}: {', '.join(parts)}, TF bias {format_tf_bias(d.get('ftfc_score'))}.")
+    return " ".join(sentences)
 
 
 _TICKER_PROMPT = (
