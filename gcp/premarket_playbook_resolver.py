@@ -473,6 +473,53 @@ def _bar_minutes_et(ts) -> int:
     return t.hour * 60 + t.minute
 
 
+@dataclass
+class _Entry:
+    """resolve_plan's entry walk on one side: the status, the fill bar
+    index and price (entered only), and the bar arrays it read."""
+    status: str
+    i: Optional[int]
+    fill: Optional[float]
+    o: object
+    h: object
+    lo: object
+    c: object
+    times: list
+    reached: object
+
+
+def _entry(is_call: bool, plan: 'PlanInputs', bars: pd.DataFrame) -> _Entry:
+    """The entry rule of resolve_plan (exits spec Design 6), the one copy:
+    the first bar opens at or beyond the trigger -> opened_through; no bar
+    reaches it -> no_cross; the first bar that reaches it starts at or after
+    the entry cutoff -> late_cross; otherwise entered, filled at the
+    trigger, or at that bar's open when it opened beyond the trigger. The
+    caller has checked the trigger, the bars and the cutoff."""
+    trigger = plan.trigger_price
+    o = bars['open'].to_numpy(dtype=float)
+    h = bars['high'].to_numpy(dtype=float)
+    lo = bars['low'].to_numpy(dtype=float)
+    c = bars['close'].to_numpy(dtype=float)
+    times = list(bars['time'])
+    reached = (h >= trigger) if is_call else (lo <= trigger)
+
+    fill = i = None
+    if (o[0] >= trigger) if is_call else (o[0] <= trigger):
+        status = 'opened_through'
+    elif not reached.any():
+        status = 'no_cross'
+    else:
+        i = int(reached.argmax())
+        if _bar_minutes_et(times[i]) >= plan.cutoff_minutes:
+            status = 'late_cross'
+            i = None
+        else:
+            status = 'entered'
+            opened_beyond = (o[i] > trigger) if is_call else (o[i] < trigger)
+            fill = float(o[i]) if opened_beyond else float(trigger)
+    return _Entry(status, i, fill, o, h, lo, c, times, reached)
+
+
 def resolve_plan(direction: str, plan: PlanInputs, bars: pd.DataFrame) -> PlanOutcome:
     """Score the brief's exit plan for one side on the session's RTH bars
     (exits spec Design 6).
@@ -514,29 +561,13 @@ def resolve_plan(direction: str, plan: PlanInputs, bars: pd.DataFrame) -> PlanOu
         out.r_status = PLAN_TARGETS_UNAVAILABLE
         return out
 
-    o = bars['open'].to_numpy(dtype=float)
-    h = bars['high'].to_numpy(dtype=float)
-    lo = bars['low'].to_numpy(dtype=float)
-    c = bars['close'].to_numpy(dtype=float)
-    times = list(bars['time'])
-    reached = (h >= trigger) if is_call else (lo <= trigger)
-
-    fill = i = None
-    if (o[0] >= trigger) if is_call else (o[0] <= trigger):
-        out.entry_status = 'opened_through'
-    elif not reached.any():
-        out.entry_status = 'no_cross'
-    else:
-        i = int(reached.argmax())
-        if _bar_minutes_et(times[i]) >= plan.cutoff_minutes:
-            out.entry_status = 'late_cross'
-            i = None
-        else:
-            out.entry_status = 'entered'
-            opened_beyond = (o[i] > trigger) if is_call else (o[i] < trigger)
-            fill = float(o[i]) if opened_beyond else float(trigger)
-            out.fill_price = fill
-            out.fill_ts = times[i]
+    e = _entry(is_call, plan, bars)
+    o, h, lo, c, times, reached = e.o, e.h, e.lo, e.c, e.times, e.reached
+    fill, i = e.fill, e.i
+    out.entry_status = e.status
+    if e.status == 'entered':
+        out.fill_price = fill
+        out.fill_ts = times[i]
 
     if not plan.plan_available:
         out.r_status = PLAN_TARGETS_UNAVAILABLE
@@ -586,6 +617,88 @@ def resolve_plan(direction: str, plan: PlanInputs, bars: pd.DataFrame) -> PlanOu
         risk = abs(fill - stop)
         out.r = round(sum(sign * (px - fill) / risk for px, _ in exits) / legs, 4)
     return out
+
+
+# Consecutive 1-minute closes a price must hold for the held measure
+# (target hit rates spec, Design 3).
+HELD_CLOSES = 5
+
+
+@dataclass
+class ExcursionResult:
+    """One entered side's move past the trigger before the stop (target hit
+    rates spec, Design 3), in stop distances."""
+    fill_i: int
+    fill_price: float
+    fill_ts: object
+    stop_i: Optional[int]
+    stop_ts: object
+    excursion_r: Optional[float]
+    excursion_held5_r: Optional[float]
+
+
+def plan_excursion(direction: str, plan: PlanInputs, bars: pd.DataFrame) -> Optional[ExcursionResult]:
+    """How far one side's trade went past the trigger before the stop
+    (target hit rates spec, Design 3). None unless resolve_plan's entry walk
+    enters the side and the stop is valid against the fill.
+
+    The stop bar is the first bar from the fill bar on that touches the
+    stop. excursion_r is the furthest the high (calls) or low (puts) went
+    past the TRIGGER on the bars after the fill bar and before the stop bar
+    (to the last bar when none touches the stop), over |trigger - stop|;
+    None when there is no such bar. excursion_held5_r is the same for the
+    furthest price that HELD_CLOSES consecutive closes all stayed at or
+    beyond, all of them in that range; None when the range is shorter. So a
+    rung d stop distances past the trigger is reached exactly when
+    excursion_r >= d, a bar touching the stop and the rung counting the
+    stop first. A value can be negative (the move never went back past the
+    trigger); it reaches no rung."""
+    is_call = (direction == 'call')
+    trigger = plan.trigger_price
+    if trigger is None or not math.isfinite(trigger) or trigger <= 0:
+        return None
+    if bars.empty or plan.cutoff_minutes is None:
+        return None
+    e = _entry(is_call, plan, bars)
+    if e.status != 'entered' or not _valid_stop(is_call, plan.stop_price, e.fill):
+        return None
+    stop = float(plan.stop_price)
+    i = e.i
+    touched = (e.lo[i:] <= stop) if is_call else (e.h[i:] >= stop)
+    stop_i = i + int(touched.argmax()) if touched.any() else None
+    end = stop_i if stop_i is not None else len(e.o)
+    risk = abs(trigger - stop)
+    sign = 1.0 if is_call else -1.0
+    seg_h = (e.h if is_call else e.lo)[i + 1:end]
+    seg_c = e.c[i + 1:end]
+    excursion = None
+    if len(seg_h):
+        far = seg_h.max() if is_call else seg_h.min()
+        excursion = float(sign * (far - trigger) / risk)
+    held = None
+    if len(seg_c) >= HELD_CLOSES:
+        w = pd.Series(sign * seg_c).rolling(HELD_CLOSES).min()
+        held = float((w.max() - sign * trigger) / risk)
+    return ExcursionResult(
+        fill_i=i, fill_price=e.fill, fill_ts=e.times[i], stop_i=stop_i,
+        stop_ts=e.times[stop_i] if stop_i is not None else None,
+        excursion_r=excursion, excursion_held5_r=held)
+
+
+def trade_of_day(calls: Optional[ExcursionResult],
+                 puts: Optional[ExcursionResult]) -> Optional[tuple]:
+    """The day's one trade (target hit rates spec, Design 2): the side whose
+    fill bar is earlier, as ('calls' | 'puts', result). None when neither
+    side entered or both filled on the same bar."""
+    if calls is None and puts is None:
+        return None
+    if puts is None:
+        return 'calls', calls
+    if calls is None:
+        return 'puts', puts
+    if calls.fill_i == puts.fill_i:
+        return None
+    return ('calls', calls) if calls.fill_i < puts.fill_i else ('puts', puts)
 
 
 def plan_inputs(side: str, row, basis: Optional[dict], policy_fn) -> PlanInputs:
