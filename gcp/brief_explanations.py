@@ -296,6 +296,21 @@ _OTHER_SUBJECTS = frozenset({
     'macd', 'rsi', 'stochrsi', 'ftfc', 'continuity', 'open', 'opens', 'vwap',
     'bias', 'score', 'cross', 'momentum', 'price'})
 _TIMEFRAME_KEYS = {word: key for key, word in TIMEFRAME_WORDS.items()}
+# A direction word within four words after one of these is denied, not
+# claimed ('is not bearish', 'neither bullish nor bearish', 'no weekly
+# candle is up'); a word ending n't counts too.
+_NEGATORS = frozenset({'not', 'no', 'never', 'neither', 'nor', 'without',
+                       'cannot', 'lacks', 'lacking'})
+_TOKEN = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
+
+
+def _tokens(clause: str) -> list[str]:
+    """Lower-case words of a clause, a possessive 's dropped."""
+    return [t[:-2] if t.endswith("'s") else t for t in _TOKEN.findall(clause.lower())]
+
+
+def _negated(tokens: list[str], at: int) -> bool:
+    return any(t in _NEGATORS or t.endswith("n't") for t in tokens[max(0, at - 4):at])
 # Partial quantifiers and the least number of described tickers that must
 # hold the claim; 'most' is a strict majority, worked out per clause.
 _AT_LEAST = (
@@ -312,8 +327,9 @@ def _overview_tickers(tickers: dict[str, dict]) -> list[str]:
     return [tk for tk, d in tickers.items() if d.get('status') != 'NO DATA']
 
 
-def _clause_claims(tokens: list[str]) -> list[tuple[str, str]]:
-    """The (timeframe key, '2U' or '2D') claims one clause makes.
+def _clause_claims(tokens: list[str]) -> list[tuple[str, str, int]]:
+    """The (timeframe key, '2U' or '2D', word index of the timeframe) claims
+    one clause makes.
 
     Each direction or neutral word is bound to the subject nearest to it in
     the clause, the one before it on a tie. A subject is a timeframe, a run
@@ -322,7 +338,7 @@ def _clause_claims(tokens: list[str]) -> list[tuple[str, str]]:
     A timeframe followed by open or opens is part of that open, not a
     candle. A timeframe claims a direction only when the words bound to it
     are all one direction: none, a neutral word, or both directions is no
-    claim.
+    claim. A negated direction word ('not bearish') is bound to nothing.
     """
     subjects: list[tuple[int, int, list[str]]] = []   # first index, last index, keys
     i = 0
@@ -356,7 +372,7 @@ def _clause_claims(tokens: list[str]) -> list[tuple[str, str]]:
     bound: dict[int, set[str]] = {}
     for at, tok in enumerate(tokens):
         mark = _CLAIM_WORDS.get(tok) or ('neutral' if tok in _NEUTRAL_WORDS else None)
-        if mark is None or not subjects:
+        if mark is None or not subjects or (tok in _CLAIM_WORDS and _negated(tokens, at)):
             continue
         def gap(n: int) -> tuple[int, int]:
             first, last, _ = subjects[n]
@@ -364,10 +380,10 @@ def _clause_claims(tokens: list[str]) -> list[tuple[str, str]]:
                 return (first - at, 1)
             return (at - last, 0)      # a tie goes to the subject before
         bound.setdefault(min(range(len(subjects)), key=gap), set()).add(mark)
-    claims: list[tuple[str, str]] = []
+    claims: list[tuple[str, str, int]] = []
     for n, marks in bound.items():
         if len(marks) == 1 and 'neutral' not in marks:
-            claims.extend((key, next(iter(marks))) for key in subjects[n][2])
+            claims.extend((key, next(iter(marks)), subjects[n][0]) for key in subjects[n][2])
     return claims
 
 
@@ -384,8 +400,11 @@ def overview_conflicts(text: str, tickers: dict[str, dict]) -> list[dict]:
     on the weekly, and 'bullish FTFC above the monthly open' claims
     nothing, since FTFC is price against the period opens and the monthly
     candle can be inside with price above its open. The claim must hold
-    for every ticker the clause describes: the brief tickers it names,
-    else all of them. A clause with a partial quantifier is held to its
+    for every ticker that claim describes: the brief tickers named last
+    before it in the clause, else the first named after it, else all of
+    them, so 'SPY has a down daily candle and QQQ has an up weekly candle'
+    holds each name to its own claim. A negated direction ('is not
+    bearish') claims nothing. A clause with a partial quantifier is held to its
     count: 'one of' and 'some' need one, 'two of three' and 'two of the
     three' need two, and 'most' needs more than half.
 
@@ -402,31 +421,52 @@ def overview_conflicts(text: str, tickers: dict[str, dict]) -> list[dict]:
     # A run of tickers is one subject: its commas are not clause boundaries.
     joined = ticker_run.sub(lambda m: m.group(0).replace(",", " "), text)
 
+    by_lower = {n.lower(): n for n in names}
     conflicts: list[dict] = []
     for raw in _CLAUSE_BOUNDARY.split(joined):
         clause = raw.strip()
         if not clause:
             continue
         lowered = clause.lower()
-        claimed = _clause_claims(re.findall(r"[a-z0-9]+", lowered))
+        tokens = _tokens(clause)
+        claimed = _clause_claims(tokens)
         if not claimed:
             continue
-        described = [n for n in names if re.search(rf"\b{re.escape(n)}\b", clause)] or names
-        needed = len(described)
-        if _MOST.search(lowered):
-            needed = len(described) // 2 + 1
-        else:
-            for pattern, count in _AT_LEAST:
-                if pattern.search(lowered):
-                    needed = min(count, len(described))
-                    break
-        for key, claim in claimed:
-            word = TIMEFRAME_WORDS[key]
+        # Runs of brief tickers in the clause: (index of the first, names).
+        runs: list[tuple[int, list[str]]] = []
+        at = 0
+        while at < len(tokens):
+            if tokens[at] in by_lower:
+                start, run = at, [by_lower[tokens[at]]]
+                while True:
+                    k = at + 1
+                    if k < len(tokens) and tokens[k] in ('and', 'or'):
+                        k += 1
+                    if k < len(tokens) and tokens[k] in by_lower:
+                        run.append(by_lower[tokens[k]])
+                        at = k
+                    else:
+                        break
+                runs.append((start, run))
+            at += 1
+        for key, claim, where in claimed:
+            # The tickers a claim describes: the run named last before it,
+            # else the first after it, else every ticker in the brief.
+            before = [run for start, run in runs if start < where]
+            described = before[-1] if before else (runs[0][1] if runs else names)
+            needed = len(described)
+            if _MOST.search(lowered):
+                needed = len(described) // 2 + 1
+            else:
+                for pattern, count in _AT_LEAST:
+                    if pattern.search(lowered):
+                        needed = min(count, len(described))
+                        break
             missing = sorted(
                 n for n in described
                 if (tickers[n].get('ftfc_labels') or {}).get(key) != claim)
             if len(described) - len(missing) < needed:
-                conflicts.append({'timeframe': word, 'claim': claim,
+                conflicts.append({'timeframe': TIMEFRAME_WORDS[key], 'claim': claim,
                                   'tickers': missing, 'clause': clause})
     return conflicts
 

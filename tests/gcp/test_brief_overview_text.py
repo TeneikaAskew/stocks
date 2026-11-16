@@ -227,6 +227,35 @@ class TestOverviewCheck:
         found = be.overview_conflicts('IWM prints a weekly 2D.', tickers)
         assert [(c['timeframe'], c['claim']) for c in found] == [('weekly', '2D')]
 
+    @pytest.mark.parametrize('text', [
+        "SPY's weekly candle is not bearish.",
+        "The weekly isn't bullish for any of the three.",
+        'No weekly candle is up.',
+        'The weekly is neither bullish nor bearish.',
+    ])
+    def test_a_negated_direction_is_not_a_claim(self, text):
+        assert be.overview_conflicts(text, _three(weekly=('1', '1', '1'))) == []
+
+    def test_each_claim_is_held_to_the_ticker_it_describes(self):
+        tickers = {
+            'SPY': _iwm(ftfc_labels={'1d': '2D', '1w': '1', '1mo': '1'}),
+            'QQQ': _iwm(ftfc_labels={'1d': '2U', '1w': '2U', '1mo': '1'}),
+        }
+        text = 'SPY has a down daily candle and QQQ has an up weekly candle.'
+        assert be.overview_conflicts(text, tickers) == []
+        found = be.overview_conflicts(
+            'SPY has a down daily candle and QQQ has a down weekly candle.', tickers)
+        assert [(c['timeframe'], c['claim'], c['tickers']) for c in found] == [
+            ('weekly', '2D', ['QQQ'])]
+
+    def test_a_claim_before_its_tickers_is_held_to_them(self):
+        tickers = {
+            'SPY': _iwm(ftfc_labels={'1d': '2D', '1w': '1', '1mo': '1'}),
+            'QQQ': _iwm(ftfc_labels={'1d': '2U', '1w': '2U', '1mo': '1'}),
+        }
+        found = be.overview_conflicts('The daily is bearish for SPY and QQQ.', tickers)
+        assert [(c['timeframe'], c['tickers']) for c in found] == [('daily', ['QQQ'])]
+
     def test_most_needs_a_strict_majority(self):
         text = 'most names are bearish on the weekly'
         conflicts = be.overview_conflicts(text, _three(weekly=('2D', '1', '1')))
