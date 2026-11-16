@@ -138,13 +138,25 @@ async def _call(system: str, user: str) -> Optional[str]:
 # ── Per-section helpers ──────────────────────────────────────────────────
 
 
+def format_tf_bias(score: Optional[float]) -> str:
+    """The TF bias score as text: two decimals of the score rounded to two.
+
+    The stored -0.30 / 0.40 is 0.7499999999999999 in floating point; one
+    decimal printed it as -0.7 where the value is -0.75. None or NaN is
+    'unavailable', never 0 (CLAUDE.md 3.7).
+    """
+    if score is None or score != score:
+        return 'unavailable'
+    return f"{round(score, 2):+.2f}"
+
+
 def _tf_bias(d: dict) -> str:
     """The weighted candle vote (keys ftfc_*), or unavailable: a missing
     score is never read as 0 (CLAUDE.md 3.7)."""
-    score = d.get('ftfc_score')
-    if score is None:
-        return 'unavailable'
-    return f"{score:+.1f} ({d.get('ftfc_direction')})"
+    text = format_tf_bias(d.get('ftfc_score'))
+    if text == 'unavailable':
+        return text
+    return f"{text} ({d.get('ftfc_direction')})"
 
 
 def _ftfc_state(d: dict) -> str:

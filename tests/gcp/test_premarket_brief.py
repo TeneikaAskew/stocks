@@ -3347,6 +3347,54 @@ class TestTfBiasAndFtfcRender:
         fields = _build_ticker_fields({'tickers': {'QQQ': base}})
         return next(f['value'] for f in fields if f['name'] == 'QQQ Strat').split('\n')
 
+    def test_score_prints_two_decimals(self):
+        """B3: the three render sites print the stored score, -0.30 / 0.40,
+        as -0.75; one decimal printed it as -0.7."""
+        import ast
+        import inspect
+        from gcp import brief_explanations, premarket_brief
+        from gcp.brief_explanations import format_tf_bias
+        from gcp.premarket_brief import _build_overview_embed, _build_ticker_fields
+
+        score = -0.30 / 0.40
+        assert format_tf_bias(score) == '-0.75'
+        assert format_tf_bias(None) == 'unavailable'
+        assert format_tf_bias(0.75) == '+0.75'
+        # Review Focus: the edges.
+        assert format_tf_bias(float('nan')) == 'unavailable'
+        assert format_tf_bias(0.0) == '+0.00'
+
+        d = TestTickerFieldsLayout()._ticker_data(
+            strat_combo='none', ftfc_score=score, ftfc_direction='bearish',
+            ftfc_labels={'1d': '2D', '1w': '1', '1mo': '2U'}, vol_regime='Normal')
+        brief = {'date': 'Mon Nov 16, 2026', 'tickers': {'IWM': d}}
+        assert 'IWM: bearish (-0.75)' in _build_overview_embed(brief)['description']
+        strat = next(f['value'] for f in _build_ticker_fields(brief) if f['name'] == 'IWM Strat')
+        assert 'TF bias: -0.75 (bearish)' in strat.split('\n')
+        assert brief_explanations._tf_bias(d) == '-0.75 (bearish)'
+
+        # No render site formats ftfc_score to one decimal, directly or
+        # through a local name assigned from it.
+        offenders = []
+        for module in (brief_explanations, premarket_brief):
+            tree = ast.parse(inspect.getsource(module))
+            for func in ast.walk(tree):
+                if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                score_names = set()
+                for node in ast.walk(func):
+                    if isinstance(node, ast.Assign) and 'ftfc_score' in ast.unparse(node.value):
+                        score_names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+                for node in ast.walk(func):
+                    if not isinstance(node, ast.FormattedValue) or node.format_spec is None:
+                        continue
+                    if '+.1f' not in ast.unparse(node.format_spec):
+                        continue
+                    value = ast.unparse(node.value)
+                    if 'ftfc_score' in value or value in score_names:
+                        offenders.append(f'{module.__name__}:{node.lineno} {value}')
+        assert offenders == []
+
     def test_tf_bias_labels_and_ftfc_lines_in_order(self):
         lines = self._strat(
             ftfc_score=0.5, ftfc_direction='bullish',
@@ -3354,7 +3402,7 @@ class TestTfBiasAndFtfcRender:
             tf_continuity='bearish',
             tf_continuity_frames={'1q': _frame('red', 742.51), '1mo': _frame('red', 695.315),
                                   '1w': _frame('red', 695.315)})
-        assert lines == ['Daily: 2U', 'TF bias: +0.5 (bullish)', '1D:2U 1W:2D 1M:2D',
+        assert lines == ['Daily: 2U', 'TF bias: +0.50 (bullish)', '1D:2U 1W:2D 1M:2D',
                          'FTFC: bearish (Q red, M red, W red)']
 
     def test_mixed_and_at_open(self):
@@ -3428,7 +3476,7 @@ class TestTfBiasAndFtfcRender:
         embed = _build_overview_embed({'date': 'Thu Nov 05, 2026', 'tickers': {
             'QQQ': {'price': 691.95, 'change_pct': 1.0, 'rsi': 50, 'ftfc_direction': 'bullish',
                     'ftfc_score': 0.5, 'vol_regime': 'Normal'}}})
-        assert '**TF bias:** QQQ: bullish (+0.5)' in embed['description']
+        assert '**TF bias:** QQQ: bullish (+0.50)' in embed['description']
         assert '**FTFC:**' not in embed['description']
 
 
@@ -3573,9 +3621,9 @@ class TestExplanationInputsReadTfBias:
         asyncio.run(be.explain_ticker('QQQ', self._qqq()))
         asyncio.run(be.explain_playbook('QQQ', self._qqq(), '5m'))
         overview, ticker, playbook = (user for _, user in seen)
-        assert 'QQQ: TF bias +0.5 (bullish); FTFC bearish (1q red, 1mo red, 1w red)' in overview
-        assert 'TF bias +0.5 (bullish) | FTFC bearish (1q red, 1mo red, 1w red)' in ticker
-        assert 'TF bias: +0.5 (bullish)\nFTFC: bearish (1q red, 1mo red, 1w red)' in playbook
+        assert 'QQQ: TF bias +0.50 (bullish); FTFC bearish (1q red, 1mo red, 1w red)' in overview
+        assert 'TF bias +0.50 (bullish) | FTFC bearish (1q red, 1mo red, 1w red)' in ticker
+        assert 'TF bias: +0.50 (bullish)\nFTFC: bearish (1q red, 1mo red, 1w red)' in playbook
         assert 'FTFC=' not in overview and 'FTFC +0.5' not in ticker
         assert "only when the FTFC state is bullish or bearish" in seen[0][0]
 

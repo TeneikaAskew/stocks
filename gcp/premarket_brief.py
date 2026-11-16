@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.eastern_time import (ET_NAME, as_eastern_time, as_utc_instant, eastern_bounds_utc, is_session,
                               localize_assuming_utc, market_date, market_today, previous_session)
 from lib.earnings_reactions import earnings_not_retired_sql
+from gcp.brief_explanations import format_tf_bias
 
 from lib.data_loader import DataLoader
 from lib.indicators import add_brief_indicators
@@ -2057,7 +2058,7 @@ def _build_overview_embed(brief: dict) -> dict:
         # skip them rather than crashing on the missing key.
         if d.get('ftfc_direction') is None:
             continue
-        ftfc_parts.append(f'{ticker}: {d["ftfc_direction"]} ({d["ftfc_score"]:+.1f})')
+        ftfc_parts.append(f'{ticker}: {d["ftfc_direction"]} ({format_tf_bias(d["ftfc_score"])})')
     if ftfc_parts:
         lines.append('')
         lines.append('**TF bias:** ' + ' | '.join(ftfc_parts))
@@ -2223,7 +2224,7 @@ def _build_ticker_fields(brief: dict) -> list:
             strat_lines.append('TF bias: unavailable')
         else:
             strat_lines.append(
-                f'TF bias: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
+                f'TF bias: {format_tf_bias(d["ftfc_score"])} ({d["ftfc_direction"]})'
             )
         tf_parts = ' '.join(
             f'{_fmt_timeframe(k)}:{v}'

@@ -339,7 +339,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [614](../../../gcp/fetchers/fetch_market_data.py#L614), [689](../../../gcp/fetchers/fetch_market_data.py#L689), [738](../../../gcp/fetchers/fetch_market_data.py#L738), [1149](../../../gcp/fetchers/fetch_market_data.py#L1149)
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [385](../../../gcp/fetchers/fetch_premarket_refresh.py#L385)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [170](../../../gcp/migrate_to_gcp.py#L170), [589](../../../gcp/migrate_to_gcp.py#L589)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [326](../../../gcp/premarket_brief.py#L326)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [327](../../../gcp/premarket_brief.py#L327)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [236](../../../scripts/backfill_watchlist_data.py#L236)
 - [`scripts/deep_backfill_ticker.py`](../../../scripts/deep_backfill_ticker.py) — line [102](../../../scripts/deep_backfill_ticker.py#L102)
 
@@ -381,12 +381,12 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [900](../../../platform/api/routers/backtest.py#L900)
 
 ### `premarket_analysis`
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3876](../../../gcp/premarket_brief.py#L3876), [3929](../../../gcp/premarket_brief.py#L3929), [3956](../../../gcp/premarket_brief.py#L3956)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3877](../../../gcp/premarket_brief.py#L3877), [3930](../../../gcp/premarket_brief.py#L3930), [3957](../../../gcp/premarket_brief.py#L3957)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [865](../../../gcp/premarket_playbook_resolver.py#L865)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [575](../../../gcp/signal_monitor.py#L575)
 
 ### `premarket_analysis_history`
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3826](../../../gcp/premarket_brief.py#L3826)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3827](../../../gcp/premarket_brief.py#L3827)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [123](../../../scripts/backfill_history_tables.py#L123)
 
 ### `ranker_runs`
@@ -533,7 +533,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/fetch_news_sentiment.py`](../../../gcp/fetchers/fetch_news_sentiment.py) — line [164](../../../gcp/fetchers/fetch_news_sentiment.py#L164)
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [90](../../../gcp/fetchers/fetch_premarket_refresh.py#L90), [115](../../../gcp/fetchers/fetch_premarket_refresh.py#L115)
 - [`gcp/fetchers/fetch_sec_filings.py`](../../../gcp/fetchers/fetch_sec_filings.py) — line [430](../../../gcp/fetchers/fetch_sec_filings.py#L430)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [429](../../../gcp/premarket_brief.py#L429), [783](../../../gcp/premarket_brief.py#L783)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [430](../../../gcp/premarket_brief.py#L430), [784](../../../gcp/premarket_brief.py#L784)
 - [`gcp/refresh_earnings_views.py`](../../../gcp/refresh_earnings_views.py) — line [164](../../../gcp/refresh_earnings_views.py#L164)
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [91](../../../lib/agents/ranker/candidates.py#L91)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1709](../../../lib/agents/summarizers.py#L1709)
@@ -586,7 +586,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/routers/earnings.py`](../../../platform/api/routers/earnings.py) — line [125](../../../platform/api/routers/earnings.py#L125), [127](../../../platform/api/routers/earnings.py#L127)
 
 ### `economic_events`
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [861](../../../gcp/premarket_brief.py#L861)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [862](../../../gcp/premarket_brief.py#L862)
 - [`gcp/research/magnitude_engine/mag_dataset.py`](../../../gcp/research/magnitude_engine/mag_dataset.py) — line [133](../../../gcp/research/magnitude_engine/mag_dataset.py#L133)
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [198](../../../lib/agents/ranker/candidates.py#L198)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1700](../../../lib/agents/summarizers.py#L1700)
@@ -604,7 +604,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/fetch_av_historical_options.py`](../../../gcp/fetchers/fetch_av_historical_options.py) — line [135](../../../gcp/fetchers/fetch_av_historical_options.py#L135), [218](../../../gcp/fetchers/fetch_av_historical_options.py#L218)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [225](../../../gcp/migrate_to_gcp.py#L225)
 - [`gcp/options_retention_job.py`](../../../gcp/options_retention_job.py) — line [65](../../../gcp/options_retention_job.py#L65), [68](../../../gcp/options_retention_job.py#L68), [73](../../../gcp/options_retention_job.py#L73), [75](../../../gcp/options_retention_job.py#L75)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [233](../../../gcp/premarket_brief.py#L233), [246](../../../gcp/premarket_brief.py#L246)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [234](../../../gcp/premarket_brief.py#L234), [247](../../../gcp/premarket_brief.py#L247)
 - [`gcp/research/p2_build_gamma_levels.py`](../../../gcp/research/p2_build_gamma_levels.py) — line [127](../../../gcp/research/p2_build_gamma_levels.py#L127)
 - [`gcp/research/p7_build_multi_tf_features.py`](../../../gcp/research/p7_build_multi_tf_features.py) — line [162](../../../gcp/research/p7_build_multi_tf_features.py#L162)
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [118](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L118), [125](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L125)
@@ -700,7 +700,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [153](../../../gcp/fetchers/fetch_premarket_refresh.py#L153), [362](../../../gcp/fetchers/fetch_premarket_refresh.py#L362)
 - [`gcp/fetchers/fetch_watched_tickers.py`](../../../gcp/fetchers/fetch_watched_tickers.py) — line [153](../../../gcp/fetchers/fetch_watched_tickers.py#L153), [238](../../../gcp/fetchers/fetch_watched_tickers.py#L238), [291](../../../gcp/fetchers/fetch_watched_tickers.py#L291), [292](../../../gcp/fetchers/fetch_watched_tickers.py#L292)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [131](../../../gcp/migrate_to_gcp.py#L131)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [425](../../../gcp/premarket_brief.py#L425), [430](../../../gcp/premarket_brief.py#L430), [784](../../../gcp/premarket_brief.py#L784), [3175](../../../gcp/premarket_brief.py#L3175)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [426](../../../gcp/premarket_brief.py#L426), [431](../../../gcp/premarket_brief.py#L431), [785](../../../gcp/premarket_brief.py#L785), [3176](../../../gcp/premarket_brief.py#L3176)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [219](../../../gcp/premarket_playbook_resolver.py#L219)
 - [`gcp/refresh_earnings_views.py`](../../../gcp/refresh_earnings_views.py) — line [149](../../../gcp/refresh_earnings_views.py#L149)
 - [`gcp/research/p2_outcomes_grid.py`](../../../gcp/research/p2_outcomes_grid.py) — line [145](../../../gcp/research/p2_outcomes_grid.py#L145), [150](../../../gcp/research/p2_outcomes_grid.py#L150)
@@ -805,7 +805,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `premarket_analysis`
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [357](../../../gcp/discord_interactions/main.py#L357)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3315](../../../gcp/premarket_brief.py#L3315), [3948](../../../gcp/premarket_brief.py#L3948), [3993](../../../gcp/premarket_brief.py#L3993)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3316](../../../gcp/premarket_brief.py#L3316), [3949](../../../gcp/premarket_brief.py#L3949), [3994](../../../gcp/premarket_brief.py#L3994)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [664](../../../gcp/premarket_playbook_resolver.py#L664), [903](../../../gcp/premarket_playbook_resolver.py#L903), [1012](../../../gcp/premarket_playbook_resolver.py#L1012)
 - [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [346](../../../lib/movement_statement.py#L346), [421](../../../lib/movement_statement.py#L421)
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [2930](../../../lib/strat_levels.py#L2930)
