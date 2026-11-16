@@ -205,6 +205,28 @@ class TestOverviewCheck:
             'The monthly candle is bullish with bullish FTFC.', tickers)
         assert [c['timeframe'] for c in found] == ['monthly']
 
+    @pytest.mark.parametrize('text', [
+        'IWM has a down daily candle and an inside weekly bar.',
+        'IWM shows an inside weekly candle alongside a bullish MACD cross.',
+        'The weekly is inside while RSI turns higher.',
+        'IWM is bearish on the daily with a neutral weekly.',
+        'TF bias is bearish with the weekly inside.',
+    ])
+    def test_a_direction_word_is_bound_to_what_it_describes(self, text):
+        # IWM: daily 2D, weekly 1, monthly 2U. Each sentence is accurate.
+        assert be.overview_conflicts(text, {'IWM': _iwm()}) == []
+
+    def test_a_bound_claim_is_still_checked(self):
+        found = be.overview_conflicts(
+            'IWM has an up daily candle and an inside weekly bar.', {'IWM': _iwm()})
+        assert [(c['timeframe'], c['claim']) for c in found] == [('daily', '2U')]
+
+    def test_candle_names_are_read_as_claims(self):
+        tickers = {'IWM': _iwm()}
+        assert be.overview_conflicts('IWM prints a daily 2D and a monthly 2U.', tickers) == []
+        found = be.overview_conflicts('IWM prints a weekly 2D.', tickers)
+        assert [(c['timeframe'], c['claim']) for c in found] == [('weekly', '2D')]
+
     def test_most_needs_a_strict_majority(self):
         text = 'most names are bearish on the weekly'
         conflicts = be.overview_conflicts(text, _three(weekly=('2D', '1', '1')))

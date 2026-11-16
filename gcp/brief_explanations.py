@@ -283,9 +283,19 @@ async def explain_overview_setup(
     return text
 
 
-# Words that claim a direction for a timeframe's candle.
-_CLAIM_WORDS = {'bearish': '2D', 'down': '2D', 'lower': '2D',
-                'bullish': '2U', 'up': '2U', 'higher': '2U'}
+# Words that claim a direction for a timeframe's candle, the candle names
+# included.
+_CLAIM_WORDS = {'bearish': '2D', 'down': '2D', 'lower': '2D', '2d': '2D',
+                'bullish': '2U', 'up': '2U', 'higher': '2U', '2u': '2U'}
+# Words that say a candle is neither: a timeframe described by one is not
+# claimed to be up or down.
+_NEUTRAL_WORDS = frozenset({'inside', 'outside', 'neutral'})
+# Things other than a candle that a direction word can describe. FTFC is
+# price against the current period opens, not the candle type.
+_OTHER_SUBJECTS = frozenset({
+    'macd', 'rsi', 'stochrsi', 'ftfc', 'continuity', 'open', 'opens', 'vwap',
+    'bias', 'score', 'cross', 'momentum', 'price'})
+_TIMEFRAME_KEYS = {word: key for key, word in TIMEFRAME_WORDS.items()}
 # Partial quantifiers and the least number of described tickers that must
 # hold the claim; 'most' is a strict majority, worked out per clause.
 _AT_LEAST = (
@@ -294,10 +304,6 @@ _AT_LEAST = (
     (re.compile(r"\bsome\b"), 1),
 )
 _MOST = re.compile(r"\bmost\b")
-# FTFC is price against the current period opens, not the candle type: a
-# clause in these words makes no candle claim unless it names a candle.
-_PRICE_VS_OPEN = re.compile(r"\b(?:opens?|ftfc|continuity)\b")
-_CANDLE_WORD = re.compile(r"\b(?:candles?|bars?)\b")
 _CLAUSE_BOUNDARY = re.compile(r"\.(?!\d)|[;,]|\b(?:but|while|whereas)\b", re.IGNORECASE)
 
 
@@ -306,23 +312,82 @@ def _overview_tickers(tickers: dict[str, dict]) -> list[str]:
     return [tk for tk, d in tickers.items() if d.get('status') != 'NO DATA']
 
 
+def _clause_claims(tokens: list[str]) -> list[tuple[str, str]]:
+    """The (timeframe key, '2U' or '2D') claims one clause makes.
+
+    Each direction or neutral word is bound to the subject nearest to it in
+    the clause, the one before it on a tie. A subject is a timeframe, a run
+    of timeframes joined by and or or ('the daily and weekly' is one), or
+    something else a direction can describe (MACD, RSI, FTFC, the TF bias).
+    A timeframe followed by open or opens is part of that open, not a
+    candle. A timeframe claims a direction only when the words bound to it
+    are all one direction: none, a neutral word, or both directions is no
+    claim.
+    """
+    subjects: list[tuple[int, int, list[str]]] = []   # first index, last index, keys
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in _TIMEFRAME_KEYS:
+            if i + 1 < len(tokens) and tokens[i + 1] in ('open', 'opens'):
+                subjects.append((i, i + 1, []))
+                i += 2
+                continue
+            keys, last = [_TIMEFRAME_KEYS[tok]], i
+            while True:
+                k = last + 1
+                if k >= len(tokens) or tokens[k] not in ('and', 'or'):
+                    break
+                k += 1
+                if k < len(tokens) and tokens[k] == 'the':
+                    k += 1
+                if k >= len(tokens) or tokens[k] not in _TIMEFRAME_KEYS:
+                    break
+                if k + 1 < len(tokens) and tokens[k + 1] in ('open', 'opens'):
+                    break
+                keys.append(_TIMEFRAME_KEYS[tokens[k]])
+                last = k
+            subjects.append((i, last, keys))
+            i = last + 1
+            continue
+        if tok in _OTHER_SUBJECTS:
+            subjects.append((i, i, []))
+        i += 1
+    bound: dict[int, set[str]] = {}
+    for at, tok in enumerate(tokens):
+        mark = _CLAIM_WORDS.get(tok) or ('neutral' if tok in _NEUTRAL_WORDS else None)
+        if mark is None or not subjects:
+            continue
+        def gap(n: int) -> tuple[int, int]:
+            first, last, _ = subjects[n]
+            if at < first:
+                return (first - at, 1)
+            return (at - last, 0)      # a tie goes to the subject before
+        bound.setdefault(min(range(len(subjects)), key=gap), set()).add(mark)
+    claims: list[tuple[str, str]] = []
+    for n, marks in bound.items():
+        if len(marks) == 1 and 'neutral' not in marks:
+            claims.extend((key, next(iter(marks))) for key in subjects[n][2])
+    return claims
+
+
 def overview_conflicts(text: str, tickers: dict[str, dict]) -> list[dict]:
     """Claims in the overview text that the candle labels do not back.
 
     The text is split into clauses on '.', ';', ',' and the words but,
     while and whereas; a comma inside a list of brief tickers ('SPY, QQQ
-    and IWM') is not a boundary. A clause that names daily, weekly or
-    monthly with bearish, down or lower claims 2D on that timeframe; with
-    bullish, up or higher, 2U. The claim must hold for every ticker the
-    clause describes: the brief tickers it names, else all of them. A
-    clause with a partial quantifier is held to its count: 'one of' and
-    'some' need one, 'two of three' and 'two of the three' need two, and
-    'most' needs more than half. A clause about price against the period
-    opens (it says open, FTFC or continuity and names no candle or bar)
-    makes no candle claim: the monthly candle can be inside with price
-    above the monthly open. A clause whose direction words point
-    both ways makes no claim: it cannot be said which timeframe each
-    word is about.
+    and IWM') is not a boundary. Within a clause each direction word
+    (bearish, down, lower or 2D; bullish, up, higher or 2U) is bound to
+    the subject nearest to it, see _clause_claims, and a timeframe whose
+    bound words are all one direction claims that candle: 'a down daily
+    candle and an inside weekly bar' claims 2D on the daily and nothing
+    on the weekly, and 'bullish FTFC above the monthly open' claims
+    nothing, since FTFC is price against the period opens and the monthly
+    candle can be inside with price above its open. The claim must hold
+    for every ticker the clause describes: the brief tickers it names,
+    else all of them. A clause with a partial quantifier is held to its
+    count: 'one of' and 'some' need one, 'two of three' and 'two of the
+    three' need two, and 'most' needs more than half.
 
     Returns one dict a conflict: {'timeframe', 'claim', 'tickers' (the
     described names that do not hold the claim, sorted), 'clause'}. An
@@ -343,14 +408,9 @@ def overview_conflicts(text: str, tickers: dict[str, dict]) -> list[dict]:
         if not clause:
             continue
         lowered = clause.lower()
-        words = set(re.findall(r"[a-z]+", lowered))
-        claims = {_CLAIM_WORDS[w] for w in words if w in _CLAIM_WORDS}
-        timeframes = [(key, word) for key, word in TIMEFRAME_WORDS.items() if word in words]
-        if len(claims) != 1 or not timeframes:
+        claimed = _clause_claims(re.findall(r"[a-z0-9]+", lowered))
+        if not claimed:
             continue
-        if _PRICE_VS_OPEN.search(lowered) and not _CANDLE_WORD.search(lowered):
-            continue
-        claim = next(iter(claims))
         described = [n for n in names if re.search(rf"\b{re.escape(n)}\b", clause)] or names
         needed = len(described)
         if _MOST.search(lowered):
@@ -360,7 +420,8 @@ def overview_conflicts(text: str, tickers: dict[str, dict]) -> list[dict]:
                 if pattern.search(lowered):
                     needed = min(count, len(described))
                     break
-        for key, word in timeframes:
+        for key, claim in claimed:
+            word = TIMEFRAME_WORDS[key]
             missing = sorted(
                 n for n in described
                 if (tickers[n].get('ftfc_labels') or {}).get(key) != claim)
