@@ -219,8 +219,9 @@ def test_a_session_with_no_bars_or_no_basis_is_reported_and_left_alone(patched):
 
 def test_the_brief_replay_writes_nothing_and_never_reaches_the_model(monkeypatch):
     """brief_basis on the committed 2026-11-06 fixture: the brief's own path
-    with persist_levels=False; persist_level_map, the null-close cleanup and
-    the model client all fail the test if reached. The basis equals the one
+    with persist_levels=False; persist_level_map and the null-close cleanup
+    fail the test if reached, and the model client must be called zero
+    times. The basis equals the one
     the live brief path builds for the same session."""
     import lib.agents.llm_client as llm_client
     import lib.strat_levels as sl
@@ -236,10 +237,19 @@ def test_the_brief_replay_writes_nothing_and_never_reaches_the_model(monkeypatch
     def forbidden(*_a, **_k):
         pytest.fail('the history replay wrote or reached the model client')
 
+    model_calls = []
+
+    def model_client(*a, **k):
+        # The brief swallows a failing explanation, so a raise here could go
+        # unseen; the call is recorded and counted instead.
+        model_calls.append((a, k))
+        raise RuntimeError('model client reached')
+
     monkeypatch.setattr(sl, 'persist_level_map', forbidden)
     monkeypatch.setattr(pb, '_delete_null_close_rows', forbidden)
-    monkeypatch.setattr(llm_client, 'get_adapter', forbidden)
+    monkeypatch.setattr(llm_client, 'get_adapter', model_client)
     basis = job.brief_basis('IWM', date(2026, 11, 6), cfg)
+    assert model_calls == []
     assert basis['rule_version'] == LEVEL_RULE_VERSION
     strip = lambda b: {k: v for k, v in b.items() if k not in ('built_at',)}  # noqa: E731
     assert strip(basis) == strip(live)
