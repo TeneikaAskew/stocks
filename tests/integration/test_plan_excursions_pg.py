@@ -91,7 +91,10 @@ def test_history_job_reads_one_month_per_query_and_writes_only_its_rows(clean, m
     for s in sessions:
         t0 = pd.Timestamp(f'{s} 09:25', tz='America/New_York')
         for i in range(400):                 # 09:25 to 16:04 ET
-            px = 100.0 if i < 10 else 101.0 + i / 1000
+            # 09:25 to 09:29 ET is premarket and runs well past the trigger
+            # (103.0); the read keeps the regular session only, so these bars
+            # change neither the fill nor the excursion.
+            px = 103.0 if i < 5 else 100.0 if i < 10 else 101.0 + i / 1000
             rows.append(dict(ticker='ZZPX', interval='1min', ts=(t0 + pd.Timedelta(minutes=i)
                              ).tz_convert('UTC').to_pydatetime(),
                              open=px, high=px + 0.01, low=px - 0.01, close=px))
