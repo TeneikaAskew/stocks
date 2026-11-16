@@ -3403,6 +3403,66 @@ def _trading_days_between(source_ts: pd.Timestamp, ref_ts: pd.Timestamp) -> int:
     return session_count(source_ts.date(), ref_ts.date())
 
 
+def check_source_freshness(
+    level_map: 'LevelMap',
+    *,
+    source_data_as_of=None,
+    max_age_business_days: int = 2,
+    today=None,
+) -> None:
+    """The stale-source refusal of persist_level_map, apart from the write.
+
+    ONE check with two callers: persist_level_map, before it writes, and the
+    premarket brief's dry run (--no-persist), which writes nothing and must
+    still reach the status a run that writes reaches. It reads no table: the
+    count of NYSE trading days comes from the shared calendar.
+
+    Returns None when the level map may be written: it has no levels (nothing
+    would be written, so nothing is refused), `source_data_as_of` is None, or
+    the source is at most `max_age_business_days` NYSE trading days behind
+    `today`. Raises StaleSourceDataError otherwise, and lets a calendar
+    failure propagate (Rule 3.7). The arguments are persist_level_map's.
+    """
+    if not level_map.levels:
+        return
+
+    # Freshness check (skipped only when source_data_as_of is None for
+    # back-compat with callers that haven't been wired through yet —
+    # those callers should be migrated; the None path is a transitional
+    # convenience, not a long-term position).
+    if source_data_as_of is not None:
+        from datetime import datetime, timezone
+        # Normalize to UTC so tz-aware vs naive comparisons don't raise.
+        # The caller may pass a date, datetime (naive or aware), or
+        # pandas Timestamp — coerce all to a UTC pd.Timestamp.
+        ts = pd.Timestamp(source_data_as_of)
+        if ts.tz is None:
+            ts = ts.tz_localize('UTC')
+        else:
+            ts = ts.tz_convert('UTC')
+
+        ref = today if today is not None else datetime.now(timezone.utc)
+        ref_ts = pd.Timestamp(ref)
+        if ref_ts.tz is None:
+            ref_ts = ref_ts.tz_localize('UTC')
+        else:
+            ref_ts = ref_ts.tz_convert('UTC')
+
+        # Business-day staleness via NYSE trading calendar.
+        biz_days = _trading_days_between(ts, ref_ts)
+        if biz_days > max_age_business_days:
+            raise StaleSourceDataError(
+                f"persist_level_map({level_map.ticker}): refusing to write — "
+                f"source_data_as_of={ts.isoformat()} is {biz_days} NYSE "
+                f"trading days behind {ref_ts.isoformat()} (threshold: "
+                f"{max_age_business_days} trading days). The level map "
+                f"was built off stale `market_data_daily` data; writing "
+                f"it would propagate the staleness to every downstream "
+                f"reader. Investigate the daily fetcher (likely a sticky "
+                f"--date latch per docs/RUNBOOK_BACKFILL.md) before retrying."
+            )
+
+
 def persist_level_map(
     level_map: 'LevelMap',
     conn,
@@ -3445,7 +3505,8 @@ def persist_level_map(
                Defaults to datetime.now() in UTC.
 
     Raises:
-        StaleSourceDataError: when source_data_as_of is more than
+        StaleSourceDataError: from check_source_freshness, which makes the
+            refusal, when source_data_as_of is more than
             max_age_business_days NYSE trading days behind `today`.
             The caller's transaction should roll back. Pre-fix this
             path was silent — the row was written with stale prices
@@ -3458,41 +3519,10 @@ def persist_level_map(
     if not level_map.levels:
         return 0
 
-    # Freshness check (skipped only when source_data_as_of is None for
-    # back-compat with callers that haven't been wired through yet —
-    # those callers should be migrated; the None path is a transitional
-    # convenience, not a long-term position).
-    if source_data_as_of is not None:
-        from datetime import datetime, timezone
-        # Normalize to UTC so tz-aware vs naive comparisons don't raise.
-        # The caller may pass a date, datetime (naive or aware), or
-        # pandas Timestamp — coerce all to a UTC pd.Timestamp.
-        ts = pd.Timestamp(source_data_as_of)
-        if ts.tz is None:
-            ts = ts.tz_localize('UTC')
-        else:
-            ts = ts.tz_convert('UTC')
-
-        ref = today if today is not None else datetime.now(timezone.utc)
-        ref_ts = pd.Timestamp(ref)
-        if ref_ts.tz is None:
-            ref_ts = ref_ts.tz_localize('UTC')
-        else:
-            ref_ts = ref_ts.tz_convert('UTC')
-
-        # Business-day staleness via NYSE trading calendar.
-        biz_days = _trading_days_between(ts, ref_ts)
-        if biz_days > max_age_business_days:
-            raise StaleSourceDataError(
-                f"persist_level_map({level_map.ticker}): refusing to write — "
-                f"source_data_as_of={ts.isoformat()} is {biz_days} NYSE "
-                f"trading days behind {ref_ts.isoformat()} (threshold: "
-                f"{max_age_business_days} trading days). The level map "
-                f"was built off stale `market_data_daily` data; writing "
-                f"it would propagate the staleness to every downstream "
-                f"reader. Investigate the daily fetcher (likely a sticky "
-                f"--date latch per docs/RUNBOOK_BACKFILL.md) before retrying."
-            )
+    check_source_freshness(
+        level_map, source_data_as_of=source_data_as_of,
+        max_age_business_days=max_age_business_days, today=today,
+    )
 
     sql = (
         "INSERT INTO strat_levels "

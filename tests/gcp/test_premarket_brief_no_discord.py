@@ -347,6 +347,233 @@ class TestNoPersist:
         assert db.not_reads() == [] and db.commits == 0
 
 
+# The fields of one ticker's brief entry, and of the brief around the
+# tickers, that record the write itself and so may differ between a dry run
+# and a run that writes. There are none: the brief dict carries the decisions
+# (status, playbook_error, the levels and the playbook) and no trace of the
+# upsert. A field that starts to differ fails the parity tests below until it
+# is fixed or named here.
+WRITE_ONLY_FIELDS = ()
+# Not a write and not a decision: the wall clock at which build_session_levels
+# ran, which differs between any two runs, dry or not.
+RUN_CLOCK_FIELDS = (('level_basis', 'built_at'),)
+STALE_TICKER = 'QQQ'
+STALE_LAST_BAR = pd.Timestamp('2026-10-30')     # four sessions short of 2026-11-05
+# What a dry run of the three tickers executes in a new process, every one a
+# read: the level parameters, three RSI calibration reads (cached for the life
+# of the process, so _run clears that cache), three statement timeouts, six
+# options snapshot reads, two earnings reads, the economic events and the
+# earnings analytics.
+DRY_RUN_STATEMENTS = 17
+
+
+def _stale_playbook_read(monkeypatch, db, ticker: str = STALE_TICKER) -> None:
+    """Every read of `ticker`'s daily bars after the first loses its last four
+    completed sessions (the session's own premarket row stays). The brief's
+    first read, behind its data freshness gate, sees current bars; the read
+    the level map is built from does not."""
+    from collections import Counter
+    from lib.data_loader import DataLoader
+    reads = Counter()
+    session = pd.Timestamp(dry.SESSION)
+
+    def load_daily(self, name, *a, **k):
+        frame = db.daily[name.upper()].copy()
+        reads[name.upper()] += 1
+        if name.upper() == ticker and reads[ticker] > 1:
+            frame = frame[(frame.index <= STALE_LAST_BAR) | (frame.index >= session)]
+        return frame
+
+    monkeypatch.setattr(DataLoader, 'load_daily', load_daily)
+
+
+def _stale_session_count(monkeypatch, ticker: str = STALE_TICKER) -> list:
+    """The stale-source refusal for one ticker. On real frames two earlier
+    gates stop a stale frame first (the brief's data freshness gate, and
+    build_session_levels, which gives a stale frame no levels, and a level map
+    with no levels is never refused), so the refusal is forced where it is
+    decided: the session count the check reads answers three sessions too many
+    for `ticker`, whose turn is its place in the run's ticker order. Returns
+    the list of counts the check was given, one a ticker."""
+    import lib.strat_levels as sl
+    real = getattr(sl._trading_days_between, '__wrapped__', sl._trading_days_between)
+    turn = dry.TICKERS.index(ticker)
+    counts = []
+
+    def count(source_ts, ref_ts):
+        n = real(source_ts, ref_ts) + (3 if len(counts) == turn else 0)
+        counts.append(n)
+        return n
+
+    count.__wrapped__ = real
+    monkeypatch.setattr(sl, '_trading_days_between', count)
+    return counts
+
+
+def _params():
+    """One stored set of level parameters for the two runs of a comparison:
+    the fixture mints a run_id each time it is built."""
+    from tests.lib.level_params_fixtures import legacy_db
+    return legacy_db(list(dry.TICKERS))
+
+
+def _run(monkeypatch, argv, params_db, *, stale_read=None, stale_count=None):
+    from lib.strategies import calibration
+    calibration._latest_calibration.cache_clear()
+    db = dry.RecordingDb(dry.brief_frames(), params_db=params_db)
+    pb = dry.install(monkeypatch, db)
+    if stale_read:
+        _stale_playbook_read(monkeypatch, db, stale_read)
+    db.session_counts = _stale_session_count(monkeypatch, stale_count) if stale_count else None
+    code = dry.run_main(pb, argv)
+    return pb, db, code
+
+
+def _decisions(entry: dict) -> dict:
+    out = {k: v for k, v in _plain(entry).items() if k not in WRITE_ONLY_FIELDS}
+    for outer, inner in RUN_CLOCK_FIELDS:
+        if isinstance(out.get(outer), dict):
+            out[outer] = {k: v for k, v in out[outer].items() if k != inner}
+    return out
+
+
+def _assert_same_brief(dry_brief: dict, real_brief: dict) -> None:
+    assert list(dry_brief['tickers']) == list(real_brief['tickers'])
+    for ticker, real in real_brief['tickers'].items():
+        assert _decisions(dry_brief['tickers'][ticker]) == _decisions(real), ticker
+    rest = lambda b: _decisions({k: v for k, v in b.items() if k != 'tickers'})  # noqa: E731
+    assert rest(dry_brief) == rest(real_brief)
+
+
+def _assert_wrote_nothing(db) -> None:
+    assert db.texts and db.not_reads() == [] and db.commits == 0
+    for name in WRITERS:
+        assert db.calls[name] == 0, name
+    assert db.calls['send_to_discord'] == 0
+
+
+class TestDryRunDecides:
+    """A dry run makes every decision a run that writes makes. It differs in
+    that it writes nothing and posts nothing."""
+
+    def test_a_stale_source_is_marked_as_the_real_run_marks_it(self, monkeypatch, capsys):
+        params = _params()
+        pb, real_db, real_code = _run(monkeypatch, (), params, stale_count=STALE_TICKER)
+        capsys.readouterr()
+        _pb, dry_db, dry_code = _run(monkeypatch, ('--no-persist',), params,
+                                     stale_count=STALE_TICKER)
+        err = capsys.readouterr().err
+        assert (real_code, dry_code) == (0, 0)
+        real, dried = real_db.briefs[0], dry_db.briefs[0]
+
+        # The control: the run that writes refuses this ticker's upsert.
+        assert real_db.session_counts == [1, 4, 1]
+        assert real['tickers'][STALE_TICKER]['status'] == 'STALE_DAILY_DATA'
+        assert real['tickers'][STALE_TICKER]['playbook_error'].startswith(
+            'strat_levels persist refused: ')
+        assert sum(t.startswith('INSERT INTO strat_levels') for t in real_db.not_reads()) == 2
+
+        # The dry run made the same check, once a ticker, and the same mark.
+        assert dry_db.session_counts == [1, 4, 1]
+        assert dried['tickers'][STALE_TICKER]['status'] == 'STALE_DAILY_DATA'
+        assert (dried['tickers'][STALE_TICKER]['playbook_error']
+                == real['tickers'][STALE_TICKER]['playbook_error'])
+        _assert_same_brief(dried, real)
+        assert f'[brief:{STALE_TICKER}] strat_levels persist REFUSED (stale source)' in err
+        assert f'[brief:{STALE_TICKER}] strat_levels persist skipped (no-persist)' not in err
+        for ticker in ('SPY', 'IWM'):
+            assert f'[brief:{ticker}] strat_levels persist skipped (no-persist)' in err
+
+        _assert_wrote_nothing(dry_db)
+        assert len(dry_db.statements) == DRY_RUN_STATEMENTS
+
+        # The rows and the payloads built from the two briefs agree (last,
+        # because building the payloads reads the earnings analytics).
+        built_real, built_dry = pb.build_persist_rows(real), pb.build_persist_rows(dried)
+        assert built_dry.stale_data == built_real.stale_data == frozenset({STALE_TICKER})
+        assert ([r['ticker'] for r in built_dry.canonical]
+                == [r['ticker'] for r in built_real.canonical] == ['SPY', 'IWM'])
+        assert (pb.format_discord_messages_routed(dried)
+                == pb.format_discord_messages_routed(real))
+
+    def test_a_stale_frame_at_the_playbook_read(self, monkeypatch):
+        """A frame that went stale between the brief's two reads: both runs
+        build no levels for it (reason stale_daily) and neither refuses."""
+        params = _params()
+        _pb, real_db, _code = _run(monkeypatch, (), params, stale_read=STALE_TICKER)
+        _pb, dry_db, _code = _run(monkeypatch, ('--no-persist',), params,
+                                  stale_read=STALE_TICKER)
+        real, dried = real_db.briefs[0], dry_db.briefs[0]
+        assert real['tickers'][STALE_TICKER]['reason_long'] == 'stale_daily'
+        assert real['tickers'][STALE_TICKER].get('status') is None
+        _assert_same_brief(dried, real)
+        _assert_wrote_nothing(dry_db)
+
+    def test_every_ticker_matches_the_real_run(self, monkeypatch):
+        params = _params()
+        pb, real_db, real_code = _run(monkeypatch, (), params)
+        _pb, dry_db, dry_code = _run(monkeypatch, ('--no-persist',), params)
+        assert (real_code, dry_code) == (0, 0)
+        real, dried = real_db.briefs[0], dry_db.briefs[0]
+        assert list(real['tickers']) == list(dry.TICKERS)
+        _assert_same_brief(dried, real)
+        _assert_wrote_nothing(dry_db)
+        # The freshness check reads the frame the level map was built from
+        # and the NYSE calendar: it adds no statement to the dry run, whose
+        # statements are the real run's reads, in the real run's order.
+        assert len(dry_db.statements) == DRY_RUN_STATEMENTS
+        real_reads = [t for t in real_db.texts if t not in real_db.not_reads()]
+        assert dry_db.texts == real_reads
+        # Last, because building the payloads reads the earnings analytics.
+        assert (pb.format_discord_messages_routed(dried)
+                == pb.format_discord_messages_routed(real))
+
+    def test_a_failed_check_is_marked_alike(self, monkeypatch):
+        """The NYSE calendar failing inside the check marks the ticker
+        PLAYBOOK_FAILED in a run that writes; the dry run reaches the same
+        mark through the same handler."""
+        import lib.strat_levels as sl
+
+        def unavailable(_source, _ref):
+            raise RuntimeError('NYSE calendar unavailable')
+
+        briefs, params = [], _params()
+        for argv in ((), ('--no-persist',)):
+            db = dry.RecordingDb(dry.brief_frames(), params_db=params)
+            pb = dry.install(monkeypatch, db)
+            monkeypatch.setattr(sl, '_trading_days_between', unavailable)
+            assert dry.run_main(pb, argv) == 0
+            briefs.append(db.briefs[0])
+        real, dried = briefs
+        for ticker in dry.TICKERS:
+            assert real['tickers'][ticker]['status'] == 'PLAYBOOK_FAILED'
+            assert real['tickers'][ticker]['playbook_error'] == (
+                'strat_levels persist failed: RuntimeError: NYSE calendar unavailable')
+        _assert_same_brief(dried, real)
+        _assert_wrote_nothing(db)
+
+    def test_one_check_two_callers(self):
+        """persist_level_map refuses through the function the dry run calls,
+        in the same words, before it asks for a cursor."""
+        import lib.strat_levels as sl
+        from tests.lib.test_strat_levels_freshness import _level_map
+        kw = dict(source_data_as_of=pd.Timestamp('2026-04-27'),
+                  today=pd.Timestamp('2026-05-06', tz='UTC'))
+        with pytest.raises(sl.StaleSourceDataError) as checked:
+            sl.check_source_freshness(_level_map(), **kw)
+
+        class _NoWrite:
+            def cursor(self):
+                raise AssertionError('a refused level map reached the cursor')
+
+        with pytest.raises(sl.StaleSourceDataError) as persisted:
+            sl.persist_level_map(_level_map(), _NoWrite(), **kw)
+        assert str(checked.value) == str(persisted.value)
+        assert sl.check_source_freshness(
+            _level_map(), source_data_as_of=pd.Timestamp('2026-05-05'),
+            today=pd.Timestamp('2026-05-06', tz='UTC')) is None
+
+
 # ── FEAT-PLAYBOOK-001 B10: the dry run recomputes the premarket from bars ──
 
 from datetime import date as _date  # noqa: E402

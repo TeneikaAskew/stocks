@@ -101,13 +101,13 @@ evidence that brief-aligned signals outperform brief-opposed ones.
 **The actionable threshold is recorded; its rationale is not.** The `(N/5)` in the
 brief's `signal_status` is the five-factor mean-reversion score from
 `lib.signals.check_call_conditions` / `check_put_conditions` (`gcp/premarket_brief.py:36`,
-`:1403-1404`), and `_resolve_signal_status` (`:1990`) turns it into text with two
-thresholds read at `:1187-1188`:
+`:1408-1409`), and `_resolve_signal_status` (`:2006`) turns it into text with two
+thresholds read at `:1192-1193`:
 
 | Threshold | Default | Source | Status text | `classify` reads it as |
 |---|---|---|---|---|
-| `SignalConfig.premarket_signal_threshold` | **3** | `lib/config.py:490` | `CALL setup (N/5)` / `PUT setup (N/5)` (`premarket_brief.py:1774-1775`) | `CALL` / `PUT` (subject to the FTFC check above) |
-| `SignalConfig.premarket_building_threshold` | **2** | `lib/config.py:491` | `CALL building (N/5)` / `PUT building (N/5)` (`:1776-1777`) | `NEUTRAL` ("building") |
+| `SignalConfig.premarket_signal_threshold` | **3** | `lib/config.py:490` | `CALL setup (N/5)` / `PUT setup (N/5)` (`premarket_brief.py:2053-2054`) | `CALL` / `PUT` (subject to the FTFC check above) |
+| `SignalConfig.premarket_building_threshold` | **2** | `lib/config.py:491` | `CALL building (N/5)` / `PUT building (N/5)` (`:2055-2056`) | `NEUTRAL` ("building") |
 | below both | — | — | `No signal` | `NEUTRAL` |
 
 So a brief becomes a CALL or PUT bias at a score of 3 of 5. Both values can be overridden

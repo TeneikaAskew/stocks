@@ -1167,9 +1167,14 @@ def generate_premarket_brief(cfg=None, data_dir: str = None, *,
 
     `no_persist` (the dry run, --no-persist) skips the two writes this
     function makes on its own, the null-close cleanup of market_data_daily
-    and the strat_levels upsert, and prints one line for each skip. The
-    stale-source refusal lives inside that upsert, so a dry run does not
-    make it.
+    and the strat_levels upsert, and prints one line for each skip. It makes
+    every decision a run that writes makes: the stale-source refusal that
+    guards the upsert (lib.strat_levels.check_source_freshness, the function
+    persist_level_map calls) runs in the dry run too, and marks a ticker
+    STALE_DAILY_DATA, or PLAYBOOK_FAILED when the check itself fails, as the
+    run that writes does. What a dry run cannot reproduce is a failure of the
+    write itself (a connection or an upsert that raises), which marks the
+    ticker PLAYBOOK_FAILED only in a run that writes.
 
     `premarket_from_bars` (BRIEF_PREMARKET_FROM_BARS=true, a dry run only)
     recomputes each ticker's premarket snapshot from the stored one-minute
@@ -1692,15 +1697,18 @@ def generate_premarket_brief(cfg=None, data_dir: str = None, *,
             # every downstream reader trusted them. The data layer's
             # #322/#323/#325 guards catch the upstream freeze, but this
             # is defense-in-depth at the level-write boundary.
-            if no_persist:
-                # The dry run writes nothing: no strat_levels upsert, no commit.
-                print(f"[brief:{ticker}] strat_levels persist skipped (no-persist)",
-                      file=sys.stderr, flush=True)
-                continue
+            #
+            # The dry run (no_persist) makes the same stale-source check with
+            # the same arguments, inside this try, so a refusal or a failed
+            # check marks the ticker through the handlers below exactly as a
+            # run that writes is marked. It opens no connection.
             try:
-                from gcp.database import get_engine
-                from lib.strat_levels import persist_level_map, StaleSourceDataError
-                engine = get_engine()
+                from lib.strat_levels import (
+                    persist_level_map, StaleSourceDataError, check_source_freshness,
+                )
+                if not no_persist:
+                    from gcp.database import get_engine
+                    engine = get_engine()
                 # df was just used to build level_map immediately above
                 # (lines ~1015-1034); its index max is the latest
                 # market_data_daily.date that fed the level computation.
@@ -1727,16 +1735,24 @@ def generate_premarket_brief(cfg=None, data_dir: str = None, *,
                         _today_ref = _today_ref.tz_localize('UTC')
                 except Exception:
                     _today_ref = None
-                with engine.connect() as conn:
-                    n = persist_level_map(
-                        level_map, conn.connection,
-                        source_data_as_of=_src_age,
-                        today=_today_ref,
+                if no_persist:
+                    # The decision without the write: no upsert, no commit.
+                    check_source_freshness(
+                        level_map, source_data_as_of=_src_age, today=_today_ref,
                     )
-                    conn.connection.commit()
-                print(f"[brief:{ticker}] persisted {n} strat_levels rows "
-                      f"(source_data_as_of={_src_age}, today_ref={_today_ref})",
-                      file=sys.stderr, flush=True)
+                    print(f"[brief:{ticker}] strat_levels persist skipped (no-persist)",
+                          file=sys.stderr, flush=True)
+                else:
+                    with engine.connect() as conn:
+                        n = persist_level_map(
+                            level_map, conn.connection,
+                            source_data_as_of=_src_age,
+                            today=_today_ref,
+                        )
+                        conn.connection.commit()
+                    print(f"[brief:{ticker}] persisted {n} strat_levels rows "
+                          f"(source_data_as_of={_src_age}, today_ref={_today_ref})",
+                          file=sys.stderr, flush=True)
             except StaleSourceDataError as exc:
                 # Stale-source refusal is loud + surfaceable, not a generic
                 # failure. Don't traceback (the message is the message).
