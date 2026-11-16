@@ -383,7 +383,8 @@ def prior_session_inputs(df: pd.DataFrame, enriched: pd.DataFrame) -> dict:
 
 
 def premarket_snapshot(ticker: str, session_date, bars: pd.DataFrame, prior: dict,
-                       level_params, read_at: datetime) -> dict | None:
+                       level_params, read_at: datetime, *,
+                       recorded_filter: dict | None = None) -> dict | None:
     """The eleven premarket columns of one session, from its premarket bars.
 
     The one place that turns a session's 04:00 to 09:30 Eastern bars, the
@@ -397,6 +398,13 @@ def premarket_snapshot(ticker: str, session_date, bars: pd.DataFrame, prior: dic
     means the run could not read the tables, and the snapshot is labelled
     level_params_unavailable. `read_at` is when the bars were read.
 
+    `recorded_filter` (the brief's dry run, FEAT-PLAYBOOK-001 B10) is the
+    filter an earlier run of this function recorded for the session:
+    {'atr', 'stale_print_atr', 'spike_atr', 'params'}, the three numbers and
+    the threshold record they were read from. When set it replaces what
+    would be derived from `level_params` and `prior`'s ATR, so a replay
+    filters as the original run did; `prior` still gives the close and open.
+
     Returns the eleven values, None where the computation gives none, or
     None when `bars` is empty or holds no bar in the premarket window. It
     makes no query, reads no clock and catches nothing.
@@ -405,7 +413,12 @@ def premarket_snapshot(ticker: str, session_date, bars: pd.DataFrame, prior: dic
 
     if bars.empty:
         return None
-    if level_params is None:
+    if recorded_filter is not None:
+        pm_filter = {'status': 'ok', 'atr': recorded_filter['atr'],
+                     'stale_print_atr': recorded_filter['stale_print_atr'],
+                     'spike_atr': recorded_filter['spike_atr'],
+                     'params': recorded_filter['params']}
+    elif level_params is None:
         pm_filter = {'status': 'level_params_unavailable', 'atr': None,
                      'stale_print_atr': None, 'spike_atr': None, 'params': None}
     else:

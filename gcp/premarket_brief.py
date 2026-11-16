@@ -31,6 +31,7 @@ from lib.strat import (CONTINUITY_DISPLAY_ORDER, StratClassifier, compute_strat_
 from lib.strat_levels import (
     LevelParamsUnavailable, build_session_levels,
     format_levels_for_brief, load_level_params, premarket_snapshot_from_daily,
+    premarket_snapshot_from_row, session_row_from_daily,
 )
 from lib.signals import check_call_conditions, check_put_conditions
 from lib.strategies.calibration import resolve_rsi_bands
@@ -1015,6 +1016,144 @@ def _level_params_query(sql: str, params: dict):
     return database.query_to_dataframe_strict(sql, params)
 
 
+def _strict_read(sql: str, params: dict):
+    """gcp.database's strict reader: a failed query raises (CLAUDE.md 3.7),
+    never an empty frame. The dry run's bars and cutoff reads go through it."""
+    from gcp import database  # noqa: PLC0415
+    return database.query_to_dataframe_strict(sql, params)
+
+
+# The nightly's own premarket bars statement
+# (gcp/fetchers/fetch_market_data.py, compute_and_upsert_daily_indicators).
+PREMARKET_BARS_SQL = (
+    "SELECT ts, open, high, low, close, volume FROM market_data_intraday "
+    "WHERE ticker = :ticker AND interval = '1min' AND ts >= :start AND ts < :end "
+    "ORDER BY ts"
+)
+
+
+def _bar_price(value) -> str:
+    """A stored or recomputed price for the dry run's line; a missing one is
+    the word, never a number."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 'unavailable'
+    return f"{number:.4f}" if number == number else 'unavailable'
+
+
+def _positive_number(value) -> Optional[float]:
+    """`value` as a positive finite float, or None."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and 0 < number < float('inf') else None
+
+
+def _recorded_premarket_filter(stored_params) -> Optional[dict]:
+    """The print filter the session's original premarket run recorded, read
+    from its market_data_daily.pre_filter_params (the block
+    lib.strat_levels.premarket_filter_inputs builds: `atr` at the root, each
+    threshold under its policy key as {'value', 'status', ...}).
+
+    Returns {'atr', 'stale_print_atr', 'spike_atr', 'params'} for
+    premarket_snapshot's `recorded_filter`, or None when the block is absent
+    or unreadable, the ATR or either threshold's value is missing, or a
+    threshold's status is not ok. Nothing is filled in from today's
+    calibration."""
+    from lib.strat_levels import (  # noqa: PLC0415
+        PARAM_OK, PM_SPIKE_KEY, PM_STALE_PRINT_KEY, parse_level_basis,
+    )
+    record = parse_level_basis(stored_params)
+    if not record:
+        return None
+    atr = _positive_number(record.get('atr'))
+    thresholds = {}
+    for key in (PM_STALE_PRINT_KEY, PM_SPIKE_KEY):
+        entry = record.get(key)
+        if not isinstance(entry, dict) or entry.get('status') != PARAM_OK:
+            return None
+        thresholds[key] = _positive_number(entry.get('value'))
+    if atr is None or any(v is None for v in thresholds.values()):
+        return None
+    kept = ('atr_basis', 'atr', 'policy_effective_from', PM_STALE_PRINT_KEY, PM_SPIKE_KEY)
+    return {'atr': atr, 'stale_print_atr': thresholds[PM_STALE_PRINT_KEY],
+            'spike_atr': thresholds[PM_SPIKE_KEY],
+            'params': {k: record[k] for k in kept if k in record}}
+
+
+def _premarket_from_bars(ticker: str, session_date: date, prior: dict, level_params,
+                         query_fn, *, stored=None) -> tuple[Optional[dict], str]:
+    """The dry run's premarket snapshot for one ticker, recomputed from the
+    session's stored one-minute bars as the original brief would have seen
+    them (FEAT-PLAYBOOK-001 B10). Returns (snapshot, line): the eleven
+    PREMARKET_COLUMNS values, or None when nothing was recomputed, and the
+    line to print.
+
+    The bars stop at the cutoff the original brief recorded,
+    level_basis.premarket.fetched_at of the session's LIVE premarket_analysis
+    row, and at 09:30 Eastern if that is earlier. market_data_daily's
+    pre_fetched_at is never the cutoff: the nightly and the later refresh
+    rewrite it. The filter runs with the ATR and thresholds the session's
+    stored row recorded (`stored`, that row: pre_filter_params), not the ones
+    loaded today; `level_params` and `prior`'s ATR are only shown beside
+    them. `prior` gives the prior close and open.
+
+    No recorded cutoff, no recorded parameters or no bars: None, with the
+    line saying which, and the caller keeps the stored snapshot. Both reads
+    go through `query_fn`, which must raise on a failed query; that
+    propagates. It writes nothing.
+    """
+    from gcp.fetchers.fetch_market_data import premarket_snapshot  # noqa: PLC0415
+    from lib.strat_levels import premarket_filter_inputs, read_live_level_basis  # noqa: PLC0415
+
+    get = stored.get if stored is not None else (lambda _key, default=None: default)
+    head = f"[brief:{ticker}]"
+    was = (f"stored high={_bar_price(get('pre_high'))} "
+           f"stored low={_bar_price(get('pre_low'))}")
+
+    basis = read_live_level_basis(query_fn, ticker, session_date)
+    fetched_at = ((basis or {}).get('premarket') or {}).get('fetched_at')
+    cutoff = None
+    if fetched_at is not None:
+        try:
+            cutoff = as_utc_instant(_gamma_snapshot_instant(fetched_at))
+        except (TypeError, ValueError):
+            cutoff = None
+    if cutoff is None:
+        return None, f"{head} premarket cutoff unavailable: {was} (kept)"
+
+    recorded = _recorded_premarket_filter(get('pre_filter_params'))
+    if recorded is None:
+        return None, (f"{head} premarket filter parameters unavailable: "
+                      f"cutoff={cutoff.isoformat()} {was} (kept)")
+
+    start, market_open = eastern_bounds_utc(session_date, time(4, 0), time(9, 30))
+    end = min(cutoff, market_open)
+    bars = query_fn(PREMARKET_BARS_SQL, {'ticker': ticker.upper(), 'start': start, 'end': end})
+    snapshot = None
+    if bars is not None and not bars.empty:
+        snapshot = premarket_snapshot(ticker, session_date, bars, prior, level_params, cutoff,
+                                      recorded_filter=recorded)
+    if snapshot is None:
+        return None, (f"{head} premarket bars unavailable: "
+                      f"cutoff={cutoff.isoformat()} {was} (kept)")
+
+    today_atr = None
+    if level_params is not None:
+        today_atr = premarket_filter_inputs(
+            level_params, {'atr_14': prior.get('atr_14'), 'atr_5': prior.get('atr_5')})['params']['atr']
+    return snapshot, (
+        f"{head} premarket from bars: cutoff={cutoff.isoformat()} {was} "
+        f"recomputed high={_bar_price(snapshot['pre_high'])} "
+        f"recomputed low={_bar_price(snapshot['pre_low'])} "
+        f"bars={len(bars)} recorded atr={_bar_price(recorded['atr'])} "
+        f"today atr={_bar_price(today_atr)}")
+
+
 def generate_premarket_brief(cfg=None, data_dir: str = None, *,
                              no_persist: bool = False,
                              premarket_from_bars: bool = False) -> dict:
@@ -1031,7 +1170,15 @@ def generate_premarket_brief(cfg=None, data_dir: str = None, *,
     and the strat_levels upsert, and prints one line for each skip. The
     stale-source refusal lives inside that upsert, so a dry run does not
     make it.
+
+    `premarket_from_bars` (BRIEF_PREMARKET_FROM_BARS=true, a dry run only)
+    recomputes each ticker's premarket snapshot from the stored one-minute
+    bars up to the original brief's cutoff (_premarket_from_bars) and uses
+    it in place of the stored pre_* values, in memory. A failed read there
+    raises out of this function.
     """
+    if premarket_from_bars and not no_persist:
+        raise ValueError("premarket_from_bars is a dry run's option: it needs no_persist")
     if cfg is None:
         cfg = load_config()
 
@@ -1401,6 +1548,9 @@ def generate_premarket_brief(cfg=None, data_dir: str = None, *,
     print(f"[brief] entering playbook loop with {len(brief.get('tickers', {}))} tickers: "
           f"{list(brief.get('tickers', {}).keys())}",
           file=sys.stderr, flush=True)
+    # A failed strict read of the dry run's premarket recompute: re-raised
+    # by the playbook block's handler instead of becoming PLAYBOOK_FAILED.
+    strict_read_failure = None
     for ticker, d in brief.get('tickers', {}).items():
         print(f"[brief:{ticker}] status={d.get('status')} price={d.get('price')}",
               file=sys.stderr, flush=True)
@@ -1429,6 +1579,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None, *,
             # read before the frame is cut to prior sessions. The prior
             # day's pre_* is never this session's (FEAT-STRAT-001).
             session_premarket = premarket_snapshot_from_daily(df, analysis_date)
+            stored_row = session_row_from_daily(df, analysis_date) if premarket_from_bars else None
             # Same as_of cutoff applied above for the strat block — keep
             # the level map honest on historical replays so PDH/PDL/PWH
             # / etc. don't silently leak future bars (e.g. ARM 4/20
@@ -1446,6 +1597,34 @@ def generate_premarket_brief(cfg=None, data_dir: str = None, *,
             # distance is measured in. Missing ATR gives no trigger on either
             # side (reason atr_unavailable).
             atrs = {'atr_14': d.get('atr14'), 'atr_5': d.get('atr5')}
+            if premarket_from_bars:
+                # The dry run's recompute from the stored bars, in memory. The
+                # prior close is the brief's own (d['price'], the last
+                # completed session's close); the prior open rides on the
+                # computation's report and sets no column. The two reads are
+                # strict: a failed one ends the run (re-raised below), it is
+                # never a PLAYBOOK_FAILED row of the printout.
+                with_close = df[df['Close'].notna()] if 'Close' in df.columns else df.iloc[0:0]
+                prior_open = (with_close['Open'].iloc[-1]
+                              if len(with_close) and 'Open' in with_close.columns else None)
+                prior_inputs = {
+                    'close': d.get('price'),
+                    'open': float(prior_open) if prior_open is not None and pd.notna(prior_open) else None,
+                    **atrs,
+                }
+                try:
+                    recomputed, line = _premarket_from_bars(
+                        ticker, analysis_date, prior_inputs, level_params[ticker.upper()],
+                        _strict_read, stored=stored_row)
+                except Exception as exc:
+                    strict_read_failure = exc
+                    raise
+                print(line, flush=True)
+                if recomputed is not None:
+                    replaced = stored_row.copy()
+                    for column, value in recomputed.items():
+                        replaced[column] = value
+                    session_premarket = premarket_snapshot_from_row(replaced, analysis_date)
             session_levels = build_session_levels(
                 ticker, analysis_date, df, atrs, session_premarket,
                 level_params[ticker.upper()],
@@ -1596,6 +1775,8 @@ def generate_premarket_brief(cfg=None, data_dir: str = None, *,
                 d['playbook_error'] = (
                     f"strat_levels persist failed: {type(exc).__name__}: {exc}")
         except Exception as e:
+            if e is strict_read_failure:
+                raise
             import traceback
             print(f"[brief:{ticker}] playbook block FAILED: {type(e).__name__}: {e}",
                   file=sys.stderr, flush=True)
@@ -4383,6 +4564,14 @@ def main(argv: Optional[list[str]] = None):
                   f"with {refused}", file=sys.stderr)
             sys.exit(2)
 
+    # BRIEF_PREMARKET_FROM_BARS replaces the stored premarket values in
+    # memory, so it is a dry run's option only: refused before any query.
+    premarket_from_bars = _env_true('BRIEF_PREMARKET_FROM_BARS')
+    if premarket_from_bars and not no_persist:
+        print("ERROR: BRIEF_PREMARKET_FROM_BARS=true needs --no-persist "
+              "(or BRIEF_NO_PERSIST=true)", file=sys.stderr)
+        sys.exit(2)
+
     if args.post_existing:
         ticker, date_str = args.post_existing
         try:
@@ -4473,7 +4662,8 @@ def main(argv: Optional[list[str]] = None):
               f"run_kind={run_kind}, triggered_by={triggered_by})")
     try:
         if no_persist:
-            brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir, no_persist=True)
+            brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir, no_persist=True,
+                                             premarket_from_bars=premarket_from_bars)
         else:
             brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
     except LevelParamsUnavailable as exc:

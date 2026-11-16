@@ -2980,20 +2980,29 @@ def read_live_level_basis(query_fn, ticker: str, session_date) -> Optional[dict]
     return parse_level_basis(df.iloc[0]['level_basis'])
 
 
+def session_row_from_daily(df: pd.DataFrame, session_date) -> Optional[pd.Series]:
+    """The row dated `session_date` of a daily frame (the session's own row,
+    written by fetch-premarket-refresh at 08:20 ET), or None when the frame
+    has none. A prior day's row is never returned."""
+    if df is None or len(df) == 0:
+        return None
+    frame = _normalize_daily(df) if not isinstance(df.index, pd.DatetimeIndex) else df
+    idx = frame.index.tz_localize(None) if frame.index.tz is not None else frame.index  # tz-ok: session-date labels, wall date kept
+    rows = frame.loc[idx.normalize() == pd.Timestamp(_to_date(session_date))]
+    if rows.empty:
+        return None
+    return rows.iloc[-1]
+
+
 def premarket_snapshot_from_daily(df: pd.DataFrame, session_date) -> Optional[dict]:
     """The premarket snapshot dated `session_date` from a daily frame whose
     rows carry pre_high / pre_low / pre_vwap / gap_pct (the session's own
     row, written by fetch-premarket-refresh at 08:20 ET), or None when that
     row is absent. A prior day's pre_* is never returned."""
-    if df is None or len(df) == 0:
+    row = session_row_from_daily(df, session_date)
+    if row is None:
         return None
-    frame = _normalize_daily(df) if not isinstance(df.index, pd.DatetimeIndex) else df
-    idx = frame.index.tz_localize(None) if frame.index.tz is not None else frame.index  # tz-ok: session-date labels, wall date kept
-    session = _to_date(session_date)
-    rows = frame.loc[idx.normalize() == pd.Timestamp(session)]
-    if rows.empty:
-        return None
-    return premarket_snapshot_from_row(rows.iloc[-1], session)
+    return premarket_snapshot_from_row(row, _to_date(session_date))
 
 
 # ─── LevelMap compatibility wrapper ───────────────────────────────────────
