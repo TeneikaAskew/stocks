@@ -59,7 +59,7 @@ def test_schema_applies_a_second_time_and_keeps_one_policy_row(clean, monkeypatc
 
 
 def test_the_source_check_refuses_another_writer(clean):
-    with pytest.raises(sa.exc.IntegrityError):
+    with pytest.raises(sa.exc.DBAPIError, match="plan_excursions_"):
         with clean.begin() as conn:
             _insert(conn, source='other')
 
@@ -67,6 +67,6 @@ def test_the_source_check_refuses_another_writer(clean):
 def test_one_row_per_ticker_session_and_rule_version(clean):
     with clean.begin() as conn:
         _insert(conn)
-    with pytest.raises(sa.exc.IntegrityError):
+    with pytest.raises(sa.exc.DBAPIError, match="plan_excursions_"):
         with clean.begin() as conn:
             _insert(conn, side='calls')
