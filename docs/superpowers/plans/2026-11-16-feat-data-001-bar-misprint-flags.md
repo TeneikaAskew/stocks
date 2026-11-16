@@ -144,7 +144,7 @@ Spec: Design 1 (scale, threshold, bound, flagged, print_kind, excess_bp, columns
   - `test_low_wick_60bp`: bar 30 of `flat(61)` has low 99.40. One flag: `side "low"`, `print_kind "wick"`, `observed 99.40`, `reference 100.0`, `scale 0.05`, `bound 99.50` (100 minus `max(6 x 0.05, 0.0050 x 100)`), `excess_bp == pytest.approx(60.0)`.
   - `test_open_close_and_one_price`: open 99.40 with close 100 is `"open"`; close 99.40 with open 100 is `"close"`; open, high, low and close all 99.40 is `"open_and_close"`.
   - `test_five_consecutive_wicks`: bars 28 to 32 have low 99.40, opens and closes at 100: five flags.
-  - `test_level_shift_is_not_flagged`: bar 30 and every bar after it open and close at 99.40: `len(flags) == 0`.
+  - `test_level_shift_is_not_flagged`: bar 30 and every bar after it sit 0.60 lower as whole bars (open and close 99.40, high 99.45, low 99.40), so every bar stays a valid OHLC bar: `len(flags) == 0`.
   - `test_under_the_floor_and_at_the_bound`: low 99.51 (49 bp) gives no flag; low 99.50, exactly the bound, gives no flag.
   - `test_wide_scale`: the same 60 bp wick where every bar's range is 0.15 (6 x 0.15 = 0.90 above 0.60): no flag.
   - `test_ends_are_not_judged`: `judged[:2]` and `judged[-2:]` are False, the rest True, and `np.array_equal(judged, print_geometry(bars).judged)`.
