@@ -9,7 +9,7 @@ done_when:
   - "ATR marks are the targets: tests/lib/test_strat_levels.py passes a TestAtrMarkTargets class on the three stored 2026-11-16 bases (Design 7 fixtures) rebuilt with plan_target_marks_atr [0.25, 0.5, 0.75, 1.0] and exit_legs 4: IWM calls targets are 280.14, 281.36, 282.58 and 283.79 and IWM puts 274.64, 273.42, 272.20 and 270.99; for every side of SPY, QQQ and IWM each target equals the trigger in cents plus (calls) or minus (puts) price_cents(mark x ATR), with ATR the basis's own value for its atr_basis, computed in the test from the fixture and not by the builder; each target records its mark, its share label and source atr_mark; the trigger, the stop and gate_targets of every side equal what origin/main gives for the same basis (IWM calls 278.92 PMK_H with stop 275.86 PMK_L, IWM puts 275.86 PMK_L with stop 277.41 PQL); no target is moved onto a level (IWM puts T1 is 274.64, never 274.67); skipped is empty; with marks [0.25, 0.5, 0.75] and exit_legs 3 each side has the first three of those targets; with more marks than legs, with a marks row that is not ok, with two marks on one cent, with a mark whose offset is zero cents, or with a puts mark at or below zero cents the side publishes no target and target_status carries input_unavailable or the row's status; with the seeded empty list every side's targets, skipped list, target_status and brief text equal origin/main's; the non-empty cases fail on origin/main"
   - "Waypoints and the stronger case: on the same bases each side built under the marks records plan_waypoints: every level of the basis's levels strictly past the trigger on the side's own side, one entry a cent with every name on that cent, in price order outward, out to the last target and past it only inside the side's trigger window, each entry with price, names, segment (before_t1, t1_t2, t2_t3, t3_t4 or beyond), distance_atr from the trigger and, where levels are grouped, zone with far_price and members; the test computes the expected list from the fixture's levels independently of the builder and also asserts by name and price that IWM calls holds PDO 278.95, PDH 279.17 and PMC 279.33 before T1, CMO 281.64 between T2 and T3 and PMH 285.26 beyond, and IWM puts holds PDL 274.67 before T1, 11/9 Gap Low 274.55 between T1 and T2 and PML 269.88 beyond; a target on a level's own cent records on_level with the level's names (IWM calls T4 283.79 records PWH) and that level is not also a waypoint; a level one cent from a target is a waypoint and the target records no on_level; levels within the ticker's level_cluster_atr x ATR in cents of a group's nearest level print as one zone, equal joins, a zone never spans a target, and with level_cluster_atr not ok every level is its own entry and waypoint_zone_status carries the status; the tests fail on origin/main (no plan_waypoints)"
   - "Brief copy: tests/lib/test_strat_levels.py passes golden-string tests on the stored IWM 2026-11-16 basis with the Design 7 reach histories and bias bearish: with the seeded policy the CALLS and PUTS blocks are exactly the text origin/main prints for that basis; with marks [0.25, 0.5, 0.75, 1.0] and exit_legs 4 they are exactly Design 7's After text; with marks [0.25, 0.5, 0.75] and exit_legs 3 the share reads 1/3 and the last target line reads 'sell the last 1/3, or hold to the close or the stop'; a side whose reach history is empty prints 'no history yet' on each line and never '0 of 0'; a side built under the marks prints no 'Skipped, closer than' line and, under Decision 6 as recommended, no 'ATR levels' line, while NEXT LEVELS Calls and Puts lines and PMG ZONES are unchanged; a side whose marks row or leg count is not ok prints the existing 'Targets unavailable ({status}): no exit plan for this side.' line and no target; the new goldens fail on origin/main"
-  - "Rule version and stored briefs: a basis built under a non-empty marks list records rule_version feat-strat-001.v5 and a basis built under the empty list records the level rule's version that origin/main holds on the PR's merge base; tests/gcp/test_level_basis.py passes tests that (a) a stored basis of the level rule, with params that record neither new key and with params that record both, rebuilds through SessionLevels.from_basis with targets, skipped list, target_status and brief text equal to origin/main's, and the marks key is never checked for it, (b) a v5 basis rebuilds the same four targets, waypoints and text from the marks and leg count it recorded after the policy rows change, and (c) gcp.premarket_playbook_resolver.plan_inputs on a v5 basis returns the four target prices in order, legs 4 and plan_available true, and on a level-rule basis what origin/main returns; tests/lib/test_movement_statement.py passes a test that with resolved rows of the level rule and of v5 in the population a v5 session's rates count v5 rows only and a level-rule session's count its own version only, and that _new_rule_mark returns the cleared mark for a v5 basis; no file under lib/, gcp/ or platform/ compares a value with a rule version constant outside the helpers named in Design 6 and the population lines of lib/movement_statement.py"
+  - "Rule version and stored briefs: a basis built under a non-empty marks list records the marks version as its rule_version (the next free version after the prior-close change, docs/superpowers/specs/2026-11-16-feat-playbook-001-prior-close-prints.md: feat-strat-001.v5 when that change kept v4, feat-strat-001.v6 when it took v5; the PR body says which, with LEVEL_RULE_VERSION and PICK_RULE_VERSIONS as they stand on its merge base) and a basis built under the empty list records the level rule's version that origin/main holds on the PR's merge base; tests/gcp/test_level_basis.py passes tests that (a) a stored basis of the level rule, with params that record neither new key and with params that record both, rebuilds through SessionLevels.from_basis with targets, skipped list, target_status and brief text equal to origin/main's, and the marks key is never checked for it, (b) a marks-version basis rebuilds the same four targets, waypoints and text from the marks and leg count it recorded after the policy rows change, and (c) gcp.premarket_playbook_resolver.plan_inputs on a marks-version basis returns the four target prices in order, legs 4 and plan_available true, and on a level-rule basis what origin/main returns; tests/lib/test_movement_statement.py passes a test that with resolved rows of the level rule and of the marks version in the population a marks-version session's rates count marks-version rows only and a level-rule session's count its own version only, and that _new_rule_mark returns the cleared mark for a marks-version basis; no file under lib/, gcp/ or platform/ compares a value with a rule version constant outside the helpers named in Design 6 and the population lines of lib/movement_statement.py"
   - "The fourth target is stored and scored: gcp/schema.sql adds nullable calls_plan_t4_price and puts_plan_t4_price to premarket_analysis and to premarket_analysis_history, and nullable calls_plan_t4_hit_ts and puts_plan_t4_hit_ts to premarket_analysis; gcp.premarket_brief.structured_playbook_columns writes plan_t1 to plan_t4 and still writes t1 to t3 from the gate targets, and the persisted row carries them (tests/gcp/test_premarket_brief.py); tests/gcp/test_premarket_playbook_resolver.py passes a TestFourLegs class on synthetic 1-minute bars for a call with trigger 100.00, stop 99.00, targets 100.50, 101.00, 101.50 and 102.00 and four legs: all four reached gives exit 't1,t2,t3,t4', plan_r 1.25 and t4_hit_ts set; the stop after T2 gives 't1,t2,stop,stop' and plan_r -0.125; the mirrored put cases pass; resolve_one's UPDATE sets both t4 columns; every existing three-leg case of the file passes unchanged; the t4_hit_ts assertions fail on origin/main, where PlanOutcome has no such field"
   - "Reach history stored and read: gcp/schema.sql adds nullable calls_plan_mfe_atr and puts_plan_mfe_atr to premarket_analysis; tests/gcp/test_premarket_playbook_resolver.py passes a TestPlanMfe class on synthetic 1-minute bars for a call with trigger 100.00, stop 99.00 and basis ATR 2.00: entered, a high of 103.00 before a later stop gives 1.5; the bar that hits the stop does not count (its high of 104.00 is ignored, stop first); a high reached only on the fill bar does not count; never above the trigger after the fill gives 0.0; a side not entered, or a basis with no ATR, gives NULL; a stop-less entered side is measured to the close; a fill bar that also touches the stop gives 0.0 whatever follows; the mirrored put cases pass with trigger 100.00, stop 101.00 and ATR 2.00 (a low of 97.00 before a later stop gives 1.5); on a half day (2025-11-28, close 13:00 ET) a call whose high is 101.00 before 13:00 and 105.00 at 14:30 gives 0.5; resolve_one's UPDATE sets both columns and RESOLVER_VERSION changes; tests/gcp/test_premarket_brief.py passes a test that the brief reads the reach history for all its tickers in one query, bounded to ladder_history_sessions analysis dates before the session date, to rows whose value is not NULL and to rows whose level_basis rule_version equals the version of the basis being built, never a date on or after the session (a BRIEF_AS_OF run sees only earlier rows), and that a failed read raises instead of printing 'no history yet'; the tests fail on origin/main"
   - "No numbers and no names: tests/lib/test_level_params_structure.py passes unchanged (no new literal or module constant on the build_session_levels walk) and test_the_walk_reaches_the_rules_it_must_cover also asserts that the mark walk and the waypoint builder are reached from build_session_levels; tests/lib/test_level_params_copy.py asserts that no string literal in lib/strat_levels.py contains '25%', '50%', '75%', '100%', '1/4' or 'quarter'; the marks, the leg count and the history length are read only from LevelParams and level_param_policy, and the percent and share texts are formatted from those values"
@@ -17,7 +17,7 @@ done_when:
   - "Experiment through the production paths, before any production change of the plan: the implementation PR body shows, for SPY, QQQ and IWM over 2022-01-03 to 2026-11-10 on the gap-edges spec's ticker-days (one trade per ticker-day, the first side to cross its trigger, a same-bar tie is no trade, a day that opens past a trigger is no trade, half days cut at the exchange close, SPY 2025-04-09 and IWM 2026-06-26 left out), plan R from gcp.premarket_playbook_resolver.resolve_plan with inputs from plan_inputs on bases built by gcp/premarket_brief.py (BRIEF_AS_OF) into a local copy of the schema, never production, for the arms of the Experiment section: A today, Q four quarters at marks 0.25, 0.5, 0.75 and 1.0, and Q3 thirds at marks 0.25, 0.5 and 0.75; per arm every measure of the Experiment section's Reported list; arm A matches the gap-edges spec's +176.8 R over 3,463 trades to 0.1 R before any other arm is read; an arm whose 90% range against A lies wholly below zero overall, or for two of the three tickers, is reported as failing, and the swap rows of Design 8 are not proposed for it without the owner's explicit decision recorded on the PR"
   - "Source identity (DASHBOARD-01): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, DASHBOARD-01) note row carries that source_identity_sha256 with implementation and test prose for this PR"
   - "The FEAT-STRAT-001 catalog record and the PR traceability entry are updated; python3 scripts/gate/spec_gate.py --pr origin/main passes; the implementation PR, whose merge applies gcp/schema.sql to production, is merged only after the owner's yes to that merge, recorded on the PR; and the swap rows of Design 8 reach production only after a second yes given on the Experiment's results, recorded separately"
-status: draft
+status: approved
 supersedes: docs/superpowers/specs/2026-11-16-feat-strat-001-plan-always-three-targets-full-ladder.md
 ---
 
@@ -44,9 +44,37 @@ What the owner decided:
 4. This is drafted now and run as one more arm of the experiment beside today's plan before the
    live plan changes. The experiment gates the production change.
 
-`status: draft`: the owner approves this spec. Approval of the spec approves the direction and the
-build behind policy rows that reproduce today's plan. It does not change the live plan: the rows of
-Design 8 do, and they wait for the Experiment and a second yes.
+**Decided by the owner on 2026-11-16, after seeing the experiment** (Experiment, "Result as run").
+In chat, as relayed to the session that recorded it; the chat itself was not read there. The quoted
+words are the owner's:
+
+- "Quarters are still my preference".
+- Put two questions, the owner answered "1 yes" to switching to plain quarters at 25, 50, 75 and
+  100 percent of ATR from the entry trigger, and "2 no" to keeping level targets with the ATR
+  ladder as display only.
+- "Quarters not Thirds anymore". Four sales.
+- The entry trigger "is fine". It does not change (Design 1).
+- On the insight's under 1.5R check (rule N2): "agree with judge reward on the average of the four
+  targets, which is what you bank if the plan completes." Specified in the conviction spec
+  (Design 9, Decision 7).
+- "Fixing the prior close problem will help with triggers." That is the prior-close spec
+  (`docs/superpowers/specs/2026-11-16-feat-playbook-001-prior-close-prints.md`), which merges and is
+  built before this one (Decision 9).
+- On the three other approved FEAT-STRAT-001 specs that describe the level rule: "Update after we
+  finalize experiments and target implementation." (Conflicts, item 1.)
+- "the replay is fine, the live brief should be done at 820 and 920 with updates." Recorded as
+  said. The run times are an open item (Experiment, "Result as run", limits); this spec designs no
+  schedule.
+- "Mark specs ready if they are ready and resolve any conflicts. Keep the work moving. Auto merge."
+  Every numbered decision under "Decisions for the owner" is therefore decided per its
+  recommendation, except a production step, which stays a step the owner approves at the time it is
+  run, exactly as written.
+
+`status: approved`, by the owner (T) on 2026-11-16. Approval of the spec approves the direction and
+the build behind policy rows that reproduce today's plan. It does not change the live plan: the
+rows of Design 8 do. The owner has chosen the arm (Q, four quarters) knowing its result. Applying
+the rows to production is still its own step, on the owner's yes when it is run, after the
+implementation PR has shown the Experiment as its done_when item requires.
 
 Rulings still in force (restated from the superseded spec's Authority, read): a change is tested
 against its hypothesis before it is swapped in; R is the stock's move after the fill measured in stop
@@ -129,8 +157,9 @@ the stop. Design 4 stores that one number.
   slots, which are those columns (`lib/movement_statement.py:251`, read).
 - No snapping of a target to a nearby level (Design 2; Decision 4).
 - No breakeven or trailing stop.
-- No change to the insight's risk rules. The under 1.5R rule is a dependency, stated in Design 9,
-  not decided here.
+- No change to the insight's risk rules in this spec's PR. The under 1.5R rule is a dependency,
+  stated in Design 9. The owner decided on 2026-11-16 what it reads; that is specified in the
+  conviction spec, not here.
 - No solyra change in this spec's PR. What the site assumes about three targets is listed in
   Design 9.
 - No per-ticker calibration of the four fractions (Conflicts, item 5).
@@ -304,7 +333,7 @@ the storage and the display:
 | Reach columns | new, beside `gcp/schema.sql:1987-2004` | Add `calls_plan_mfe_atr`, `puts_plan_mfe_atr` (Design 4). |
 | Writing the price columns | `gcp/premarket_brief.py:1561-1565` (`for k in (1, 2, 3)` for both `t` and `plan_t`); `:3748-3753` (the persisted row) | `plan_t` goes to 4; `t` stays 1 to 3 (gate targets). The persisted row gains the two `plan_t4` values. |
 | Plan outcome | `gcp/premarket_playbook_resolver.py:146` (`PlanOutcome.t3_hit_ts`), `:550-553` (`targets[:3]`, three slots), `:877-878` (`_PLAN_FIELDS`) | Add `t4_hit_ts`; the hit walk covers four targets; `_PLAN_FIELDS` gains `t4_hit_ts`, which carries it into the UPDATE (`:843`). |
-| Plan inputs | `gcp/premarket_playbook_resolver.py:591-640` | A v5 basis is read like today's current rule: targets by price, legs and cutoff from the side's `plan` (`:611-624`). The v2 fallback's `(1, 2, 3)` (`:636`) reads the gate columns and does not change. |
+| Plan inputs | `gcp/premarket_playbook_resolver.py:591-640` | A marks-version basis is read like today's current rule: targets by price, legs and cutoff from the side's `plan` (`:611-624`). The v2 fallback's `(1, 2, 3)` (`:636`) reads the gate columns and does not change. |
 | Legs cut | `gcp/premarket_playbook_resolver.py:545` | Unchanged; Design 2 refuses more marks than legs so nothing is cut silently. |
 | Brief text | `lib/strat_levels.py:3173-3227` (`_plan_block`) | Design 7. The share `1/{legs}` and the last-leg wording are already built from the leg count (`:3205-3219`). |
 | Discord | `gcp/premarket_brief.py:2820-2852` (`_playbook_code_fields`), `:2854-2900` | No change: the playbook is the text, split at line breaks with nothing cut (read). The embed's docstring says "T1/T2" (`:2855`); wording only. How the longer text splits across messages was not checked. |
@@ -326,45 +355,64 @@ ignores it (`lib/strat_levels.py:1454-1496`, read).
 
 ### 6. Rule version, stored rows and rates
 
-A basis built under a non-empty marks list records `rule_version` `feat-strat-001.v5`. A basis
-built under the empty list records the level rule's version: `feat-strat-001.v3` on main today
-(`lib/strat_levels.py:1516`, read), `feat-strat-001.v4` once the brief spec's B8b is on main
+A basis built under a non-empty marks list records the marks version as its `rule_version`.
+
+**Which number the marks version is.** Version numbers are taken in merge order. The prior-close
+spec (`docs/superpowers/specs/2026-11-16-feat-playbook-001-prior-close-prints.md`, its decision 3
+and PC6) merges and is built first and takes its number first. The marks version is the next free
+version after it, and there are exactly two cases:
+
+- The prior-close change kept v4 (no v4 row existed when it deployed): the marks version is
+  `feat-strat-001.v5`.
+- The prior-close change took v5: the marks version is `feat-strat-001.v6`, and v5 is then one more
+  level-rule version beside v3 and v4.
+
+The implementation reads which case holds from `LEVEL_RULE_VERSION` and `PICK_RULE_VERSIONS` on
+its merge base and says so in the PR body. The two specs cannot claim the same number.
+
+A basis built under the empty list records the level rule's version: `feat-strat-001.v3` on main
+today (`lib/strat_levels.py:1516`, read), `feat-strat-001.v4` once the brief spec's B8b is on main
 (`docs/superpowers/specs/2026-11-16-feat-playbook-001-brief-says-what-the-data-says.md`, approved,
-done_when B8b and Design 4, read). So the version a row carries always names the rule that picked
-its targets, whatever the date it was built on.
+done_when B8b and Design 4, read), or `feat-strat-001.v5` if the prior-close change took it. So the
+version a row carries always names the rule that picked its targets, whatever the date it was built
+on.
 
 **The brief spec's helper.** B8b defines `lib.strat_levels.is_current_pick_rule(version)`, true for
 v3 and v4 through `PICK_RULE_VERSIONS`, and a meta test that lets only that helper and the
 movement statement's two population lines compare a value with the rule version (its plan, Task
 B8b interfaces, read). The helper is not on main and not on
 `origin/feature/feat-playbook-001-brief-says-what-the-data-says` at c328134b (run: `git grep` finds
-no definition). v3 and v4 share one pick rule. v5 is a different pick rule, so:
+no definition). v3 and v4 share one pick rule, and so does v5 when the prior-close change took
+it. The marks version is a different pick rule, so:
 
 - `is_current_pick_rule` answers what its four readers ask: "does this basis carry its own plan,
-  cleared mark and version, to be read and rebuilt as recorded?" For v5 the answer is yes, exactly
-  as for v3 and v4: `SessionLevels.from_basis` keeps the basis's own version
+  cleared mark and version, to be read and rebuilt as recorded?" For the marks version the answer is yes, exactly
+  as for the level-rule versions: `SessionLevels.from_basis` keeps the basis's own version
   (`lib/strat_levels.py:1968`), `_assemble` keeps it (`:2434`), `plan_inputs` reads the plan from the
   basis (`gcp/premarket_playbook_resolver.py:611`) and `_new_rule_mark` returns the cleared mark
-  (`lib/movement_statement.py:499`). v5 joins `PICK_RULE_VERSIONS`.
+  (`lib/movement_statement.py:499`). The marks version joins `PICK_RULE_VERSIONS`.
 - Which rule picks the targets is a second question, and it gets its own helper in
-  `lib/strat_levels.py`, `plan_target_rule(version)`: `v2` for v2, `levels` for v3 and v4,
-  `atr_marks` for v5, nothing else. `_pick_side` calls the level walk or the mark walk by it. The
+  `lib/strat_levels.py`, `plan_target_rule(version)`: `v2` for v2, `levels` for every level-rule
+  version (v3, v4, and v5 when the prior-close change took it), `atr_marks` for the marks version,
+  nothing else. `_pick_side` calls the level walk or the mark walk by it. The
   brief spec's meta test gains this helper as an allowed site, and no other comparison is added.
 - A stored level-rule basis is rebuilt by the level walk with the values it recorded, and the marks
   key is never checked for it, even when its params record that key (the loader records every
-  policy key once its row exists, `:1441`, `:1452-1456`). A v5 basis is rebuilt by the mark walk from the
+  policy key once its row exists, `:1441`, `:1452-1456`). A marks-version basis is rebuilt by the mark walk from the
   marks and leg count it recorded, so later policy rows leave it unchanged.
 - If this change merges before the brief spec's B8b, the implementation adds both helpers itself
   with v3 where B8b would have v3 and v4, and B8b's branch then adds v4 to the two lists.
-  Recommended order: the brief spec's branch first (Decision 9).
+  Decided order: the brief spec's branch first, then the prior-close change, then this one
+  (Decision 9).
 
 **Rates never mix rule versions.**
 
 - The movement statement's reach rates select rows by `level_basis->>'rule_version'`
   (`lib/movement_statement.py:348`, `:366-368`, read). After B8b the bound value is the session
-  row's own version. So a v5 session's rates count v5 rows only, and a v4 session's v4 rows only.
-  Its slots are the gate targets, which v5 does not change, but the rule stays: one version, one
-  population. v5 therefore starts with no resolved rows of its own.
+  row's own version. So a marks-version session's rates count marks-version rows only, and a v4
+  session's v4 rows only. Its slots are the gate targets, which the marks version does not change,
+  but the rule stays: one version, one population. The marks version therefore starts with no
+  resolved rows of its own.
 - The reach counts of Design 4 are read only from rows of the same rule version as the basis being
   built. At the swap they restart at `no history yet` (Decision 3 gives the alternative).
 - The Experiment's rates are per arm and never pooled across arms.
@@ -480,7 +528,7 @@ insight's plan the brief's plan: entry, stop and targets read from the side reco
 "the insight follows whatever the row holds" (its Scope and Non-goals, read). Its code is not on
 main (`grep` finds no `read_stored_sides` or `compute_rule_flags`, run); on main the planner still
 prices targets as R multiples of its own stop (`lib/agents/trade_planner.py:284-287`, read). Once it
-lands, a v5 row gives the insight four targets with no further change, and that rule stands: the
+lands, a marks-version row gives the insight four targets with no further change, and that rule stands: the
 brief's numbers and the insight's plan are one plan.
 
 Three things then assume fewer than four, all outside this spec's PR (Decision 8):
@@ -490,7 +538,8 @@ Three things then assume fewer than four, all outside this spec's PR (Decision 8
   `slice(0, 3)`.
 - `lib/agents/schema.py:241-244` describes "Up to 3 price targets" (text only).
 
-**The under 1.5R rule: a dependency, not decided here.** Rule N2 warns when the first target is
+**The under 1.5R rule: a dependency, decided by the owner and specified in the conviction spec.**
+Rule N2 warns when the first target is
 under 1.5R (`lib/agents/prompts.py:228-232`, read; the insight spec moves it to
 `compute_rule_flags`, its Design 3, read). With T1 at 0.25 x ATR, T1 in R is 0.25 divided by the
 stop distance in ATR, so N2 fires whenever the stop is more than about 0.167 x ATR from the entry.
@@ -502,13 +551,24 @@ and 1.59R for T1 to T4; puts 0.79R, 1.57R, 2.36R and 3.15R. So N2 would warn on 
 and the insight spec says a warn bars high conviction (its Risks, read; `orchestrator.py` not
 opened here).
 
+Measured since, by the spike (Experiment, "Result as run"; quoted from its `report_v1_side.txt`):
+"stop distance in ATR (trigger to stop): median 0.36, quartiles 0.26 / 0.51", and T1 at 0.25 ATR is
+"under 1.5R on 93.1% of 3463 trades; under 1.0R on 76.2%; median 0.69R". The 0.4 handed above is
+that 0.36.
+
 That rule and its 1.5R line are under review in the draft conviction spec
 (`docs/superpowers/specs/2026-11-16-feat-insight-001-conviction-reachable.md` on
 `origin/docs/spec-feat-insight-001-conviction-reachable` at c6b58201, `status: draft`, read; the
 task names it PR #2009, not checked). Its measurement grid tests the first target at 1.0R, 1.5R and
-2.0R on the brief's present targets. This spec states the dependency and decides nothing: what N2
-should read when the plan has four ATR targets is for that spec. The swap of Design 8 should not
-happen until that is settled or the owner accepts the warning on nearly every plan (Decision 7).
+2.0R on the brief's present targets.
+
+The owner decided on 2026-11-16 that the reward is judged on the average of the plan's targets
+(Authority). For four quarters at 25, 50, 75 and 100 percent of ATR that average is 0.625 x ATR,
+against the same stop distance: 0.625 / 0.36 = 1.74R at the median stop, where T1 alone is 0.69R.
+What changes in the insight's code, and its test, is specified in the conviction spec, not here.
+This spec's PR changes no risk rule. Until that change is deployed the insight still judges T1
+alone, so the swap of Design 8 follows it, or the owner accepts the warning on nearly every plan
+when giving the yes for the rows (Decision 7).
 
 ### 10. Capacity and cost (CLAUDE.md rule 0)
 
@@ -525,10 +585,13 @@ happen until that is settled or the owner accepts the warning on nearly every pl
 
 ## Experiment
 
-Run before any production change of the plan. It is not run by this spec and was not run by this
-session. A separate helper is running an experiment on this design; what it runs was not read here.
-Its result is context. The result that gates the swap is the one produced as written below, through
-the production paths, on the implementation's code.
+Run before any production change of the plan. A spike ran it on 2026-11-16, before the
+implementation exists; its result is recorded under "Result as run" below and is the basis of the
+owner's decision. The method, arms and Reported list here are unchanged, and the done_when item
+"Experiment through the production paths" stands as written: the implementation PR shows the
+Experiment on the implementation's code, by running it again or, for any measure the spike already
+produced the same way, by posting the spike's output again with its files. The swap rows wait for
+that and for the owner's yes when they are applied.
 
 **Hypotheses.**
 
@@ -606,51 +669,181 @@ way: the deployed job reads its policy rows from production for the analysis dat
 The arm the owner picks is checked in production once, after the second yes, by a dry run of the
 first session the swap rows cover. Each dry run calls the model (Decision 11).
 
+### Result as run on 2026-11-16 (a spike; the owner's basis)
+
+**Where a reader stands.** The spike's code is not on main and not on any remote. It is two local
+commits on the branch `spike/atr-quarter-targets` (21612e698) under
+`docs/superpowers/spikes/2026-11-16-atr-quarter-targets/`; a spike opens no PR. Its outputs are
+session files under
+`/tmp/claude-0/-home-user/fa186a7b-7434-50ad-97db-844fe591fc0f/scratchpad/atr_exp/out/`
+(`report_v1_side.txt`, `report_followup.txt`, the per-trade `arms_followup.csv`), which a cleanup
+can clear. So a reviewer cannot open the result from the repo. It is recorded here as what the
+owner saw and decided on, quoted from those two report files, not typed from memory. The
+implementation PR is where it becomes reproducible (the done_when item).
+
+**How it ran** (read in the spike's scripts): the production brief replayed with `BRIEF_AS_OF` into
+a local database, model calls off, for every session from 2022-01-03 to 2026-11-10; every trade
+scored by the production `resolve_plan` on `plan_inputs` of the stored basis; for the ATR arms
+"only `targets` and `legs` of the PlanInputs change per arm". No bar walk was written. The arms
+were therefore not built by a builder under the marks rule, which does not exist yet.
+
+**Arm A reproduced.** `report_followup.txt`: "A   total  +176.75" over "trades 3463", against the
+gap-edges spec's +176.8 R over 3,463 trades. Within 0.1 R, so the other arms may be read.
+
+**Totals, quoted** (`report_v1_side.txt`; R; "range = 90%, whole days resampled 2,000 times, numpy
+default_rng(7)"):
+
+```
+All                                n= 3463  A   +176.7  Q   +152.5  Q-A   -24.3 (-71.8, +21.8)  Q3   +129.7  Q3-A   -47.0 (-109.1, +12.4)
+SPY                                n= 1161  A    +64.2  Q    +55.8  Q-A    -8.4 (-28.3, +10.8)  Q3    +44.4  Q3-A   -19.8 (-44.6, +4.6)
+QQQ                                n= 1152  A   +114.0  Q    +92.4  Q-A   -21.6 (-43.3, +0.8)  Q3    +80.9  Q3-A   -33.1 (-60.2, -4.0)
+IWM                                n= 1150  A     -1.4  Q     +4.3  Q-A    +5.7 (-15.3, +26.0)  Q3     +4.4  Q3-A    +5.8 (-21.4, +31.6)
+```
+
+**The other arms, quoted** (`report_followup.txt`, "per arm" and the "All" line; Q2 is the first
+three marks with four legs, B1 and B2 the first two marks with level targets beyond, B3 one mark
+and a level target with two legs, as the spike's `score_arms2.py` builds them):
+
+```
+A   total  +176.75 avg +0.0510 share R>0 43.4% R=0 0.0% worst -1.02 best +8.31 all legs stopped 41.7% any leg stopped 43.6% losing runs {'SPY': 10, 'QQQ': 10, 'IWM': 11} max drawdown 41.2R
+Q   total  +152.49 avg +0.0440 share R>0 45.9% R=0 0.0% worst -1.02 best +4.97 all legs stopped 34.7% any leg stopped 43.5% losing runs {'SPY': 7, 'QQQ': 10, 'IWM': 11} max drawdown 37.8R
+Q3  total  +129.72 avg +0.0375 share R>0 46.9% R=0 0.0% worst -1.02 best +4.93 all legs stopped 34.7% any leg stopped 43.3% losing runs {'SPY': 7, 'QQQ': 10, 'IWM': 11} max drawdown 36.4R
+Q2  total  +148.82 avg +0.0430 share R>0 45.9% R=0 0.0% worst -1.02 best +4.97 all legs stopped 34.7% any leg stopped 43.6% losing runs {'SPY': 7, 'QQQ': 10, 'IWM': 11} max drawdown 37.8R
+B1  total  +148.83 avg +0.0430 share R>0 45.8% R=0 0.0% worst -1.02 best +5.11 all legs stopped 34.7% any leg stopped 43.6% losing runs {'SPY': 10, 'QQQ': 10, 'IWM': 11} max drawdown 37.8R
+B2  total  +151.09 avg +0.0436 share R>0 45.8% R=0 0.0% worst -1.02 best +5.11 all legs stopped 34.7% any leg stopped 43.6% losing runs {'SPY': 10, 'QQQ': 10, 'IWM': 11} max drawdown 37.8R
+B3  total  +101.94 avg +0.0294 share R>0 51.1% R=0 0.1% worst -1.02 best +4.84 all legs stopped 34.7% any leg stopped 41.7% losing runs {'SPY': 9, 'QQQ': 9, 'IWM': 8} max drawdown 32.9R
+```
+
+Each arm minus A, all trades, from the same file: Q2 "-27.9 (-70.5,+13.4)", B1 "-27.9
+(-67.3,+11.0)", B2 "-25.7 (-64.2,+13.1)", B3 "-74.8 (-149.3,-5.7)".
+
+**Reach before the stop, quoted** (`report_v1_side.txt`, "share of entered trades whose leg sold at
+the target"):
+
+```
+arm A: {'T1': '22.2%', 'T2': '3.8%', 'T3': '0.7%'}  stop on every leg: 41.7%  any leg stopped: 43.6%
+arm Q (0.25, 0.50, 0.75, 1.00 ATR): {'T1': '52.3%', 'T2': '27.1%', 'T3': '12.8%', 'T4': '6.2%'}  any leg stopped: 43.5%  all four stopped: 34.7%
+```
+
+**T1 against the stop, quoted** ("from the trigger, risk = trigger to stop"): "under 1.5R on 93.1%
+of 3463 trades; under 1.0R on 76.4%; median 0.69R; quartiles 0.49 / 0.98".
+
+**A target just past a level, quoted** ("within 5 cents past a named level"): "all four targets
+pooled: 318 of 13852 (2.3%); reached 30.8% against 24.4%", and "trades with at least one such
+target: 8.8%". The spike used 5 cents, not the ticker's `level_cluster_atr` that measure 8 names.
+
+**Read by this spec's own rule ("What keeps today's plan").**
+
+- No arm's range against A lies wholly above zero. No arm was shown to be better than today's
+  plan.
+- Q's range spans zero overall and for each of SPY, QQQ and IWM. By this spec's rule that is "no
+  worse, by this test". It is not "better": the best estimate is 24.3 R lower over 3,463 trades,
+  and the owner chose Q knowing that.
+- Q3, Q2, B1 and B2 span zero overall; each has QQQ wholly below zero and no second ticker, so none
+  fails the rule. B3's range overall lies wholly below zero: B3 fails.
+- Not part of the rule, and stated so the choice is read with it: in the latest six-month block,
+  "2026-09-01 to 2026-11-10           n=  134  A    +33.0  Q    +16.8  Q-A   -16.2 (-33.6, -1.8)",
+  Q's range lies wholly below zero; in the other ten blocks it spans zero. By side, calls
+  "Q-A   -24.3 (-51.3, +1.7)" and puts "Q-A    +0.1 (-35.8, +37.1)".
+- The shape differs as expected: Q sells T1 on 52.3% of trades against A's 22.2%, ends with every
+  leg stopped on 34.7% against 41.7%, and its best trade is +4.97 R against A's +8.31.
+
+**Limits of this run.** The first three were handed with the result and checked here as far as
+each line says.
+
+- The premarket window. The replay's premarket highs and lows were recomputed from the 04:00 to
+  09:30 ET bars (the spike's `recompute2.log`: "recompute-premarket 2022-01-03..2026-11-10 tickers=SPY
+  QQQ IWM candidates=3657"; the window read at `gcp/fetchers/fetch_market_data.py:384`, `:573`).
+  The live brief is built from the 08:20 ET refresh (as relayed from a GCP read on 2026-11-16, not
+  read here: `premarket-refresh-daily` 08:20 ET and `premarket-brief-daily` 08:30 ET on weekdays,
+  no 09:20 run). So the replay's triggers know up to 70 minutes of premarket the live brief does
+  not. The owner's "the live brief should be done at 820 and 920 with updates" is recorded
+  (Authority) and left as an open item; no schedule is designed here.
+- The triggers include the prior-close prints. The spike ran on main 97190ef4, before the brief
+  spec's premarket rules and before the prior-close rule. The owner: "Fixing the prior close problem
+  will help with triggers." Every arm shares those triggers, so the comparison between arms stands
+  and the level of each total may move.
+- Sessions. The replay holds 3,657 ticker-days over 1,219 sessions (counted in the spike's
+  `premarket_analysis_v1.csv.gz`); the report says "ticker-days scored 3655  trades 3463", the two
+  left-out days apart. The gap-edges spec states 1,212 sessions. The 3,463 trades fall on 1,212
+  dates (counted in `arms_followup.csv`). Whether that is the whole of the difference was not
+  checked.
+- No trading costs, as the method says. Q sells four times where A sells three.
+- Measures the Reported list asks for that the spike did not produce: the reach share of each mark
+  from the Design 4 measure for arm A (5), waypoints by level name and segment (6), a target on a
+  level's own cent (7), measure 8 at `level_cluster_atr`, and average win and average loss (9). The
+  implementation PR owes them.
+
 ## Decisions for the owner
 
-Each is written into the text as recommended.
+Each is written into the text as recommended. All twelve are decided per the recommendation,
+owner 2026-11-16: keep the work moving, with the owner's own words where they bear on one. A
+production step inside a decision (applying schema, applying policy rows, a deploy, a dry run that
+spends) stays a step the owner approves at the time it is run, exactly as written. The alternatives
+stay written as the record of what was not chosen.
 
-1. **The marks are a policy row and the swap is by dated rows, not a code switch.** Recommended, so
+1. **The marks are a policy row and the swap is by dated rows, not a code switch.** Decided per the
+   recommendation, owner 2026-11-16: keep the work moving. Recommended, so
    earlier sessions replay as they were and both rules run from one code base. Alternative: switch
    in code at deploy, which is simpler to read and cannot replay an earlier session's plan.
-2. **Arm Q3's last third.** Recommended reading: a third at each of 25, 50 and 75 percent, any
+2. **Arm Q3's last third.** Decided per the recommendation, owner 2026-11-16: keep the work
+   moving. The owner chose quarters ("Quarters not Thirds anymore"), so Q3 is a comparison arm
+   only. Recommended reading: a third at each of 25, 50 and 75 percent, any
    unreached leg held to the close or the stop. Alternative reading: sell a third at 25 and at 50
    and hold the last third to the close or the stop with no 75 exit (marks `[0.25, 0.5]`, three
    legs, which Design 2 already allows); it can be run as a fourth arm at no design cost.
-3. **Reach counts and rates are per rule version, so v5 starts at `no history yet`.** Recommended,
+3. **Reach counts and rates are per rule version, so the marks version starts at `no history
+   yet`.** Decided per the recommendation, owner 2026-11-16: keep the work moving. Recommended,
    because the standing rule is that rates never mix rule versions. Alternative: let the Design 4
-   reach counts pool level-rule rows resolved after deploy with v5 rows, since that measure reads
-   only the trigger, the stop and the ATR, which v5 does not change; it would need its own helper
+   reach counts pool level-rule rows resolved after deploy with marks-version rows, since that
+   measure reads only the trigger, the stop and the ATR, which the marks version does not change;
+   it would need its own helper
    and test saying exactly which versions share an entry rule.
 4. **No snapping: a target a few cents past a level stays where the arithmetic puts it**, and the
-   level prints as a waypoint (IWM puts T1 274.64 just past PDL/PWL 274.665). Whether such marks
-   are reached less often is measure 8 of the Experiment. Alternative, only on that evidence: pull
+   level prints as a waypoint (IWM puts T1 274.64 just past PDL/PWL 274.665). Decided per the
+   recommendation, owner 2026-11-16: keep the work moving. Whether such marks
+   are reached less often is measure 8 of the Experiment; the spike found them on 2.3% of targets
+   and reached no less often (Result as run). Alternative, only on that evidence: pull
    a mark back onto a level within the cluster distance, as a later change with its own arm.
-5. **Waypoint zones use the ticker's existing `level_cluster_atr`.** Recommended: no new number and
+5. **Waypoint zones use the ticker's existing `level_cluster_atr`.** Decided per the
+   recommendation, owner 2026-11-16: keep the work moving. Recommended: no new number and
    already per ticker. On the example it prints PDO and PDH as one zone and PMC alone. Alternative:
    a new display key seeded at the owner's earlier 0.10 x ATR, which would print PDO, PDH and PMC
    as one zone; or no zones at all, every level its own line, as the owner's example lists them.
 6. **The brief's existing `ATR levels` line is not printed for a side built under the marks.**
-   Recommended: that line's rungs hang from PDH, PDL, PMK_H and PMK_L in half-ATR steps, so on IWM
+   Decided per the recommendation, owner 2026-11-16: keep the work moving. Recommended: that line's rungs hang from PDH, PDL, PMK_H and PMK_L in half-ATR steps, so on IWM
    it would print 280.73 (PMK_L+1) beside T1 280.14, two different ATR ladders in one brief. The
    rungs are still built and recorded in `level_basis`, so nothing that reads them changes.
    Alternative: keep the line, renamed so it cannot be read as the targets.
-7. **The swap waits for the under 1.5R rule.** Recommended: do not insert the Design 8 rows until
+7. **The swap waits for the under 1.5R rule.** Decided: the owner decided the reward is judged on
+   the average of the plan's targets; it is specified in the conviction spec
+   (`docs/superpowers/specs/2026-11-16-feat-insight-001-conviction-reachable.md`). What N2 reads is
+   therefore settled as a decision. The Design 8 rows still follow that change being deployed, or
+   the owner accepts a warning on nearly every plan when giving the yes for the rows (Design 9).
+   As recommended: do not insert the Design 8 rows until
    the conviction spec has settled what N2 reads on a four-target plan, or the owner accepts a
    warning on nearly every plan. Alternative: swap on the Experiment alone.
 8. **The insight's Discord line, the site's two target fields and the chart's three lines are
    changed under FEAT-INSIGHT-001 and in solyra, before the swap, not in this spec's PR.**
-   Recommended: those files belong to other capabilities, and before the swap no row can hold four
+   Decided per the recommendation, owner 2026-11-16: keep the work moving. Recommended: those files belong to other capabilities, and before the swap no row can hold four
    targets. Alternative: change `gcp/insight_discord_push.py:221` in this PR.
-9. **Merge order: the brief spec's branch first, then this one.** Recommended, so the helper and v4
+9. **Merge order: the brief spec's branch first, then this one.** Decided per the recommendation,
+   owner 2026-11-16: keep the work moving, and with the prior-close change between the two: the
+   brief spec's branch, then the prior-close change, then this one, so the rule version is numbered
+   once (Design 6). Recommended, so the helper and v4
    exist once and the production dry run is available. Alternative: this first, adding the helpers
    here.
 10. **The swap rows go into `gcp/schema.sql` through their own small PR**, merged on the second
-    yes, so a fresh database equals production and the merge is the recorded approval. Alternative:
+    yes. The route is decided per the recommendation, owner 2026-11-16: keep the work moving. The
+    merge applies policy rows to production, so it stays a step the owner approves when it is run.
+    As recommended: their own small PR, merged on the second yes, so a fresh database equals production and the merge is the recorded approval. Alternative:
     insert them with `scripts/db_query_cr.sh --commit`, which leaves source and production apart.
-11. **Dry-run sample: five stored sessions**, about five briefs' model calls. Alternative: none,
+11. **Dry-run sample: five stored sessions**, about five briefs' model calls. The sample size is
+    decided per the recommendation, owner 2026-11-16: keep the work moving; each dry run is a
+    spend on the deployed job and stays a step the owner approves when it is run. Alternative: none,
     relying on the local replay alone.
-12. **Gate targets stay level-based.** The brief will print T1 to T4 as ATR marks while the signal
+12. **Gate targets stay level-based.** Decided per the recommendation, owner 2026-11-16: keep the
+    work moving. The brief will print T1 to T4 as ATR marks while the signal
     monitor's legs and the movement statement's `t1..t3` slots stay the next three levels.
     Recommended for this change, since the monitor is a non-goal. The two meanings of "T1" on one
     site are a known cost; aligning them is its own spec.
@@ -666,14 +859,17 @@ Found while reading; none is resolved silently.
    for every stored basis and every session before the swap, the rungs, the gap levels. They stay
    approved as the record of the level rule. From the swap date their target rules no longer
    describe new briefs. The owner may prefer them marked superseded in turn; the gate allows one
-   target per new spec.
+   target per new spec. The owner, 2026-11-16: "Update after we finalize experiments and target
+   implementation." So they are left as they are for now, and updating them is its own change
+   after the implementation and its Experiment.
 2. **The superseded spec quotes the owner: "The levels are always targets and the ATR levels
    enhance them" and "keep thirds".** Today's decision reverses both. That is the reason for the
    supersession.
 3. **The insight spec quotes the owner: "Use the brief's level-based targets"** and its D3 fixtures
    pin level targets for 2026-11-16. Its rule, the insight follows the row, still holds; the words
-   "level-based" stop being true for a v5 row. Its fixtures are v3 rows and are unaffected.
-4. **Rule N2 (first target under 1.5R)** would warn on nearly every plan (Design 9).
+   "level-based" stop being true for a marks-version row. Its fixtures are v3 rows and are unaffected.
+4. **Rule N2 (first target under 1.5R)** would warn on nearly every plan (Design 9). The owner
+   decided it is judged on the average of the plan's targets; the conviction spec specifies it.
 5. **The 2026-11-08 ruling: values are tailored per ticker through calibration.** The four
    fractions are one list for all tickers. They scale with each ticker's own ATR, and they are a
    policy row, but they are not calibrated per ticker.
@@ -709,14 +905,17 @@ After the merge, separately and never as a pre-merge box:
 3. Post the Experiment on the implementation PR or, if merged, on a new issue. On the owner's
    second yes, with Decisions 7 and 8 met, add the Design 8 rows with the values chosen and confirm
    by a dry run, then on the next live brief, that each side prints its targets at the marks and
-   records `feat-strat-001.v5`.
-4. Mark the superseded spec `superseded` in the change that sets this one `approved`.
+   records the marks version (Design 6).
+4. Mark the superseded spec `superseded` in the change that sets this one `approved`. Done in that
+   change: its `status` line is the only edit to it.
 5. Complete the DOC close-out as the product-delivery skill prescribes.
 
 ## Risks
 
 - **Q scores below today's plan.** Close first sales cost R in the earlier evidence. The Experiment
-  is the gate, and the seeded rows keep today's plan until the owner decides on its result.
+  is the gate, and the seeded rows keep today's plan until the owner decides on its result. As run:
+  Q made 24.3 R less than A over 3,463 trades with a range that spans zero, and the owner chose Q
+  (Result as run).
 - **Nearly every plan carries an N2 warning.** Decision 7.
 - **A first sale 0.25 x ATR from the entry is inside the noise of the entry bar on a wide bar.**
   Targets count only from the bar after the fill bar (`resolve_plan`, `gcp/premarket_playbook_resolver.py:577-580`), so a same-bar
@@ -725,7 +924,7 @@ After the merge, separately and never as a pre-merge box:
 - **Deploy order.** Code before rows leaves every side without targets for that run, because a
   missing marks row is not ok and there is no fallback. The merge applies the rows before any
   deploy (Design 5), and close-out step 1 checks it.
-- **Version handling.** A reader that compares the version directly would treat a v5 row as
+- **Version handling.** A reader that compares the version directly would treat a marks-version row as
   unknown. The brief spec's meta test, extended by Design 6, catches it.
 - **Thin history after the swap.** Counts print as counts, and `no history yet` when there are
   none.
@@ -738,9 +937,17 @@ After the merge, separately and never as a pre-merge box:
   `level_cluster_atr` of about 25 cents and the "Today" text come from the superseded spec, which
   read them.
 - Whether the stored IWM basis holds levels in range beyond those in the owner's example.
-- The median stop distance of about 0.4 x ATR: handed, measured by another session.
-- The owner's words: relayed to this session; the chat was not read.
-- What the separately running experiment helper runs, and any result from it.
+- The median stop distance of about 0.4 x ATR: handed, measured by another session. The spike's
+  report gives 0.36 on its 3,463 trades.
+- The owner's words: relayed to this session and to the one that recorded the decisions; the chat
+  was not read.
+- The spike's result: quoted from its two report files; the spike was not run again for this
+  record, and its three stated limits were checked only as far as each says. The scheduler times
+  beside them were relayed, not read.
+- Whether a v4 row exists when the prior-close change deploys, and so which number the marks
+  version takes: not known until then (Design 6 names both cases).
+- Open item, not designed here: the owner's "the live brief should be done at 820 and 920 with
+  updates" against the schedule as relayed.
 - That the lane's bar files and local schema copy used by the gap-edges Experiment still exist.
 - The other session's notes quoted under Experiment (+80 R, +90.5 R).
 - The live `apply-schema-on-change` trigger: only its config file was read.
