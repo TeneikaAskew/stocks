@@ -414,3 +414,243 @@ def generate_signals(
             signals.append(sig)
 
     return pd.DataFrame(signals) if signals else pd.DataFrame()
+
+
+# Historical score metadata only. These definitions do not evaluate conditions.
+# Match IDs are captured in the native producer branches that count them.
+MOMENTUM_CONDITION_IDS = {
+    'call': ('consecutive_up', 'rsi_bullish_zone', 'above_vwap', 'above_ema9',
+             'rvol_above_recent', 'atr_expansion', 'rsi_thrust_up'),
+    'put': ('consecutive_down', 'rsi_bearish_zone', 'below_vwap', 'below_ema9',
+            'rvol_above_recent', 'atr_expansion', 'rsi_thrust_down'),
+}
+HISTORICAL_MR_CONDITION_IDS = {
+    'call': ('consecutive_down', 'rsi_oversold_zone', 'below_vwap',
+             'stoch_rsi_oversold', 'level_break_pdh'),
+    'put': ('consecutive_up', 'rsi_overbought_zone', 'above_vwap',
+            'stoch_rsi_overbought', 'level_break_pdl'),
+}
+_SCORE_KEYS = frozenset({
+    'version', 'status', 'kind', 'base_count', 'base_max', 'matched_conditions',
+    'bonuses', 'bonus_total', 'composite_strength', 'composite_max',
+    'unavailable_reasons', 'provenance',
+})
+_SCORE_PROVENANCE_KEYS = frozenset({
+    'corpus', 'strategy', 'run_kind', 'storage_source', 'producer_definition',
+    'profile', 'direction', 'code_sha256', 'config_sha256', 'input_sha256',
+    'generated_at', 'inserted_at',
+})
+
+
+
+def _score_input_sha256(frame):
+    """Lossless identity with scratch memory bounded to one input row."""
+    import hashlib
+    import json
+    from datetime import date, datetime, timedelta
+
+    def scalar(value):
+        if value is pd.NA:
+            return ['missing', 'pd.NA']
+        if value is pd.NaT:
+            return ['missing', 'NaT']
+        if isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, float):
+            return ['float', value.hex()]
+        if isinstance(value, (pd.Timestamp, datetime, date)):
+            return ['datetime', type(value).__name__, value.isoformat()]
+        if isinstance(value, (pd.Timedelta, timedelta)):
+            return ['timedelta', str(value)]
+        if value is None or isinstance(value, (str, int, bool)):
+            return value
+        if isinstance(value, bytes):
+            return ['bytes', value.hex()]
+        if isinstance(value, (tuple, list)):
+            return [type(value).__name__, [scalar(item) for item in value]]
+        raise TypeError('unsupported native score input scalar')
+
+    header = {
+        'version': 1,
+        'columns': [scalar(value) for value in frame.columns],
+        'column_names': [scalar(value) for value in frame.columns.names],
+        'dtypes': [str(dtype) for dtype in frame.dtypes],
+        'index_names': [scalar(value) for value in frame.index.names],
+        'index_dtype': str(frame.index.dtype),
+    }
+    def encode(value):
+        return json.dumps(value, sort_keys=True, allow_nan=False, separators=(',', ':')).encode()
+
+    digest = hashlib.sha256(encode(header))
+    for index, row in zip(frame.index, frame.itertuples(index=False, name=None)):
+        digest.update(b'\n')
+        digest.update(encode([scalar(index), [scalar(value) for value in row]]))
+    return digest.hexdigest()
+
+def score_execution_context(*, producer_definition, strategy, direction=None,
+                            source_path, config, frame):
+    """Record local generation identity, never original market availability.
+
+    Reads only the explicitly supplied local source and in-memory frame. No git,
+    subprocess, database, credential, provider or environment discovery.
+    """
+    import hashlib
+    import json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    return {
+        'corpus': 'historical_signals', 'strategy': strategy,
+        'run_kind': None, 'storage_source': None,
+        'producer_definition': producer_definition, 'profile': 'historical-default',
+        'direction': direction,
+        # Bind both native wrapper and shared descriptor, without git or an
+        # absolute executor path. Enriched inputs are hashed separately below.
+        'code_sha256': hashlib.sha256(json.dumps({
+            Path(path).name: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+            for path in {str(Path(source_path).resolve()), str(Path(__file__).resolve())}
+        }, sort_keys=True).encode()).hexdigest(),
+        'config_sha256': hashlib.sha256(json.dumps(config, sort_keys=True,
+            allow_nan=False).encode()).hexdigest(),
+        'input_sha256': _score_input_sha256(frame),
+        'generated_at': datetime.now(timezone.utc).isoformat(), 'inserted_at': None,
+    }
+
+
+def _score_integer(value):
+    import numbers
+    import math
+    return (not isinstance(value, (bool, np.bool_))
+            and isinstance(value, numbers.Real) and math.isfinite(value)
+            and value == int(value))
+
+
+def _validate_score_explanation(value, score=None, strategy=None, direction=None):
+    """Refuse malformed/unknown data; no inferred denominator or truncation."""
+    import json
+    import re
+    from datetime import datetime
+
+    if not isinstance(value, dict) or set(value) != _SCORE_KEYS:
+        raise ValueError('score_contract_fields')
+    if len(json.dumps(value, allow_nan=False, separators=(',', ':')).encode()) > 2048:
+        raise ValueError('score_contract_oversize')
+    if (value['version'] != 'historical-score-v1' or value['status'] != 'recorded'
+            or value['unavailable_reasons'] != []):
+        raise ValueError('score_contract_version_or_status')
+    p = value['provenance']
+    if not isinstance(p, dict) or set(p) != _SCORE_PROVENANCE_KEYS:
+        raise ValueError('score_contract_provenance')
+    definitions = {
+        'historical-momentum-v1': ('momentum', MOMENTUM_CONDITION_IDS, 7, 'condition_count'),
+        'historical-mr-v1': ('mean_reversion', HISTORICAL_MR_CONDITION_IDS, 5, 'base_plus_bonus'),
+    }
+    if p['producer_definition'] not in definitions:
+        raise ValueError('score_contract_unknown_producer')
+    native_strategy, ids, maximum, kind = definitions[p['producer_definition']]
+    if (p['corpus'] != 'historical_signals' or p['strategy'] != native_strategy
+            or (strategy is not None and strategy != native_strategy)
+            or (direction is not None and direction != p['direction'])
+            or p['profile'] != 'historical-default' or p['direction'] not in ids
+            or value['kind'] != kind):
+        raise ValueError('score_contract_profile_mismatch')
+    for k in ('code_sha256', 'config_sha256', 'input_sha256'):
+        if not isinstance(p[k], str) or not re.fullmatch('[0-9a-f]{64}', p[k]):
+            raise ValueError('score_contract_identity_missing')
+    if not isinstance(p['generated_at'], str) or datetime.fromisoformat(p['generated_at']).tzinfo is None:
+        raise ValueError('score_contract_generation_clock')
+    if p['run_kind'] not in (None, 'live', 'replay', 'backfill'):
+        raise ValueError('score_contract_run_kind')
+    if p['storage_source'] not in (None, 'cloud_sql', 'gcs_parquet'):
+        raise ValueError('score_contract_storage_source')
+    if p['inserted_at'] is not None:
+        if not isinstance(p['inserted_at'], str) or datetime.fromisoformat(p['inserted_at']).tzinfo is None:
+            raise ValueError('score_contract_insert_clock')
+    matched = value['matched_conditions']
+    if (not isinstance(matched, list) or any(not isinstance(x, str) for x in matched)
+            or len(set(matched)) != len(matched) or not set(matched).issubset(ids[p['direction']])):
+        raise ValueError('score_contract_conditions')
+    for k in ('base_count', 'base_max', 'bonus_total', 'composite_strength'):
+        if not _score_integer(value[k]):
+            raise ValueError('score_contract_noninteger')
+    if value['base_max'] != maximum or value['base_count'] != len(matched):
+        raise ValueError('score_contract_base_mismatch')
+    # Only these historical profiles have an established bonus policy: none.
+    if (value['bonuses'] != [] or value['bonus_total'] != 0
+            or value['composite_max'] != maximum
+            or value['composite_strength'] != value['base_count']):
+        raise ValueError('score_contract_total_mismatch')
+    if score is not None and (not _score_integer(score) or score != value['composite_strength']):
+        raise ValueError('score_contract_stored_total_mismatch')
+    return value
+
+
+def build_score_explanation(*, base_count, matched_conditions, provenance):
+    """Describe the actual no-bonus historical producer; never recalculate it."""
+    definition = provenance['producer_definition']
+    maximum = {'historical-momentum-v1': 7, 'historical-mr-v1': 5}.get(definition)
+    result = {
+        'version': 'historical-score-v1', 'status': 'recorded',
+        'kind': 'condition_count' if definition == 'historical-momentum-v1' else 'base_plus_bonus',
+        'base_count': base_count, 'base_max': maximum,
+        'matched_conditions': list(matched_conditions), 'bonuses': [], 'bonus_total': 0,
+        'composite_strength': base_count, 'composite_max': maximum,
+        'unavailable_reasons': [], 'provenance': dict(provenance),
+    }
+    _validate_score_explanation(result)
+    return result
+
+
+def read_score_explanation(value, *, score, strategy=None, direction=None, run_kind=None,
+                           storage_source, inserted_at=None):
+    """Allowlisted API projection; missing/invalid evidence preserves raw score.
+
+    Current strategy or raw condition strings cannot reconstruct legacy maxima.
+    Storage fields describe this read, not original source publication or receipt.
+    """
+    from copy import deepcopy
+    import json
+
+    reason = 'legacy_score_contract_missing'
+    missing = value is None or (isinstance(value, (float, np.floating)) and np.isnan(value))
+    if not missing:
+        try:
+            if not isinstance(value, str):
+                # Arrow/pandas returns nested list columns as NumPy arrays.
+                # Normalize only their JSON representation, never score math.
+                def numpy_json(obj):
+                    if isinstance(obj, np.ndarray):
+                        return obj.tolist()
+                    if isinstance(obj, np.generic):
+                        return obj.item()
+                    raise TypeError('unsupported score contract value')
+                value = json.dumps(value, default=numpy_json, allow_nan=False,
+                                   separators=(',', ':'))
+            if len(value.encode()) > 2048:
+                raise ValueError('score_contract_oversize')
+            value = json.loads(value)
+            if not _score_integer(score):
+                raise ValueError('score_contract_stored_total_missing')
+            _validate_score_explanation(value, score=score, strategy=strategy, direction=direction)
+            result = deepcopy(value)
+            p = result['provenance']
+            if p['run_kind'] is not None and run_kind is not None and p['run_kind'] != run_kind:
+                raise ValueError('score_contract_run_kind_mismatch')
+            p.update(run_kind=run_kind, storage_source=storage_source, inserted_at=inserted_at)
+            _validate_score_explanation(result, score=score, strategy=strategy, direction=direction)
+            return result
+        except (ValueError, TypeError, KeyError, OverflowError):
+            reason = 'score_contract_invalid'
+    return {
+        'version': 'historical-score-v1',
+        'status': 'legacy_unavailable' if missing else 'invalid_record', 'kind': 'unknown',
+        'base_count': None, 'base_max': None, 'matched_conditions': None,
+        'bonuses': None, 'bonus_total': None, 'composite_strength': None, 'composite_max': None,
+        'unavailable_reasons': [reason],
+        'provenance': {
+            'corpus': 'historical_signals', 'strategy': strategy, 'run_kind': run_kind,
+            'storage_source': storage_source, 'producer_definition': None,
+            'profile': None, 'direction': None, 'code_sha256': None, 'config_sha256': None,
+            'input_sha256': None, 'generated_at': None, 'inserted_at': inserted_at,
+        },
+    }

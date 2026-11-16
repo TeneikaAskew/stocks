@@ -301,8 +301,8 @@ def test_a_research_deploy_without_a_research_build_pins_the_current_digest(tmp_
 
 def test_a_deploy_names_the_built_digest(tmp_path):
     env = _env(tmp_path)
-    fns = _BUILD_FNS + ("deploy_evaluate_ew_strikes",)
-    r = _run(tmp_path, env, fns, "build_image && deploy_evaluate_ew_strikes")
+    fns = _BUILD_FNS + ("deploy_fetch_fred_rates",)
+    r = _run(tmp_path, env, fns, "build_image && deploy_fetch_fred_rates")
     assert "rc=0" in r.stdout, r.stdout + r.stderr
     jobs = [c for c in _calls(tmp_path) if c.startswith(("run jobs create", "run jobs update"))]
     assert jobs, _calls(tmp_path)
@@ -313,7 +313,7 @@ def test_a_deploy_without_a_build_mutates_nothing(tmp_path):
     """`${IMAGE_REF:?}` exits the shell before gcloud runs. A failed $(...)
     inside an argument would not: gcloud would run with an empty --image."""
     env = _env(tmp_path)
-    r = _run(tmp_path, env, ("deploy_evaluate_ew_strikes",), "deploy_evaluate_ew_strikes")
+    r = _run(tmp_path, env, ("deploy_fetch_fred_rates",), "deploy_fetch_fred_rates")
     assert "rc=0" not in r.stdout
     assert r.returncode != 0
     assert "IMAGE_REF" in r.stderr, r.stderr

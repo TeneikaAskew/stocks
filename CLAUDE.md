@@ -15,6 +15,18 @@ pass comes back empty, then one push. Never push a gate change one finding at a 
 The two gate workflows and the hook are pinned byte for byte to copies under `scripts/gate/pinned/`, read from main:
 change the copy in one PR, then make the file equal to it in the next. One PR changing both is refused.
 
+## Definition of done and autonomy (owner directive)
+Done means merged to main, deployed where the change ships (the staging deploy a merge to main starts, for a change that ships), and verified.
+Verified means the tests pass, a change the site shows carries Playwright evidence as AGENTS.md `## Review guidelines` defines it,
+and real queries against GCP show the expected result. Record that evidence on the PR.
+Within your assigned scope, make reversible calls yourself and take your own recommendations. Commit, push, open PRs and iterate on
+review without waiting, inside this file's spec gate, review cap and gate-file red-team rules. Record the choices you made on the PR
+instead of batching decisions back to the owner.
+Stop for the owner only for irreversible or production-destructive steps (live migrations, data deletes, production config),
+spending money, or contacting people outside the project. Ask one specific question, not a list.
+The owner's latest instruction in a session supersedes earlier holds in it.
+If another lane blocks you, open a small PR for the blocking piece or coordinate with that lane's owner instead of waiting.
+
 ## Project Overview
 This is a stocks/trading application project that includes Google Apps Script components for market data fetching, historical data backfilling, and continuation systems for long-running operations.
 

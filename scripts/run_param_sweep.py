@@ -32,7 +32,7 @@ import logging
 import os
 import sys
 import uuid
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -41,6 +41,7 @@ import pandas as pd
 
 from lib.config import load_config
 from lib.data_loader import DataLoader
+from lib.eastern_time import market_today, market_today_sql
 from lib.indicators import add_all_indicators
 from lib.walk_forward import WalkForwardValidator, select_calibration_winner
 
@@ -130,13 +131,13 @@ def apply_winner(ticker: str, winner: dict, run_id: str) -> None:
         f"(n={int(winner['total_trades'])} trades, "
         f"{int(winner['total_folds'])} folds)"
     )
-    sql = """
+    sql = f"""
         INSERT INTO exit_config_overrides
           (ticker, calibration_date, call_target, put_target,
            call_stop, put_stop, call_time_stop, put_time_stop,
            consecutive_periods, disabled_conditions, disabled_directions,
            blue_sky_atr_offset, notes)
-        SELECT ticker, CURRENT_DATE, :call_target, :put_target,
+        SELECT ticker, {market_today_sql()}, :call_target, :put_target,
                call_stop, put_stop, :call_time_stop, :put_time_stop,
                :consecutive_periods, disabled_conditions, disabled_directions,
                blue_sky_atr_offset, :notes
@@ -263,7 +264,7 @@ def main() -> None:
 
     start = args.start
     if start is None:
-        start = (date.today()
+        start = (market_today()
                  - timedelta(days=DEFAULT_SWEEP_LOOKBACK_DAYS)).isoformat()
     log.info("param sweep run_id=%s task=%d/%d tickers=%s start=%s end=%s apply=%s",
              run_id, task_idx, task_count, assigned, start,

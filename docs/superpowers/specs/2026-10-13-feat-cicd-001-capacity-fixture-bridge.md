@@ -10,7 +10,7 @@ done_when:
   - "tests/scripts/test_spec_gate.py::test_capacity_bridge_case_and_carrier_equivalence proves the executable independently captured BASE case oracle covers every original positive/rejection/missing-label case, compares actual paired carrier text/quantities and baseline verdict/failure class, and fails before real gate subprocess on Cost999 versus legacy0.01/300, both-carriers-changed, missing/duplicate carrier and dropped or replaced negative-case mutations; all original gate cases execute once through the existing real CLI, unchanged gate/template/pins and285second budget."
   - "Actual current-main-versus-branch docs audits have no new findings using the actually merged source-review verifier and an approved-spec-bound own SHARED-01 source note/committed eligible sidecar; all other SITE bytes, historical markers, other capability records and policy/runtime predicates stay unchanged."
   - "Four independent frozen-head gate-review seats execute concrete shell/YAML/exporter-policy/byte controls and report no unresolved load-bearing finding before the single reviewed push; normal current-head authenticated CODE review, required green CI, resolved conversations and this branch's own ready plan/catalog/traceability/PR evidence complete this fixture-only delivery."
-status: approved
+status: superseded
 supersedes: null
 ---
 

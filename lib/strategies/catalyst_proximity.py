@@ -23,6 +23,7 @@ contexts without a live Cloud SQL.
 from __future__ import annotations
 
 from lib.eastern_time import ET
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 import logging
 from datetime import datetime, time as dtime, timedelta
 from functools import lru_cache
@@ -229,10 +230,11 @@ def _nearest_earnings(ticker: str, ts_et: datetime) -> tuple:
     ticker's nearest earnings within ±24h. Type is 'earnings_pre' or
     'earnings_post' depending on earnings_calendar.earnings_time.
     """
-    sql = """
+    sql = f"""
         SELECT earnings_date, earnings_time
           FROM earnings_calendar
          WHERE ticker = :ticker
+           AND {EARNINGS_NOT_RETIRED_SQL}
            AND earnings_date BETWEEN (CAST(:ts AS timestamp) - INTERVAL '1 day')::date
                                 AND (CAST(:ts AS timestamp) + INTERVAL '1 day')::date
          ORDER BY earnings_date

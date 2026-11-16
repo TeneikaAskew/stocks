@@ -1,0 +1,169 @@
+{
+  "controls": [
+    {
+      "changed_files": [
+        "gcp/model_job.py",
+        "lib/model.py"
+      ],
+      "control": "cost_only_numeric",
+      "fixture_base_sha": "84c952cc5a1503f9411da116bb32604559a16550",
+      "fixture_head_sha": "152ac50eb09e2dc2a50f837fd90cb4fea5e3f998",
+      "note": "defect: a numeric Cost-only body is refused as leaving 30 blank",
+      "pr_body": "Spec: docs/superpowers/specs/2026-09-01-model-decisions.md\nPlan: docs/superpowers/plans/2026-09-01-model-decisions.md\n\n- [ ] every model states its decision\n- [ ] the registry test passes\n\n## Capacity\nVolume: 30 rows\nVelocity: 1 query\nWall-clock: 2 s\nCost: $0.01\n",
+      "pr_body_sha256": "f16e1d365c67710ce40443101eee1554799e630a38d408234ede67139b109819",
+      "returncode": 1,
+      "stderr": "<fixture-repo>/scripts/gate/spec_gate.py:110: SyntaxWarning: invalid escape sequence '\\/'\n  (round seven: `HTTPS://`, `https:\\/\\/` and `file:` slipped a text scan). Raises ValueError\n",
+      "stdout": "SPEC GATE FAILED\n - PR body's Capacity section leaves 30 blank; give the numbers, or write 'n/a: <why no workload runs differently>'\n\nRun the product-delivery skill (Phase 1 to 3) before continuing.\n",
+      "verdict": "refused"
+    },
+    {
+      "changed_files": [
+        "gcp/model_job.py",
+        "lib/model.py"
+      ],
+      "control": "cost_only_canonical_formula",
+      "fixture_base_sha": "84c952cc5a1503f9411da116bb32604559a16550",
+      "fixture_head_sha": "152ac50eb09e2dc2a50f837fd90cb4fea5e3f998",
+      "note": "defect: the canonical Cost formula alone is refused",
+      "pr_body": "Spec: docs/superpowers/specs/2026-09-01-model-decisions.md\nPlan: docs/superpowers/plans/2026-09-01-model-decisions.md\n\n- [ ] every model states its decision\n- [ ] the registry test passes\n\n## Capacity\nVolume: 30 rows\nVelocity: 1 query\nWall-clock: 2 s\nCost: $0.01/run x 2 runs/day x 30 = $0.60/month\n",
+      "pr_body_sha256": "50fe48cd02383573eb32176d350a68fa87541407b704e0ffab02c33a185e7aac",
+      "returncode": 1,
+      "stderr": "<fixture-repo>/scripts/gate/spec_gate.py:110: SyntaxWarning: invalid escape sequence '\\/'\n  (round seven: `HTTPS://`, `https:\\/\\/` and `file:` slipped a text scan). Raises ValueError\n",
+      "stdout": "SPEC GATE FAILED\n - PR body's Capacity section leaves 30 blank; give the numbers, or write 'n/a: <why no workload runs differently>'\n\nRun the product-delivery skill (Phase 1 to 3) before continuing.\n",
+      "verdict": "refused"
+    },
+    {
+      "changed_files": [
+        "gcp/model_job.py",
+        "lib/model.py"
+      ],
+      "control": "bare_unrelated_30",
+      "fixture_base_sha": "84c952cc5a1503f9411da116bb32604559a16550",
+      "fixture_head_sha": "152ac50eb09e2dc2a50f837fd90cb4fea5e3f998",
+      "note": "defect: an unrelated bare 30 line is taken as the cost",
+      "pr_body": "Spec: docs/superpowers/specs/2026-09-01-model-decisions.md\nPlan: docs/superpowers/plans/2026-09-01-model-decisions.md\n\n- [ ] every model states its decision\n- [ ] the registry test passes\n\n## Capacity\nVolume: 30 rows\nVelocity: 1 query\nWall-clock: 2 s\n30: 0.01 samples\n",
+      "pr_body_sha256": "d698b749e6ced2617d4379c1ac863a47761714b2d0d7faf69b6b6b6cb6034d10",
+      "returncode": 0,
+      "stderr": "<fixture-repo>/scripts/gate/spec_gate.py:110: SyntaxWarning: invalid escape sequence '\\/'\n  (round seven: `HTTPS://`, `https:\\/\\/` and `file:` slipped a text scan). Raises ValueError\n",
+      "stdout": "spec gate ok (branch=feature/feat-model-001-model-decisions, 2 changed file(s))\n",
+      "verdict": "accepted"
+    },
+    {
+      "changed_files": [
+        "gcp/model_job.py",
+        "lib/model.py"
+      ],
+      "control": "legacy_formula_only",
+      "fixture_base_sha": "84c952cc5a1503f9411da116bb32604559a16550",
+      "fixture_head_sha": "152ac50eb09e2dc2a50f837fd90cb4fea5e3f998",
+      "note": "the legacy formula label alone is accepted",
+      "pr_body": "Spec: docs/superpowers/specs/2026-09-01-model-decisions.md\nPlan: docs/superpowers/plans/2026-09-01-model-decisions.md\n\n- [ ] every model states its decision\n- [ ] the registry test passes\n\n## Capacity\nVolume: 30 rows\nVelocity: 1 query\nWall-clock: 2 s\n$/run × runs/day × 30: $0.01\n",
+      "pr_body_sha256": "cf40e308e37b8cfd2cc0e59fd9ee949b6411eedccd771219c54afe4fe2bfe5e1",
+      "returncode": 0,
+      "stderr": "<fixture-repo>/scripts/gate/spec_gate.py:110: SyntaxWarning: invalid escape sequence '\\/'\n  (round seven: `HTTPS://`, `https:\\/\\/` and `file:` slipped a text scan). Raises ValueError\n",
+      "stdout": "spec gate ok (branch=feature/feat-model-001-model-decisions, 2 changed file(s))\n",
+      "verdict": "accepted"
+    },
+    {
+      "changed_files": [
+        "gcp/model_job.py",
+        "lib/model.py"
+      ],
+      "control": "blank_cost_beside_numeric_30",
+      "fixture_base_sha": "84c952cc5a1503f9411da116bb32604559a16550",
+      "fixture_head_sha": "152ac50eb09e2dc2a50f837fd90cb4fea5e3f998",
+      "note": "defect: a blank Cost beside a numeric 30 is accepted",
+      "pr_body": "Spec: docs/superpowers/specs/2026-09-01-model-decisions.md\nPlan: docs/superpowers/plans/2026-09-01-model-decisions.md\n\n- [ ] every model states its decision\n- [ ] the registry test passes\n\n## Capacity\nVolume: 30 rows\nVelocity: 1 query\nWall-clock: 2 s\nCost:\n30: $0.01\n",
+      "pr_body_sha256": "16ce34b812c07dcc32a92256fb4a52fb857ab1c97c1f48b152693c6a02315765",
+      "returncode": 0,
+      "stderr": "<fixture-repo>/scripts/gate/spec_gate.py:110: SyntaxWarning: invalid escape sequence '\\/'\n  (round seven: `HTTPS://`, `https:\\/\\/` and `file:` slipped a text scan). Raises ValueError\n",
+      "stdout": "spec gate ok (branch=feature/feat-model-001-model-decisions, 2 changed file(s))\n",
+      "verdict": "accepted"
+    },
+    {
+      "changed_files": [
+        "gcp/model_job.py",
+        "lib/model.py"
+      ],
+      "control": "deferred_cost_beside_legacy_30",
+      "fixture_base_sha": "84c952cc5a1503f9411da116bb32604559a16550",
+      "fixture_head_sha": "152ac50eb09e2dc2a50f837fd90cb4fea5e3f998",
+      "note": "defect: a TBD Cost beside the legacy formula is accepted",
+      "pr_body": "Spec: docs/superpowers/specs/2026-09-01-model-decisions.md\nPlan: docs/superpowers/plans/2026-09-01-model-decisions.md\n\n- [ ] every model states its decision\n- [ ] the registry test passes\n\n## Capacity\nVolume: 30 rows\nVelocity: 1 query\nWall-clock: 2 s\nCost: TBD\n$/run × runs/day × 30: $0.01\n",
+      "pr_body_sha256": "6a3048a8595f4c345b7abd0b7d7b09e1de5706b270388d5d05058fac89dbf225",
+      "returncode": 0,
+      "stderr": "<fixture-repo>/scripts/gate/spec_gate.py:110: SyntaxWarning: invalid escape sequence '\\/'\n  (round seven: `HTTPS://`, `https:\\/\\/` and `file:` slipped a text scan). Raises ValueError\n",
+      "stdout": "spec gate ok (branch=feature/feat-model-001-model-decisions, 2 changed file(s))\n",
+      "verdict": "accepted"
+    },
+    {
+      "changed_files": [
+        "gcp/model_job.py",
+        "lib/model.py"
+      ],
+      "control": "numeric_cost_and_numeric_30",
+      "fixture_base_sha": "84c952cc5a1503f9411da116bb32604559a16550",
+      "fixture_head_sha": "152ac50eb09e2dc2a50f837fd90cb4fea5e3f998",
+      "note": "both carriers numeric: accepted",
+      "pr_body": "Spec: docs/superpowers/specs/2026-09-01-model-decisions.md\nPlan: docs/superpowers/plans/2026-09-01-model-decisions.md\n\n- [ ] every model states its decision\n- [ ] the registry test passes\n\n## Capacity\nVolume: 30 rows\nVelocity: 1 query\nWall-clock: 2 s\nCost: $0.01\n30: $0.01\n",
+      "pr_body_sha256": "346df4d064ebe09f79d6c09f5f60f5a1085432b11cf182eed2b8d1799ef29306",
+      "returncode": 0,
+      "stderr": "<fixture-repo>/scripts/gate/spec_gate.py:110: SyntaxWarning: invalid escape sequence '\\/'\n  (round seven: `HTTPS://`, `https:\\/\\/` and `file:` slipped a text scan). Raises ValueError\n",
+      "stdout": "spec gate ok (branch=feature/feat-model-001-model-decisions, 2 changed file(s))\n",
+      "verdict": "accepted"
+    },
+    {
+      "changed_files": [
+        "gcp/model_job.py",
+        "lib/model.py"
+      ],
+      "control": "no_cost_field",
+      "fixture_base_sha": "84c952cc5a1503f9411da116bb32604559a16550",
+      "fixture_head_sha": "152ac50eb09e2dc2a50f837fd90cb4fea5e3f998",
+      "note": "no cost field at all: refused as leaving 30 blank",
+      "pr_body": "Spec: docs/superpowers/specs/2026-09-01-model-decisions.md\nPlan: docs/superpowers/plans/2026-09-01-model-decisions.md\n\n- [ ] every model states its decision\n- [ ] the registry test passes\n\n## Capacity\nVolume: 30 rows\nVelocity: 1 query\nWall-clock: 2 s\n",
+      "pr_body_sha256": "8d37335f9a0d1a322cd85dff0459b359ff90be88603b4c8b54d1c1c006a7a81e",
+      "returncode": 1,
+      "stderr": "<fixture-repo>/scripts/gate/spec_gate.py:110: SyntaxWarning: invalid escape sequence '\\/'\n  (round seven: `HTTPS://`, `https:\\/\\/` and `file:` slipped a text scan). Raises ValueError\n",
+      "stdout": "SPEC GATE FAILED\n - PR body's Capacity section leaves 30 blank; give the numbers, or write 'n/a: <why no workload runs differently>'\n\nRun the product-delivery skill (Phase 1 to 3) before continuing.\n",
+      "verdict": "refused"
+    },
+    {
+      "changed_files": [
+        "gcp/model_job.py",
+        "lib/model.py"
+      ],
+      "control": "all_fields_na_with_reason",
+      "fixture_base_sha": "84c952cc5a1503f9411da116bb32604559a16550",
+      "fixture_head_sha": "152ac50eb09e2dc2a50f837fd90cb4fea5e3f998",
+      "note": "all-fields n/a with a reason: accepted",
+      "pr_body": "Spec: docs/superpowers/specs/2026-09-01-model-decisions.md\nPlan: docs/superpowers/plans/2026-09-01-model-decisions.md\n\n- [ ] every model states its decision\n- [ ] the registry test passes\n\n## Capacity\nn/a: nothing runs differently\n",
+      "pr_body_sha256": "a52e7d03dad177a589e3bf508f11b96d7cd5cb65b38c22251a990934fa6663d4",
+      "returncode": 0,
+      "stderr": "<fixture-repo>/scripts/gate/spec_gate.py:110: SyntaxWarning: invalid escape sequence '\\/'\n  (round seven: `HTTPS://`, `https:\\/\\/` and `file:` slipped a text scan). Raises ValueError\n",
+      "stdout": "spec gate ok (branch=feature/feat-model-001-model-decisions, 2 changed file(s))\n",
+      "verdict": "accepted"
+    }
+  ],
+  "feat_id": "FEAT-CICD-001",
+  "source": {
+    "gate": {
+      "blob_oid": "ffb1ada8efef5777e1248241bd38b68ffaa2d23a",
+      "path": "scripts/gate/spec_gate.py",
+      "sha256": "aaa698ad94bf6d633620b68d9f765c720bd4cf7a2bb18e0b5a2f201ac9a6ecc9"
+    },
+    "invocation": "python3 scripts/gate/spec_gate.py --pr <fixture_base_sha> <fixture_head_sha> (both full 40-hex, from a throwaway fixture repository built by tests/scripts/test_spec_gate.py::make_repo) using the unchanged gate of main_commit_oid below, not this PR's gate, PR_HEAD_REF=feature/feat-model-001-model-decisions, PR_TITLE='FEAT-MODEL-001: x', changing gcp/model_job.py (a workload path)",
+    "main_commit_oid": "178973b061cc65a6e9256421bf0804a41b9b182c",
+    "proposed_code_executed": false,
+    "suite": {
+      "blob_oid": "9387d37cfaff137e15984b98b357973adc549d18",
+      "path": "tests/scripts/test_spec_gate.py"
+    },
+    "template": {
+      "blob_oid": "acccdb768d2630f6a9cd8123f22199235c2e82c8",
+      "path": ".github/pull_request_template.md",
+      "sha256": "496bc1e31588d4ea392559fd5ab0097bfaf4a6b5761f745d2ac1271fa498450a"
+    }
+  },
+  "spec": "docs/superpowers/specs/2026-11-04-feat-cicd-001-capacity-cost-label-whole-job.md"
+}

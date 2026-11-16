@@ -1,15 +1,15 @@
 """LLM-generated explanations for the pre-market brief.
 
 The brief is a deterministic data deck — three columns of indicators,
-strat candle, FTFC score, level map. Useful, but not narrative.
+strat candle, TF bias, FTFC, level map. Useful, but not narrative.
 
 This module adds short Gemini-Flash explanations on top of that data
 without changing any of the underlying numbers:
 
-  • explain_overview_setup    → 1-2 sentence FTFC interpretation
-                                ("All three names print +1.0 FTFC bullish —
-                                  every timeframe agrees, trend-continuation
-                                  setups favored.")
+  • explain_overview_setup    → 1-2 sentence TF bias / FTFC interpretation
+                                ("All three names are FTFC bullish —
+                                  price is above every period open,
+                                  trend-continuation setups favored.")
   • explain_ticker            → per-ticker synthesis of levels + momentum
                                 + strat ("IWM sits 13% above SMA200 with
                                 RSI 72 — extended but not overbought.
@@ -138,32 +138,55 @@ async def _call(system: str, user: str) -> Optional[str]:
 # ── Per-section helpers ──────────────────────────────────────────────────
 
 
+def _tf_bias(d: dict) -> str:
+    """The weighted candle vote (keys ftfc_*), or unavailable: a missing
+    score is never read as 0 (CLAUDE.md 3.7)."""
+    score = d.get('ftfc_score')
+    if score is None:
+        return 'unavailable'
+    return f"{score:+.1f} ({d.get('ftfc_direction')})"
+
+
+def _ftfc_state(d: dict) -> str:
+    """Price-open continuity state with each period's relation."""
+    state = d.get('tf_continuity')
+    if not isinstance(state, str) or not state:
+        return 'unavailable'
+    frames = d.get('tf_continuity_frames')
+    frames = frames if isinstance(frames, dict) else {}
+    detail = ', '.join(f"{tf} {f.get('relation')}" for tf, f in frames.items())
+    return f"{state} ({detail})" if detail else state
+
+
 _OVERVIEW_PROMPT = (
     "You are a trading-desk analyst writing the daily pre-market summary. "
-    "You'll receive the watchlist's FTFC scores and bias. Write ONE or TWO "
-    "sentences explaining what this collective bias implies for today's "
-    "tape. Concrete language, no hedging. If everything is +1.0 bullish, "
-    "say 'every timeframe agrees, expect trend-continuation setups; "
-    "counter-trend trades have weakest setup.' If mixed, call out which "
-    "names disagree and what that means. "
+    "You'll receive, per name, the TF bias (a weighted vote of daily and "
+    "weekly candle types, -1 to +1) and the FTFC state (whether price is "
+    "above or below each current period open listed with it: bullish "
+    "means above all of them, bearish below all, mixed otherwise). Write "
+    "ONE or TWO sentences explaining what this collective picture implies "
+    "for today's tape. Concrete language, no hedging. Say 'every timeframe "
+    "agrees' only when the FTFC state is bullish or bearish for every name; "
+    "then expect trend-continuation setups, and counter-trend trades have "
+    "the weakest setup. If names are mixed, or TF bias and FTFC disagree, "
+    "call out which names and what that means. "
     "Plain text only — NO emojis, NO markdown formatting, NO bullet lists."
 )
 
 
 async def explain_overview_setup(tickers: dict[str, dict]) -> Optional[str]:
-    """Explain the day's setup based on the watchlist's FTFC bias."""
+    """Explain the day's setup from the watchlist's TF bias and FTFC."""
     parts = []
     for tk, d in tickers.items():
         if d.get('status') == 'NO DATA':
             continue
         parts.append(
-            f"{tk}: FTFC={d.get('ftfc_score', 0.0):+.1f} "
-            f"({d.get('ftfc_direction', 'mixed')}); "
+            f"{tk}: TF bias {_tf_bias(d)}; FTFC {_ftfc_state(d)}; "
             f"price ${d.get('price', 0):.2f}, RSI {d.get('rsi', 0):.0f}"
         )
     if not parts:
         return None
-    user = "Watchlist FTFC snapshot:\n" + "\n".join(parts)
+    user = "Watchlist TF bias and FTFC snapshot:\n" + "\n".join(parts)
     return await _call(_OVERVIEW_PROMPT, user)
 
 
@@ -171,7 +194,8 @@ _TICKER_PROMPT = (
     "You are a trading-desk analyst writing one paragraph of context for "
     "a single ticker on the morning brief. You'll receive the ticker's "
     "key levels (Prev H/L, SMA200, BB, EMA9/20, ATR), momentum (RSI, "
-    "StochRSI, MACD, signal), and Strat block (candle, combo, FTFC). "
+    "StochRSI, MACD, signal), and Strat block (candle, combo, TF bias = "
+    "weighted candle vote, FTFC = price versus the current period opens). "
     "Write ONE or TWO sentences synthesizing these into trade-relevant "
     "context — what bias the setup implies, what to watch for, where "
     "key levels sit relative to current price. Reference SPECIFIC level "
@@ -202,7 +226,7 @@ async def explain_ticker(ticker: str, data: dict) -> Optional[str]:
         f"signal {data.get('signal_status', '')}\n"
         f"Strat: {data.get('strat_candle', '?')} | "
         f"combo {data.get('strat_combo', 'none')} | "
-        f"FTFC {data.get('ftfc_score', 0):+.1f} ({data.get('ftfc_direction', 'mixed')})"
+        f"TF bias {_tf_bias(data)} | FTFC {_ftfc_state(data)}"
     )
     return await _call(_TICKER_PROMPT, user)
 
@@ -264,10 +288,10 @@ _PLAYBOOK_PROMPT = (
     "stop sits relative to the trigger in ATR-units if mentionable, and "
     "what each target represents. Always cite the specific price "
     "alongside the level name — e.g. 'PDO ($276.67)' not just 'PDO'. "
-    "When the playbook is ORB-only (price has cleared every structural "
-    "level), name the LAST cleared level with its price (e.g. 'price is "
-    "above PWH $222 and PQH $214 — every structural resistance has been "
-    "passed; only the ORB high will give a fresh trigger'). "
+    "When a side of the playbook is ORB-only, repeat its stated reason "
+    "(no unbroken level within the 3x ATR window, levels traded through "
+    "pre-market, ATR unavailable, or stale daily data) and say the 15-min "
+    "opening range gives the next setup; never invent a price. "
     "Plain text only — NO emojis, NO markdown formatting, NO bullet lists."
 )
 
@@ -283,8 +307,8 @@ async def explain_playbook(
         f"Ticker: {ticker}\n"
         f"ORB window: {orb_window}\n"
         f"Playbook:\n{playbook_text}\n"
-        f"FTFC: {data.get('ftfc_score', 0):+.1f} "
-        f"({data.get('ftfc_direction', 'mixed')})\n"
+        f"TF bias: {_tf_bias(data)}\n"
+        f"FTFC: {_ftfc_state(data)}\n"
         f"ATR14: ${data.get('atr14', 0):.2f}"
     )
     return await _call(_PLAYBOOK_PROMPT, user)
@@ -297,7 +321,7 @@ async def generate_explanations(brief: dict) -> dict:
     """Populate every LLM explanation slot on the brief dict in parallel.
 
     Mutates ``brief`` in-place by setting:
-      * ``brief['llm_overview']``                — overview FTFC explanation
+      * ``brief['llm_overview']``                — overview TF bias / FTFC explanation
       * ``brief['llm_orb_explanation']``         — ORB window choice
       * ``brief['tickers'][T]['llm_analysis']``  — per-ticker analysis
       * ``brief['tickers'][T]['llm_playbook']``  — per-ticker playbook why

@@ -1,6 +1,6 @@
 # Investment Models & Code Summary — Unified (IWM · QQQ · SPY · SPX)
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 **Unified record — merged 2026-06-10. Both parallel editions preserved in full, nothing dropped; where wording differs both are kept.**
 
@@ -323,7 +323,7 @@ produce comparable fire-rates. See
 | QQQ    | 36.1 | 50.9 | 64.9 | (36.1, 50.9) | (50.9, 64.9) | A |
 | SPY    | 35.5 | 50.5 | 64.3 | (35.5, 50.5) | (50.5, 64.3) | A |
 
-_Auto-refreshed monthly by `.github/workflows/refresh-architecture-docs.yml` via `scripts/refresh_calibration_table.py`. Manual refresh: `python -m scripts.refresh_calibration_table`._
+_Manual refresh: `python -m scripts.refresh_calibration_table` (needs Cloud SQL access; not scheduled)._
 <!-- END ticker_calibration_resolved_values -->
 
 **Inspecting the table at any time:**

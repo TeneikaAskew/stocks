@@ -29,8 +29,10 @@ class IndicatorConfig:
     ema_periods: List[int] = field(default_factory=lambda: [9, 20, 50])
     sma_periods: List[int] = field(default_factory=lambda: [5, 10, 20, 50, 200])
     atr_period: int = 14
-    # Additional ATR windows. Schema declares `atr_20`; same reasoning.
-    atr_extra_periods: List[int] = field(default_factory=lambda: [20])
+    # Additional ATR windows. Schema declares `atr_5` and `atr_20`; same
+    # reasoning. ATR(5) is stored beside ATR(14) for the per-ticker level
+    # parameters' ATR basis (FEAT-STRAT-001, owner ruling 2026-11-07).
+    atr_extra_periods: List[int] = field(default_factory=lambda: [5, 20])
     # Annualised historical-volatility windows. Each entry N produces a
     # `volatility_{N}d` series (std of pct_change × sqrt(252)).
     volatility_periods: List[int] = field(default_factory=lambda: [5, 20])
@@ -110,24 +112,41 @@ class IndicatorConfig:
 class AlphaVantageConfig:
     """AlphaVantage API rate limits, key management, and settings.
 
-    Current plan: 150 RPM premium.
-    Scripts should read AV_RPM from here rather than hardcoding a value.
+    Purchased account allowance: 600 RPM premium. Local pacing defaults to
+    a conservative 150 RPM allocation; it is not an account-wide governor
+    or proof of unused shared capacity.
 
     API keys are loaded ONLY from environment variables — never hardcoded.
     Supports multi-key rotation via comma-separated ALPHA_VANTAGE_API_KEYS,
     or single key via ALPHA_VANTAGE_API_KEY.
     """
-    rpm: int = 150                          # requests per minute (plan limit)
+    rpm: int = 600                          # purchased account ceiling
+    local_rpm: int = 150                    # conservative local allocation
+
+    def __post_init__(self) -> None:
+        for name in ("rpm", "local_rpm"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.rpm > 600:
+            raise ValueError("rpm exceeds the confirmed 600 RPM account allowance")
+        if self.local_rpm > self.rpm:
+            raise ValueError("local_rpm cannot exceed the account allowance")
+
+    @property
+    def account_rpm(self) -> int:
+        """Purchased ceiling; separate from an allocation to this process."""
+        return self.rpm
 
     @property
     def delay_between_calls(self) -> float:
-        """Minimum seconds to wait between API calls to stay within RPM."""
-        return 60.0 / self.rpm
+        """Minimum local interval, without certifying aggregate account usage."""
+        return 60.0 / self.local_rpm
 
     @property
     def batch_size(self) -> int:
-        """How many calls to make per 60-second window before a forced wait."""
-        return self.rpm
+        """Local calls per 60-second batch before a forced wait."""
+        return self.local_rpm
 
     @staticmethod
     def get_api_keys() -> List[str]:
@@ -414,6 +433,37 @@ class StratConfig:
         '4h':  0.15, '12h': 0.15,
         '1d':  0.30, '1w':  0.10,
     })
+    # FTFC in Rob Smith's sense: price above (green) or below (red) the
+    # current period's open on every timeframe (lib.strat rule
+    # price-open-v1). Display and storage only; the gates use the weighted
+    # vote above ("TF bias"). Premarket (the 08:30 ET brief) excludes 1d
+    # because today's daily period has no observed open before 09:30;
+    # in-session consumers include it. Period timeframes only.
+    continuity_timeframes_premarket: list = field(
+        default_factory=lambda: ['1q', '1mo', '1w'])
+    continuity_timeframes_session: list = field(
+        default_factory=lambda: ['1q', '1mo', '1w', '1d'])
+
+
+CONTINUITY_PERIOD_TIMEFRAMES = ('1d', '1w', '1mo', '1q', '1y')
+
+
+def validate_continuity_timeframes(name: str, raw) -> list:
+    """A non-empty, duplicate-free list of period timeframe keys, or ValueError.
+
+    Price-open continuity is built from daily sessions, so only period
+    frames are meaningful; an unknown key would make every brief show
+    FTFC unavailable without saying the configuration was wrong.
+    """
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise ValueError(f"strat.{name} must be a non-empty list of timeframes, got {raw!r}")
+    items = list(raw)
+    unknown = [tf for tf in items if tf not in CONTINUITY_PERIOD_TIMEFRAMES]
+    if unknown:
+        raise ValueError(f"strat.{name}={raw!r}: {unknown} not in {list(CONTINUITY_PERIOD_TIMEFRAMES)}")
+    if len(set(items)) != len(items):
+        raise ValueError(f"strat.{name}={raw!r} repeats a timeframe")
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +672,11 @@ class AppConfig:
         # Strat
         if not (0.0 <= self.strat.ftfc_threshold <= 1.0):
             errors.append(f"strat.ftfc_threshold={self.strat.ftfc_threshold}, expected [0, 1]")
+        for name in ('continuity_timeframes_premarket', 'continuity_timeframes_session'):
+            try:
+                validate_continuity_timeframes(name, getattr(self.strat, name))
+            except ValueError as exc:
+                errors.append(str(exc))
 
         # Proximity multipliers — clamp to [0.1, 2.0]; outside this
         # range strongly suggests a config error (e.g. signed or %-vs-decimal).
@@ -947,6 +1002,9 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
             app.strat.allowed_directions = dirs
         app.strat.timeframes = strat_data.get('timeframes', app.strat.timeframes)
         app.strat.ftfc_weights = strat_data.get('ftfc_weights', app.strat.ftfc_weights)
+        for name in ('continuity_timeframes_premarket', 'continuity_timeframes_session'):
+            if name in strat_data:
+                setattr(app.strat, name, validate_continuity_timeframes(name, strat_data[name]))
 
     # --- Proximity multipliers (Phase 1.5) ---
     pm_data = data.get('proximity_multipliers', {})

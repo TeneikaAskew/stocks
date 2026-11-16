@@ -358,11 +358,22 @@ def test_embed_has_expected_fields():
     embed = push.format_report_embed(_sample_row())
     field_names = [f["name"] for f in embed["fields"]]
     assert "📐 Trade plan" in field_names
-    assert "🎲 Strat / FTFC" in field_names
+    assert "🎲 Strat / TF bias" in field_names
     assert "📍 Key levels" in field_names
     assert "⚠️ Risk flags" in field_names
     assert "📅 Catalysts" in field_names
     assert "🛑 Invalidation" in field_names
+
+
+def test_embed_labels_weighted_vote_tf_bias():
+    """FEAT-STRAT-001: the weighted candle vote reads "TF bias"; the key
+    it comes from stays ftfc_score / ftfc_direction."""
+    row = _sample_row()
+    row["report"]["strat_status"].update(ftfc_score=0.5, ftfc_direction="bullish")
+    embed = push.format_report_embed(row)
+    strat_field = next(f for f in embed["fields"] if f["name"] == "🎲 Strat / TF bias")
+    assert "TF bias +0.50 **bullish**" in strat_field["value"]
+    assert "FTFC" not in strat_field["value"]
 
 
 def test_embed_renders_combo_in_title_case():
@@ -374,7 +385,7 @@ def test_embed_renders_combo_in_title_case():
     row = _sample_row()
     row["report"]["strat_status"]["in_force_combo"] = "322_bull_continuation"
     embed = push.format_report_embed(row)
-    strat_field = next(f for f in embed["fields"] if f["name"] == "🎲 Strat / FTFC")
+    strat_field = next(f for f in embed["fields"] if f["name"] == "🎲 Strat / TF bias")
     assert "322 Bull Continuation" in strat_field["value"]
     assert "322_bull_continuation" not in strat_field["value"]
     assert "`" not in strat_field["value"]  # no backtick code-fence
@@ -386,7 +397,7 @@ def test_embed_handles_failed_2u_combo():
     row = _sample_row()
     row["report"]["strat_status"]["in_force_combo"] = "failed_2u_bear_reversal"
     embed = push.format_report_embed(row)
-    strat_field = next(f for f in embed["fields"] if f["name"] == "🎲 Strat / FTFC")
+    strat_field = next(f for f in embed["fields"] if f["name"] == "🎲 Strat / TF bias")
     assert "Failed 2U Bear Reversal" in strat_field["value"]
 
 
@@ -396,7 +407,7 @@ def test_embed_no_combo_omits_combo_line():
     row = _sample_row()
     row["report"]["strat_status"]["in_force_combo"] = None
     embed = push.format_report_embed(row)
-    strat_field = next(f for f in embed["fields"] if f["name"] == "🎲 Strat / FTFC")
+    strat_field = next(f for f in embed["fields"] if f["name"] == "🎲 Strat / TF bias")
     assert "Combo" not in strat_field["value"]
 
 

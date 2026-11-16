@@ -38,6 +38,10 @@ def minute_data():
     low = close * (1 - np.abs(np.random.normal(0, 0.001, n)))
     open_ = np.roll(close, 1)
     open_[0] = base
+    # Coherent OHLC: a gap from the previous close is still inside this
+    # bar's range. Invalid constituents now intentionally invalidate aggregates.
+    high = np.maximum(high, open_)
+    low = np.minimum(low, open_)
     volume = np.random.randint(10000, 100000, n).astype(float)
 
     times = pd.date_range('2024-01-02 09:30', periods=n, freq='1min')
@@ -689,3 +693,252 @@ class TestLoadIntradayFromSqlBounds:
             pd.Timestamp("2026-07-15 09:30")
         assert dl._eastern_bound("2026-07-15") == pd.Timestamp("2026-07-15")
         assert dl._eastern_bound(None) is None
+
+
+class TestRecoveredObservationContract:
+    """New recovery coverage; these are not the lost historical Task 2 tests."""
+
+    @staticmethod
+    def frame(index, *, daily=False):
+        frame = pd.DataFrame({
+            'Open': 100., 'High': 102., 'Low': 99., 'Close': 101., 'Volume': 10.,
+        }, index=pd.DatetimeIndex(index))
+        frame.attrs = {
+            'source_resolution': '1d' if daily else '1min',
+            'session_policy': 'NYSE_regular',
+            'timestamp_semantics': 'session_label' if daily else 'bar_start',
+        }
+        return frame
+
+    @staticmethod
+    def observed(loader, frame, timeframe='5m', clock='2024-01-02 09:35-05:00'):
+        return loader.aggregate_to_timeframe(
+            frame, timeframe, observation_ts=clock, aggregation_policy='observed_v2')
+
+    def test_completed_minutes_only_and_session_anchor(self, loader):
+        frame = self.frame(pd.date_range('2024-01-02 09:29', periods=8, freq='min'))
+        frame.loc[pd.Timestamp('2024-01-02 09:35'), 'High'] = 900.
+        result = self.observed(loader, frame)
+        assert list(result.index) == [pd.Timestamp('2024-01-02 09:30')]
+        assert result.iloc[0].to_dict() == {
+            'Open': 100., 'High': 102., 'Low': 99., 'Close': 101., 'Volume': 50.}
+        coverage = result.attrs['period_coverage']['2024-01-02T14:30:00+00:00']
+        assert coverage['source_cutoff'] == '2024-01-02T09:35:00-05:00'
+        assert coverage['coverage_complete'] is True
+        assert coverage['completed'] is True
+
+    def test_live_build_resolves_one_clock(self, loader, monkeypatch):
+        import lib.data_loader as module
+        calls = []
+        def now():
+            calls.append(1)
+            return pd.Timestamp('2024-01-02 09:34-05:00')
+        monkeypatch.setattr(module, 'eastern_now', now)
+        frame = self.frame(pd.date_range('2024-01-02 09:30', periods=6, freq='min'))
+        live = loader.build_multi_timeframe(frame, ['5m', '1d'], aggregation_policy='observed_v2')
+        assert len(calls) == 1
+        for timeframe, actual in live.items():
+            expected = self.observed(loader, frame, timeframe, '2024-01-02 14:34Z')
+            pd.testing.assert_frame_equal(actual, expected)
+            assert actual.attrs == expected.attrs
+            coverage = actual.attrs['coverage']
+            assert coverage['partial'] and coverage['period_open_observed']
+            assert coverage['open'] == 100.
+            assert coverage['observed_count'] == 4
+            assert coverage['source_acquisition_status'] == 'unknown'
+            assert coverage['source_acquired_at'] is None
+            assert coverage['price_adjustment'] == 'unknown'
+
+    @pytest.mark.parametrize('day,close', [
+        ('2024-03-08', '21:00Z'), ('2024-03-11', '20:00Z'),
+        ('2024-11-29', '18:00Z'),
+    ])
+    def test_daily_session_not_available_until_exchange_close(self, loader, day, close):
+        frame = self.frame([pd.Timestamp(day, tz='UTC')], daily=True)
+        clock = pd.Timestamp(f'{day} {close}')
+        before = self.observed(loader, frame, '1d', clock-pd.Timedelta(seconds=1))
+        after = self.observed(loader, frame, '1d', clock)
+        assert before.empty
+        assert before.attrs['coverage']['open'] is None
+        assert len(after) == 1
+        assert after.attrs['coverage']['completed'] is True
+        assert after.attrs['coverage']['source_cutoff'] == clock.tz_convert('America/New_York').isoformat()
+
+    def test_holiday_rows_are_not_daily_observations(self, loader):
+        frame = self.frame(['2024-07-04', '2024-07-05'], daily=True)
+        result = self.observed(loader, frame, '1d', '2024-07-05 16:00-04:00')
+        assert list(result.index) == [pd.Timestamp('2024-07-05')]
+
+    @pytest.mark.parametrize('timeframe,label', [
+        ('1w', '2024-01-05'), ('1mo', '2024-01-31'),
+        ('1q', '2024-03-31'), ('1y', '2024-12-31'),
+    ])
+    def test_current_period_open_requires_actual_opening_session(self, loader, timeframe, label):
+        frame = self.frame(['2024-01-02', '2024-01-03'], daily=True)
+        frame.iloc[1, frame.columns.get_loc('Open')] = 101.
+        result = self.observed(loader, frame, timeframe, '2024-01-03 16:00-05:00')
+        assert list(result.index) == [pd.Timestamp(label)]
+        coverage = result.attrs['coverage']
+        assert coverage['partial'] and coverage['coverage_complete']
+        assert coverage['open'] == 100.
+        assert coverage['source_cutoff'] == '2024-01-03T16:00:00-05:00'
+        missing_open = self.observed(loader, frame.iloc[1:], timeframe, '2024-01-03 16:00-05:00')
+        assert missing_open.attrs['coverage']['open'] is None
+        assert 'missing_period_open' in missing_open.attrs['coverage']['reasons']
+
+    def test_missing_interval_and_invalid_constituent_block_adjacency(self, loader):
+        from lib.strat import StratClassifier
+        index = pd.date_range('2024-01-02 09:30', periods=15, freq='min')
+        frame = self.frame(index)
+        missing = frame.drop(index[5:10])
+        result = self.observed(loader, missing, clock='2024-01-02 09:45-05:00')
+        assert result.attrs['gap_before_by_timestamp']['2024-01-02T14:40:00+00:00']
+        assert StratClassifier().classify_series(result).iloc[-1] == 'X'
+        frame.loc[index[2], 'Close'] = np.nan
+        invalid = self.observed(loader, frame, clock='2024-01-02 09:45-05:00')
+        assert invalid.iloc[0][['Open', 'High', 'Low', 'Close']].isna().all()
+        assert invalid.attrs['gap_before_by_timestamp']['2024-01-02T14:35:00+00:00']
+
+    @pytest.mark.parametrize('key,value,reason', [
+        ('source_resolution', None, 'unknown_source_resolution'),
+        ('source_resolution', '2d', 'unsupported_source_resolution'),
+        ('source_resolution', '10min', 'source_resolution_too_coarse'),
+        ('session_policy', 'unknown', 'unknown_session_policy'),
+        ('timestamp_semantics', 'unknown', 'unsupported_timestamp_semantics'),
+    ])
+    def test_unsafe_source_contract_is_unavailable(self, loader, key, value, reason):
+        frame = self.frame(pd.date_range('2024-01-02 09:30', periods=5, freq='min'))
+        frame.attrs[key] = value
+        result = self.observed(loader, frame)
+        assert result.empty
+        coverage = result.attrs['coverage']
+        assert not coverage['available'] and not coverage['coverage_complete']
+        assert coverage['open'] is None and coverage['source_cutoff'] is None
+        assert reason in coverage['reasons']
+
+    @pytest.mark.parametrize('kwargs', [
+        {'observation_ts': '2024-01-02 10:00-05:00'},
+        {'source_resolution': '1min'}, {'session_policy': 'NYSE_regular'},
+    ])
+    def test_source_overrides_require_explicit_policy(self, loader, kwargs):
+        frame = self.frame(pd.date_range('2024-01-02 09:30', periods=5, freq='min'))
+        with pytest.raises(ValueError, match='observed_v2'):
+            loader.aggregate_to_timeframe(frame, '5m', **kwargs)
+        with pytest.raises(ValueError, match='observed_v2'):
+            loader.build_multi_timeframe(frame, ['5m'], **kwargs)
+
+    def test_default_and_named_legacy_keep_literal_historical_bins(self, loader):
+        frame = self.frame(['2024-01-02 09:30', '2024-01-02 09:31', '2024-01-02 10:00'])
+        frame['Open'] = [100., 101., 102.]
+        frame['High'] = [102., 103., 104.]
+        frame['Low'] = [99., 100., 101.]
+        frame['Close'] = [101., 102., 103.]
+        expected = pd.DataFrame({
+            'Open': [100., 102.], 'High': [103., 104.], 'Low': [99., 101.],
+            'Close': [102., 103.], 'Volume': [20., 10.],
+        }, index=pd.date_range('2024-01-02 09:00', periods=2, freq='h'))
+        for kwargs in ({}, {'aggregation_policy': 'legacy_v1'}):
+            actual = loader.aggregate_to_timeframe(frame, '1h', **kwargs)
+            pd.testing.assert_frame_equal(actual, expected)
+            assert actual.attrs == {'aggregation_policy': 'legacy_v1'}
+
+    @pytest.mark.parametrize('daily', [False, True])
+    @pytest.mark.parametrize('defect', ['missing', 'conflicting', 'none'])
+    def test_actual_partition_loaders_reconcile_source_contracts(self, loader, tmp_path, daily, defect):
+        frames = [self.frame([f'2024-01-0{day} 09:30'], daily=daily) for day in (2, 3)]
+        if defect == 'missing':
+            frames[1].attrs.pop('source_resolution')
+        elif defect == 'conflicting':
+            frames[1].attrs['source_resolution'] = '2min'
+        directory = tmp_path / 'iwm' if daily else tmp_path / 'iwm' / 'intraday'
+        directory.mkdir(parents=True)
+        for number, frame in enumerate(frames):
+            name = f'iwm_202{number}.parquet' if daily else f'iwm_av_1min_2024_0{number+1}.parquet'
+            frame.to_parquet(directory/name)
+        result = loader.load_daily('IWM') if daily else loader.load_intraday('IWM')
+        assert len(result) == 2
+        if defect == 'none':
+            assert result.attrs['source_resolution'] == ('1d' if daily else '1min')
+            assert 'source_contract_reasons' not in result.attrs
+        else:
+            assert result.attrs['source_resolution'] == 'unknown'
+            reason = 'incomplete_source_contract' if defect == 'missing' else 'conflicting_source_contract'
+            assert reason in result.attrs['source_contract_reasons']
+            observed = self.observed(loader, result, '1d', '2024-01-03 16:00-05:00')
+            assert not observed.attrs['coverage']['available']
+            assert reason in observed.attrs['coverage']['reasons']
+
+    @pytest.mark.parametrize('daily', [False, True])
+    @pytest.mark.parametrize('declared', ['partial', 'none', 'full'])
+    def test_single_file_loaders_never_invent_a_partial_contract(self, loader, tmp_path, daily, declared):
+        """The year-scoped daily and combined intraday parquet paths skip
+        _concat_source_frames; a partly declared contract must still stay
+        unknown there (Codex r4476732530)."""
+        frame = self.frame(['2024-01-02 09:30', '2024-01-03 09:30'], daily=daily)
+        if declared == 'partial':
+            frame.attrs = {'source_resolution': frame.attrs['source_resolution']}
+        elif declared == 'none':
+            frame.attrs = {}
+        directory = tmp_path / 'iwm' if daily else tmp_path / 'iwm' / 'intraday'
+        directory.mkdir(parents=True)
+        name = 'iwm_2024.parquet' if daily else 'iwm_av_1min_combined.parquet'
+        frame.to_parquet(directory / name)
+        result = loader.load_daily('IWM', year=2024) if daily else loader.load_intraday('IWM')
+        if declared == 'partial':
+            assert result.attrs['session_policy'] == 'unknown'
+            assert result.attrs['timestamp_semantics'] == 'unknown'
+            assert 'incomplete_source_contract' in result.attrs['source_contract_reasons']
+            observed = self.observed(loader, result, '1d', '2024-01-03 16:00-05:00')
+            assert not observed.attrs['coverage']['available']
+        else:
+            assert result.attrs['source_resolution'] == ('1d' if daily else '1min')
+            assert result.attrs['timestamp_semantics'] == ('session_label' if daily else 'bar_start')
+            assert 'source_contract_reasons' not in result.attrs
+
+    @pytest.mark.parametrize('acquisitions,status', [
+        ([None, None], 'unknown'), (['2024-01-04', None], 'incomplete'),
+        (['2024-01-04', '2024-01-05'], 'mixed'),
+        (['2024-01-04', '2024-01-04'], 'uniform'),
+    ])
+    def test_concat_preserves_acquisition_uncertainty(self, acquisitions, status):
+        from lib.data_loader import _concat_source_frames
+        frames = [self.frame([f'2024-01-0{day}'], daily=True) for day in (2, 3)]
+        for frame, acquisition in zip(frames, acquisitions):
+            frame.attrs['source_acquired_at'] = acquisition
+        result = _concat_source_frames(frames)
+        assert result.attrs['source_acquisition_status'] == status
+        assert result.attrs['source_acquired_at'] == (acquisitions[0] if status == 'uniform' else None)
+        assert frames[0].attrs['source_acquired_at'] == acquisitions[0]
+
+
+class TestObservedAggregationScaling:
+    """observed_v2 reads one calendar per call, not one copy per period.
+
+    Building a calendar slice and a pandas frame per historical period made
+    compute_strat_status take about 36 s on 20 years of daily bars (0.06 s
+    before observed_v2). The count bounds that cost without timing anything.
+    """
+
+    @pytest.mark.parametrize('timeframe', ['1d', '1w', '1mo'])
+    def test_daily_history_reads_a_bounded_number_of_schedules(self, monkeypatch, timeframe):
+        import lib.data_loader as data_loader
+        from lib.eastern_time import session_schedule
+        days = session_schedule(date(2022, 1, 3), date(2024, 12, 31)).index
+        values = np.linspace(100, 120, len(days))
+        frame = pd.DataFrame({'Open': values, 'High': values + 1, 'Low': values - 1,
+                              'Close': values + 0.5, 'Volume': 1e6}, index=days)
+        frame.attrs = {'source_resolution': '1d', 'session_policy': 'NYSE_regular',
+                       'timestamp_semantics': 'session_label'}
+        calls = []
+
+        def counting(start, end):
+            calls.append((start, end))
+            return session_schedule(start, end)
+
+        monkeypatch.setattr(data_loader, 'session_schedule', counting)
+        result = DataLoader().aggregate_to_timeframe(
+            frame, timeframe, observation_ts=pd.Timestamp('2025-01-02 12:00', tz='America/New_York'),
+            aggregation_policy='observed_v2')
+        assert len(result.attrs['period_coverage']) == len(result) > 30
+        assert all(record['coverage_complete'] for record in result.attrs['period_coverage'].values())
+        assert len(calls) <= 4

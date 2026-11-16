@@ -47,7 +47,7 @@ done_when:
   - "docs/EARNINGS_PIPELINE.md commits the literal producer schemas/keys/native source choices, existing capacity/cost assumptions and measured commands, staged nullable-to-all-writer-drain-to-online-index-to-final-NOTNULL identity checklist, and merge/schema/deployed-digest/source-receipt activation prerequisites; scratch notes are not canonical repository approval."
   - "The FEAT-CATALYST-001 implementation plan references this complementary merged specification before any additional implementation acceptance work; PR1430 and its own capability/traceability record distinguish implementation verification from pending deployed producer/schema verification, and DEPLOY/OPS activation remains dependency_pending until actual merged code plus the targeted deployed-state verifier prove the producer digest, tables and acknowledged receipts."
   - "The actual merged Gov verifier and compatible Counter CODE-main identities are recorded; the sole CATALYSTS-04 implementation-source note is changed against a genuine ancestral-main baseline and bound to the exact approved consolidated primary spec/current committed source; actual trusted produce/verify, BASE gate, branch-versus-main audit and exact renderer checks pass with the committed sidecar, every non-owned SITE byte preserved and normal authenticated current-head CODE review/CI/conversation evidence retained; source identity alone never certifies rollout or source freshness."
-status: approved
+status: superseded
 supersedes: docs/superpowers/specs/2026-10-12-feat-catalyst-001-av-catalysts.md
 ---
 

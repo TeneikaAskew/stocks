@@ -1,6 +1,6 @@
 # GCP Data Dictionary — Trading Platform
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 > Maps every frontend page of the React trading platform (`platform/src/`) to the
 > GCP resources that back it: FastAPI endpoints (`platform/api/`), Cloud SQL tables
@@ -163,7 +163,7 @@ secrets server-side.
 | **`admin-token`** | `ADMIN_TOKEN` for `/api/admin/*` model-routing UI. Mounted into `insight-pipeline` Job; **NOT on the API service** | `insight-pipeline` Job | No (browser sends it as `X-Admin-Token` from sessionStorage; the value lives server-side) | Admin page (⚠️ not mounted on the API service → identity auth is the only working path: `ADMIN_EMAIL` on staging) |
 | `benzinga-api-key` | **Benzinga** catalyst calendar | catalyst fetchers / `BENZINGA_API_KEY` (optional) | No | Catalysts (optional/primary) |
 | `fred-api-key` | **FRED** economic data | `fetch-fred-rates`, `fetch-economic-events` (optional) | No | Catalysts (economic events), Greeks risk-free rate |
-| `ew-user` / `ew-pass` | Earnings Whispers login (paid) | earnings fetchers | No | Indirect (earnings calendar enrichment) |
+| `ew-user` / `ew-pass` | Earnings Whispers login (paid). **Source retired 2026-10-31**: `scripts/fetch_earnings_calendar.py` no longer reads it; the secrets are retained, and historical `earnings_calendar` rows (`data_source = 'earnings_whispers'`) are retained and excluded by the readers | no code reads them; `gcp/deploy.sh` `deploy_fetch_earnings_calendar` still binds them into the `fetch-earnings-calendar` job as `EW_USER`/`EW_PASS` until the bindings are removed (P-B, #1659) and that job is redeployed | No | No (retired; historical rows only) |
 | `sec-user-agent` | SEC EDGAR `User-Agent` header (required by SEC) | `fetch-sec-filings` | No | Catalysts (8-K filings) |
 | `discord-webhook-insights` | Default `DISCORD_WEBHOOK_URL` (briefs/insights channel) | Jobs (premarket-brief, insight-discord-push, …) | No | No (push notifications, not page data) |
 | `discord-webhook-signals` | Signals channel (`signal-monitor`, EOD resolver, QA) | signal jobs | No | No |
@@ -212,8 +212,8 @@ previously said the opposite — see the correction in §0.1.
 /api/insights/ticker/{t}/peers  → lib.ticker_info.get_peers        → FinViz (cached)
 /api/live/quote/{t}             → routers/live.py                  → AlphaVantage GLOBAL_QUOTE
 /api/live/history/{t}           → routers/live.py                  → AlphaVantage TIME_SERIES_INTRADAY (1min ×100)
-/api/market/data/{t}/{d}        → main.py::_load_date_data         → Cloud SQL market_data_intraday  (GCS parquet fallback)
-/api/market/reference/{t}/{d}   → main.py::get_reference_levels    → AV TIME_SERIES_DAILY (≤30d) ELSE Cloud SQL market_data_daily
+/api/market/data/{t}/{d}        → main.py::_load_date_data         → Cloud SQL market_data_intraday only (404 or 503 otherwise; bucket parquet only when Cloud SQL is not configured)
+/api/market/reference/{t}/{d}   → main.py::get_reference_levels    → Cloud SQL market_data_daily, one query (no AlphaVantage call)
 ```
 GCP hops: **Cloud Run svc** → **AlphaVantage / FinViz** (external) and/or **Cloud SQL**
 (`market_data_intraday`, `market_data_daily`, `ticker_info`). Populating Jobs behind the

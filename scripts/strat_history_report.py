@@ -31,6 +31,19 @@ def _fwd_outcome(history: list, i: int) -> str:
     return f"→ next: {nxt['candle']:<2} ({_BREAK.get(nxt['candle'], '?')})"
 
 
+def _continuation(history: list, start: int) -> tuple:
+    """(continued, scored) over directional bars from ``start`` whose successor
+    is a known candle. An unknown successor (a NULL-OHLC placeholder, ``X``)
+    is still pending, not a miss (Codex r4481033984)."""
+    correct = total = 0
+    for i in range(start, len(history) - 1):
+        cur, nxt = history[i]["candle"], history[i + 1]["candle"]
+        if cur in ("2U", "2D") and nxt in _BREAK and nxt != "X":
+            total += 1
+            correct += nxt == cur
+    return correct, total
+
+
 def _fmt(x) -> str:
     return "  —  " if x is None else f"{x:>8.2f}"
 
@@ -54,7 +67,6 @@ def report_ticker(ticker: str, days: int) -> None:
     print(f"    {'date':<11}{'cand':<5}{'combo':<26}{'O':>8}{'H':>8}{'L':>8}{'C':>8}"
           f"   trig(hi/lo)        outcome")
     start = max(0, len(hist) - days - 1)
-    correct = total = 0
     for i in range(start, len(hist)):
         b = hist[i]
         trig = f"{_fmt(b['trigger_high']).strip()}/{_fmt(b['trigger_low']).strip()}"
@@ -62,10 +74,7 @@ def report_ticker(ticker: str, days: int) -> None:
         print(f"    {b['period']:<11}{b['candle']:<5}{(b['combo'] or 'none'):<26}"
               f"{_fmt(b['open'])}{_fmt(b['high'])}{_fmt(b['low'])}{_fmt(b['close'])}"
               f"   {trig:<18}{outcome}")
-        if i + 1 < len(hist) and b["candle"] in ("2U", "2D"):
-            total += 1
-            if hist[i + 1]["candle"] == b["candle"]:
-                correct += 1
+    correct, total = _continuation(hist, start)
     if total:
         print(f"    directional continuation this week: {correct}/{total} "
               f"({100*correct/total:.0f}%)")

@@ -6,6 +6,9 @@ import pandas as pd
 import pytest
 
 from gcp import earnings_long_watchlist as watchlist
+from tests.fixtures.market_clock import freeze_market_clock
+
+NOON_2026_08_30 = "2026-08-30T16:00:00Z"  # Sunday 2026-08-30 12:00 EDT
 
 
 @pytest.mark.parametrize(
@@ -25,7 +28,7 @@ def test_normalize_source_date(value, expected):
 def test_stale_source_suppresses_query_and_post(monkeypatch):
     monkeypatch.setattr(watchlist, "is_cloud_sql_configured", lambda: True)
     monkeypatch.setattr(watchlist, "_latest_source_date", lambda: date(2026, 5, 22))
-    monkeypatch.setattr(watchlist, "date", Mock(today=lambda: date(2026, 8, 30)))
+    freeze_market_clock(monkeypatch, NOON_2026_08_30, watchlist)
     query = Mock()
     post = Mock()
     monkeypatch.setattr(watchlist, "_query_watchlist", query)
@@ -39,7 +42,7 @@ def test_stale_source_suppresses_query_and_post(monkeypatch):
 def test_fresh_source_reaches_posting_path(monkeypatch):
     monkeypatch.setattr(watchlist, "is_cloud_sql_configured", lambda: True)
     monkeypatch.setattr(watchlist, "_latest_source_date", lambda: date(2026, 8, 24))
-    monkeypatch.setattr(watchlist, "date", Mock(today=lambda: date(2026, 8, 30)))
+    freeze_market_clock(monkeypatch, NOON_2026_08_30, watchlist)
     monkeypatch.setattr(watchlist, "_query_watchlist", lambda *_: pd.DataFrame())
     post = Mock(return_value=True)
     monkeypatch.setattr(watchlist, "send_to_discord", post)
@@ -59,7 +62,7 @@ def test_a_failed_freshness_probe_is_not_reported_as_a_missing_snapshot(
     engine rather than the query helper so the real swallow path runs.
     """
     monkeypatch.setattr(watchlist, "is_cloud_sql_configured", lambda: True)
-    monkeypatch.setattr(watchlist, "date", Mock(today=lambda: date(2026, 8, 30)))
+    freeze_market_clock(monkeypatch, NOON_2026_08_30, watchlist)
 
     def unreachable(*_args, **_kwargs):
         raise RuntimeError("connection refused")
@@ -92,7 +95,7 @@ def test_a_failed_candidate_query_does_not_post_an_empty_watchlist(
     perfectly well-formed empty Discord post and exited 0.
     """
     monkeypatch.setattr(watchlist, "is_cloud_sql_configured", lambda: True)
-    monkeypatch.setattr(watchlist, "date", Mock(today=lambda: date(2026, 8, 30)))
+    freeze_market_clock(monkeypatch, NOON_2026_08_30, watchlist)
     monkeypatch.setattr(watchlist, "_latest_source_date", lambda: date(2026, 8, 24))
 
     def unreachable(*_args, **_kwargs):

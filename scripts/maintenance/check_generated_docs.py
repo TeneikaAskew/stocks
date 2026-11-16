@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Structural gates for the monthly architecture-doc refresh.
+"""Structural gates for the generated architecture documents.
 
-Run by `.github/workflows/refresh-architecture-docs.yml` after Gemini has
-updated the prose, and runnable locally against a saved live snapshot:
+Run locally against a saved live snapshot:
 
     python scripts/maintenance/check_generated_docs.py --snapshot live.json \
-        --previous-dir refresh-inputs/previous --transcripts-dir refresh-inputs/transcripts
+        --previous-dir previous
 
 Each gate turns one of the 2026-09-02 failure modes into a red run:
 
@@ -18,13 +17,7 @@ Each gate turns one of the 2026-09-02 failure modes into a red run:
                 a fresh render (the model must not edit inside them)
 * headings      no H2/H3 present in the previous version is missing, unless it
                 is listed under "Removed since last refresh"
-* size          each doc is at least 80% of its previous line count; a
-                REGENERATED doc is measured in bytes instead, since its
-                headings carry the month's data
-* structure     a regenerated doc carries every numbered section its prompt
-                promises, derived from the prompt. COST_ANALYSIS.md is exempt
-                from the churn ceiling for the same reason: it is told to
-                regenerate, so churn measures nothing about it
+* size          each doc is at least 80% of its previous line count
 * elision       no prose line is only an ellipsis: a `replace` that writes
                 `...` deletes the paragraph it stood in (run 27)
 * prose floor   prose outside the marker blocks keeps 80% of its characters
@@ -40,7 +33,7 @@ Each gate turns one of the 2026-09-02 failure modes into a red run:
 * links         every relative markdown link resolves
 * readme        README.md is a pointer map: links the required docs, embeds
                 no mermaid block, does not describe a Vite frontend here
-* transcripts   Gemini never reported a truncated input file
+* transcripts   a run transcript never reports a truncated input file
 
 Exit code is 1 when any gate fails. Findings are printed as GitHub
 workflow-command errors so they surface inline in the run.
@@ -69,14 +62,14 @@ COST = f"{INFRA}/05-d-COST_ANALYSIS.md"
 API = f"{INFRA}/05-e-API.md"
 
 README = "README.md"
-# Every document these gates judge.
-DOCS = (ARCH, DEPS, COST, README)
-# ...of which these three are written by a model. README is not: its badges and
-# closing date are rendered from the inventory and its prose is hand-written, so
-# a model edit to it is a stray write rather than the point of the run. Run 31
-# showed the model's whole contribution to README was three badge lines and a
-# date; run 32 showed the cost of asking anyway. (Run 32.)
-MODEL_DOCS = (ARCH, DEPS, COST)
+# Every document these gates judge. The cost report is not one: it is a dated
+# record nobody maintains, so no gate here reads it.
+DOCS = (ARCH, DEPS, README)
+# ...of which these two carry rendered marker blocks around hand-maintained
+# prose (the prose has been hand-maintained since #1009). README is not one of
+# them: its closing date is rendered from the inventory and its prose is
+# hand-written. (Run 32.)
+MODEL_DOCS = (ARCH, DEPS)
 MARKER_DOCS = (ARCH, DEPS, API)
 # Every block each document must carry. A balanced-pairs check alone lets a
 # block vanish when both its markers are deleted together (Codex, PR #1009).
@@ -95,19 +88,9 @@ SIZE_FLOOR = 0.80
 # README.md is a pointer map by design (2026-09-07); its length is not a
 # content signal, so it is exempt from the size floor (headings still apply).
 SIZE_FLOOR_EXEMPT = ("README.md",)
-# COST_ANALYSIS.md is REGENERATED from the month's billing digests -- its own
-# prompt says "Regenerate", not "update in place" -- and its headings carry
-# that month's values: `Cloud Run (Jobs & Services) — $94.26`,
-# `## 2. Top 10 cost line items by SKU (Partial August data)`,
-# `#1 — Implement Artifact Registry retention policies (estimated saving: $20-25/mo)`.
-# Demanding those persist demands this month's report keep last month's
-# numbers, and run 17 failed on twelve of them plus a line-count floor while
-# the document GREW 31% in bytes (6,143 -> 8,027 over 103 -> 82 lines). The
-# churn ceiling already treated it as regenerated at 0.85; these two gates did
-# not. What replaces them is stricter about the thing that matters: every
-# numbered section the prompt promises must be present, and the byte mass may
-# not collapse. (Run 17, 2026-09-07.)
-REGENERATED = (COST,)
+# No document is rebuilt from data any more, so none is measured in bytes
+# instead of lines. The byte-mass check stays for a document listed here.
+REGENERATED = ()
 BYTE_FLOOR = 0.80
 
 # Prose outside the rendered marker blocks. The same 80% as SIZE_FLOOR, and
@@ -129,29 +112,8 @@ CHURN_CEILING = 0.50
 # Documents that are wholly rendered from the inventory legitimately churn
 # hard when the fleet changes, so 05-e-API.md carries a higher ceiling: every
 # line of it comes from the router files.
-#
-# COST_ANALYSIS.md has NO ceiling, because churn does not measure anything
-# about it. Its prompt says "Regenerate ... with write_file", so a full
-# rewrite is the specified behaviour, not a symptom; churn there answers "did
-# this month's billing differ from last month's", which it always does.
-# Measured across the two runs that got far enough to be measured, run 28 came
-# in at 81% and run 29 at 96% -- a ceiling of 0.85 sits inside the normal
-# range and fires at random on good output, which is worse than no ceiling
-# because it teaches the operator to disregard a red run. Run 29's document
-# was read line by line before this was changed: correct service names,
-# pasteable commands, a per-component table that reconciles to the SKU table
-# with an explicit rounding row, and implemented-vs-outstanding recommendations.
-# It failed only for having rewritten what it was told to rewrite.
-#
-# What guards it instead, none of which depends on textual continuity:
-# BYTE_FLOOR (mass), gate_regenerated_structure (every promised section),
-# gate_elided_prose, gate_duplicated_tail, gate_derived_numbers, gate_stale,
-# gate_links, the workflow's own "must contain a dollar figure / must not call
-# itself a placeholder" checks, and verify_docs_against_live on every name.
-# The churn figure is still computed and printed in the run's diff report,
-# where a human can read it. (Run 29.)
 CHURN_CEILING_RENDERED = {API: 0.90}
-CHURN_EXEMPT = (COST,)
+CHURN_EXEMPT = ()
 DIFF_DOCS = DOCS + (API,)
 REMOVED_HEADING = "Removed since last refresh"
 
@@ -177,7 +139,7 @@ HISTORY_OK = re.compile(
     r"no longer|merged|stub|history|since)\b|Removed since last refresh|verify-docs-ok",
     re.I,
 )
-# Every in-repo target .github/prompts/readme.md mandates a row for. Three
+# Every in-repo target the README map must carry a row for. Three
 # were missing (GCP_IMPLEMENTATION_GUIDE, docs/audits/, cloudbuild/README):
 # dropping those rows left no dead link, kept the headings, and README is
 # exempt from the size floor, so a shortened map passed every gate.
@@ -570,11 +532,10 @@ def gate_inline_rule(root: pathlib.Path) -> list[str]:
                 continue
             if _is_table_sep(line) and "|" in line:
                 # `--- | --- | ---` is the separator of a table written without
-                # outer pipes, which `_table_rows` accepts. Reading it as a rule
-                # with text welded on would fail a document for the very
-                # formatting this module just started allowing -- a gate
-                # contradicting its own sibling. Requiring a `|` keeps a bare
-                # `-----` (which TABLE_SEP also matches) out of the exemption.
+                # outer pipes, which `_is_table_sep` accepts. Reading it as a
+                # rule with text welded on would fail a document for ordinary
+                # table formatting. Requiring a `|` keeps a bare `-----` out of
+                # the exemption.
                 # (Codex, PR #1064.)
                 continue
             if fence is not None:
@@ -731,197 +692,9 @@ def gate_prose_floor(root: pathlib.Path, previous_dir: pathlib.Path | None) -> l
     return out
 
 
-def _promised_sections(root: pathlib.Path, prompt: str) -> list[tuple[str, str]]:
-    """The numbered sections a regeneration prompt promises to produce.
-
-    Derived from the prompt rather than written down here, so a section added
-    to or removed from the prompt moves the gate with it.
-    """
-    f = root / ".github/prompts" / prompt
-    if not f.exists():
-        return []          # reported as a finding by the caller, not swallowed
-    body = f.read_text().split("## What to produce", 1)[-1].split("\n## ", 1)[0]
-    return re.findall(r"^#{2,4} (\d+)\. (.+)$", body, re.M)
-
-
-def gate_regenerated_structure(root: pathlib.Path) -> list[str]:
-    """A regenerated document loses the heading-persistence gate, so its
-    sections are checked against what its prompt promises instead.
-
-    The whole heading must match, not a prefix of it. A prefix test tolerated
-    an appended qualifier, so "2. Top 10 cost line items by SKU (90-day
-    trailing)" passed while the prompt said to copy the heading exactly --
-    a rule stated and not enforced, which is how the heading drift it exists
-    to prevent gets in. This month's caveat belongs in the sentence under the
-    heading. Case is folded because GitHub lowercases anchors, so Title Case
-    breaks no link; adding or rewording a word does. (Codex, PR #1063.)
-    """
-    out = []
-    for doc, prompt in ((COST, "cost-analysis.md"),):
-        promised = _promised_sections(root, prompt)
-        if not promised:
-            out.append(f"{prompt}: no numbered sections found; the structure gate for {doc} is not running")
-            continue
-        heads = [h.strip().casefold() for h in _headings((root / doc).read_text())]
-        for num, title in promised:
-            want = f"{num}. {title.strip()}"
-            if want.casefold() not in heads:
-                out.append(f"{doc}: section heading must be exactly '{want}'; "
-                           f"the prompt lists it and this gate compares the whole line. "
-                           f"Found: {[h for h in heads if h.startswith(num + '. ')] or 'nothing with that number'}")
-    return out
-
-
-# Floors for 05-d's substance, every one of them measured against the three
-# real versions of the document rather than chosen: the copy on main, run 28's
-# and run 29's.
-#
-#   metric                     main  run28  run29   floor
-#   monetary values (whole doc)  43     28     36     15
-#   §1 table data rows            2      3      3      2
-#   §2 table data rows           10     10     10      8
-#   §5 recommendation entries     3      5      6      3
-#   non-blank lines, per §      6-20   2-28   3-28      2
-#
-# §3 is deliberately unfloored beyond the per-section minimum: it was a bullet
-# list in two versions and a table in the third, and run 28 carried only two
-# lines with a cost figure in it, so any threshold worth having would fail an
-# honest document.
-# Only MONETARY values count -- but requiring a `$` counted the wrong
-# population. An optional `$` let any decimal in (eleven percentages scored
-# eleven); requiring one missed the amounts the model actually writes, because
-# under headers named `Spend (USD)` and `90-day cost (USD)` it writes `222.71`,
-# not `$222.71`. Measured over the four real documents: main 43/0, run 28
-# 15/13, run 29 14/22, run 30 11/22 ($-prefixed / bare). A floor set on the
-# $-count alone would have failed a correct report on its currency formatting;
-# run 30 cleared 8 by three.
-#
-# So: a `$` amount anywhere, OR a table cell whose ENTIRE content is a decimal
-# amount. A cell is the unit that makes a bare number unambiguous -- `50.00%`
-# and `1.5 GiB` are not decimal cells, and prose decimals are not cells at all.
-#
-#   counted   main 43   run 28 28   run 29 36   run 30 33
-#   degraded report: one $ figure + eleven percentages -> 1
-#
-# The two populations separate by more than an order of magnitude, so the
-# floor sits at 15: half the smallest real document, fifteen times the
-# degraded one. (Codex, PR #1064.)
-COST_FIGURE = re.compile(r"\$\s?\d[\d,]*(?:\.\d{2})?\b")
-# A cell whose whole content is an amount, and the spelled-out currency form.
-# The first version required a pipe on BOTH sides, which is only true of a
-# cell in the MIDDLE of a row: the first and last column of a table written
-# without outer pipes were invisible, and so was `Cloud SQL: 222.71 USD` in
-# prose, which no prompt forbids. At their floors the two required tables
-# contribute 2 + 8 = 10 amounts, under a floor of 15, so a report whose §3 is
-# prose could have been rejected for its formatting. Cells are split, not
-# looked around. (Codex, PR #1064.)
-# One or two decimals, because that is what the pipeline produces. The workflow
-# writes `round(c, 2)` through csv.writer, so a value ending in zero is emitted
-# as `1.2` or `0.0`, and the cost prompt tells the model to copy the CSV value
-# without rounding. Requiring exactly two decimals rejected every such amount,
-# and a complete report could have undercounted its way under the floor.
-# Integers stay excluded: a rank, a year or a row index is not an amount.
-# (Codex, PR #1064.)
-COST_BARE = re.compile(r"^\d[\d,]*\.\d{1,2}$")
-# A cell's RENDERED text. `| Cloud SQL | **222.71** |` is an emphasised amount,
-# and matching the raw markdown missed it -- a complete report whose costs are
-# bolded would have fallen under the floor. (Codex, PR #1064.)
-_STYLE = re.compile(r"^[*_`~]+|[*_`~]+$")
-
-
-def _unstyle(cell: str) -> str:
-    return _STYLE.sub("", cell.strip()).strip()
-COST_USD_PROSE = re.compile(r"\b\d[\d,]*(?:\.\d{2})?\s?USD\b")
-# Counting EVERY decimal cell let a `Duration (s)` or utilisation column feed a
-# floor named for money: one dollar amount plus eleven non-cost decimals cleared
-# it while the billing tables held no usable costs. A bare number is an amount
-# only under a column that says so. (Codex, PR #1064.)
-# `total` alone is not a money word: `Total duration (s)` and `Total utilization`
-# are headers a cost report legitimately carries, and eleven decimal duration
-# cells under one would have fed the monetary floor. It counts only when paired
-# with a money word, which the other alternatives already cover.
-# (Codex, PR #1064.)
-MONEY_HEADER = re.compile(r"(?i)\b(spend|cost|usd|amount|charge|price|billed)\b|\$")
-
-
-def cost_figures(text: str) -> int:
-    """Monetary values, whether or not they carry a currency symbol.
-
-    Three forms, because the prompt requires none of them in particular:
-    `$222.71` anywhere, `222.71 USD` in prose, and a table cell whose entire
-    content is an amount. A percentage, a duration or a size carries a unit, so
-    it is not a bare cell; a decimal inside a sentence is not a cell at all.
-    """
-    # Spans, not counts: `$1.00 USD` is one amount matching BOTH patterns, and
-    # counting it twice let six values satisfy a floor of twelve.
-    # (Codex, PR #1064.)
-    spans: list[tuple[int, int]] = sorted(
-        [m.span() for m in COST_FIGURE.finditer(text)]
-        + [m.span() for m in COST_USD_PROSE.finditer(text)])
-    n, last_end = 0, -1
-    for start, end in spans:
-        if start >= last_end:
-            n += 1
-            last_end = end
-    lines = text.split("\n")
-    money_cols: set[int] | None = None
-    for i, line in enumerate(lines):
-        if "|" not in line:
-            money_cols = None
-            continue
-        if _is_table_sep(line):
-            # the row above is this table's header; it decides which columns
-            # hold money and which hold durations, counts or utilisation
-            header = _table_cells(lines[i - 1]) if i else []
-            money_cols = {j for j, h in enumerate(header) if MONEY_HEADER.search(h)}
-            continue
-        if money_cols:
-            cells = _table_cells(line)
-            n += sum(1 for j in money_cols
-                     if j < len(cells) and COST_BARE.fullmatch(_unstyle(cells[j])))
-    return n
-COST_REC = re.compile(r"^\s*(?:#{3,4}\s*#?\d+\b|\d+\.\s)")
-# 12, not 15: the floor must be reachable from what the prompt REQUIRES, not
-# only from what the real documents happen to contain. Section 1 carries at
-# least 2 rows and section 2 is "Top 10 ... by SKU", so the mandated tables
-# alone supply 12 amounts; anything above that would reject a compliant report
-# whose section 3 is prose. Still twelve times the degraded case, which scores
-# 1, and every real document clears it three-fold (28 to 43).
-COST_MIN_FIGURES = 12
-COST_MIN_SECTION_LINES = 2
-COST_MIN_ROWS = {"1": 2, "2": 8}
-COST_MIN_RECOMMENDATIONS = 3
-
-
-def _numbered_sections(text: str) -> dict[str, list[str]]:
-    out: dict[str, list[str]] = {}
-    cur = None
-    for line in text.split("\n"):
-        # H2 only. Accepting `###` too meant a report that ranks its
-        # recommendations as `### 1. Reduce ...` inside §5 read as three new
-        # top-level sections, leaving §5 empty and its recommendation count
-        # zero -- rejecting a valid report. The prompt delimits sections with
-        # `## N.`; nothing below that level does. (Codex, PR #1064.)
-        m = re.match(r"^##\s+(\d+)\.", line)
-        if m:
-            cur = m.group(1)
-            out.setdefault(cur, [])
-        elif cur is not None:
-            out[cur].append(line)
-    return out
-
-
-# A table row in either style: `| a | b |` or the outer pipes omitted,
-# `a | b`. Requiring a leading `|` rejected a valid table for its formatting
-# (Codex, PR #1064); requiring two pipes when there are none on the outside
-# keeps ordinary prose containing a single `|` out.
-TABLE_SEP = re.compile(r"^\|?[\s|:-]+\|?$")
-# ...but matching the punctuation is not the same as being a delimiter row.
-# `: | :` and `| | |` satisfy the character class while containing no hyphen at
-# all, and anchoring the row count on one let nine lines of prose beneath a
-# pseudo-separator clear section 2's floor of 8. A delimiter CELL is
-# `-`, `:-`, `-:` or `:-:` with at least one hyphen; a delimiter ROW is one or
-# more of them. Parsed rather than pattern-matched. (Codex, PR #1064.)
+# A delimiter CELL is `-`, `:-`, `-:` or `:-:` with at least one hyphen; a
+# delimiter ROW is one or more of them. `: | :` and `| | |` carry no hyphen, so
+# they are parsed rather than pattern-matched. (Codex, PR #1064.)
 TABLE_SEP_CELL = re.compile(r"^:?-+:?$")
 
 
@@ -943,81 +716,6 @@ def _table_cells(line: str) -> list[str]:
 def _is_table_sep(line: str) -> bool:
     cells = _table_cells(line)
     return bool(cells) and all(TABLE_SEP_CELL.fullmatch(c) for c in cells)
-
-
-def _table_rows(body: list[str]) -> int:
-    """Data rows of the first markdown table in a section.
-
-    A table is a separator row with rows attached to it, not any run of lines
-    carrying pipes. Counting every two-pipe line and subtracting one for a
-    header let nine lines of `1 | Cloud Run | $1.00` -- no header, no
-    separator, not a table at all -- clear the section-2 floor of 8 exactly.
-    That is the prose-shaped-like-a-report case this floor exists to reject,
-    so the floor was failing open. Anchoring on the separator means a section
-    with no table counts zero rather than counting its prose. (Codex, PR #1064.)
-    """
-    lines = [l.strip() for l in body]
-    for i, st in enumerate(lines):
-        if not (_is_table_sep(st) and "|" in st):
-            continue
-        # The separator defines the table's shape, so a row is a line with the
-        # same pipe count. Testing "two or more pipes" instead rejected a
-        # two-column table written without outer pipes, which carries exactly
-        # one -- the formatting this module set out to accept.
-        width = len(_table_cells(st))
-        if i == 0 or len(_table_cells(lines[i - 1])) != width:
-            continue          # a separator with no header above it is not a table
-        n = 0
-        for st2 in lines[i + 1:]:
-            # Markdown pads a row that omits its trailing cells, so
-            # `| 2026-08 | 211.00 |` under a three-column header is a valid row
-            # with an empty Notes cell. Requiring an identical count stopped the
-            # scan there and could report 0 rows against a floor of 2.
-            # (Codex, PR #1064.)
-            cells = _table_cells(st2)
-            if not st2 or "|" not in st2 or not (1 <= len(cells) <= width):
-                break
-            n += 1
-        return n
-    return 0
-
-
-def gate_cost_content(root: pathlib.Path) -> list[str]:
-    """05-d must still contain a cost report, not prose shaped like one.
-
-    Dropping the churn ceiling for this document (run 29) removed the only
-    check that noticed a wholesale replacement, and nothing that remains looks
-    at what is IN it: generic prose carrying the five headings, one dollar
-    figure and 80% of the previous byte count would pass the byte floor, the
-    structure gate, and every prose gate. That is the hole this closes.
-    (Codex, PR #1063.)
-    """
-    f = root / COST
-    if not f.exists():
-        return []
-    text = f.read_text()
-    out = []
-    figures = cost_figures(text)
-    if figures < COST_MIN_FIGURES:
-        out.append(f"{COST}: only {figures} monetary values in the whole document "
-                   f"(floor {COST_MIN_FIGURES}); the four real versions carry 28 to 43. "
-                   "This is prose where a billing report should be")
-    secs = _numbered_sections(text)
-    for num, floor in sorted(COST_MIN_ROWS.items()):
-        rows = _table_rows(secs.get(num, []))
-        if rows < floor:
-            out.append(f"{COST}: §{num} has {rows} table row(s), floor {floor} — "
-                       "the table its prompt asks for is missing or empty")
-    recs = len([l for l in secs.get("5", []) if COST_REC.match(l)])
-    if recs < COST_MIN_RECOMMENDATIONS:
-        out.append(f"{COST}: §5 lists {recs} recommendation(s), floor "
-                   f"{COST_MIN_RECOMMENDATIONS} — its prompt asks for three, ranked")
-    for num in sorted(secs):
-        n = len([l for l in secs[num] if l.strip()])
-        if n < COST_MIN_SECTION_LINES:
-            out.append(f"{COST}: §{num} has {n} non-blank line(s) under its heading — "
-                       "the section is a heading with nothing beneath it")
-    return out
 
 
 def diff_stats(root: pathlib.Path, previous_dir: pathlib.Path | None) -> list[dict]:
@@ -1067,8 +765,8 @@ def gate_diff_budget(stats: list[dict], allow_rewrite: tuple[str, ...] = ()) -> 
     """Refuse a run that rewrote a document instead of updating it.
 
     `allow_rewrite` names documents a HUMAN is deliberately reconstructing.
-    The refresh workflow never passes it, so the monthly bot can never exempt
-    itself; it exists for a one-off rebuild done under review.
+    Nothing scheduled passes it, so no automated run can exempt itself; it
+    exists for a one-off rebuild done under review.
     """
     out = []
     for st in stats:
@@ -1470,8 +1168,6 @@ def run(root: pathlib.Path, snapshot: pathlib.Path | None, previous_dir: pathlib
     findings += gate_inline_rule(root)
     findings += gate_stale_asof(root, live)
     findings += gate_prose_floor(root, previous_dir)
-    findings += gate_regenerated_structure(root)
-    findings += gate_cost_content(root)
     findings += gate_derived_numbers(root, repo, live)
     findings += gate_new_suppressions(root, previous_dir)
     findings += gate_scheduled_scaling(root, repo)
@@ -1491,7 +1187,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--report", help="write the added/removed accounting here as markdown")
     ap.add_argument("--allow-rewrite", action="append", default=[], metavar="DOC",
                     help="a document a human is deliberately reconstructing; exempt it from the "
-                         "churn ceiling. The refresh workflow never passes this.")
+                         "churn ceiling. Nothing scheduled passes this.")
     a = ap.parse_args(argv)
     root = pathlib.Path(a.root)
     previous_dir = pathlib.Path(a.previous_dir) if a.previous_dir else None

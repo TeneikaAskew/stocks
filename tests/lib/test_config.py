@@ -1540,3 +1540,41 @@ class TestRvolGateAndExitModeLoading:
             self._load(tmp_path, {
                 "alerts": {"exit_alerts": {"exit_mode": {
                     "put": "fixed_horizon", "put_fixed_horizon_minutes": 0}}}})
+
+
+# =========================================================================
+# FEAT-STRAT-001: price-open continuity (FTFC) timeframes
+# =========================================================================
+
+class TestContinuityTimeframes:
+    """Premarket excludes 1d (no observed daily open before 09:30); session adds it."""
+
+    def test_defaults(self):
+        cfg = StratConfig()
+        assert cfg.continuity_timeframes_premarket == ['1q', '1mo', '1w']
+        assert cfg.continuity_timeframes_session == ['1q', '1mo', '1w', '1d']
+        AppConfig().validate()
+
+    def test_loaded_from_strat_section(self, tmp_path):
+        path = _write_config(tmp_path, {'strat': {
+            'continuity_timeframes_premarket': ['1mo', '1w'],
+            'continuity_timeframes_session': ['1y', '1q', '1mo', '1w', '1d']}})
+        app = load_config(path)
+        assert app.strat.continuity_timeframes_premarket == ['1mo', '1w']
+        assert app.strat.continuity_timeframes_session == ['1y', '1q', '1mo', '1w', '1d']
+
+    def test_omitted_keeps_defaults(self, tmp_path):
+        app = load_config(_write_config(tmp_path, {'strat': {'ftfc_threshold': 0.5}}))
+        assert app.strat.continuity_timeframes_premarket == ['1q', '1mo', '1w']
+
+    @pytest.mark.parametrize('bad', [[], '1w', ['1w', '1w'], ['1w', '4h'], ['weekly'], None])
+    def test_bad_lists_are_refused(self, tmp_path, bad):
+        path = _write_config(tmp_path, {'strat': {'continuity_timeframes_premarket': bad}})
+        with pytest.raises(ValueError, match='continuity_timeframes_premarket'):
+            load_config(path)
+
+    def test_validate_reports_a_bad_list_set_in_code(self):
+        app = AppConfig()
+        app.strat.continuity_timeframes_session = ['1d', '5m']
+        with pytest.raises(ConfigValidationError, match='continuity_timeframes_session'):
+            app.validate()

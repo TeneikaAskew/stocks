@@ -1,0 +1,193 @@
+{
+  "frozen_at": "2026-10-24T23:56:41.286611+00:00",
+  "protocol_sha256": "424ee0920e1dad0a1b808923631c994225228b09292c94ae18803204e2c287d3",
+  "sources": [
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/selector-protocol-freeze.json",
+      "sha256": "230b57c92d57793f9ab0c5e04f9ca1e2617300e01a6df7340e851ba465c5628d",
+      "bytes": 118660
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/consumer-freeze.json",
+      "sha256": "e0cd1627f84e402ad35210aec9f34256439d93be2118e801f3000371b720fad4",
+      "bytes": 8231
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/FDX-2025-09-18-prior-selected.json",
+      "sha256": "449c39dc38a2fafc743b0bcad881b9e8bde26307088911806d33cc38c1663567",
+      "bytes": 9313
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/FDX-2025-12-18-prior-selected.json",
+      "sha256": "593ac29f80468072172c9107e31f629c7a04a86c0a4dfe3caae8d8a9cf5b3c06",
+      "bytes": 9323
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/FDX-2025-06-24-prior-selected.json",
+      "sha256": "1590eb90e8fafe55123336616a8ac95a72fd15d06bce8e1f8e0a5efaa03a9e53",
+      "bytes": 9312
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/FDX-2026-03-19-prior-selected.json",
+      "sha256": "b8eef53b12b401ae4acc7e0b3588a951ff00096542ea159217f0fdabbb8738d8",
+      "bytes": 9303
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/target-projection-v2/FDX-2026-06-23-target-selected.json",
+      "sha256": "ff3cb084812914c487725bf9275d5eca483216316bdd926d7e9c7dddf717bf58",
+      "bytes": 9309
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/LLY-2025-10-30-prior-selected.json",
+      "sha256": "78ded2d864db04182c6f948e5568cad16caeebf59413b10c8172e3f04f96b9dc",
+      "bytes": 9220
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/LLY-2026-04-30-prior-selected.json",
+      "sha256": "33621c7bf8531a287834d32b0bb651c054a09bff4e02002a6ef729a1991c1af1",
+      "bytes": 9230
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/LLY-2025-08-07-prior-selected.json",
+      "sha256": "89176d9e6cf963f1eecfba9448182d36489f0d968ef0699d9393d43b99a31586",
+      "bytes": 9219
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/LLY-2026-02-04-prior-selected.json",
+      "sha256": "8fea7bd72d58844c198333fb58f2c240b8af3d0036fdedd43066c65007ca80d6",
+      "bytes": 9291
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/target-projection-v2/LLY-2026-08-05-target-selected.json",
+      "sha256": "96faf3ce4e25ef2872d91b37d9740c92960858165ab2b3f37218d824e6632e43",
+      "bytes": 9302
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/STX-2025-10-28-prior-selected.json",
+      "sha256": "f7bdd5f7ddcfc69bde48555c3083e25aa44b7aa8bd56a97a5bdf867e202ebe06",
+      "bytes": 9281
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/STX-2026-04-28-prior-selected.json",
+      "sha256": "01a39c1c6a0bfbc87c55874e72c5f077afc1396bdd4b885b28a45cbbcde92c05",
+      "bytes": 9222
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/STX-2025-07-29-prior-selected.json",
+      "sha256": "69cb075a675f5bb4f8f1ca85a3aa4a1d04d842c1db98ca9f6ed2effbd02a7b59",
+      "bytes": 9230
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/STX-2026-01-27-prior-selected.json",
+      "sha256": "d9289964802c8f0a8a26feeaa124a40a9cf67c25f7abc77d9406ac09c891a825",
+      "bytes": 9237
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/target-projection-v2/STX-2026-07-28-target-selected.json",
+      "sha256": "d57e32662fc46963013d4199a6ecdbf693ead98cb681c32b6dc5f1cc030a76ce",
+      "bytes": 9232
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/INTC-2025-10-23-prior-selected.json",
+      "sha256": "e55d954c5b59411641be73003d12a992447b7376d319002524b89b36384fbbe6",
+      "bytes": 9014
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/INTC-2025-07-24-prior-selected.json",
+      "sha256": "c9ca5ec369c4b3868c69d4901cc8b463d5b642eedfbb312bc68ddc7e8a4bc0b0",
+      "bytes": 9008
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/INTC-2026-01-22-prior-selected.json",
+      "sha256": "83498010563d3a105130060d8f3abb600fedecbbfc8f55df99eba11bbea7d9bc",
+      "bytes": 9025
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/INTC-2026-04-23-prior-selected.json",
+      "sha256": "c2302f11c501fe0f4323c06726813ce63b1fce375366baad8c18450137df3121",
+      "bytes": 9026
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/target-projection-v2/INTC-2026-07-23-target-selected.json",
+      "sha256": "6a0d7befc434cf6bc7141fea32fa1d8e8a113ec9b4acf27c8c2fb22944a3034a",
+      "bytes": 9064
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/AMD-2026-05-05-prior-selected.json",
+      "sha256": "5ff6fbec0be9855c4e22c5977b7bf3d61eebbee525b992091e24ef1379954c10",
+      "bytes": 9065
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/AMD-2026-02-03-prior-selected.json",
+      "sha256": "f598c226a570018fa187612d6074e023cced38ed2f0ca7a2ac625f83d1d05d31",
+      "bytes": 9069
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/AMD-2025-11-04-prior-selected.json",
+      "sha256": "bae1e70a7ae49e6890f0af10171750e9ea9f1af19e82431f480edaa6ee8deb50",
+      "bytes": 9075
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/AMD-2025-08-05-prior-selected.json",
+      "sha256": "68dcb4b380ece6c23a4b399d2621e01df8e8242367fcd4696b5c2625968fbdfc",
+      "bytes": 9066
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/target-projection-v2/AMD-2026-08-04-target-selected.json",
+      "sha256": "7c48461b4272f08a2d2240aec7fa75e1e7014a7ec967605fd85235f2171948d8",
+      "bytes": 9064
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/TWLO-2025-08-07-prior-selected.json",
+      "sha256": "228ada5f3d61cdea689b436babe80bd02575ab23cb27ca3f4d4551b6d41910fa",
+      "bytes": 9056
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/TWLO-2026-02-12-prior-selected.json",
+      "sha256": "e428a2c06200ce832b34d2b2fbc0732447c42856e69e0b57920d545a4b0dcefa",
+      "bytes": 9059
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/TWLO-2026-04-30-prior-selected.json",
+      "sha256": "14cf9368491cae21330529cd8a1ade12422d165b4bd338288cb5445159486530",
+      "bytes": 9061
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/TWLO-2025-10-30-prior-selected.json",
+      "sha256": "135edaab71a0e4da5a15c4830b7b42f0cef4e80b4ec5ba5ca23cd45135a56319",
+      "bytes": 9089
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/target-projection-v2/TWLO-2026-08-06-target-selected.json",
+      "sha256": "abda407a582e7a5db05eb39ef84ba3a7022ec90ec8334722872a8dcae25080bb",
+      "bytes": 9077
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/VLO-2026-01-29-prior-selected.json",
+      "sha256": "67fb42b36e01f91869ad2c08b6ff9f30b0ec11c41d8f169df058405b1a593724",
+      "bytes": 9317
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/VLO-2025-07-24-prior-selected.json",
+      "sha256": "16119492443f5512ca3ea7cba487628b895aeda6c1f2564132a7e40b31b55063",
+      "bytes": 9316
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/VLO-2025-04-24-prior-selected.json",
+      "sha256": "f43d2b32a808f66fd1afd25202825a9c71be5ab370fc3c5f22bb94b7c4afef20",
+      "bytes": 9231
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/prior-projection-v1/VLO-2026-04-30-prior-selected.json",
+      "sha256": "962e9fba35e5f512e777895ef4fbdc00563a98d8a08dadbd5cb5c885bd5b7092",
+      "bytes": 9230
+    },
+    {
+      "path": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/target-projection-v2/VLO-2026-07-30-target-selected.json",
+      "sha256": "44ef07d07a0913d31407426325835eba2487ed4b5c4c18c5f979397cc1ca6a89",
+      "bytes": 9246
+    }
+  ],
+  "selected_data_not_loaded_for_new_math_yet": true,
+  "freeze_reads": "full selected-file hash only; no raw originals opened"
+}

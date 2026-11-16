@@ -60,3 +60,41 @@ def test_snapshot_is_canonical_json():
     exporter = _load_exporter()
     text = exporter.SNAPSHOT.read_text(encoding="utf-8")
     assert text == exporter.render(json.loads(text))
+
+
+def test_the_ping_description_does_not_name_the_retired_service():
+    """solyra-api-prod was deleted on 2026-10-10 (#1366); the ping docstring
+    is part of the contract solyra vendors, so it must not describe that
+    service as the live one."""
+    spec = json.loads(_load_exporter().SNAPSHOT.read_text(encoding="utf-8"))
+    description = spec["paths"]["/api/earnings/health/ping"]["get"]["description"]
+    assert "solyra-api-prod" not in description
+    assert "sits behind IAP" not in description
+    assert "kept for manual and in-cluster warm-up" in description
+
+
+def test_replay_routes_document_their_error_responses():
+    """The four replay routes answer a 404 or a 503 whose body is
+    `{"detail": "<string>"}`, and solyra tells the cases apart by the start
+    of `detail` (FEAT-REPLAY-001, Design 7). The contract says so: the two
+    GET routes list 404 and 503, the two POST routes 503 only (there a
+    missing day is a 200 with `unavailable`, never a 404)."""
+    spec = json.loads(_load_exporter().SNAPSHOT.read_text(encoding="utf-8"))
+    error_detail = {"$ref": "#/components/schemas/ErrorDetail"}
+
+    def response_schema(path, method, code):
+        response = spec["paths"][path][method]["responses"][code]
+        return response["content"]["application/json"]["schema"]
+
+    for path in ("/api/market/data/{ticker}/{date}",
+                 "/api/market/reference/{ticker}/{date}"):
+        assert response_schema(path, "get", "404") == error_detail, path
+        assert response_schema(path, "get", "503") == error_detail, path
+
+    for path in ("/api/backtest/replay-trades", "/api/style/mine-and-validate"):
+        assert response_schema(path, "post", "503") == error_detail, path
+        assert "404" not in spec["paths"][path]["post"]["responses"], path
+
+    schema = spec["components"]["schemas"]["ErrorDetail"]
+    assert schema["required"] == ["detail"]
+    assert schema["properties"]["detail"]["type"] == "string"

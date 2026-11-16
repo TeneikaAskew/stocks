@@ -3,7 +3,7 @@
 
 Why this exists
 ---------------
-The monthly architecture-doc refresh (`.github/workflows/refresh-architecture-docs.yml`)
+The retired monthly architecture-doc refresh
 asked an LLM to count Cloud Run Jobs, schedulers, tables and API routes by
 reading `gcp/deploy.sh`, `gcp/schema.sql` and `platform/api` itself. The
 2026-09-02 regeneration named 4 of the 67 jobs `deploy.sh` declares, and the
@@ -26,7 +26,7 @@ Usage
 -----
     python -m scripts.maintenance.doc_inventory --json                 # repo only
     python -m scripts.maintenance.doc_inventory --live --json          # repo + live + reconcile
-    python -m scripts.maintenance.doc_inventory --live --write-snapshot refresh-inputs/live.json
+    python -m scripts.maintenance.doc_inventory --live --write-snapshot live.json
     python -m scripts.maintenance.doc_inventory --snapshot live.json --markdown jobs
     python -m scripts.maintenance.doc_inventory --markdown tables
 
@@ -395,6 +395,44 @@ def deploy_schedulers(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
     return sorted(rows.values(), key=lambda r: r["name"])
 
 
+# The two scripts that deploy Cloud Run services. gcp/deploy.sh deploys
+# discord-interactions and the failure notifier; platform/deploy.sh deploys the
+# website API. A service no script deploys is drift the architecture export
+# reports, so the declared set has to come from both.
+SERVICE_DEPLOY_SCRIPTS = ("gcp/deploy.sh", "platform/deploy.sh")
+
+
+def deploy_services(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
+    """Every Cloud Run service `gcp/deploy.sh` or `platform/deploy.sh` deploys.
+
+    A `gcloud run deploy NAME` line names the service literally
+    (`discord-interactions`) or through a variable the same script assigns
+    once (`NOTIFIER_SERVICE="failure-notifier"`, `SERVICE="solyra-api-staging"`).
+    Comment lines are dropped first, as for jobs: platform/deploy.sh mentions
+    `gcloud run deploy --image` in prose. A variable the script never assigns
+    raises rather than guessing a name (CLAUDE.md Rule 3.7). A tree without one
+    of the two scripts declares no service there.
+    """
+    rows: dict[str, dict[str, Any]] = {}
+    for rel in SERVICE_DEPLOY_SCRIPTS:
+        path = root / rel
+        if not path.exists():
+            continue
+        text = _strip_comments(path.read_text())
+        assigns = dict(re.findall(r'^\s*(?:readonly\s+|local\s+)?([A-Z_][A-Z0-9_]*)="?([a-z0-9][a-z0-9-]*)"?\s*$',
+                                  text, re.M))
+        for m in re.finditer(r'gcloud run deploy\s+("?\$\{([A-Z_][A-Z0-9_]*)\}"?|[a-z0-9][a-z0-9-]*)', text):
+            var = m.group(2)
+            if var:
+                if var not in assigns:
+                    raise ValueError(f"{rel}: gcloud run deploy uses ${{{var}}}, which {rel} never assigns")
+                name = assigns[var]
+            else:
+                name = m.group(1)
+            rows.setdefault(name, {"name": name, "script": rel})
+    return sorted(rows.values(), key=lambda r: r["name"])
+
+
 def deploy_targets(root: pathlib.Path = REPO) -> list[str]:
     """The `./gcp/deploy.sh <target>` dispatch names (the `case` at the end)."""
     raw = (root / "gcp/deploy.sh").read_text()
@@ -409,7 +447,7 @@ def deploy_targets(root: pathlib.Path = REPO) -> list[str]:
 def schema_tables(root: pathlib.Path = REPO) -> dict[str, list[dict[str, Any]]]:
     """Tables, materialized views and views `gcp/schema.sql` creates.
 
-    The table regex is byte-for-byte the one the refresh workflow's gate uses
+    The table regex is byte-for-byte the one the retired generated-docs gate used
     (`grep -oE '^CREATE TABLE( IF NOT EXISTS)? [a-zA-Z0-9_]+'`), so the two
     can never disagree on the count.
     """
@@ -603,6 +641,7 @@ def discord_commands(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
 def repo_inventory(root: pathlib.Path = REPO) -> dict[str, Any]:
     jobs = deploy_jobs(root)
     sched = deploy_schedulers(root)
+    services = deploy_services(root)
     schema = schema_tables(root)
     routes = api_routes(root)
     declared = [x["name"] for x in schema["tables"]] \
@@ -627,6 +666,7 @@ def repo_inventory(root: pathlib.Path = REPO) -> dict[str, Any]:
         "root": str(root),
         "jobs": jobs,
         "schedulers": sched,
+        "services": services,
         "deploy_targets": deploy_targets(root),
         "tables": schema["tables"],
         "materialized_views": schema["materialized_views"],
@@ -641,6 +681,7 @@ def repo_inventory(root: pathlib.Path = REPO) -> dict[str, Any]:
         "counts": {
             "jobs": len(jobs),
             "schedulers": len(sched),
+            "services": len(services),
             "tables": len(schema["tables"]),
             "routes": len(routes),
             "routers": len({r["router"] for r in routes if r["router"] != "main"}),
@@ -3683,8 +3724,8 @@ def db_tables_snapshot() -> dict[str, dict[str, Any]]:
     """Live relations with row estimates and sizes, via gcp.database.get_engine().
 
     Needs the Cloud SQL env (CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME),
-    which the refresh workflow already injects for the calibration step. From a
-    sandbox without port 5432, run the same SQL through scripts/db_query_cr.sh
+    which the calibration renderer reads when a person runs it with them set.
+    From a sandbox without port 5432, run the same SQL through scripts/db_query_cr.sh
     and pass the CSV with --db-tables instead.
     """
     from sqlalchemy import text  # local import: optional dependency
@@ -4145,6 +4186,104 @@ RUNTIME_RELATION_COUNT = re.compile(r"(\d+)( runtime[- ](?:created )?relations)"
 RELATION_BREAKDOWN = re.compile(
     r"\((\d+) tables?, (\d+) materialized views?, (\d+) views?\)")
 
+# The total written just before that breakdown, in 05-a's two shapes:
+# "declares **70 relations** (67 tables, ...)" and "that file declares 70
+# (67 tables, ...)". Rendering the breakdown alone left the total behind: a
+# pull request adding two tables to gcp/schema.sql got "72 (71 tables, ...)"
+# from the render, while check_generated_docs requires the total to equal
+# the parts, so no committed text could satisfy both. The total is the sum of
+# the same three counts, so it is rendered with them.
+RELATION_TOTAL = re.compile(
+    r"(declares (?:\*\*)?)(\d+)((?: relations\*\*)? )(?=\(\d+ tables?, \d+ materialized views?, \d+ views?\))")
+
+
+# The declared job retry split, in the three shapes 05-a states it (§6's list
+# and §11's two). check_generated_docs.gate_derived_numbers derives every
+# per-flag count from gcp/deploy.sh and requires the prose to match, and the
+# REQ-GOV-004 render gate refuses a hand-typed number outside the blocks, so a
+# branch that changes a declared retry could satisfy neither: the predecessor
+# answer for relation counts applies here too. Literal shapes only, applied to
+# one document at its exact repository path; the frozen copy under manual/
+# carries the same sentences with historical figures and must not move.
+# ASCII digits only: a shape written with other Unicode digits is not owned,
+# so the unchanged check, which reads them, still reports it.
+# (FEAT-CICD-001, docs/superpowers/specs/2026-10-31-feat-cicd-001-retry-split-substitution.md.)
+RETRY_SPLIT_DOC = "docs/product/infrastructure/05-a-ARCHITECTURE.md"
+RETRY_SPLIT = {
+    # §11: "`--max-retries 0` is the norm (43 of the 68 declared jobs)"
+    "norm": re.compile(r"(`--max-retries )(\d)(` is the norm \()(\d+)( of the )(\d+)( declared jobs\))", re.ASCII),
+    # §11: "the 24 `--max-retries 1` jobs"
+    "jobs": re.compile(r"(\bthe )(\d+)( `--max-retries )(\d)(` jobs\b)", re.ASCII),
+    # §6: "`--max-retries 0` for 43 of the 68 declared jobs, `1` for 24 and `2` for one"
+    # Digits are ASCII but the closing lookahead is not: a count that runs on into any word character (a Unicode
+    # digit included) or a decimal point and digit is not owned, so the render never writes text the check rejects.
+    "list": re.compile(r"(`--max-retries )([0-9])(` for )([0-9]+)( of the )([0-9]+)( declared jobs, `)([0-9])(` for )([0-9]+)"
+                       r"( and `)([0-9])(` for )([0-9]+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?!\w)(?!\.[0-9])"),
+}
+
+
+# check_generated_docs.WORD_NUMBERS, the table its retry check reads spelled-out
+# counts with. Copied, not imported: check_generated_docs imports this module,
+# and the script-path invocation (`python3 scripts/maintenance/doc_inventory.py`)
+# has no `scripts` package to import it from. A test pins the two equal.
+_RETRY_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                "eleven", "twelve")
+
+
+def _retry_count(token: str, n: int) -> str:
+    """n in the form of the token it replaces: a WORD_NUMBERS word stays a word up to twelve, the table's limit."""
+    if token.isdigit():
+        return str(n)
+    if token not in _RETRY_WORDS:
+        raise ValueError(f"retry split: {token!r} is neither digits nor a lowercase WORD_NUMBERS word")
+    return _RETRY_WORDS[n] if 0 <= n < len(_RETRY_WORDS) else str(n)
+
+
+def render_retry_split(text: str, repo: dict[str, Any]) -> str:
+    """text with every owned retry-split count rendered from the declared jobs.
+
+    The counts are the parse gate_derived_numbers reads (Counter of each job's
+    max_retries, the Cloud Run default 3 included) and the total is the number
+    of declared jobs. A shape is rendered only where text carries it; none is
+    added or removed. Raises instead of rendering when a shape appears more
+    than once, or when the §6 list cannot state the split truthfully: the
+    declared retry values are not exactly the three it names, or its counts
+    would not sum to the declared total. That list changes only in reviewed
+    prose.
+    """
+    import collections
+    counts = collections.Counter(j.get("max_retries") for j in repo["jobs"])
+    total = len(repo["jobs"])
+    for name, pat in RETRY_SPLIT.items():
+        found = len(pat.findall(text))
+        if found > 1:
+            raise ValueError(f"retry split: the {name} shape appears {found} times; it is rendered only where it "
+                             "appears once")
+
+    def norm(m: re.Match) -> str:
+        return (m.group(1) + m.group(2) + m.group(3) + str(counts.get(m.group(2), 0)) + m.group(5) + str(total)
+                + m.group(7))
+
+    def jobs(m: re.Match) -> str:
+        return m.group(1) + str(counts.get(m.group(4), 0)) + m.group(3) + m.group(4) + m.group(5)
+
+    def split(m: re.Match) -> str:
+        flags = (m.group(2), m.group(8), m.group(12))
+        if len(set(flags)) != 3 or set(counts) != set(flags):
+            raise ValueError(f"retry split: the declared retry values {sorted(counts, key=str)} are not exactly the "
+                             f"three the list names {list(flags)}; if a job's retries are written in a form the parser misreads, "
+                             "write them as `--max-retries N`, otherwise change the list in reviewed prose")
+        ns = [counts[f] for f in flags]
+        if sum(ns) != total:
+            raise ValueError(f"retry split: the list's counts {ns} do not sum to the {total} declared jobs")
+        return (m.group(1) + m.group(2) + m.group(3) + str(ns[0]) + m.group(5) + str(total) + m.group(7)
+                + m.group(8) + m.group(9) + str(ns[1]) + m.group(11) + m.group(12) + m.group(13)
+                + _retry_count(m.group(14), ns[2]))
+
+    text = RETRY_SPLIT["list"].sub(split, text)
+    text = RETRY_SPLIT["norm"].sub(norm, text)
+    return RETRY_SPLIT["jobs"].sub(jobs, text)
+
 
 # The three "as of" labels a human wrote into the prose, every one of which has
 # to track the snapshot the run was taken from. Deliberately literal: a looser
@@ -4173,7 +4312,8 @@ ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
 # with `replace` and never to regenerate it; the model regenerated it anyway
 # (52% churn). Same conclusion as the as-of labels and the runtime-relation
 # count: render what is inventory and stop asking. (Run 32.)
-# The five badges this renderer owns, by identity. Anything else in README
+# The four badges this renderer renders, by identity. OWNED_BADGE still claims
+# the retired workflow badge too, so a render over an older README removes it. Anything else in README
 # belongs to a maintainer and is never rewritten. Anchoring on "the first
 # contiguous run of badge-shaped lines" was wrong twice over: it could pick a
 # run that is not ours at all, and -- once that was fixed by looking for the
@@ -4200,7 +4340,7 @@ OWNED_BADGE = re.compile(
 
 
 def readme_badges(repo: dict[str, Any], live: dict[str, Any] | None, day: str) -> str:
-    """The five badge lines, rendered from the same inventory as everything else.
+    """The four badge lines, rendered from the same inventory as everything else.
 
     Refuses without a live snapshot. `--readme-badges` with no `--snapshot` or
     `--live` left `live` as None, and the counts fell back to 0: the badges
@@ -4238,8 +4378,6 @@ def readme_badges(repo: dict[str, Any], live: dict[str, Any] | None, day: str) -
         # (Codex, PR #1070.)
         f"![Cloud SQL relations](https://img.shields.io/badge/schema_relations-"
         f"{declared_relations}_declared_%2F_{live_relations}_live-blue)",
-        "![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
-        "workflows/refresh-architecture-docs.yml/badge.svg)",
     ])
 
 
@@ -4264,7 +4402,7 @@ def insert_readme_badges(doc_path: pathlib.Path, repo: dict[str, Any],
         raise ValueError(
             f"{doc_path}: no badge block found to render. Expected at least one of "
             f"the badges this renderer owns (docs_verified, cloud_run_jobs, "
-            f"schedulers, schema_relations, the refresh workflow badge).")
+            f"schedulers, schema_relations, the retired workflow badge).")
     lo, hi = owned[0][0], owned[-1][1]
     foreign = [ln for ln in text[lo:hi].split("\n")
                if ln.strip() and not OWNED_BADGE.fullmatch(ln)]
@@ -4345,6 +4483,14 @@ def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, 
             lambda _m: f"({t} table{'' if t == 1 else 's'}, "
                        f"{m_} materialized view{'' if m_ == 1 else 's'}, "
                        f"{v} view{'' if v == 1 else 's'})", new)
+        new = RELATION_TOTAL.sub(lambda m: f"{m.group(1)}{t + m_ + v}{m.group(3)}", new)
+        # The declared retry split, on 05-a only, by its exact repository path.
+        try:
+            rel = doc_path.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            rel = None
+        if rel == RETRY_SPLIT_DOC:
+            new = render_retry_split(new, repo)
     # The as-of labels are inventory too, for exactly the same reason. Run 31
     # updated the header note and the closing line and left §3's table column
     # at the previous snapshot's date, failing the run on one stale label --
@@ -4377,9 +4523,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--snapshot", help="use a saved live snapshot instead of gcloud")
     ap.add_argument("--day", metavar="YYYY-MM-DD",
                     help="the run date stamped on README's badges and closing line. "
-                         "Defaults to today in UTC. The refresh workflow pins one "
-                         "date at job start and passes it here so the renderer and "
-                         "the verifier cannot disagree across a midnight boundary.")
+                         "Defaults to today in UTC. A caller running the renderer and "
+                         "the verifier together pins one date and passes it here so "
+                         "they cannot disagree across a midnight boundary.")
     ap.add_argument("--write-snapshot", help="write the live snapshot to this path")
     ap.add_argument("--db-tables", help="CSV of relname,n_live_tup,size (from scripts/db_query_cr.sh) to merge as live db_tables")
     ap.add_argument("--db-live", action="store_true", help="read live table stats via gcp.database (needs Cloud SQL env)")
@@ -4388,8 +4534,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--insert", nargs="*", help="rewrite marker blocks in these docs")
     ap.add_argument("--restore", nargs="*", help="rewrite only the marker blocks that differ from a fresh render, and name each one")
     ap.add_argument("--readme-badges", metavar="README",
-                    help="rewrite README's badge block from the inventory (date, counts, "
-                         "workflow badge). The badges are inventory in a picture; run 32's "
+                    help="rewrite README's badge block from the inventory (date, counts). "
+                         "The badges are inventory in a picture; run 32's "
                          "model rewrote them and invented a workflow filename.")
     args = ap.parse_args(argv)
 

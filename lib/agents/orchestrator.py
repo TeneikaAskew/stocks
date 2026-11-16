@@ -488,7 +488,7 @@ async def run_insight_pipeline(
 
     # Deterministic key_levels — sourced directly from the context bundle
     # so the report always shows the FULL multi-timeframe level map
-    # (PDH/PDL/PWH/PWL/PMH/PML/PQH/PQL/PYH/PYL + effective_PDH/PDL +
+    # (PDH/PDL/PWH/PWL/PMH/PML/PQH/PQL/PYH/PYL + the parent bar +
     # gamma flip/kings/gates + EMA 20/SMA 200 + Max Pain), not just
     # whichever subset the PM LLM happened to surface. Previously this
     # was a fallback-only path that ran when pm.key_levels was empty,
@@ -586,8 +586,11 @@ async def run_insight_pipeline(
     # (thesis, bull/bear case, risk flags) but the numbers are now
     # reproducible across runs.
     from .trade_planner import compute_persona_plans, context_from_bundle
+    plan_level_basis = None
     try:
         plan_ctx = context_from_bundle(bundle, direction, conviction)
+        if plan_ctx.levels is not None:
+            plan_level_basis = plan_ctx.levels.to_basis()
         persona_plans = compute_persona_plans(plan_ctx)
     except Exception as exc:
         logger.warning("deterministic plan compute failed: %s", exc)
@@ -621,8 +624,8 @@ async def run_insight_pipeline(
     # This closes the LLM-hallucination surface that produced ARM 4/20's
     # $237.68 entry zone (a number sourced from outside the bundle —
     # see docs/plans/INSIGHT_ZONE_HALLUCINATION_PLAN.md). On orb_only
-    # regimes the persona plan publishes placeholder bracketing levels
-    # and the rationale tells the trader to wait for the opening range.
+    # regimes the persona plan's entry_zone and stop are null and the
+    # rationale tells the trader to wait for the opening range.
     if persona_plans:
         canonical = next(
             (p for p in persona_plans if p.persona == "neutral"),
@@ -668,6 +671,7 @@ async def run_insight_pipeline(
         targets=headline_targets,
         invalidation=pm.invalidation,
         time_horizon=pm.time_horizon,
+        level_basis=plan_level_basis,
         key_levels=pm.key_levels,
         strat_status=strat_status,
         catalysts=catalysts,
@@ -833,7 +837,7 @@ def _build_embedding_query_text(ticker: str, bundle: dict) -> str:
     strat = bundle.get("strat") or {}
     market = bundle.get("market") or {}
     parts: list[str] = [ticker.upper()]
-    if strat.get("last_candle"):
+    if strat.get("available") is not False and strat.get("last_candle") not in (None, "", "X"):
         parts.append(f"strat candle {strat['last_candle']}")
     if strat.get("in_force_combo"):
         parts.append(f"combo {strat['in_force_combo']}")
@@ -917,10 +921,11 @@ def _calibrate_conviction(
     # the sign must MATCH the trade direction — `abs(ftfc_score) >= 0.5`
     # would let a contradicting FTFC count as agreement (e.g. long with
     # ftfc_score=-0.8). Codex review on PR #351 caught this.
-    ftfc_aligned = (
-        (direction == "long" and ftfc_score >= 0.5)
-        or (direction == "short" and ftfc_score <= -0.5)
-    )
+    # Shared with compute_risk_metrics, so the raw score and its 2 dp
+    # snapshot give the same answer.
+    from .trade_planner import is_ftfc_aligned
+
+    ftfc_aligned = is_ftfc_aligned(direction, ftfc_score)
     if (
         analyst_agreement_count >= 4
         and ftfc_aligned
@@ -958,10 +963,10 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
     strat = bundle.get("strat", {}) or {}
     if strat.get("available"):
         # Full multi-timeframe level map populated by
-        # summarize_strat_status → compute_previous_levels. Surface every
-        # timeframe (day/week/month/quarter/year + mother-bar walk-back)
-        # so users can audit which level the trade-planner classified
-        # against. "Prev High/Low" alone hid PWH/PMH/PQH/PYH/effective_*
+        # lib.strat_levels.build_session_levels. Surface every timeframe
+        # (day/week/month/quarter/year + the parent bar) so users can audit
+        # which level the trade-planner classified against. "Prev High/Low"
+        # alone hid PWH/PMH/PQH/PYH/the parent bar
         # from the report even though the planner's blue-sky / extended /
         # normal regime classification depended on them.
         # Label map: short codes -> human-readable. Order matters only
@@ -977,10 +982,16 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
             ("PQL", "Prev Quarter Low"),
             ("PYH", "Prev Year High"),
             ("PYL", "Prev Year Low"),
-            ("effective_PDH", "Effective PDH"),
-            ("effective_PDL", "Effective PDL"),
+            ("parent_bar_high", "Parent bar high"),
+            ("parent_bar_low", "Parent bar low"),
         )
-        strat_levels = strat.get("levels") or {}
+        # The session's levels (FEAT-STRAT-001): the level_basis the bundle
+        # carries, so the block shows the same levels the planner picked from.
+        basis = ((bundle.get("session_levels") or {}).get("level_basis") or {})
+        strat_levels = {
+            lv.get("name"): lv.get("price")
+            for lv in (basis.get("levels") or []) if isinstance(lv, dict)
+        }
         for code, label in _LEVEL_LABEL_MAP:
             v = strat_levels.get(code)
             if isinstance(v, (int, float)):
@@ -1099,21 +1110,36 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
     return levels
 
 
+_SNAPSHOT_FOUNDATION_KEYS = (
+    "rule_version", "observation_ts", "data_as_of", "session", "clock_policy",
+    "aggregation_policy", "price_adjustment", "source_acquired_at",
+    "source_acquisition_status", "coverage", "bar_validity", "confirmed_setups",
+)
+
+
 def _build_strat_snapshot(section: dict) -> StratSnapshot:
-    if not section or not section.get("available"):
+    section = section or {}
+    foundation = {key: section[key] for key in _SNAPSHOT_FOUNDATION_KEYS
+                  if section.get(key) is not None}
+    if not section.get("available") or section.get("last_candle") in (None, "", "X"):
+        # FEAT-STRAT-001: unknown is not an inside bar with a neutral score.
         return StratSnapshot(
-            last_candle="1",
+            available=False,
+            reason=section.get("reason") or "strat section unavailable",
+            last_candle="X",
             in_force_combo=None,
-            ftfc_score=0.0,
-            ftfc_direction="mixed",
+            ftfc_score=None,
+            ftfc_direction=None,
+            **foundation,
         )
     return StratSnapshot(
-        last_candle=section.get("last_candle", "1") or "1",
+        last_candle=section.get("last_candle"),
         in_force_combo=section.get("in_force_combo"),
         ftfc_score=float(section.get("ftfc_score") or 0.0),
         ftfc_direction=section.get("ftfc_direction", "mixed") or "mixed",
         trigger_high=section.get("trigger_high"),
         trigger_low=section.get("trigger_low"),
+        **foundation,
     )
 
 

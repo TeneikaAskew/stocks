@@ -9,14 +9,16 @@ GET /api/config/indicators
     without hardcoding numbers that can drift from Python.
 
 GET /api/config/market-hours
-    US equity market session boundaries (RTH, pre, post) and the 2026
-    holiday list. Used by the chart time-of-day filters and session badges.
+    US equity market session boundaries (RTH, pre, post), plus the NYSE
+    holidays and early closes for the current and next year from the shared
+    calendar (lib.eastern_time). Used by the chart time-of-day filters and
+    session badges.
 """
 from __future__ import annotations
 
 import os
 import sys
-from datetime import time
+from datetime import date, time
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -29,8 +31,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from api.routers.live import (  # noqa: E402
     MARKET_OPEN,
     MARKET_CLOSE,
-    MARKET_HOLIDAYS_2026,
 )
+from lib.eastern_time import ET_NAME, holidays_in, market_today, session_schedule
 from lib.config import load_config  # noqa: E402
 from api import auth as _auth  # noqa: E402  (AUTH_MODE validated at import there)
 from api.schemas import (
@@ -128,9 +130,30 @@ def get_indicator_config() -> dict:
     }
 
 
+def _early_closes(first_year: int, last_year: int) -> list[dict]:
+    """Sessions in ``first_year`` .. ``last_year`` that close before the
+    regular 16:00 ET, each with its Eastern close as ``HH:MM``."""
+    schedule = session_schedule(date(first_year, 1, 1), date(last_year, 12, 31))
+    closes = schedule["market_close"].dt.tz_convert(ET_NAME)
+    return [
+        {"date": day.date().isoformat(), "close": close.strftime("%H:%M")}
+        for day, close in closes.items()
+        if close.time() < MARKET_CLOSE
+    ]
+
+
 @router.get("/api/config/market-hours", response_model=MarketHoursResponse, response_model_exclude_unset=True)
 def get_market_hours() -> dict:
-    """Return US equity market session windows + 2026 holidays."""
+    """Return US equity market session windows, holidays and early closes.
+
+    ``holidays`` and ``early_closes`` cover the current and next year by the
+    Eastern date, so the window rolls at 00:00 ET on 1 January. Half days
+    are sessions, so they are in ``early_closes`` and never in ``holidays``.
+    ``holidays_2026`` is kept, filled from the same calendar, for solyra's
+    replay picker until Spec C moves it to ``holidays`` and removes it.
+    A calendar failure raises (CLAUDE.md 3.7); nothing is filled in.
+    """
+    year = market_today().year
     return {
         "timezone": "America/New_York",
         "regular": {
@@ -139,5 +162,7 @@ def get_market_hours() -> dict:
         },
         "pre_market": {"open": "04:00", "close": _time_to_str(MARKET_OPEN)},
         "after_hours": {"open": _time_to_str(MARKET_CLOSE), "close": "20:00"},
-        "holidays_2026": sorted(d.isoformat() for d in MARKET_HOLIDAYS_2026),
+        "holidays_2026": [d.isoformat() for d in holidays_in(2026)],
+        "holidays": [d.isoformat() for d in holidays_in(year) + holidays_in(year + 1)],
+        "early_closes": _early_closes(year, year + 1),
     }

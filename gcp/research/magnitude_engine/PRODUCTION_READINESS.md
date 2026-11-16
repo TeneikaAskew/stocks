@@ -1,6 +1,6 @@
 # Magnitude Engine Production-Readiness Contract
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
 
 **Criteria version:** `magnitude-production-readiness-v1`  
 **Status:** locked prospectively; all requirements are mandatory and conjunctive.

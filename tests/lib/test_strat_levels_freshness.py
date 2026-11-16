@@ -170,6 +170,16 @@ def test_trading_days_zero_when_source_after_today():
     assert _trading_days_between(src, today) == 0
 
 
+def test_trading_days_counts_the_date_a_utc_midnight_stamp_carries():
+    """The premarket brief passes date-valued stamps localised to UTC midnight
+    (`df.index.max()`, `analysis_date`). Each counts as the date it carries, not
+    as the previous Eastern evening: Fri 5/8 -> Sun 5/10 holds no session."""
+    assert _trading_days_between(
+        pd.Timestamp("2026-05-08", tz="UTC"), pd.Timestamp("2026-05-10", tz="UTC")) == 0
+    assert _trading_days_between(
+        pd.Timestamp("2026-05-08", tz="UTC"), pd.Timestamp("2026-05-11", tz="UTC")) == 1
+
+
 # ── 5) tz handling ────────────────────────────────────────────────────
 
 

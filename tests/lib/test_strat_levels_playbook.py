@@ -19,12 +19,24 @@ import re
 import pytest
 
 from lib.strat_levels import (
-    MAX_TRIGGER_DISTANCE_ATR,
-    MAX_TRIGGER_DISTANCE_PCT,
     LevelMap,
-    build_level_map,
     format_levels_for_brief,
 )
+from lib.strat_levels import build_level_map as _build_level_map
+from tests.lib.level_params_fixtures import LEGACY_1753_VALUES, fixture_params
+
+# The ticker's trigger windows (per-ticker parameters, 2026-11-08): these
+# tests run the #1753 values through the parameter path.
+WINDOW_LONG = LEGACY_1753_VALUES['trigger_window_long_atr']
+WINDOW_SHORT = LEGACY_1753_VALUES['trigger_window_short_atr']
+
+
+def build_level_map(ticker, df, price, *args, atr=None, **kw):
+    """The deprecated shim with the ticker's LevelParams (every key at the
+    #1753 values) and the ATR named as ATR(14), the policy's day-one basis."""
+    return _build_level_map(ticker, df, price, *args,
+                            atr={'atr_14': atr} if atr is not None else {},
+                            params=fixture_params(ticker), **kw)
 
 
 # ───── Commit 1: "Room to T1" relabeling ──────────────────────────────
@@ -113,9 +125,9 @@ class TestRoomLabel:
 
 
 class TestStalenessFilter:
-    """When `atr` is passed to build_level_map, levels farther than
-    BOTH 3×ATR AND 8% of spot are excluded from trigger AND stop
-    selection. The filter prevents stale year-old crash lows (e.g.
+    """When `atr` is passed to build_level_map, levels farther than the
+    ticker's trigger window (trigger_window_{long,short}_atr x ATR) are
+    excluded from trigger AND stop selection. The filter prevents stale year-old crash lows (e.g.
     ASTX 2026-04-28: PYL=$15.03, spot=$25.70, distance=41%) from
     surfacing as PUT triggers or 41%-below stop levels on CALL trades.
     """
@@ -126,18 +138,13 @@ class TestStalenessFilter:
         for side in (lm.calls_trigger, lm.puts_trigger):
             if side is None:
                 continue
+            window = WINDOW_LONG if side is lm.calls_trigger else WINDOW_SHORT
             distance = abs(side['trigger_level'] - price)
-            assert distance <= MAX_TRIGGER_DISTANCE_PCT * price, (
-                f"trigger {side['trigger_name']} = {side['trigger_level']} "
-                f"is {distance/price*100:.1f}% from spot {price} — "
-                f"should be filtered (limit {MAX_TRIGGER_DISTANCE_PCT*100}%)"
+            assert atr > 0
+            assert distance <= window * atr, (
+                f"trigger {side['trigger_name']} = "
+                f"{distance/atr:.2f} ATR away, window {window}"
             )
-            if atr > 0:
-                assert distance <= MAX_TRIGGER_DISTANCE_ATR * atr, (
-                    f"trigger {side['trigger_name']} = "
-                    f"{distance/atr:.2f} ATR away — limit "
-                    f"{MAX_TRIGGER_DISTANCE_ATR}"
-                )
 
     def test_emitted_stop_within_budgets(self, market_data):
         """Stops are picked from the OPPOSITE-side fresh level set, so
@@ -148,10 +155,12 @@ class TestStalenessFilter:
         for side in (lm.calls_trigger, lm.puts_trigger):
             if side is None or not side.get('stop'):
                 continue
+            # The stop lies on the other side: that side's window holds it.
+            window = WINDOW_SHORT if side is lm.calls_trigger else WINDOW_LONG
             distance = abs(side['stop'] - price)
-            assert distance <= MAX_TRIGGER_DISTANCE_PCT * price, (
+            assert distance <= window * atr, (
                 f"stop {side['stop_name']} = {side['stop']} is "
-                f"{distance/price*100:.1f}% from spot — should be filtered"
+                f"{distance/atr:.2f} ATR from spot, window {window}"
             )
 
     def test_no_stop_when_no_fresh_opposite(self, market_data):
@@ -172,17 +181,14 @@ class TestStalenessFilter:
             calls_block = text.split('PUTS', 1)[0]
             assert 'Stop:' not in calls_block
 
-    def test_atr_none_falls_back_to_pct_only(self, market_data):
-        """Back-compat: callers that don't pass `atr` still get the
-        percent-distance filter applied. This protects callers that
-        pre-date the ATR plumbing (signal_monitor, dashboard router)."""
+    def test_atr_none_gives_no_trigger(self, market_data):
+        """Without the ATR the window has no size: no trigger on either
+        side (reason atr_unavailable), never a percent-of-price window."""
         df, price, _ = market_data
         lm = build_level_map('IWM', df, price)  # no atr
-        for side in (lm.calls_trigger, lm.puts_trigger):
-            if side is None:
-                continue
-            distance = abs(side['trigger_level'] - price)
-            assert distance <= MAX_TRIGGER_DISTANCE_PCT * price
+        assert lm.calls_trigger is None and lm.puts_trigger is None
+        assert lm.regime_long == 'orb_only' and lm.reason_long == 'atr_unavailable'
+        assert lm.regime_short == 'orb_only' and lm.reason_short == 'atr_unavailable'
 
     def test_filtered_levels_still_in_levels_list(self, market_data):
         """Stale levels are filtered out of TRIGGER selection but stay
@@ -211,79 +217,28 @@ class TestStalenessFilter:
             text = format_levels_for_brief(lm, 'bullish')
             assert 'no near-term structural level' in text
 
-    def test_no_trigger_banner_names_filtered_candidate(self, market_data):
-        """Enriched banner: when a side gets filtered, the banner must
-        name the actual would-be level + its distance. The trader
-        needs to see WHY the side was rejected — '15.03 (41.5% away)'
-        is more actionable than 'filtered as stale'.
-
-        Drives the canonical bug case from ASTX 2026-04-28: PYL=15.03
-        below spot $25.70 = 41.5% / 1.5× ATR. The banner must mention
-        the level name (PYL), price (15.03), and distance.
-        """
-        from lib.strat_levels import StratLevel, LevelMap, identify_triggers
-        # Synthesize a level set with a stale below-side level so the
-        # filter fires regardless of what IWM happens to look like
-        # today. (IWM tight-range data wouldn't exercise this path.)
-        spot = 25.70
-        atr_val = 7.02
-        levels = [
-            StratLevel('PYL', 15.03, 'year', 'low', '', False, '2025'),
-            StratLevel('PWL', 26.55, 'week', 'low', '', False, '2026-W17'),
-            StratLevel('PDL', 27.13, 'day', 'low', '', False, '2026-04-28'),
-        ]
-        triggers = identify_triggers(
-            spot, {lv.name: lv for lv in levels}, atr=atr_val,
-        )
-        lm = LevelMap(
-            ticker='ASTX', as_of='2026-04-28', current_price=spot,
-            levels=levels, pmg_zones=[],
-            calls_trigger=triggers['calls'], puts_trigger=triggers['puts'],
-            room_to_run_up=(26.55 - spot) / spot * 100,
-            room_to_run_down=(spot - 15.03) / spot * 100,
-        )
-        text = format_levels_for_brief(lm, 'bullish', atr=atr_val)
-        # Multi-line banner mirroring active-block indentation.
-        assert 'PYL 15.03' in text
-        assert 'next bearish level' in text
-        # Scope to the PUTS section — the active CALLS block also has
-        # its own 'Room to trigger:' line for the fresh trigger, so we
-        # need to look at the half of the output that follows the
-        # 'next bearish level' line.
-        puts_section = text.split('next bearish level', 1)[1]
-        room_line = next(
-            ln for ln in puts_section.split('\n') if 'Room to trigger' in ln
-        )
-        assert '41.5%' in room_line
-        assert '× ATR' in room_line
-        assert 'too far for intraday' in room_line
-        # Trailer line is indented like a target line.
-        assert '    -- wait for ORB confirmation' in text
+    def test_no_trigger_banner_names_the_window(self, market_data):
+        """ASTX 2026-04-28: PYL 15.03 below spot 25.70 is 41.5% away. The
+        side gets no trigger and the one copy line for
+        next_level_outside_window (FEAT-STRAT-001 Design 6)."""
+        from lib.strat_levels import orb_only_text
+        from tests.lib.session_levels_helpers import session
+        lm = session({'PYL': 15.03, 'PWH': 26.55}, prior_close=25.70, atr=7.02).to_level_map()
+        text = format_levels_for_brief(lm, 'bullish', atr=7.02)
+        assert lm.puts_trigger is None
+        assert lm.reason_short == 'next_level_outside_window'
+        assert '  PUTS: ' + orb_only_text('next_level_outside_window', 'short', lm.window_short) in text
 
     def test_no_trigger_banner_without_atr_omits_atr_str(self):
-        """Same banner without `atr` kwarg: shows percent only, no
-        '× ATR' suffix. Back-compat for callers that haven't been
-        updated to pass ATR."""
-        from lib.strat_levels import StratLevel, LevelMap, identify_triggers
-        spot = 25.70
-        levels = [
-            StratLevel('PYL', 15.03, 'year', 'low', '', False, '2025'),
-            StratLevel('PWL', 26.55, 'week', 'low', '', False, '2026-W17'),
-        ]
-        triggers = identify_triggers(spot, {lv.name: lv for lv in levels})
-        lm = LevelMap(
-            ticker='X', as_of='', current_price=spot,
-            levels=levels, pmg_zones=[],
-            calls_trigger=triggers['calls'], puts_trigger=triggers['puts'],
-            room_to_run_up=0, room_to_run_down=0,
-        )
+        """Without ATR(14) there is no trigger on either side (reason
+        atr_unavailable, FEAT-STRAT-001), never a percent-only window."""
+        from lib.strat_levels import orb_only_text
+        from tests.lib.session_levels_helpers import session
+        lm = session({'PYL': 15.03, 'PWL': 26.55}, prior_close=25.70, atr=None).to_level_map()
         text = format_levels_for_brief(lm, 'bullish')
-        if 'no near-term' in text:
-            # No ATR axis qualifier when atr not passed; the banner
-            # falls back to "(too far for intraday)" without the
-            # "1.5× ATR away" prefix.
-            assert '× ATR' not in text
-            assert 'too far for intraday' in text
+        assert lm.calls_trigger is None and lm.puts_trigger is None
+        assert orb_only_text('atr_unavailable', 'long', lm.window_long) in text
+        assert '× ATR' not in text
 
 
 # ───── Commit 4: both-side regime ─────────────────────────────────────
@@ -298,44 +253,16 @@ class TestPerSideRegime:
     the primary side does.
     """
 
-    def test_per_side_extended_calls_only(self, market_data):
-        """regime_long='extended', regime_short='normal' — only the
-        CALLS block carries the warning; PUTS renders normally."""
-        df, price, atr = market_data
-        lm = build_level_map('IWM', df, price, atr=atr)
-        text = format_levels_for_brief(
-            lm, 'bullish', regime_long='extended', regime_short='normal',
-        )
-        if lm.calls_trigger:
-            calls_block = text.split('PUTS', 1)[0]
-            assert 'extended gap' in calls_block.lower()
-        if lm.puts_trigger:
-            puts_block = text.split('PUTS', 1)[1] if 'PUTS' in text else ''
-            assert 'extended gap' not in puts_block.lower()
-
-    def test_per_side_extended_puts_only(self, market_data):
-        df, price, atr = market_data
-        lm = build_level_map('IWM', df, price, atr=atr)
-        text = format_levels_for_brief(
-            lm, 'bullish', regime_long='normal', regime_short='extended',
-        )
-        if lm.calls_trigger:
-            calls_block = text.split('PUTS', 1)[0]
-            assert 'extended gap' not in calls_block.lower()
-        if lm.puts_trigger:
-            puts_block = text.split('PUTS', 1)[1] if 'PUTS' in text else ''
-            assert 'extended gap' in puts_block.lower()
-
-    def test_both_orb_only_short_circuits_to_global_block(self, market_data):
-        """When BOTH sides clear every structural level, fall back to
-        the legacy global 'ORB-only' block (it summarizes the whole
-        situation cleaner than two per-side banners)."""
+    def test_both_orb_only_renders_both_copy_lines(self, market_data):
+        """Both sides orb_only: each side prints its own copy line and no
+        trigger block (FEAT-STRAT-001 Design 6)."""
         df, price, atr = market_data
         lm = build_level_map('IWM', df, price, atr=atr)
         text = format_levels_for_brief(
             lm, 'bullish', regime_long='orb_only', regime_short='orb_only',
         )
-        assert 'ORB-only' in text
+        assert text.count('Wait for the 15-min opening range') == 2
+        assert 'CALLS above' not in text and 'PUTS below' not in text
 
     def test_legacy_regime_param_applies_to_both_sides(self, market_data):
         """Single `regime=` (no per-side) propagates to both sides via
@@ -459,8 +386,8 @@ class TestClearedSideTriggerSuppress:
             lm, 'bullish',
             regime_long='orb_only', regime_short='normal',
         )
-        assert 'pre-market cleared' in text.lower(), (
-            "expected the orb_only warning banner to render"
+        assert 'wait for the 15-min opening range' in text.lower(), (
+            "expected the orb_only line to render"
         )
         assert 'CALLS above 278.13' not in text, (
             "trigger block must be suppressed under orb_only"
@@ -490,7 +417,7 @@ class TestClearedSideTriggerSuppress:
             lm, 'bullish',
             regime_long='orb_only', regime_short='normal',
         )
-        assert 'pre-market cleared' in text.lower()
+        assert 'wait for the 15-min opening range' in text.lower()
         assert 'CALLS above 278.13' not in text, (
             "wick-and-fade orb_only must still suppress the trigger block"
         )
@@ -529,7 +456,7 @@ class TestClearedSideTriggerSuppress:
             lm, 'bearish',
             regime_long='normal', regime_short='orb_only',
         )
-        assert 'pre-market cleared' in text.lower()
+        assert 'wait for the 15-min opening range' in text.lower()
         assert 'PUTS below 278.13' not in text
 
     def test_one_side_cleared_other_side_renders_normally(self):

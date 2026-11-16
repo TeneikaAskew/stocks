@@ -18,7 +18,7 @@ done_when:
   - "tests/scripts/test_spec_gate.py runs the unchanged trusted renderer with merge-base document prose and committed head source inputs, accepts exact runtime-relation totals, declared table/materialized-view/view breakdowns and existing fixed snapshot as-of substitutions, and refuses wrong counts, arbitrary neighboring prose, altered historical dates, forged marker-prefix rows and new count/as-of patterns; real-gate refused cases have accepted controls."
   - "tests/scripts/test_spec_gate.py proves scripts/__init__.py and scripts/maintenance/__init__.py are FEAT-CICD-001 process inputs and rejects changes to either alongside generated documents; a concrete trusted-base startup regression cannot introduce a verdict-changing initializer through an unrelated feature branch, and no head code is imported or executed."
   - "The unchanged registry-workflow equivalent full suite completes below285seconds with all required actual hook/CLI assertions preserved, the unchanged BASE suite completes within600seconds, and python3 tests/scripts/measure_inventory_render.py --ref HEAD --max-rss-mib 512 --max-seconds 60 runs the actual committed-tree trusted gate renderer, fails on an observed total process-tree-plus-monitor RSS above512MiB or elapsed time above60seconds, records source bytes and actual sampling gaps/kernel child peak, and exercises accepted and actual memory/time refusal controls without weakening hook/CLI assertions; no workflow timeout or pinned-file changes are permitted."
-status: approved
+status: superseded
 supersedes: docs/superpowers/specs/2026-10-11-feat-cicd-001-generated-docs-render.md
 ---
 

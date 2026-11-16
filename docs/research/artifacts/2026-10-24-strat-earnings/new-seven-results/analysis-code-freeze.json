@@ -1,0 +1,9 @@
+{
+  "frozen_at": "2026-10-24T23:57:29.198402+00:00",
+  "news_sources": {
+    "analyze_news_once.py": "9bf5f23e2381d0685a85ed05e2c097ef13fdd57ad152c480a0eff4ad00332e7c",
+    "frozen_news_rules.py": "bd74ab791479b6f70522185c49728d82a8d4c2b6f9d827bc022d79505ff62ee7",
+    "frozen-analysis-protocol.json": "424ee0920e1dad0a1b808923631c994225228b09292c94ae18803204e2c287d3"
+  },
+  "news_computation_frozen_before_new_outcome_join": true
+}

@@ -17,7 +17,7 @@
 - Velocity: <!-- SQL queries / API calls / round-trips per input row × total -->
 - Wall-clock: <!-- queries × per-query latency (pg8000 + connector ≈ 0.5–2 s);
      task-timeout must be ≥ 4× this -->
-- $/run × runs/day × 30: <!-- new scheduled jobs -->
+- Cost: <!-- $/run × runs/day × 30 for new scheduled jobs -->
 - [ ] Every workload this PR's runbook tells the user to run is handled by
       the code in this PR — no "future-work, non-blocking" perf flags on a
       runbook workload (Rule 0.1)

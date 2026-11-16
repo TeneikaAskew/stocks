@@ -376,6 +376,18 @@ def canned_bundle(monkeypatch):
     import lib.strat as _lib_strat
     monkeypatch.setattr(_lib_strat, "compute_strat_status", fake_compute_strat_status)
 
+    # The session's levels (FEAT-STRAT-001): the live level_basis the 08:30
+    # brief wrote, as summarize_session_levels returns it.
+    from tests.lib.session_levels_helpers import basis as _basis
+
+    def fake_session_levels(ticker, *args, **kwargs):
+        return {"available": True, "source": "level_basis", "session_date": "2026-04-16",
+                "premarket_status": "premarket_unavailable",
+                "level_basis": _basis({"PDH": 502.5, "PDL": 497.0}, prior_close=500.0,
+                                      atr=5.0, ticker=ticker.upper())}
+
+    monkeypatch.setattr(summarizers, "summarize_session_levels", fake_session_levels)
+
     # Audit 2026-05-08 G.P2.12: orchestrator now auto-embeds the bundle
     # for reflection-memory retrieval. Stub the Vertex call with a
     # zero-vector so tests don't hit real Vertex (~0.4s per call ×
@@ -511,20 +523,23 @@ def test_derive_key_levels_surfaces_full_multi_timeframe_map():
     but those levels were never visible in the report."""
     from lib.agents.orchestrator import _derive_key_levels
 
+    from tests.lib.session_levels_helpers import basis
+
+    level_basis = basis({
+        "PDH": 682.77, "PDL": 677.51,
+        "PWH": 682.77, "PWL": 668.80,
+        "PMH": 682.77, "PML": 571.92,
+        "PQH": 636.60, "PQL": 555.60,
+        "PYH": 637.01, "PYL": 402.39,
+        "parent_bar_high": 690.10, "parent_bar_low": 670.25,
+    }, prior_close=681.61, atr=9.70)
     bundle = {
         "strat": {
             "available": True,
             "trigger_high": 682.77,
             "trigger_low": 677.51,
-            "levels": {
-                "PDH": 682.77, "PDL": 677.51,
-                "PWH": 682.77, "PWL": 668.80,
-                "PMH": 682.77, "PML": 571.92,
-                "PQH": 636.60, "PQL": 555.60,
-                "PYH": 637.01, "PYL": 402.39,
-                "effective_PDH": 682.77, "effective_PDL": 677.51,
-            },
         },
+        "session_levels": {"available": True, "level_basis": level_basis},
         "market":  {"available": True, "sma_200": 605.24, "ema_20": 648.61},
         "options": {"available": True, "max_pain_strike_proxy": 600.0},
     }
@@ -540,8 +555,10 @@ def test_derive_key_levels_surfaces_full_multi_timeframe_map():
     assert levels["Prev Quarter Low"] == 555.60
     assert levels["Prev Year High"] == 637.01
     assert levels["Prev Year Low"] == 402.39
-    assert levels["Effective PDH"] == 682.77
-    assert levels["Effective PDL"] == 677.51
+    # The parent bar (FEAT-STRAT-001 Design 7)
+    assert levels["Parent bar high"] == 690.10
+    assert levels["Parent bar low"] == 670.25
+    assert not any("mother" in k.lower() or "effective" in k.lower() for k in levels)
     # Legacy fields suppressed when the new ones are present
     assert "Prev High" not in levels
     assert "Prev Low" not in levels
@@ -827,11 +844,15 @@ def test_derive_key_levels_legacy_bundle_defaults_to_eod_suffix():
 def test_build_strat_snapshot_default_when_unavailable():
     from lib.agents.orchestrator import _build_strat_snapshot
 
-    snap = _build_strat_snapshot({"available": False})
-    assert snap.last_candle == "1"
+    # FEAT-STRAT-001: unavailable is explicit, never an inside bar with a
+    # neutral score (the old default fabricated '1' / 0.0 / mixed).
+    snap = _build_strat_snapshot({"available": False, "reason": "invalid_ohlc"})
+    assert snap.available is False
+    assert snap.reason == "invalid_ohlc"
+    assert snap.last_candle == "X"
     assert snap.in_force_combo is None
-    assert snap.ftfc_score == 0.0
-    assert snap.ftfc_direction == "mixed"
+    assert snap.ftfc_score is None
+    assert snap.ftfc_direction is None
 
 
 def test_build_strat_snapshot_populates_from_section():
@@ -855,8 +876,9 @@ def test_build_strat_snapshot_populates_from_section():
 
 
 def test_build_strat_snapshot_coerces_falsy_strings_to_defaults():
-    """The summarizer can emit `last_candle=''` when classification
-    fails. Don't propagate a blank — fall back to '1' (mixed)."""
+    """A blank `last_candle` means classification failed. Don't propagate
+    a blank and don't invent an inside bar: report it unavailable
+    (FEAT-STRAT-001; the old fallback fabricated '1' / mixed)."""
     from lib.agents.orchestrator import _build_strat_snapshot
 
     snap = _build_strat_snapshot({
@@ -865,9 +887,10 @@ def test_build_strat_snapshot_coerces_falsy_strings_to_defaults():
         "ftfc_score": None,
         "ftfc_direction": None,
     })
-    assert snap.last_candle == "1"
-    assert snap.ftfc_score == 0.0
-    assert snap.ftfc_direction == "mixed"
+    assert snap.available is False
+    assert snap.last_candle == "X"
+    assert snap.ftfc_score is None
+    assert snap.ftfc_direction is None
 
 
 def test_build_catalysts_filters_malformed_events():

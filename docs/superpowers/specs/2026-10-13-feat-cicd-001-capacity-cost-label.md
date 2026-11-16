@@ -11,7 +11,7 @@ done_when:
   - "The independently reviewed fixture-bridge specification AND its actual TEST-only CODE are MAIN before this branch opens; complete affected gate suites and the actual mandatory unchanged bridged-BASE suite pass within285seconds, with four independent frozen-head concrete gate-review seats empty before push and no test/HTML/n-a/numeric/review guard weakening."
   - "Actual branch/main docs audits report no new findings using actual reviewed Gov verifier/compatible Counter CODE MAIN, this approved SHARED-01 ordinary source-note declaration and committed eligible sidecar; own catalog/traceability/ready plan/PR records distinguish the verified Cost predicate from unchanged production rollout, and all other SITE/product/marker bytes remain protected."
   - "Normal authenticated external CODE review for the current head, required green CI, resolved conversations and exact own spec/plan/DoD evidence complete this single Cost correction PR; no bootstrap reuse, unmerged sibling import, self-approved spec mutation or deployment claim is used."
-status: approved
+status: superseded
 supersedes: null
 ---
 
