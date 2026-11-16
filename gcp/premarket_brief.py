@@ -978,7 +978,8 @@ def _load_reach_for_brief(level_params: dict, tickers, analysis_date):
     return tables, param.min_sample
 
 
-def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
+def generate_premarket_brief(cfg=None, data_dir: str = None, *,
+                             persist_levels: bool = True) -> dict:
     """Generate pre-market brief for all tickers.
 
     Returns a dict with per-ticker analysis and economic events.
@@ -986,6 +987,11 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     Honours BRIEF_AS_OF (historical replay) and BRIEF_TICKERS (override
     the config ticker list) — used by the Discord /replay command and
     ad-hoc backfills.
+
+    persist_levels=False (the plan excursions history job, target hit rates
+    spec Design 4) skips the two writes this function makes, the
+    strat_levels persist and the null-close cleanup, and changes nothing
+    else. Every other caller keeps the default.
     """
     if cfg is None:
         cfg = load_config()
@@ -1057,7 +1063,8 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             )
             # Opportunistic cleanup so future runs don't re-encounter
             # these rows. Fire-and-forget — failure here is non-fatal.
-            _delete_null_close_rows(ticker, analysis_date)
+            if persist_levels:
+                _delete_null_close_rows(ticker, analysis_date)
         if df.empty or len(df) < 2:
             brief['tickers'][ticker] = {'status': 'NO DATA (all rows null)'}
             continue
@@ -1466,83 +1473,84 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             # every downstream reader trusted them. The data layer's
             # #322/#323/#325 guards catch the upstream freeze, but this
             # is defense-in-depth at the level-write boundary.
-            try:
-                from gcp.database import get_engine
-                from lib.strat_levels import persist_level_map, StaleSourceDataError
-                engine = get_engine()
-                # df was just used to build level_map immediately above
-                # (lines ~1015-1034); its index max is the latest
-                # market_data_daily.date that fed the level computation.
-                _src_age = None
+            if persist_levels:
                 try:
-                    if isinstance(df.index, pd.DatetimeIndex) and len(df.index):
-                        _src_age = df.index.max()
-                except Exception:
+                    from gcp.database import get_engine
+                    from lib.strat_levels import persist_level_map, StaleSourceDataError
+                    engine = get_engine()
+                    # df was just used to build level_map immediately above
+                    # (lines ~1015-1034); its index max is the latest
+                    # market_data_daily.date that fed the level computation.
                     _src_age = None
-                # AS-OF-aware freshness check: when this is a historical
-                # replay (BRIEF_AS_OF set), the freshness comparison
-                # should be "was the data fresh AS OF that date" — not
-                # "is the data fresh as of right now (days/weeks
-                # later)." Without this override, every historical
-                # replay refuses to write because the source is now N
-                # weeks behind today. analysis_date is set upstream
-                # from BRIEF_AS_OF or now()-in-ET; use it as the
-                # reference clock so replays are faithful to "what
-                # would the brief have said on that day."
-                _today_ref = None
-                try:
-                    _today_ref = pd.Timestamp(analysis_date)
-                    if _today_ref.tz is None:
-                        _today_ref = _today_ref.tz_localize('UTC')
-                except Exception:
+                    try:
+                        if isinstance(df.index, pd.DatetimeIndex) and len(df.index):
+                            _src_age = df.index.max()
+                    except Exception:
+                        _src_age = None
+                    # AS-OF-aware freshness check: when this is a historical
+                    # replay (BRIEF_AS_OF set), the freshness comparison
+                    # should be "was the data fresh AS OF that date" — not
+                    # "is the data fresh as of right now (days/weeks
+                    # later)." Without this override, every historical
+                    # replay refuses to write because the source is now N
+                    # weeks behind today. analysis_date is set upstream
+                    # from BRIEF_AS_OF or now()-in-ET; use it as the
+                    # reference clock so replays are faithful to "what
+                    # would the brief have said on that day."
                     _today_ref = None
-                with engine.connect() as conn:
-                    n = persist_level_map(
-                        level_map, conn.connection,
-                        source_data_as_of=_src_age,
-                        today=_today_ref,
-                    )
-                    conn.connection.commit()
-                print(f"[brief:{ticker}] persisted {n} strat_levels rows "
-                      f"(source_data_as_of={_src_age}, today_ref={_today_ref})",
-                      file=sys.stderr, flush=True)
-            except StaleSourceDataError as exc:
-                # Stale-source refusal is loud + surfaceable, not a generic
-                # failure. Don't traceback (the message is the message).
-                # Mark the ticker for the audit trail so the row lands in
-                # premarket_analysis_history with the failure cause.
-                print(f"[brief:{ticker}] strat_levels persist REFUSED (stale source): {exc}",
-                      file=sys.stderr, flush=True)
-                d['status'] = 'STALE_DAILY_DATA'
-                d['playbook_error'] = f"strat_levels persist refused: {exc}"
-            except Exception as exc:
-                import traceback
-                print(f"[brief:{ticker}] strat_levels persist FAILED: {type(exc).__name__}: {exc}",
-                      file=sys.stderr, flush=True)
-                traceback.print_exc(file=sys.stderr)
-                sys.stderr.flush()
-                # Marked, not merely logged. This branch printed a traceback
-                # and fell through, so the run went on to write the canonical
-                # premarket row while `strat_levels` still held the PREVIOUS
-                # day's values -- a published brief whose levels silently did
-                # not move, which is the shape of failure this whole audit is
-                # about (Codex, PR #994).
-                #
-                # It became reachable in this PR: `_business_days_between`
-                # used to return 0 when the NYSE calendar lookup failed, which
-                # disabled the staleness guard, and now raises instead. That
-                # RuntimeError landed here, so the fix would have converted a
-                # silent wrong answer into a silent identical one.
-                #
-                # `PLAYBOOK_FAILED` rather than a new status: it is what the
-                # enclosing handler already sets for a failure in this block,
-                # and `persist_to_cloud_sql` reads it to route the row to
-                # premarket_analysis_history (audit trail) instead of the
-                # canonical table. The stale-source branch above keeps its own
-                # `STALE_DAILY_DATA`, which is a narrower diagnosis.
-                d['status'] = 'PLAYBOOK_FAILED'
-                d['playbook_error'] = (
-                    f"strat_levels persist failed: {type(exc).__name__}: {exc}")
+                    try:
+                        _today_ref = pd.Timestamp(analysis_date)
+                        if _today_ref.tz is None:
+                            _today_ref = _today_ref.tz_localize('UTC')
+                    except Exception:
+                        _today_ref = None
+                    with engine.connect() as conn:
+                        n = persist_level_map(
+                            level_map, conn.connection,
+                            source_data_as_of=_src_age,
+                            today=_today_ref,
+                        )
+                        conn.connection.commit()
+                    print(f"[brief:{ticker}] persisted {n} strat_levels rows "
+                          f"(source_data_as_of={_src_age}, today_ref={_today_ref})",
+                          file=sys.stderr, flush=True)
+                except StaleSourceDataError as exc:
+                    # Stale-source refusal is loud + surfaceable, not a generic
+                    # failure. Don't traceback (the message is the message).
+                    # Mark the ticker for the audit trail so the row lands in
+                    # premarket_analysis_history with the failure cause.
+                    print(f"[brief:{ticker}] strat_levels persist REFUSED (stale source): {exc}",
+                          file=sys.stderr, flush=True)
+                    d['status'] = 'STALE_DAILY_DATA'
+                    d['playbook_error'] = f"strat_levels persist refused: {exc}"
+                except Exception as exc:
+                    import traceback
+                    print(f"[brief:{ticker}] strat_levels persist FAILED: {type(exc).__name__}: {exc}",
+                          file=sys.stderr, flush=True)
+                    traceback.print_exc(file=sys.stderr)
+                    sys.stderr.flush()
+                    # Marked, not merely logged. This branch printed a traceback
+                    # and fell through, so the run went on to write the canonical
+                    # premarket row while `strat_levels` still held the PREVIOUS
+                    # day's values -- a published brief whose levels silently did
+                    # not move, which is the shape of failure this whole audit is
+                    # about (Codex, PR #994).
+                    #
+                    # It became reachable in this PR: `_business_days_between`
+                    # used to return 0 when the NYSE calendar lookup failed, which
+                    # disabled the staleness guard, and now raises instead. That
+                    # RuntimeError landed here, so the fix would have converted a
+                    # silent wrong answer into a silent identical one.
+                    #
+                    # `PLAYBOOK_FAILED` rather than a new status: it is what the
+                    # enclosing handler already sets for a failure in this block,
+                    # and `persist_to_cloud_sql` reads it to route the row to
+                    # premarket_analysis_history (audit trail) instead of the
+                    # canonical table. The stale-source branch above keeps its own
+                    # `STALE_DAILY_DATA`, which is a narrower diagnosis.
+                    d['status'] = 'PLAYBOOK_FAILED'
+                    d['playbook_error'] = (
+                        f"strat_levels persist failed: {type(exc).__name__}: {exc}")
         except Exception as e:
             import traceback
             print(f"[brief:{ticker}] playbook block FAILED: {type(e).__name__}: {e}",
