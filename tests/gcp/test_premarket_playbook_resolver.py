@@ -1383,6 +1383,8 @@ class TestPlanExcursion:
         assert plan_excursion('call', _calls_plan(stop_price=None), bars) is None
         assert plan_excursion('call', _calls_plan(stop_price=100.5), bars) is None
         assert plan_excursion('call', _calls_plan(cutoff_minutes=None), bars) is None
+        assert plan_excursion('call', _calls_plan(trigger_price=None), bars) is None
+        assert plan_excursion('call', _calls_plan(), bars.iloc[0:0]) is None
 
 
 class TestTradeOfDay:
