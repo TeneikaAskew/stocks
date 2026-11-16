@@ -184,9 +184,12 @@ _OVERVIEW_PROMPT = (
     "(whether price is above or below each current period open listed "
     "with it: bullish means above all of them, bearish below all, mixed "
     "otherwise). {weights} "
-    "A 2U candle adds its timeframe's weight to the score, a 2D candle "
-    "subtracts it, and an inside (1) or outside (3) bar adds nothing to the "
-    "score. The score's sign is not a statement about any one timeframe: "
+    "Each 2U candle counts plus its timeframe's weight and each 2D candle "
+    "minus it; an inside (1) or outside (3) bar adds nothing to the score. "
+    "The score is that sum divided by the total weight of every timeframe "
+    "that has a weight, inside and outside bars included, so one 2D candle "
+    "beside an inside bar scores further from zero than its own weight. "
+    "The score's sign is not a statement about any one timeframe: "
     "say a timeframe is bullish or bearish only when its own candle is 2U "
     "or 2D. Write "
     "ONE or TWO sentences explaining what this collective picture implies "
@@ -291,6 +294,10 @@ _AT_LEAST = (
     (re.compile(r"\bsome\b"), 1),
 )
 _MOST = re.compile(r"\bmost\b")
+# FTFC is price against the current period opens, not the candle type: a
+# clause in these words makes no candle claim unless it names a candle.
+_PRICE_VS_OPEN = re.compile(r"\b(?:opens?|ftfc|continuity)\b")
+_CANDLE_WORD = re.compile(r"\b(?:candles?|bars?)\b")
 _CLAUSE_BOUNDARY = re.compile(r"\.(?!\d)|[;,]|\b(?:but|while|whereas)\b", re.IGNORECASE)
 
 
@@ -310,7 +317,10 @@ def overview_conflicts(text: str, tickers: dict[str, dict]) -> list[dict]:
     clause describes: the brief tickers it names, else all of them. A
     clause with a partial quantifier is held to its count: 'one of' and
     'some' need one, 'two of three' and 'two of the three' need two, and
-    'most' needs more than half. A clause whose direction words point
+    'most' needs more than half. A clause about price against the period
+    opens (it says open, FTFC or continuity and names no candle or bar)
+    makes no candle claim: the monthly candle can be inside with price
+    above the monthly open. A clause whose direction words point
     both ways makes no claim: it cannot be said which timeframe each
     word is about.
 
@@ -337,6 +347,8 @@ def overview_conflicts(text: str, tickers: dict[str, dict]) -> list[dict]:
         claims = {_CLAIM_WORDS[w] for w in words if w in _CLAIM_WORDS}
         timeframes = [(key, word) for key, word in TIMEFRAME_WORDS.items() if word in words]
         if len(claims) != 1 or not timeframes:
+            continue
+        if _PRICE_VS_OPEN.search(lowered) and not _CANDLE_WORD.search(lowered):
             continue
         claim = next(iter(claims))
         described = [n for n in names if re.search(rf"\b{re.escape(n)}\b", clause)] or names

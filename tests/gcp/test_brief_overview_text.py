@@ -60,6 +60,15 @@ def test_prompt_says_inside_and_outside_add_nothing():
     assert 'a weighted vote of daily and weekly candle types' not in prompt
 
 
+def test_prompt_says_the_score_is_divided_by_the_weights():
+    # calculate_ftfc divides by the summed weights (lib/strat.py:502): daily 2D
+    # at 0.30 with weekly 1 at 0.10 is -0.30 / 0.40 = -0.75, not -0.30.
+    prompt = be.overview_system_prompt(StratClassifier().ftfc_weights)
+    assert ('The score is that sum divided by the total weight of every '
+            'timeframe that has a weight, inside and outside bars included') in prompt
+    assert "adds its timeframe's weight to the score" not in prompt
+
+
 def test_missing_labels_are_unavailable():
     d = _iwm()
     del d['ftfc_labels']
@@ -178,6 +187,23 @@ class TestOverviewCheck:
     def test_a_comma_between_two_statements_is_still_a_boundary(self):
         text = 'SPY is bearish on the weekly, QQQ is bullish'
         assert be.overview_conflicts(text, _three(weekly=('2D', '2U', '1'))) == []
+
+    @pytest.mark.parametrize('text', [
+        'SPY is above its monthly open with bullish FTFC.',
+        'IWM holds bullish continuity above the monthly open.',
+        'QQQ trades below its weekly opens, a bearish FTFC state.',
+    ])
+    def test_a_price_versus_open_statement_is_not_a_candle_claim(self, text):
+        # FTFC is price against the period opens, not the candle type: the
+        # monthly candle can be inside (1) with price above the monthly open.
+        tickers = _three(weekly=('1', '1', '1'), monthly=('1', '1', '1'))
+        assert be.overview_conflicts(text, tickers) == []
+
+    def test_a_candle_claim_beside_ftfc_words_is_still_checked(self):
+        tickers = _three(monthly=('1', '1', '1'))
+        found = be.overview_conflicts(
+            'The monthly candle is bullish with bullish FTFC.', tickers)
+        assert [c['timeframe'] for c in found] == ['monthly']
 
     def test_most_needs_a_strict_majority(self):
         text = 'most names are bearish on the weekly'
