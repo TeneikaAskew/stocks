@@ -15,6 +15,10 @@ exclusion counts and keeps every print (QQQ pre_low 647.05, pre_high
 """
 from __future__ import annotations
 
+import gzip
+import hashlib
+import json
+
 import pandas as pd
 import pytest
 
@@ -612,3 +616,195 @@ class TestConfirmedExtremes:
             100, "two-bars-or-body-v1", "stale-close-report-v1", "thin-bar-v1")
         pm = context(LONE_ROWS, prev_close=CONFIRMED_PRIOR_CLOSE)
         assert premarket_rule_record(pm) == {"confirmed": pm["confirmed"], "thin": pm["thin"]}
+
+
+# ── FEAT-PLAYBOOK-001 B8: the 2026-11-16 session on the stored bars ──────────
+#
+# tests/fixtures/premarket_2026_11_16/ holds read-only exports of production
+# (sources.json names the db-query execution, the statement and the sha256 of
+# every file): the one-minute bars of SPY, QQQ and IWM from 04:00 to 09:30 ET
+# as market_data_intraday stored them on 2026-11-16 22:27Z, the session's live
+# premarket_analysis rows, and the market_data_daily rows of 2026-11-13 and
+# 2026-11-16.
+SESSION_1116_DIR = fx.FIXTURES / "premarket_2026_11_16"
+
+
+def _table_1116(name: str) -> list[dict]:
+    raw = json.loads((SESSION_1116_DIR / name).read_text())
+    return [dict(zip(raw["columns"], row)) for row in raw["rows"]]
+
+
+def load_premarket_2026_11_16(ticker: str) -> tuple[pd.DataFrame, dict]:
+    """The session's stored one-minute bars of `ticker` (`ts` aware UTC) and
+    what its live brief row and its 2026-11-13 daily row recorded: the cutoff
+    (level_basis.premarket.fetched_at), the stored extremes, the prior close
+    and open, and the ATR and thresholds the 08:20 ET fetch filtered with."""
+    bars = pd.read_csv(SESSION_1116_DIR / f"{ticker}_bars.csv")
+    bars["ts"] = pd.to_datetime(bars["ts"], utc=True)
+    brief = next(r for r in _table_1116("brief_rows.json") if r["ticker"] == ticker)
+    prior = next(r for r in _table_1116("daily_rows.json")
+                 if r["ticker"] == ticker and r["date"] == "2026-11-13")
+    premarket = brief["level_basis"]["premarket"]
+    recorded = premarket["pre_filter_params"]
+    return bars, {
+        "cutoff": pd.Timestamp(premarket["fetched_at"]),
+        "stored_high": premarket["pre_high"],
+        "stored_low": premarket["pre_low"],
+        "stored_stale_prints": premarket["excluded_stale_prints"],
+        "prior_close": prior["close"],
+        "prior_open": prior["open"],
+        "atr": recorded["atr"],
+        "stale_print_atr": recorded["pm_stale_print_atr"]["value"],
+        "spike_atr": recorded["pm_spike_atr"]["value"],
+    }
+
+
+def _context_1116(ticker: str, *, drop_et: str | None = None) -> dict:
+    """calculate_premarket_context on the bars before the brief row's
+    recorded cutoff, with that row's prior close, ATR and thresholds.
+    `drop_et` leaves out the bar of that Eastern minute."""
+    bars, entry = load_premarket_2026_11_16(ticker)
+    bars = bars[bars["ts"] < entry["cutoff"]]
+    if drop_et is not None:
+        bars = bars[_et_minute(bars) != drop_et]
+    return calculate_premarket_context(
+        times=bars["ts"], open_=bars["open"], high=bars["high"], low=bars["low"],
+        close=bars["close"], volume=bars["volume"],
+        prev_close=entry["prior_close"], atr=entry["atr"], prev_open=entry["prior_open"],
+        stale_print_atr=entry["stale_print_atr"], spike_atr=entry["spike_atr"])
+
+
+def _et_minute(bars: pd.DataFrame) -> pd.Series:
+    from lib.eastern_time import as_eastern_time
+    return bars["ts"].map(lambda ts: as_eastern_time(ts).strftime("%H:%M"))
+
+
+# The stored raw premarket highs (premarket_analysis.level_basis.premarket
+# .pre_high of the live rows). The spec writes SPY's as 754.377: the stored
+# value is 754.3772.
+STORED_RAW_HIGH_1116 = {"IWM": 278.92, "SPY": 754.3772, "QQQ": 681.022}
+
+# pre_high and pre_low the code on this branch gives, each READ BY HAND from
+# the fixture bars before the cutoff (the last bar is 08:20 ET for all three)
+# before the code was run on them. Times are Eastern.
+#
+# IWM (prior close 277.54; rule (a) distance 0.0329 x 4.875 = 0.16):
+#   rule (a) drops the nine 277.54 prints of 07:35 (high, close), 07:36 (open,
+#   high), 07:39 (open, high), 07:40 (high, close) and 07:43 (high): every one
+#   of those bars has its midpoint 0.75 or more from 277.54.
+#   The 08:05 bar (high 278.92, volume 81) is thin and gives nothing; so are
+#   86 other bars under 100 shares.
+#   Highs left: 276.97 (04:03), 276.90 (04:01), 276.86 (06:54): second-highest
+#   276.90. Highest open or close left: the 04:03 close, 276.97 (28,705
+#   shares). pre_high = max(276.90, 276.97) = 276.97.
+#   Lows left: 275.74 (07:29) and 275.74 (07:30): second-lowest 275.74. Lowest
+#   open or close: the 07:29 and 07:30 closes, 275.74. pre_low = 275.74.
+#
+# QQQ (prior close 679.89; rule (a) distance 0.0371 x 16.338 = 0.61):
+#   rule (a) drops the sixteen 679.89 prints (twelve highs from 07:01 to
+#   08:07, the 07:39 open, the 07:37, 07:38 and 07:40 closes); no bar that
+#   carries one has its midpoint within 4.8 of 679.89.
+#   Highs left: 681.022 (08:05, 3,253 shares, the stored raw high), 679.8507
+#   (07:00), 675.49 (04:03): second-highest 679.8507. Highest open or close
+#   left: the 04:00 open, 675.29. pre_high = max(679.8507, 675.29) = 679.8507.
+#   Lows left: 668.28 (07:30), 668.33 (07:29): second-lowest 668.33. Lowest
+#   open or close: the 07:29 close, 668.34. pre_low = min(668.33, 668.34).
+#
+# SPY (prior close 754.37; rule (a) distance 0.0359 x 11.036 = 0.40):
+#   rule (a) drops the twelve prints at 754.37 to the cent (ten highs from
+#   07:01 to 08:07, the 07:36 and 07:38 closes). The 07:00 high 754.3772 is
+#   754.38 to the cent, so it is not one of them.
+#   Highs left: 754.3772 (07:00, the stored raw high), 753.01 (04:00), 752.90
+#   (04:01): second-highest 753.01. Highest open or close left: the 04:26
+#   open, 752.75. pre_high = max(753.01, 752.75) = 753.01.
+#   Lows left: 747.94 (07:30), 747.96 (07:29): second-lowest 747.96. Lowest
+#   open or close: the 07:29 close, 747.9791. pre_low = 747.96.
+#
+# NOT TO BE READ AS CORRECT for QQQ and SPY. QQQ's 679.8507 is one bar's wick
+# four cents under the prior close 679.89, kept because the 08:05 print stands
+# above it: the confirmed high is still a prior-close print, not the market's
+# premarket high (the owner's tape check gave 674.92). SPY's 753.01 holds only
+# on these stored bars: on the vendor's bars as read during the session the
+# 07:00 bar closed at 754.3759 and this rule returned that, the prior close
+# again (tape check 752.44). Prints at or beside the prior close are the
+# subject of docs/superpowers/specs/2026-11-16-feat-playbook-001-prior-close-prints.md
+# and are not handled here. IWM's 276.97 is the corrected value (tape 276.90).
+CONFIRMED_1116 = {
+    #        pre_high   pre_low
+    "IWM": (276.97, 275.74),
+    "QQQ": (679.8507, 668.33),   # see the note above: a prior-close print
+    "SPY": (753.01, 747.96),     # see the note above: stored bars only
+}
+# What each rule dropped, counted by hand in the same reading:
+#   (a) prior-close prints, (b) spikes, thin bars, candidate highs above
+#   pre_high (the two 08:05 and 07:00 raw highs), candidate lows below pre_low
+#   (the two 07:30 lows)
+RULE_COUNTS_1116 = {
+    "IWM": (9, 0, 87, 0, 0),
+    "QQQ": (16, 0, 7, 1, 1),
+    "SPY": (12, 0, 34, 1, 1),
+}
+
+
+class TestSession20261116:
+    """B8, second part: the rules on the session's stored bars."""
+
+    def test_sources_json_matches_the_files(self):
+        sources = json.loads((SESSION_1116_DIR / "sources.json").read_text())["files"]
+        on_disk = sorted(p.name for p in SESSION_1116_DIR.iterdir())
+        assert on_disk == sorted([*sources, "sources.json"])
+        for name, entry in sources.items():
+            data = (SESSION_1116_DIR / name).read_bytes()
+            assert hashlib.sha256(data).hexdigest() == entry["sha256"], name
+            if name.endswith(".csv"):
+                rows = len(pd.read_csv(SESSION_1116_DIR / name))
+            else:
+                text = gzip.decompress(data) if name.endswith(".gz") else data
+                rows = len(json.loads(text)["rows"])
+            assert rows == entry["rows"], name
+            assert entry["execution"].startswith("db-query-") and entry["sql"].startswith("SELECT")
+
+    @pytest.mark.parametrize("ticker", sorted(STORED_RAW_HIGH_1116))
+    def test_raw_highs_are_the_stored_ones(self, ticker):
+        _bars, entry = load_premarket_2026_11_16(ticker)
+        assert entry["stored_high"] == STORED_RAW_HIGH_1116[ticker]
+        pm = _context_1116(ticker)
+        assert pm["filtered"] is True
+        assert pm["confirmed"]["raw_high"] == STORED_RAW_HIGH_1116[ticker]
+
+    @pytest.mark.parametrize("ticker", sorted(CONFIRMED_1116))
+    def test_confirmed_extremes(self, ticker):
+        pm = _context_1116(ticker)
+        high, low = CONFIRMED_1116[ticker]
+        assert (pm["pre_high"], pm["pre_low"]) == (high, low)
+        stale, spikes, thin, above, below = RULE_COUNTS_1116[ticker]
+        assert pm["excluded_prior_close_prints"] == stale
+        assert pm["excluded_spike_prints"] == spikes
+        assert pm["thin"] == {"rule": "thin-bar-v1", "min_volume": 100, "bars_excluded": thin}
+        confirmed = pm["confirmed"]
+        assert confirmed["rule"] == "two-bars-or-body-v1" and confirmed["reason"] is None
+        assert (confirmed["high_bars_above"], confirmed["low_bars_below"]) == (above, below)
+        # Rule (a) had already dropped every print at the prior close, so the
+        # closing-price report rule found none of its own.
+        _bars, entry = load_premarket_2026_11_16(ticker)
+        assert confirmed["stale_close_reports"] == {
+            "rule": "stale-close-report-v1", "high": 0, "low": 0,
+            "prior_close": entry["prior_close"]}
+
+    def test_the_0805_iwm_bar_is_thin(self):
+        bars, entry = load_premarket_2026_11_16("IWM")
+        bar = bars[_et_minute(bars) == "08:05"]
+        assert len(bar) == 1 and bar["ts"].iloc[0] < entry["cutoff"]
+        # What is stored. The vendor's read in the spec was open 276.4801, high
+        # 278.92, low 276.4801, close 278.92, volume 1: the stored bar has the
+        # same open and high, a low and close of 276.24 and 81 shares. Under
+        # 100 either way.
+        assert bar[["open", "high", "low", "close", "volume"]].iloc[0].tolist() == [
+            276.4801, 278.92, 276.24, 276.24, 81]
+        with_bar, without = _context_1116("IWM"), _context_1116("IWM", drop_et="08:05")
+        assert with_bar["thin"]["bars_excluded"] == without["thin"]["bars_excluded"] + 1
+        # It is the raw high and it sets nothing.
+        assert with_bar["confirmed"]["raw_high"] == 278.92
+        assert without["confirmed"]["raw_high"] == 276.97
+        assert (with_bar["pre_high"], with_bar["pre_low"]) == (
+            without["pre_high"], without["pre_low"]) == CONFIRMED_1116["IWM"]

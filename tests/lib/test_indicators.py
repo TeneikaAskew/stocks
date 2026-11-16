@@ -397,6 +397,33 @@ class TestRelativeVolume:
             np.testing.assert_allclose(np.asarray(got, dtype=float), np.asarray(pinned),
                                        rtol=0, atol=0, equal_nan=True)
 
+    # IWM's daily volumes, 2026-10-16 to 2026-11-13, oldest first
+    # (market_data_daily; the same rows as
+    # tests/fixtures/premarket_2026_11_16/iwm_daily_volumes.json).
+    IWM_VOLUMES_TO_2026_11_13 = [
+        33865030, 19578591, 26433571, 15941432, 25750441, 20785738, 15412163,
+        18854400, 18855187, 21663841, 23490879, 24296866, 17421249, 34466810,
+        50885526, 25530878, 28942482, 21530262, 17613290, 22644959, 17722264]
+
+    def test_iwm_to_2026_11_13(self):
+        import json
+        from pathlib import Path
+
+        from lib.indicators import relative_volume
+        stored = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
+                             / 'premarket_2026_11_16' / 'iwm_daily_volumes.json').read_text())
+        assert stored['columns'] == ['date', 'volume']
+        assert stored['rows'][0][0] == '2026-11-13' and stored['rows'][-1][0] == '2026-10-16'
+        assert [v for _d, v in reversed(stored['rows'])] == self.IWM_VOLUMES_TO_2026_11_13
+        volume = pd.Series(self.IWM_VOLUMES_TO_2026_11_13, dtype=float)
+        # 17,722,264 over the mean of the 20 sessions before it (24,198,179.75).
+        assert sum(self.IWM_VOLUMES_TO_2026_11_13[:20]) / 20 == 24198179.75
+        out = relative_volume(volume, 20)
+        assert out.iloc[:20].isna().all()
+        assert round(float(out.iloc[20]), 4) == 0.7324
+        # The old form, the session in its own mean: what the brief stored.
+        assert round(float(calculate_rvol(volume, 20).iloc[20]), 4) == 0.7577
+
 
 class TestOBV:
     def test_basic(self, sample_ohlcv):
