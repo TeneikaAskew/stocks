@@ -6,10 +6,11 @@ canvases: []
 site_source_notes: [SHARED-01]
 done_when:
   - "Before the contract stage, a throwaway draft PR (closed unmerged, its red gate expected) whose registry-check.yml carries the moved base-suite job as designed here records one hosted run on this repository while it is private: the head checkout reaches the PR's commits, the two proposed files land in scripts/gate, and main's two suites run against them; a design change that run forces is made to this spec first."
-  - "A contract-stage PR changes only scripts/gate/spec_gate.py and the two gate suites: WORKFLOW_CONTRACTS accepts the base-suite duties in exactly one of two layouts, judged across the live pair and, separately, across the pinned pair: today's (spec-gate.yml job base-suite after the verdict, artifact handoff) or the moved one (registry-check.yml job base-suite as the Design section gives it: base checkout and sparse head checkout both with `persist-credentials: false`, no `git fetch`, the proposed files copied over scripts/gate with no action after, unconditional suites, no secret, no cache action, contents: read, not the registry job); every existing refusal keeps its wording and each other rule of both contracts is unchanged. Only the assertions that read the real workflow files' job layout change, which the owner's approval of this spec permits: the job lists at tests/scripts/test_spec_gate.py (`list(workflow[\"jobs\"]) == [\"gate\", \"base-suite\"]`) and tests/scripts/test_export_model_registry.py (`list(jobs) == [\"registry\"]`), and the base-suite block of `test_the_invoked_command_is_the_contract_and_policy_files_keep_their_schema` (export and upload in the gate job, `needs: gate`, the credential-free checkout, the download, the unconditional suite step); each asserts the same duty in whichever of the two layouts the files hold, and no other test, case or assertion changes. New tests show the gate refusing, in the moved layout, a base-suite job whose head checkout keeps credentials or is not sparse to the two files, that runs a `git fetch`, runs a suite before the copy or an action after it, reads a secret or restores a cache, refusing a pair that holds both layouts or neither, and accepting each layout whole, each recorded failing on main and passing on the head; main's own suites pass against the proposed gate in the hosted base-suite job, and both suites pass serially and with `-n 4`."
+  - "A contract-stage PR changes only scripts/gate/spec_gate.py and the two gate suites: WORKFLOW_CONTRACTS accepts the base-suite duties in exactly one of two layouts, judged across the live pair and, separately, across the pinned pair: today's (spec-gate.yml job base-suite after the verdict, artifact handoff) or the moved one (registry-check.yml job base-suite as the Design section gives it: base checkout and sparse head checkout both with `persist-credentials: false`, no `git fetch`, the proposed files copied over scripts/gate with no action after, unconditional suites, no secret, no cache action, contents: read, not the registry job); every existing refusal keeps its wording and each other rule of both contracts is unchanged. Only the assertions that read the real workflow files' job layout change, which the owner's approval of this spec permits: the job lists at tests/scripts/test_spec_gate.py (`list(workflow[\"jobs\"]) == [\"gate\", \"base-suite\"]`) and tests/scripts/test_export_model_registry.py (`list(jobs) == [\"registry\"]`), and the base-suite block of `test_the_invoked_command_is_the_contract_and_policy_files_keep_their_schema` (export and upload in the gate job, `needs: gate`, the credential-free checkout, the download, the unconditional suite step); each asserts the same duty in whichever of the two layouts the files hold, and the synthetic workflows the suites build (`GATE_WF`, `gate_workflow()` and the literal spec-gate.yml fixtures) move to the moved layout as a pair of files, each case keeping its intent and expected outcome, except one named group of cases (`old_layout_*` in tests/scripts/test_spec_gate.py) that keeps today's layout to show it is still accepted whole and still refused when weakened; no other test, case or assertion changes, and every case's move is listed in the PR body. New tests show the gate refusing, in the moved layout, a base-suite job whose head checkout keeps credentials or is not sparse to the two files, that runs a `git fetch`, runs a suite before the copy or an action after it, reads a secret or restores a cache, refusing a pair that holds both layouts or neither, and accepting each layout whole, each recorded failing on main and passing on the head; main's own suites pass against the proposed gate in the hosted base-suite job, and both suites pass serially and with `-n 4`."
   - "A pin-stage PR, whose base holds the contract stage, changes only scripts/gate/pinned/registry-check.yml (gains job base-suite) and scripts/gate/pinned/spec-gate.yml (keeps only job gate) to the moved layout; the base's gate accepts it, and .github/workflows/registry-check.yml and .github/workflows/spec-gate.yml stay byte-identical to MAIN."
   - "A live-stage PR makes each live workflow byte-equal to its pinned copy on MAIN (`cmp` recorded) and changes nothing else executable; on its exact head the registry-check base-suite job (plain `pull_request`, the head's workflow) and the spec-gate base-suite job (`pull_request_target`, the base's workflow) both pass every test of main's suites; its body lists every workflow file with its trigger and each job that executes head content, showing no workflow runs pull-request-controlled code under `pull_request_target`, and gives the owner's one settings step for the same sitting as its merge (in the required status checks of main's branch protection or ruleset, replace `spec-gate / base-suite` with `registry-check / base-suite`)."
-  - "A tighten-stage PR, whose base holds the live stage, removes today's layout from WORKFLOW_CONTRACTS and narrows the layout assertions to the moved layout alone, so a later PR that puts a suite back into spec-gate.yml is refused, with that refusal recorded failing on the live stage's merge and passing on the head; the first PR opened after the live stage shows `registry-check / base-suite` reported and required."
+  - "A retire-stage PR, whose base holds the live stage, removes the `old_layout_*` group and nothing else, so no test on main still requires today's layout to be accepted; the base's base-suite job passes against the unchanged gate."
+  - "A tighten-stage PR, whose base holds the retire stage, removes today's layout from WORKFLOW_CONTRACTS and narrows the layout assertions to the moved layout alone, so a later PR that puts a suite back into spec-gate.yml is refused, with that refusal recorded failing on the retire stage's merge and passing on the head; the first PR opened after the live stage shows `registry-check / base-suite` reported and required."
   - "Each stage's own delivery records, ordinary SHARED-01 source proof, full-default main and proposed docs audits with no new finding, the gate-file red-team pass on each frozen head, current-head review as CLAUDE.md section 2.5 counts it, every required check green and zero unresolved threads are complete."
 status: approved
 supersedes: null
@@ -71,27 +72,31 @@ A side effect: the base-suite job's four-worker run starts on the live-stage PR 
 
 The base's gate judges every pull request, including the one that changes the gate, and its
 contract today requires the suites inside `spec-gate.yml`. A pull request that moves them in one
-step is refused by the very gate it carries a fix for, so the move lands in four stages, each
-judged by a base that already accepts it:
+step is refused by the very gate it carries a fix for, so the move lands in stages, each judged
+by a base that already accepts it:
 
 0. Experiment: a throwaway draft PR runs the moved job once on this private repository, to prove
    the head checkout and the copy work before anything is built on them.
 1. Contract stage (FEAT-CICD-001): `WORKFLOW_CONTRACTS` accepts either layout whole, never both or
    neither, and the assertions that read the real workflows' job layout (named in done_when) accept
    the same two layouts. The workflows and pinned copies do not change. The owner's approval of
-   this spec is the say-so for changing those assertions; any other existing test the stage would
-   have to change goes back to the owner first.
+   this spec is the say-so for changing those assertions and for moving the synthetic workflow
+   fixtures to the new layout, keeping one named group (`old_layout_*`) on today's layout; any
+   other existing test the stage would have to change goes back to the owner first.
 2. Pin stage (FEAT-CICD-001): the pinned copies move to the new layout.
 3. Live stage (FEAT-CICD-001): each live workflow becomes a `cp` of its pinned copy.
    Owner, in the same sitting as its merge: replace the required check `spec-gate / base-suite`
    with `registry-check / base-suite`. Until then every pull request waits on a check that no
    longer reports.
-4. Tighten stage (FEAT-CICD-001): the contract and the layout assertions drop today's layout, so the
+4. Retire stage (FEAT-CICD-001): the `old_layout_*` group goes. The base's own suite judges every
+   proposed gate, so no test on the base may still expect today's layout to pass when the tighten
+   stage proposes refusing it.
+5. Tighten stage (FEAT-CICD-001): the contract and the layout assertions drop today's layout, so the
    suites cannot move back under `pull_request_target`.
-5. Owner, only if the repository becomes public: allow `pull_request_target` for
+6. Owner, only if the repository becomes public: allow `pull_request_target` for
    `.github/workflows/spec-gate.yml` only, in Settings, Actions, Policies, as written up separately.
 
-Between stages 1 and 4 the contract accepts both layouts. That is no weaker than today for either
+Between stages 1 and 5 the contract accepts both layouts. That is no weaker than today for either
 one: each layout must hold every duty it holds today, and a pull request still cannot edit a live
 workflow except to make it equal to its pinned copy on the base.
 
@@ -116,7 +121,8 @@ workflow except to make it equal to its pinned copy on the base.
 
 ## Rollback
 
-In reverse stage order, each its own PR judged by the base it lands on: put today's layout back in
-the contract (undo the tighten stage), make each pinned copy and then each live workflow equal to
-today's layout with the required check swapped back in the same sitting, then drop the moved layout
-from the contract.
+In reverse stage order, each its own PR judged by the base it lands on: the contract accepts both
+layouts again (undo the tighten stage); the `old_layout_*` group returns; the pinned copies and then
+the live workflows go back to today's layout, with the required check swapped back in the same
+sitting as the live merge; the synthetic fixtures move back to today's layout; and last the contract
+and layout assertions drop the moved layout.
