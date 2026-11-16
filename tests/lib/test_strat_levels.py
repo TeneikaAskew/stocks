@@ -1428,6 +1428,10 @@ class TestAtrRungsDisplayOnly:
             assert hparams == bb['params'], t
             assert {k: v for k, v in hb.items() if k not in rung_keys | {'params'}} == {
                 k: v for k, v in bb.items() if k != 'params'}, t
+            # The session of the gamma snapshot (FEAT-PLAYBOOK-001 B1) is a key the
+            # brief gained after the base was taken; the fixture run has no gamma
+            # snapshot, so it is None, and every other key is still the base's.
+            assert h.pop('gamma_market_session') is None, t
             assert h == b, t
             for side in ('calls', 'puts'):
                 for k in (1, 2, 3):
