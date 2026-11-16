@@ -669,8 +669,8 @@ def test_resolve_one_sets_and_binds_the_new_outcome_columns(monkeypatch):
     assert bound['puts_eod_pnl_pct'] is None
     assert bound['puts_eod_pnl_dollar'] is None
     assert bound['puts_trigger_hit_ts'] == pd.Timestamp(_ts(0))
-    assert mod.RESOLVER_VERSION == '2026-11-15.v4'
-    assert bound['outcome_resolver_version'] == '2026-11-15.v4'
+    assert mod.RESOLVER_VERSION == '2026-11-16.v5'
+    assert bound['outcome_resolver_version'] == '2026-11-16.v5'
     assert bound['d'] == '2026-05-06' and bound['t'] == 'SPY'
 
 
@@ -989,7 +989,11 @@ class TestPlanInputs:
 
 
 def _plan_set_and_bound(engine):
-    [(sql, bound)] = engine.conn.calls
+    # The premarket_analysis UPDATE is the first statement; a resolved trade
+    # is followed by its plan_excursions write (target hit rates spec).
+    (sql, bound), *rest = engine.conn.calls
+    assert sql.startswith('UPDATE premarket_analysis SET ')
+    assert all('plan_excursions' in later for later, _ in rest) and len(rest) <= 1
     set_list = sql.split(' SET ', 1)[1].split(' WHERE ', 1)[0]
     return set_list, bound
 
@@ -1403,3 +1407,110 @@ class TestTradeOfDay:
     def test_a_same_bar_tie_or_neither_gives_no_trade(self):
         assert trade_of_day(self._r(4), self._r(4)) is None
         assert trade_of_day(None, None) is None
+
+
+
+# ─── Target hit rates spec, Design 4: resolve_one writes the day's trade ──
+
+def _v3_row():
+    import json
+
+    from tests.lib.session_levels_helpers import d8_basis
+    return pd.DataFrame([{
+        'calls_trigger_price': 252.10, 'calls_stop_price': 248.20,
+        'calls_t1_price': 253.00, 'calls_t2_price': 275.00, 'calls_t3_price': 280.00,
+        'puts_trigger_price': 248.20, 'puts_stop_price': 252.10,
+        'puts_t1_price': 247.50, 'puts_t2_price': 247.00, 'puts_t3_price': 225.00,
+        'level_basis': json.dumps(d8_basis()), 'outcome_resolved_at': None,
+    }])
+
+
+_CALLS_TRADE_BARS = [
+    {'time': _ts(0), 'open': 251.00, 'high': 251.50, 'low': 250.80, 'close': 251.40},
+    {'time': _ts(1), 'open': 251.90, 'high': 252.50, 'low': 251.80, 'close': 252.40},
+    {'time': _ts(2), 'open': 260.00, 'high': 276.00, 'low': 259.00, 'close': 270.00},
+    {'time': _ts(389), 'open': 270.00, 'high': 271.00, 'low': 269.00, 'close': 270.00},
+]
+# Opens through the calls trigger (252.10) and never reaches the puts
+# trigger (248.20): no side enters, no trade.
+_NO_TRADE_BARS = [
+    {'time': _ts(0), 'open': 252.50, 'high': 253.00, 'low': 252.20, 'close': 252.80},
+    {'time': _ts(389), 'open': 252.80, 'high': 253.10, 'low': 252.30, 'close': 252.90},
+]
+
+
+def _resolve(monkeypatch, row, bars, force=False):
+    import gcp.premarket_playbook_resolver as mod
+
+    reads = iter([row, pd.DataFrame(bars)])
+    monkeypatch.setattr(mod.pd, 'read_sql', lambda *a, **k: next(reads))
+    engine = _RecordingEngine()
+    updates, reason = mod.resolve_one(_date(2026, 5, 6), 'tst', engine, force=force)
+    assert reason == 'resolved'
+    return updates, engine.conn.calls
+
+
+def test_resolve_one_upserts_the_day_s_trade_in_the_same_transaction(monkeypatch):
+    import gcp.premarket_playbook_resolver as mod
+    from lib.strat_levels import LEVEL_RULE_VERSION
+
+    _, calls = _resolve(monkeypatch, _v3_row(), _CALLS_TRADE_BARS)
+    assert len(calls) == 2
+    assert calls[0][0].startswith('UPDATE premarket_analysis SET ')
+    sql, bound = calls[1]
+    assert sql.startswith('INSERT INTO plan_excursions ')
+    assert 'ON CONFLICT (ticker, session_date, rule_version) DO UPDATE SET' in sql
+    assert "plan_excursions.source = 'history'" not in sql
+    assert (bound['t'], bound['d'], bound['v']) == ('TST', '2026-05-06', LEVEL_RULE_VERSION)
+    assert (bound['side'], bound['source'], bound['rv']) == ('calls', 'resolver', mod.RESOLVER_VERSION)
+    assert (bound['trigger'], bound['stop'], bound['fill']) == (252.10, 248.20, pytest.approx(252.10))
+    assert bound['fill_ts'] == pd.Timestamp(_ts(1)) and bound['stop_ts'] is None
+    assert bound['xr'] == pytest.approx((276.00 - 252.10) / 3.9)
+    assert bound['xh'] is None
+
+
+def test_a_forced_re_resolution_to_no_trade_deletes_the_day_s_row(monkeypatch):
+    from lib.strat_levels import LEVEL_RULE_VERSION
+
+    _, first = _resolve(monkeypatch, _v3_row(), _CALLS_TRADE_BARS)
+    assert first[1][0].startswith('INSERT INTO plan_excursions ')
+    row = _v3_row()
+    row.loc[0, 'outcome_resolved_at'] = pd.Timestamp('2026-05-06T21:00:00Z')
+    _, calls = _resolve(monkeypatch, row, _NO_TRADE_BARS, force=True)
+    assert len(calls) == 2
+    sql, bound = calls[1]
+    assert sql == ('DELETE FROM plan_excursions WHERE ticker = :t AND session_date = :d '
+                   'AND rule_version = :v')
+    assert bound == {'t': 'TST', 'd': '2026-05-06', 'v': LEVEL_RULE_VERSION}
+
+
+def test_a_basis_with_no_rule_version_writes_nothing(monkeypatch):
+    import json
+
+    row = _v3_row()
+    basis = json.loads(row.loc[0, 'level_basis'])
+    basis.pop('rule_version')
+    row.loc[0, 'level_basis'] = json.dumps(basis)
+    _, calls = _resolve(monkeypatch, row, _CALLS_TRADE_BARS)
+    assert len(calls) == 1 and calls[0][0].startswith('UPDATE premarket_analysis SET ')
+
+
+def test_a_history_write_never_replaces_a_resolver_row_and_deletes_only_its_own():
+    import gcp.premarket_playbook_resolver as mod
+
+    plans = {'calls': _calls_plan(), 'puts': _puts_plan()}
+    ex = ExcursionResult(fill_i=1, fill_price=100.0, fill_ts=_ts(1), stop_i=None,
+                         stop_ts=None, excursion_r=1.5, excursion_held5_r=1.2)
+    sql, bound = mod.excursion_statement('spy', '2025-10-22', 'feat-strat-001.v3',
+                                         ('calls', ex), plans, 'history')
+    assert sql.text.endswith("DO UPDATE SET side = EXCLUDED.side, trigger_price = EXCLUDED.trigger_price, "
+                             "stop_price = EXCLUDED.stop_price, fill_price = EXCLUDED.fill_price, "
+                             "fill_ts = EXCLUDED.fill_ts, stop_ts = EXCLUDED.stop_ts, "
+                             "excursion_r = EXCLUDED.excursion_r, "
+                             "excursion_held5_r = EXCLUDED.excursion_held5_r, "
+                             "source = EXCLUDED.source, resolver_version = EXCLUDED.resolver_version, "
+                             "written_at = EXCLUDED.written_at WHERE plan_excursions.source = 'history'")
+    assert bound['source'] == 'history' and bound['t'] == 'SPY'
+    sql, _ = mod.excursion_statement('spy', '2025-10-22', 'feat-strat-001.v3', None, plans, 'history')
+    assert sql.text.endswith("AND rule_version = :v AND source = 'history'")
+    assert mod.excursion_statement('spy', '2025-10-22', None, ('calls', ex), plans, 'history') is None

@@ -97,7 +97,9 @@ _ET = ET
 # (FEAT-STRAT-001 drop-entry-cutoff spec, Design 3), so on a half day a print
 # after the early close is never a plan entry and the close legs book at the
 # last bar before the close; the existing columns are unchanged.
-RESOLVER_VERSION = '2026-11-15.v4'
+# 2026-11-16.v5 also writes the day's trade to plan_excursions (FEAT-STRAT-001
+# target hit rates, Design 4); every premarket_analysis column is unchanged.
+RESOLVER_VERSION = '2026-11-16.v5'
 
 # plan_r_status values, in the order the first that applies wins.
 PLAN_TARGETS_UNAVAILABLE = 'targets_unavailable'
@@ -876,8 +878,17 @@ def resolve_one(
     # already returned no_bars.
     close_utc = pd.Timestamp(session_close(analysis_date))
     plan_bars = bars[bars['time'] < close_utc].reset_index(drop=True)
-    calls_plan = resolve_plan('call', plan_inputs('calls', row, basis, _policy_fn), plan_bars)
-    puts_plan = resolve_plan('put', plan_inputs('puts', row, basis, _policy_fn), plan_bars)
+    calls_in = plan_inputs('calls', row, basis, _policy_fn)
+    puts_in = plan_inputs('puts', row, basis, _policy_fn)
+    calls_plan = resolve_plan('call', calls_in, plan_bars)
+    puts_plan = resolve_plan('put', puts_in, plan_bars)
+    # The day's trade for the target hit rates (2026-11-16 spec, Design 4):
+    # the same bars and the same published plans, the first side to fill.
+    trade = trade_of_day(plan_excursion('call', calls_in, plan_bars),
+                         plan_excursion('put', puts_in, plan_bars))
+    excursion_sql = excursion_statement(
+        ticker, analysis_date, (basis or {}).get('rule_version'), trade,
+        {'calls': calls_in, 'puts': puts_in}, 'resolver')
 
     # Build update payload
     updates = {
@@ -981,10 +992,58 @@ def resolve_one(
 
     with engine.begin() as conn:
         conn.execute(update_sql, {**updates, 'd': str(analysis_date), 't': ticker.upper()})
+        if excursion_sql is not None:
+            conn.execute(*excursion_sql)
     logger.info("resolved %s %s: calls_pnl=%s%% puts_pnl=%s%%",
                 ticker, analysis_date,
                 calls_out.eod_pnl_pct, puts_out.eod_pnl_pct)
     return updates, 'resolved'
+
+
+_EXCURSION_UPSERT = {
+    # A resolver row replaces any row for the day (the resolver scores the
+    # brief's own published basis); a history row never replaces a
+    # resolver row.
+    'resolver': '',
+    'history': " WHERE plan_excursions.source = 'history'",
+}
+
+
+def excursion_statement(ticker: str, session_date, rule_version: Optional[str],
+                        trade: Optional[tuple], plans: dict, source: str):
+    """The plan_excursions write for one ticker-day (target hit rates spec,
+    Design 4), as (sql, params) for conn.execute, or None.
+
+    With a trade, an upsert keyed (ticker, session_date, rule_version); a
+    history write never replaces a resolver row. With no trade (a same-bar
+    tie or no entry), a delete of the day's row, a history delete touching
+    only a history row. A basis with no rule_version writes nothing."""
+    if not rule_version:
+        return None
+    key = {'t': ticker.upper(), 'd': str(session_date), 'v': rule_version}
+    if trade is None:
+        only = " AND source = 'history'" if source == 'history' else ''
+        return (text("DELETE FROM plan_excursions WHERE ticker = :t AND session_date = :d "
+                     "AND rule_version = :v" + only), key)
+    side, ex = trade
+    plan = plans[side]
+    params = {**key, 'side': side, 'trigger': float(plan.trigger_price),
+              'stop': float(plan.stop_price), 'fill': float(ex.fill_price),
+              'fill_ts': ex.fill_ts, 'stop_ts': ex.stop_ts, 'xr': ex.excursion_r,
+              'xh': ex.excursion_held5_r, 'source': source, 'rv': RESOLVER_VERSION}
+    sql = (
+        "INSERT INTO plan_excursions (ticker, session_date, rule_version, side, trigger_price, "
+        "stop_price, fill_price, fill_ts, stop_ts, excursion_r, excursion_held5_r, source, "
+        "resolver_version, written_at) VALUES (:t, :d, :v, :side, :trigger, :stop, :fill, "
+        ":fill_ts, :stop_ts, :xr, :xh, :source, :rv, NOW()) "
+        "ON CONFLICT (ticker, session_date, rule_version) DO UPDATE SET "
+        "side = EXCLUDED.side, trigger_price = EXCLUDED.trigger_price, "
+        "stop_price = EXCLUDED.stop_price, fill_price = EXCLUDED.fill_price, "
+        "fill_ts = EXCLUDED.fill_ts, stop_ts = EXCLUDED.stop_ts, "
+        "excursion_r = EXCLUDED.excursion_r, excursion_held5_r = EXCLUDED.excursion_held5_r, "
+        "source = EXCLUDED.source, resolver_version = EXCLUDED.resolver_version, "
+        "written_at = EXCLUDED.written_at" + _EXCURSION_UPSERT[source])
+    return text(sql), params
 
 
 _PLAN_FIELDS = ('entry_status', 'fill_price', 'fill_ts', 'r', 'r_status',
