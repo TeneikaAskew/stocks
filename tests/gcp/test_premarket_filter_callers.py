@@ -26,7 +26,11 @@ from tests.lib import strat_2026_11_06 as fx
 from tests.lib.level_params_fixtures import fixture_params
 
 SESSION = fx.SESSION
-EXPECTED = {"SPY": (738.04, 730.64), "QQQ": (660.398, 649.62), "IWM": (272.50, 269.13)}
+# pre_high and pre_low under the confirmed rule (FEAT-PLAYBOOK-001 B7). Until
+# then these were the filter's own extremes, each one bar's lone wick: SPY
+# (738.04, 730.64), QQQ (660.398, 649.62), IWM (272.50, 269.13); the bars are
+# named beside FILTERED in tests/lib/test_premarket_print_filter.py.
+EXPECTED = {"SPY": (737.9285, 730.70), "QQQ": (660.29, 649.65), "IWM": (272.41, 269.36)}
 
 
 def _sql_param(v):
@@ -145,7 +149,7 @@ def test_nightly_values_do_not_move_with_the_fetch_dates_own_bar(monkeypatch):
         "SPY", session_row={"Open": 700.0, "High": 1200.0, "Low": 600.0, "Close": 1100.0}))
     for col in ("pre_high", "pre_low", "pre_vwap"):
         assert wild[col] == pytest.approx(base[col]), col
-    assert wild["pre_high"] == pytest.approx(738.04)
+    assert wild["pre_high"] == pytest.approx(737.9285)
 
 
 def test_refresh_values_do_not_move_with_the_fetch_dates_own_row(monkeypatch):
@@ -157,7 +161,7 @@ def test_refresh_values_do_not_move_with_the_fetch_dates_own_row(monkeypatch):
         session_atr=200.0))
     for col in ("pre_high", "pre_low", "pre_vwap", "gap_pct"):
         assert later[col] == pytest.approx(base[col]), col
-    assert later["pre_low"] == pytest.approx(649.62)
+    assert later["pre_low"] == pytest.approx(649.65)
 
 
 def test_refresh_reads_the_prior_sessions_close_open_and_atr(monkeypatch):

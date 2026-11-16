@@ -1406,7 +1406,20 @@ class TestAtrRungsDisplayOnly:
         from tests.lib.atr_levels_display_only import BRIEF_TICKERS, brief_entries
         golden = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
                              / 'atr_levels_brief_base.json').read_text())
-        head = brief_entries(monkeypatch)
+        # The base was taken on the premarket snapshot of its day, whose high
+        # and low were the print filter's own extremes (SPY 738.04 and 730.64,
+        # QQQ 660.398 and 649.62, IWM 272.50 and 269.13). FEAT-PLAYBOOK-001 B7
+        # takes the extremes from confirmed prints, so the same bars now give
+        # other values; the brief here is built on the snapshot the base
+        # recorded, as a stored row would hold it, and every column is then
+        # the base's. What the bars give under the confirmed rule is pinned in
+        # tests/lib/test_premarket_print_filter.py (FILTERED).
+        stored = {t: {col: golden[t]['level_basis']['premarket'][col]
+                      for col in ('pre_high', 'pre_low')} for t in BRIEF_TICKERS}
+        assert stored == {'SPY': {'pre_high': 738.04, 'pre_low': 730.64},
+                          'QQQ': {'pre_high': 660.398, 'pre_low': 649.62},
+                          'IWM': {'pre_high': 272.5, 'pre_low': 269.13}}
+        head = brief_entries(monkeypatch, premarket=stored)
         assert sorted(head) == sorted(golden) == sorted(BRIEF_TICKERS)
         rung_keys = {'atr_rungs', 'atr_rungs_dropped', 'atr_rung_status', 'atr_rung_anchors',
                      'atr_rung_params',
