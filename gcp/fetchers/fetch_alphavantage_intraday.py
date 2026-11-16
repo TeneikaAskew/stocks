@@ -904,6 +904,17 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
         if _held_digest(symbol, start, end, conn=conn) != digest:
             raise _HeldChanged("held rows changed (same bar counts, new content)")
 
+    # The bar flag pass holds a month's advisory lock from before its read
+    # until its write commits. Each swap takes the lock of every month whose
+    # flags and coverage its span clear can delete, before it locks a bar, so
+    # no pass publishes rows computed from bars this swap replaced (#1982).
+    # For every ticker: the keys are cheap, and a ticker with no flags has
+    # nothing to wait for.
+    from gcp.fetchers.intraday_bar_flags import (  # noqa: PLC0415
+        flag_lock_key,
+        flag_months_overlapping,
+    )
+
     cleared: dict = {}
     try:
         deleted, inserted = replace_rows_in_window(
@@ -912,6 +923,8 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
             max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify,
             clear_tables=DERIVED_TS_TABLES, cleared=cleared,
             clear_span_tables=DERIVED_SPAN_TABLES,
+            advisory_locks=[flag_lock_key(symbol, m)
+                            for m in flag_months_overlapping(start, end)],
             # The previous month's late bars: this month's refetch cannot
             # return them, so they are left as they are, inserted_at included.
             # Their own month rewrites them (the tail swap below).
@@ -938,6 +951,8 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
             max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify_tail,
             clear_tables=DERIVED_TS_TABLES, cleared=tail_cleared,
             clear_span_tables=DERIVED_SPAN_TABLES,
+            advisory_locks=[flag_lock_key(symbol, m)
+                            for m in flag_months_overlapping(end, tail_end)],
             spare_ts=tail_spare)
     except Exception as e:
         # The window's swap has committed, so this month is neither untouched

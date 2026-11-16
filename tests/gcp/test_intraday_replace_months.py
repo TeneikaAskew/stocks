@@ -2145,3 +2145,180 @@ def test_a_span_table_with_no_row_cleared_prints_no_rebuild_line(tmp_path, caplo
         "REBUILD intraday_bar_flag_coverage rows_cleared=3",
         "REBUILD strat_features_1m rows_cleared=390",
     ]
+
+
+# -- FEAT-DATA-001, bar flags: the replace takes the pass's locks (#1982) ------
+
+
+def _keys_of(symbol: str, months: list) -> list[int]:
+    from gcp.fetchers.intraday_bar_flags import flag_lock_key
+    return [flag_lock_key(symbol, m) for m in months]
+
+
+def test_the_swaps_receive_their_locks():
+    from gcp.fetchers.intraday_bar_flags import flag_months_overlapping
+
+    stored, feb = _february()
+    r, swap = _replace(stored, feb, "SPY", 2018, 2, commit=True)
+    assert r["status"] == fai.REPLACE_OK and swap.call_count == 2
+    window, tail = swap.call_args_list
+    # The window's swap of month M: M-1, M and M+1. The tail's: M and M+1.
+    assert window.kwargs["advisory_locks"] == _keys_of(
+        "SPY", [(2018, 1), (2018, 2), (2018, 3)])
+    assert tail.kwargs["advisory_locks"] == _keys_of("SPY", [(2018, 2), (2018, 3)])
+    start, end = fai.month_replace_window(2018, 2)
+    assert window.kwargs["advisory_locks"] == _keys_of(
+        "SPY", flag_months_overlapping(start, end))
+    tail_start, tail_end = tail.args[4:6]
+    assert tail_start == end
+    assert tail.kwargs["advisory_locks"] == _keys_of(
+        "SPY", flag_months_overlapping(end, tail_end))
+    assert _keys_of("SPY", [(2018, 2)]) == [-4104793531149027913]
+
+
+@pytest.mark.parametrize("symbol,year,month,months", [
+    ("SPY", 2026, 1, [(2025, 12), (2026, 1), (2026, 2)]),
+    ("QQQ", 2025, 12, [(2025, 11), (2025, 12), (2026, 1)]),
+    # Every ticker, not only the three that have flags.
+    ("AMD", 2026, 9, [(2026, 8), (2026, 9), (2026, 10)]),
+])
+def test_the_window_swap_locks_the_month_and_both_neighbours(symbol, year, month, months):
+    captured = {}
+
+    def fake_replace(df, table, key, ts_col, start, end, **kw):
+        captured.update(kw, key=key)
+        return 961, len(df)
+
+    day = date(year, month, 15)
+    vendor = _vendor_month([day.isoformat()]).assign(ticker=symbol)
+    with patch.object(fai, "fetch_month", return_value=(vendor, fai.FETCH_OK)), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({day: 1})), \
+         patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
+        r = fai.replace_month(symbol, year, month, "k", commit=True)
+    assert r["status"] == fai.REPLACE_OK
+    assert captured["key"]["ticker"] == symbol
+    assert captured["advisory_locks"] == _keys_of(symbol, months)
+    assert all(type(k) is int and -2**63 <= k < 2**63 for k in captured["advisory_locks"])
+
+
+def _lock_engine(isolation: str = "read committed", deleted: int = 1):
+    """_swap_engine, whose lock statement answers *isolation*."""
+    engine, conn, tbl = _engine_with(rowcount=deleted)
+    calls = []
+
+    def execute(stmt, *a, **k):
+        q = " ".join(str(stmt).split())
+        calls.append((q, a[0] if a else None))
+        r = MagicMock()
+        r.scalar_one.return_value = deleted
+        r.scalar.return_value = "exists"
+        r.one.return_value = (isolation, "", "", "")
+        r.rowcount = deleted if q.startswith("DELETE FROM market_data_intraday") else 1
+        return r
+    conn.execute.side_effect = execute
+    return engine, tbl, calls
+
+
+LOCK_KEYS = [2323874143540971683, -2**63, 2**63 - 1, -7, 0]
+LOCK_SELECT = ("SELECT current_setting('transaction_isolation'), pg_advisory_xact_lock(:k0), "
+               "pg_advisory_xact_lock(:k1), pg_advisory_xact_lock(:k2), "
+               "pg_advisory_xact_lock(:k3), pg_advisory_xact_lock(:k4)")
+
+
+@pytest.mark.parametrize("with_verify", [True, False])
+def test_lock_statement_precedes_the_row_lock(with_verify):
+    import gcp.database as db
+    engine, tbl, calls = _lock_engine()
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}):
+        db.replace_rows_in_window(
+            df, "market_data_intraday", {"ticker": "SPY", "interval": "1min"}, "ts",
+            start, end, verify=(lambda c: calls.append(("VERIFY", None))) if with_verify else None,
+            clear_tables=("intraday_flow_15m",),
+            clear_span_tables=("intraday_bar_flags",), advisory_locks=LOCK_KEYS)
+    texts = [q for q, _ in calls]
+    assert texts[0] == "SET LOCAL lock_timeout = '30s'"
+    assert texts[1] == LOCK_SELECT
+    # One statement, each key once, ascending.
+    assert calls[1][1] == {"k0": -2**63, "k1": -7, "k2": 0, "k3": 2323874143540971683,
+                           "k4": 2**63 - 1}
+    assert texts.count("SET LOCAL lock_timeout = '30s'") == 1
+    assert sum("pg_advisory_xact_lock" in q for q in texts) == 1
+    row_lock = ("SELECT count(*) FROM (SELECT 1 FROM market_data_intraday WHERE ticker = :k_ticker "
+                "AND interval = :k_interval AND ts >= :w_start AND ts < :w_end FOR UPDATE) locked")
+    delete = ("DELETE FROM market_data_intraday WHERE ticker = :k_ticker "
+              "AND interval = :k_interval AND ts >= :w_start AND ts < :w_end")
+    if with_verify:
+        assert texts[2:5] == [row_lock, "VERIFY", delete]
+    else:
+        # Without verify the swap takes no row lock, as before.
+        assert texts[2] == delete and not any("FOR UPDATE" in q for q in texts)
+    first_delete = min(i for i, q in enumerate(texts) if q.startswith("DELETE"))
+    assert first_delete > 1
+
+
+def test_a_key_given_twice_is_locked_once():
+    import gcp.database as db
+    engine, tbl, calls = _lock_engine()
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}):
+        db.replace_rows_in_window(
+            df, "market_data_intraday", {"ticker": "SPY", "interval": "1min"}, "ts",
+            start, end, advisory_locks=[5, 3, 5])
+    assert calls[1] == (
+        "SELECT current_setting('transaction_isolation'), pg_advisory_xact_lock(:k0), "
+        "pg_advisory_xact_lock(:k1)", {"k0": 3, "k1": 5})
+
+
+@pytest.mark.parametrize("with_verify", [True, False])
+def test_with_no_advisory_locks_no_lock_statement_is_issued(with_verify):
+    import gcp.database as db
+    engine, tbl, calls = _lock_engine()
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}):
+        db.replace_rows_in_window(
+            df, "market_data_intraday", {"ticker": "SPY", "interval": "1min"}, "ts",
+            start, end, verify=(lambda c: None) if with_verify else None, advisory_locks=())
+    texts = [q for q, _ in calls]
+    assert not any("pg_advisory" in q or "transaction_isolation" in q for q in texts)
+    # The lock timeout is set only for the row lock, as before.
+    assert texts.count("SET LOCAL lock_timeout = '30s'") == (1 if with_verify else 0)
+
+
+@pytest.mark.parametrize("with_verify", [True, False])
+def test_other_isolation_raises_before_any_row_lock(with_verify):
+    import gcp.database as db
+    engine, tbl, calls = _lock_engine(isolation="repeatable read")
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    verified = []
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}), \
+         pytest.raises(RuntimeError, match="repeatable read"):
+        db.replace_rows_in_window(
+            df, "market_data_intraday", {"ticker": "SPY", "interval": "1min"}, "ts",
+            start, end, verify=verified.append if with_verify else None,
+            clear_span_tables=("intraday_bar_flags",), advisory_locks=[1, 2, 3])
+    texts = [q for q, _ in calls]
+    assert len(texts) == 2 and texts[0] == "SET LOCAL lock_timeout = '30s'"
+    assert "pg_advisory_xact_lock" in texts[1]
+    assert verified == []
+    assert not any("FOR UPDATE" in q or q.startswith(("DELETE", "INSERT")) for q in texts)
+
+
+@pytest.mark.parametrize("key", ["1", 1.0, True, 2**63, -2**63 - 1, None])
+def test_bad_keys_are_refused(key):
+    import gcp.database as db
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    with patch.object(db, "get_engine", side_effect=AssertionError("no DB call expected")), \
+         pytest.raises(ValueError, match="advisory_locks"):
+        db.replace_rows_in_window(
+            df, "market_data_intraday", {"ticker": "SPY", "interval": "1min"}, "ts",
+            start, end, advisory_locks=[7, key])

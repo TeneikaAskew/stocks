@@ -1112,3 +1112,55 @@ def test_history_pass_that_raises_exits_1(monkeypatch, caplog):
             fai.main()
     assert stop.value.code == 1
     assert flag_lines(caplog)[-1].startswith("bar flags failed (outage)")
+
+
+# Task 10: the months a replace must lock
+
+
+def test_months_overlapping():
+    start, end = intraday_month_window(2023, 5)
+    assert ibf.flag_months_overlapping(start, end) == [(2023, 4), (2023, 5), (2023, 6)]
+    # A tail strip past May's window end.
+    assert ibf.flag_months_overlapping(end, end + timedelta(days=1)) == [(2023, 5), (2023, 6)]
+    # An empty span, and one that runs backwards.
+    assert ibf.flag_months_overlapping(start, start) == []
+    assert ibf.flag_months_overlapping(end, start) == []
+    # Across a year end.
+    assert ibf.flag_months_overlapping(*intraday_month_window(2025, 12)) == [
+        (2025, 11), (2025, 12), (2026, 1)]
+    assert ibf.flag_months_overlapping(*intraday_month_window(2026, 1)) == [
+        (2025, 12), (2026, 1), (2026, 2)]
+
+
+def test_months_overlapping_is_the_span_clears_predicate():
+    # read_start < end AND read_end > start, as the replace's DELETE has it,
+    # over every month a span of the history could touch.
+    every = xb.months_between((2014, 1), (2027, 12))
+    spans = [
+        intraday_month_window(2023, 5),
+        (datetime(2023, 5, 8, 2, tzinfo=UTC), datetime(2023, 5, 8, 2, 1, tzinfo=UTC)),
+        (datetime(2023, 5, 8, 1, 59, tzinfo=UTC), datetime(2023, 5, 8, 2, tzinfo=UTC)),
+        (datetime(2023, 5, 25, 1, 59, tzinfo=UTC), datetime(2023, 5, 25, 2, tzinfo=UTC)),
+        (datetime(2023, 5, 25, 2, tzinfo=UTC), datetime(2023, 5, 25, 2, 1, tzinfo=UTC)),
+        (datetime(2015, 1, 2, tzinfo=UTC), datetime(2026, 11, 14, tzinfo=UTC)),
+    ]
+    expected = [
+        [(2023, 4), (2023, 5), (2023, 6)],
+        [(2023, 5)],               # past April's margin: May's own days only
+        [(2023, 4), (2023, 5)],    # the last minute April's read holds
+        [(2023, 5)],               # the minute before June's read starts
+        [(2023, 5), (2023, 6)],    # the first minute June's read holds
+        xb.months_between((2014, 12), (2026, 11)),
+    ]
+    for (start, end), months in zip(spans, expected):
+        by_predicate = [m for m in every
+                        if ibf.read_window(m)[0] < end and ibf.read_window(m)[1] > start]
+        assert ibf.flag_months_overlapping(start, end) == by_predicate == months
+
+
+def test_months_overlapping_refuses_a_naive_bound():
+    start, end = intraday_month_window(2023, 5)
+    with pytest.raises(ValueError, match="tz-aware"):
+        ibf.flag_months_overlapping(start.replace(tzinfo=None), end)
+    with pytest.raises(ValueError, match="tz-aware"):
+        ibf.flag_months_overlapping(start, end.replace(tzinfo=None))

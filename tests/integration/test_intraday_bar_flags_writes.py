@@ -433,3 +433,105 @@ def test_a_tail_swap_past_a_window_end_clears_that_month_and_the_next(
     assert _coverage_months(run_sql, "SPY") == [date(2011, 3, 1), date(2011, 6, 1)]
     assert [ts.month for ts in _flag_months_held(run_sql, "SPY")] == [3, 6]
     assert len(_coverage(run_sql, "QQQ")) == 4 and len(_flags(run_sql, "QQQ")) == 4
+
+
+# -- The replace takes the pass's locks (Design 7, issue #1982) ----------------
+
+
+def _held_advisory_keys(conn) -> set[int]:
+    """The 64-bit advisory keys this connection's transaction holds, as
+    pg_locks splits them: classid the high half, objid the low."""
+    import sqlalchemy
+
+    rows = conn.execute(sqlalchemy.text(
+        "SELECT classid::bigint, objid::bigint FROM pg_locks "
+        "WHERE locktype = 'advisory' AND objsubid = 1 AND granted "
+        "AND pid = pg_backend_pid()")).fetchall()
+    return {int.from_bytes(((high << 32) | low).to_bytes(8, "big"), "big", signed=True)
+            for high, low in rows}
+
+
+def _month_of(ts: pd.Timestamp) -> tuple[int, int]:
+    return next(m for m in FOUR_MONTHS
+                if intraday_month_window(*m)[0] <= ts < intraday_month_window(*m)[1])
+
+
+@pytest.mark.parametrize("span", ["the window of May", "a tail past April's window end"])
+def test_every_row_the_span_clear_deleted_is_of_a_month_the_swap_locked(
+        own_rows, seed, run_sql, execution, span):
+    _judged_four_months(seed, execution)
+    if span == "the window of May":
+        start, end = intraday_month_window(2011, 5)
+        frame = _new_bars(SESSION_OF[(2011, 5)])
+        locked_months = [(2011, 4), (2011, 5), (2011, 6)]
+    else:
+        start = intraday_month_window(2011, 4)[1]
+        end = start + timedelta(hours=3)
+        frame = _new_bars("2011-05-01").assign(ts=pd.DatetimeIndex(
+            [pd.Timestamp(start) + timedelta(minutes=k) for k in range(60)]))
+        locked_months = [(2011, 4), (2011, 5)]
+    assert ibf.flag_months_overlapping(start, end) == locked_months
+    keys = [ibf.flag_lock_key("SPY", m) for m in locked_months]
+    flags_before, coverage_before = _flags(run_sql), _coverage(run_sql)
+    held: list = []
+
+    def verify(conn) -> None:
+        # Inside the swap's transaction, under its row lock and before its DELETE.
+        held.append(_held_advisory_keys(conn))
+
+    cleared: dict = {}
+    db.replace_rows_in_window(
+        frame, "market_data_intraday", SPY_KEY, "ts", start, end, verify=verify,
+        clear_span_tables=fai.DERIVED_SPAN_TABLES, advisory_locks=keys, cleared=cleared)
+
+    assert held == [set(keys)]
+    flags_after, coverage_after = _flags(run_sql), _coverage(run_sql)
+    gone_flags = sorted(set(flags_before.ts) - set(flags_after.ts))
+    gone_coverage = sorted(set(coverage_before.month) - set(coverage_after.month))
+    assert cleared == {"intraday_bar_flags": len(gone_flags),
+                       "intraday_bar_flag_coverage": len(gone_coverage)}
+    assert [_month_of(ts) for ts in gone_flags] == locked_months
+    assert [(d.year, d.month) for d in gone_coverage] == locked_months
+    for month in [_month_of(ts) for ts in gone_flags] + [(d.year, d.month) for d in gone_coverage]:
+        assert ibf.flag_lock_key("SPY", month) in held[0]
+    # The locks are the transaction's: none outlives the commit.
+    with db.get_engine().connect() as conn:
+        assert _held_advisory_keys(conn) == set()
+
+
+def test_a_swap_that_cannot_take_its_lock_changes_nothing(own_rows, seed, run_sql, execution,
+                                                         monkeypatch):
+    """Another session holds May's key. The swap's own lock statement gives
+    up at the transaction's lock timeout (set to 1 s here in place of 30 s,
+    through the statement the swap issues) and nothing commits."""
+    import sqlalchemy
+
+    _judged_four_months(seed, execution)
+    flags_before, coverage_before = _flags(run_sql), _coverage(run_sql)
+    start, end = intraday_month_window(2011, 5)
+    keys = [ibf.flag_lock_key("SPY", m) for m in ibf.flag_months_overlapping(start, end)]
+
+    real_text = sqlalchemy.text
+
+    def short_timeout(sql, *args, **kwargs):
+        return real_text(sql.replace("lock_timeout = '30s'", "lock_timeout = '1s'"),
+                         *args, **kwargs)
+
+    monkeypatch.setattr(sqlalchemy, "text", short_timeout)
+    with db.get_engine().connect() as holder:
+        with holder.begin():
+            holder.execute(real_text("SELECT pg_advisory_xact_lock(:k)"),
+                           {"k": ibf.flag_lock_key("SPY", (2011, 5))}).fetchall()
+            with pytest.raises(Exception, match="lock timeout") as stop:
+                db.replace_rows_in_window(
+                    _new_bars(SESSION_OF[(2011, 5)]), "market_data_intraday", SPY_KEY, "ts",
+                    start, end, verify=lambda conn: None,
+                    clear_span_tables=fai.DERIVED_SPAN_TABLES, advisory_locks=keys)
+    assert "55P03" in str(stop.value)
+    monkeypatch.undo()
+
+    pd.testing.assert_frame_equal(_flags(run_sql), flags_before)
+    pd.testing.assert_frame_equal(_coverage(run_sql), coverage_before)
+    bars = run_sql("SELECT DISTINCT open FROM market_data_intraday WHERE ticker = 'SPY' "
+                   "AND ts >= :s AND ts < :e", {"s": start, "e": end})
+    assert list(bars.open) == [100.0]

@@ -189,6 +189,37 @@ def read_window(month: tuple[int, int]) -> tuple[datetime, datetime]:
     return start - READ_MARGIN, end + READ_MARGIN
 
 
+def flag_months_overlapping(start: datetime, end: datetime) -> list[tuple[int, int]]:
+    """The months whose read window overlaps ``[start, end)``, ascending.
+
+    A month's flags and coverage rest on every bar of its read window
+    (``read_window``), so these are the months a swap of ``[start, end)``
+    invalidates: the predicate is the one of the replace's span clear,
+    ``read_start < end AND read_end > start``. A replace takes the lock of
+    each before it touches a bar (issue #1982). An empty span overlaps
+    nothing.
+    """
+    for bound in (start, end):
+        if getattr(bound, "tzinfo", None) is None:
+            raise ValueError("flag_months_overlapping: start and end must be tz-aware")
+    if start >= end:
+        return []
+    # A read window reaches READ_MARGIN past its month window, and a month
+    # window starts within hours of the first of its month: one calendar
+    # month of slack on each side holds every month that can overlap.
+    low = start - READ_MARGIN
+    high = end + READ_MARGIN
+    year, month = (low.year - 1, 12) if low.month == 1 else (low.year, low.month - 1)
+    last = (high.year + 1, 1) if high.month == 12 else (high.year, high.month + 1)
+    months = []
+    while (year, month) <= last:
+        read_start, read_end = read_window((year, month))
+        if read_start < end and read_end > start:
+            months.append((year, month))
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return months
+
+
 def session_part(ts) -> np.ndarray:
     """``'regular'`` or ``'extended'`` for each aware instant of *ts*.
 
