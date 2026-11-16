@@ -1012,6 +1012,48 @@ class TestPremarketFromBars:
         assert 'stored high=101.2500' in line
         assert not any(BARS_SQL in sql for sql in seen)   # nothing derived from today's values
 
+    @pytest.mark.parametrize('key', ['pm_stale_print_atr', 'pm_spike_atr'])
+    def test_a_recorded_threshold_of_zero_is_a_value(self, key):
+        """lib.indicators.premarket_print_filter takes a calibrated threshold
+        of zero as a valid value (its rule runs at zero distance), so a
+        recorded zero is read, the bars are fetched and the snapshot is
+        recomputed with it."""
+        recorded = _recorded_params(4.875, stale=0.0329, spike=0.542)
+        recorded[key] = {**recorded[key], 'value': 0}
+        assert recorded[key]['status'] == 'ok'
+        snap, line, seen = self._direct(recorded)
+        assert any(BARS_SQL in sql for sql in seen)
+        assert 'premarket filter parameters unavailable' not in line
+        assert snap is not None and snap['pre_filter_status'] == 'ok'
+        assert snap['pre_filter_params'][key]['value'] == 0
+        assert snap['pre_high'] is not None and snap['pre_low'] is not None
+        assert f"recomputed high={snap['pre_high']:.4f}" in line
+        assert 'recorded atr=4.8750' in line
+
+    @pytest.mark.parametrize('key', ['pm_stale_print_atr', 'pm_spike_atr'])
+    @pytest.mark.parametrize('value', [-0.1, float('nan'), float('inf'), float('-inf'),
+                                       True, False, None, 'x'],
+                             ids=['negative', 'nan', 'inf', '-inf', 'true', 'false',
+                                  'missing', 'text'])
+    def test_a_threshold_that_is_no_value_is_unavailable(self, key, value):
+        recorded = _recorded_params(4.875, stale=0.0329, spike=0.542)
+        recorded[key] = {**recorded[key], 'value': value}
+        snap, line, seen = self._direct(recorded)
+        assert snap is None
+        assert 'premarket filter parameters unavailable' in line
+        assert not any(BARS_SQL in sql for sql in seen)
+
+    @pytest.mark.parametrize('atr', [0, 0.0, -1.0, float('nan'), float('inf'), True, None],
+                             ids=['zero', 'zero-float', 'negative', 'nan', 'inf', 'true',
+                                  'missing'])
+    def test_an_atr_that_is_not_positive_is_unavailable(self, atr):
+        recorded = _recorded_params(4.875, stale=0.0329, spike=0.542)
+        recorded['atr'] = atr
+        snap, line, seen = self._direct(recorded)
+        assert snap is None
+        assert 'premarket filter parameters unavailable' in line
+        assert not any(BARS_SQL in sql for sql in seen)
+
     def test_unavailable_parameters_keep_the_stored_snapshot(self, monkeypatch, capsys):
         run = _BarsRun(monkeypatch)
         for frame in run.frames.values():

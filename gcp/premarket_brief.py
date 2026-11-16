@@ -1042,15 +1042,31 @@ def _bar_price(value) -> str:
     return f"{number:.4f}" if number == number else 'unavailable'
 
 
-def _positive_number(value) -> Optional[float]:
-    """`value` as a positive finite float, or None."""
+def _finite_number(value, *, zero_ok: bool) -> Optional[float]:
+    """`value` as a finite float above zero, or at zero too with `zero_ok`;
+    None for anything else (missing, a bool, text, NaN, an infinity)."""
     if value is None or isinstance(value, bool):
         return None
     try:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number if number == number and 0 < number < float('inf') else None
+    if number != number or number == float('inf'):
+        return None
+    return number if number > 0 or (zero_ok and number == 0) else None
+
+
+def _positive_number(value) -> Optional[float]:
+    """`value` as a positive finite float, or None."""
+    return _finite_number(value, zero_ok=False)
+
+
+def _non_negative_number(value) -> Optional[float]:
+    """`value` as a finite float at or above zero, or None: what
+    lib.indicators.premarket_print_filter accepts as a threshold. A
+    calibrated threshold of zero is a value there (its rule runs at zero
+    distance), where an ATR of zero is not."""
+    return _finite_number(value, zero_ok=True)
 
 
 def _recorded_premarket_filter(stored_params) -> Optional[dict]:
@@ -1061,7 +1077,8 @@ def _recorded_premarket_filter(stored_params) -> Optional[dict]:
 
     Returns {'atr', 'stale_print_atr', 'spike_atr', 'params'} for
     premarket_snapshot's `recorded_filter`, or None when the block is absent
-    or unreadable, the ATR or either threshold's value is missing, or a
+    or unreadable, the ATR is missing or not positive, either threshold's
+    value is missing, negative or not finite (zero is a value), or a
     threshold's status is not ok. Nothing is filled in from today's
     calibration."""
     from lib.strat_levels import (  # noqa: PLC0415
@@ -1076,7 +1093,7 @@ def _recorded_premarket_filter(stored_params) -> Optional[dict]:
         entry = record.get(key)
         if not isinstance(entry, dict) or entry.get('status') != PARAM_OK:
             return None
-        thresholds[key] = _positive_number(entry.get('value'))
+        thresholds[key] = _non_negative_number(entry.get('value'))
     if atr is None or any(v is None for v in thresholds.values()):
         return None
     kept = ('atr_basis', 'atr', 'policy_effective_from', PM_STALE_PRINT_KEY, PM_SPIKE_KEY)
