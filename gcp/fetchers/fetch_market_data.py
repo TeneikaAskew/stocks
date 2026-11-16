@@ -345,9 +345,14 @@ PREMARKET_COLUMNS = (
     'pre_fetched_at', 'pre_excluded_stale_prints', 'pre_excluded_spikes',
     'pre_filter_status', 'pre_filter_params',
 )
-# The six computed from prices. The nightly sets one only when its new value
-# is not None; the other five, the provenance of the snapshot, always.
+# The six computed from prices. Of those the nightly sets the high, the low
+# and the range from a computed snapshot always, None included: a None there
+# is an extreme the rules rejected (lib.indicators calculate_premarket_context,
+# FEAT-PLAYBOOK-001 B8), and it clears the stored price. It sets the other
+# three only when the new value is not None. The other five, the provenance of
+# the snapshot, always.
 _PREMARKET_PRICE_COLUMNS = PREMARKET_COLUMNS[:6]
+_PREMARKET_EXTREME_COLUMNS = ('pre_high', 'pre_low', 'pre_range_atr')
 _PREMARKET_PROVENANCE_COLUMNS = PREMARKET_COLUMNS[6:]
 
 
@@ -396,7 +401,7 @@ def premarket_snapshot(ticker: str, session_date, bars: pd.DataFrame, prior: dic
     None when `bars` is empty or holds no bar in the premarket window. It
     makes no query, reads no clock and catches nothing.
     """
-    from lib.indicators import calculate_premarket_context
+    from lib.indicators import calculate_premarket_context, premarket_rule_record
 
     if bars.empty:
         return None
@@ -441,7 +446,11 @@ def premarket_snapshot(ticker: str, session_date, bars: pd.DataFrame, prior: dic
             int(pm['excluded_spike_prints']) if filtered else None),
         'pre_filter_status': 'ok' if filtered else (
             pm_filter['status'] if pm_filter['status'] != 'ok' else 'atr_unavailable'),
-        'pre_filter_params': pm_filter['params'],
+        # The threshold record, with the extreme rules' own record beside it
+        # (which rule set the high and the low, what each dropped, and why an
+        # extreme is None). With the parameters unreadable there is no
+        # threshold record and the two rule blocks stand alone.
+        'pre_filter_params': {**(pm_filter['params'] or {}), **premarket_rule_record(pm)},
     }
 
 
@@ -596,11 +605,14 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
                 ticker, fetch_date, intraday, prior_session_inputs(df, enriched),
                 level_params, intraday_read_at)
             if snapshot is not None:
-                # A price column is set only when its new value is not None;
+                # The high, the low and the range are set as computed, None
+                # included: a rejected extreme is cleared, never left as the
+                # earlier price under the new rule's label. The other price
+                # columns are set only when the new value is not None.
                 # upsert_dataframe drops the provenance keys while
                 # market_data_daily lacks the columns.
                 for col in _PREMARKET_PRICE_COLUMNS:
-                    if snapshot[col] is not None:
+                    if col in _PREMARKET_EXTREME_COLUMNS or snapshot[col] is not None:
                         row[col] = snapshot[col]
                 for col in _PREMARKET_PROVENANCE_COLUMNS:
                     row[col] = snapshot[col]

@@ -406,7 +406,9 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
     compute_and_upsert_daily_indicators so the backfilled rows look
     identical to a live-fetched row."""
     from gcp.database import query_to_dataframe, query_to_dataframe_strict, upsert_dataframe
-    from lib.indicators import add_all_indicators, calculate_premarket_context
+    from lib.indicators import (
+        add_all_indicators, calculate_premarket_context, premarket_rule_record,
+    )
     from lib.strat import StratClassifier
     from lib.strat_levels import (
         LevelParamsUnavailable, load_level_params, premarket_filter_inputs,
@@ -527,7 +529,10 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
                         ("gap_pct", "gap_pct"),
                         ("pre_range_atr", "pre_range_atr"),
                     ]:
-                        if pm[k_pm] is not None:
+                        # The high, the low and the range are written as
+                        # computed, None included: a rejected extreme is
+                        # cleared, not kept (FEAT-PLAYBOOK-001 B8).
+                        if k_db in ("pre_high", "pre_low", "pre_range_atr") or pm[k_pm] is not None:
                             row[k_db] = pm[k_pm]
                     # Whether the prints were filtered with the ticker's own
                     # thresholds (Design 8); counts NULL when not.
@@ -538,7 +543,11 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
                         int(pm["excluded_spike_prints"]) if filtered else None)
                     row["pre_filter_status"] = "ok" if filtered else (
                         pm_filter["status"] if pm_filter["status"] != "ok" else "atr_unavailable")
-                    row["pre_filter_params"] = pm_filter["params"]
+                    # The threshold record with the extreme rules' record
+                    # beside it; the two rule blocks alone when the
+                    # parameters could not be read.
+                    row["pre_filter_params"] = {
+                        **(pm_filter["params"] or {}), **premarket_rule_record(pm)}
                     log.info("  ✓ pre-market %s @ %s: pre_high=%s gap=%s",
                              ticker, fd, pm["pre_high"], pm["gap_pct"])
         except Exception as exc:
