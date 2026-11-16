@@ -231,7 +231,26 @@ def test_level_basis_records_every_parameter_and_the_policy(monkeypatch):
     d = fx.daily("QQQ")
     assert b["atr_14"] == pytest.approx(fx.prior_atr("QQQ"))
     assert b["atr_5"] == pytest.approx(calculate_atr(d["High"], d["Low"], d["Close"], 5).iloc[-1])
-    assert set(b["params"]) == set(LEGACY_1753_VALUES)
+    # The exits spec's policy-wide keys are recorded beside the ticker rows,
+    # with the policy row they came from.
+    assert set(b["params"]) == set(LEGACY_1753_VALUES) | {"exit_legs", "entry_cutoff_et",
+                                                         "atr_rung_anchors",
+                                                         "plan_target_level_types"}
+    # Gap-edge plan targets spec: the type list is policy-wide, recorded with
+    # its row, and the basis carries the rule's marker with the types used.
+    types = b["params"]["plan_target_level_types"]
+    assert (types["value"], types["status"], types["method_id"]) == (2.0, "ok", "policy")
+    assert types["extra"] == {"level_types": ["gap_high", "gap_low"]}
+    assert b["plan_target_level_types_status"] == "ok"
+    assert b["plan_target_level_types"] == ["gap_high", "gap_low"]
+    # ATR levels spec: the anchor list is policy-wide, recorded with its row.
+    anchors = b["params"]["atr_rung_anchors"]
+    assert (anchors["value"], anchors["status"], anchors["method_id"]) == (4.0, "ok", "policy")
+    assert anchors["extra"] == {"anchors": ["PDH", "PDL", "PMK_H", "PMK_L"]}
+    assert (b["params"]["exit_legs"]["value"], b["params"]["exit_legs"]["status"]) == (3.0, "ok")
+    assert b["params"]["exit_legs"]["method_id"] == "policy"
+    assert b["params"]["exit_legs"]["effective_from"] == "2015-01-02"
+    assert b["params"]["entry_cutoff_et"]["extra"] == {"time_et": "16:00"}
     for key, value in LEGACY_1753_VALUES.items():
         p = b["params"][key]
         assert p["value"] == pytest.approx(value) and p["status"] == "ok"

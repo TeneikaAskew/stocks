@@ -38,7 +38,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -47,6 +47,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import is_cloud_sql_configured, upsert_dataframe
+from lib.eastern_time import market_today
 from lib.logging_config import setup_logging
 
 setup_logging()
@@ -153,7 +154,7 @@ def main() -> int:
         log.error("Cloud SQL not configured — cannot upsert")
         return 2
 
-    today = date.today()
+    today = market_today()
     if args.start:
         start = args.start
     elif args.backfill:

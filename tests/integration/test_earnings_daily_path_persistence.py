@@ -276,10 +276,11 @@ def test_actual_event_view_does_not_attach_other_fiscal_period_eps(db):
 def test_actual_daily_refresh_embeds_descriptor_without_new_upcoming_column(db,monkeypatch):
     from gcp import database,refresh_earnings_views as refresh
     from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
+    from lib.eastern_time import market_today_sql
     _upsert_reaction_frame(pd.DataFrame([record()]))
     with db.begin() as c:
         c.execute(sa.text("DELETE FROM earnings_calendar WHERE ticker='SYNTH'"))
-        c.execute(sa.text("INSERT INTO earnings_calendar(ticker,earnings_date,earnings_time,data_source) VALUES('SYNTH',CURRENT_DATE,'premarket','alphavantage')"))
+        c.execute(sa.text(f"INSERT INTO earnings_calendar(ticker,earnings_date,earnings_time,data_source) VALUES('SYNTH',{market_today_sql()},'premarket','alphavantage')"))
         c.execute(sa.text('REFRESH MATERIALIZED VIEW earnings_event_outcomes'))
         c.execute(sa.text('REFRESH MATERIALIZED VIEW earnings_ticker_lean'))
     def query(sql,params=None):
@@ -288,7 +289,7 @@ def test_actual_daily_refresh_embeds_descriptor_without_new_upcoming_column(db,m
     monkeypatch.setattr(database,'query_to_dataframe',query)
     refresh.refresh_daily(14)
     with db.connect() as c:
-        stored=c.execute(sa.text("SELECT last_3_events FROM earnings_upcoming_with_history WHERE ticker='SYNTH' AND refresh_date=CURRENT_DATE")).scalar_one()
+        stored=c.execute(sa.text(f"SELECT last_3_events FROM earnings_upcoming_with_history WHERE ticker='SYNTH' AND refresh_date={market_today_sql()}")).scalar_one()
         assert isinstance(stored,list) and stored[0]['daily_path_v1']==payload()
         assert stored[0]['eps_surprise_pct'] is None
     with db.begin() as c:c.execute(sa.text("DELETE FROM earnings_calendar WHERE ticker='SYNTH'"))

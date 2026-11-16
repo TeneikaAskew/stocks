@@ -53,3 +53,22 @@ def list_blobs(bucket: str, prefix: str) -> list:
     except Exception as e:
         log.warning("  GCS list failed (%s): %s", prefix, e)
         return []
+
+
+def _storage_client():
+    """A Cloud Storage client. Imported here so the module imports without
+    the library and a test can replace the client."""
+    from google.cloud import storage as gcs
+    return gcs.Client()
+
+
+def upload_text_to_gcs(bucket: str, blob_path: str, text: str, content_type: str) -> str:
+    """Upload *text* as one object and return its ``gs://`` URL.
+
+    Unlike the download helpers above, this raises on failure: its caller
+    writes to the database only after the upload is known to have worked, so
+    a swallowed error here would be a report that was never saved.
+    """
+    _storage_client().bucket(bucket).blob(blob_path).upload_from_string(
+        text, content_type=content_type)
+    return f"gs://{bucket}/{blob_path}"

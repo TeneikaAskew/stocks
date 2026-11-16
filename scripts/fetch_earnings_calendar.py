@@ -217,6 +217,22 @@ def fetch_alphavantage_earnings(horizon: str = '3month') -> pd.DataFrame:
 # options_volume filter has signal for ALL earnings tickers — not only
 # the ~30/day UnusualWhales covers.
 
+def _market_today() -> date:
+    """Today's date on the exchange's clock.
+
+    This file is run by path (``python scripts/fetch_earnings_calendar.py``), so the repo
+    root is not on ``sys.path`` at import and a module-level
+    ``from lib.eastern_time import ...`` fails in the job's container. The
+    import is made here, after putting the root on the path, as the other
+    ``lib`` / ``gcp`` reads of this file do.
+    """
+    _root = str(Path(__file__).resolve().parent.parent)
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
+    from lib.eastern_time import market_today
+    return market_today()
+
+
 def _previous_trading_weekday(d: date) -> date:
     """Most recent weekday strictly before d (ignores market holidays —
     AV returns 'No data' for those, which the caller handles)."""
@@ -240,7 +256,7 @@ def _resolve_target_dates_for_av_options(scope: str) -> list:
 
     Returns a list of date objects (may be empty).
     """
-    today = datetime.now().date()
+    today = _market_today()
     if scope == 'weekly':
         # Find next Monday (or today if already Monday/weekday … but the
         # weekly scope is invoked on Sunday by the scheduler).
@@ -262,7 +278,7 @@ def _resolve_scope(cli_scope: Optional[str] = None) -> str:
     env = os.environ.get('PIPELINE_SCOPE', '').strip().lower()
     if env in ('daily', 'weekly'):
         return env
-    return 'weekly' if datetime.now().weekday() == 6 else 'daily'
+    return 'weekly' if _market_today().weekday() == 6 else 'daily'
 
 
 def fetch_av_options_summary(ticker: str, snapshot_date: str, api_key: str,
@@ -1010,7 +1026,7 @@ class EarningsCalendarFetcher:
 
             # Parse and structure the data
             earnings_list = []
-            today = datetime.now().date()
+            today = _market_today()
             cutoff_date = today + timedelta(days=days_ahead)
 
             for item in earnings_data:
@@ -1129,7 +1145,7 @@ class EarningsCalendarFetcher:
                     print(f"  {time}: {count}")
 
         # Upcoming earnings (next 7 days)
-        today = datetime.now().date()
+        today = _market_today()
         next_week = today + timedelta(days=7)
         upcoming = earnings_df[
             earnings_df["date"].apply(
@@ -1218,7 +1234,7 @@ def main():
     if args.start_date and args.end_date:
         start = datetime.strptime(args.start_date, "%Y-%m-%d").date()
         end = datetime.strptime(args.end_date, "%Y-%m-%d").date()
-        days_ahead = max((end - datetime.now().date()).days, 90)
+        days_ahead = max((end - _market_today()).days, 90)
         print(f"Fetching earnings for date range: {args.start_date} to {args.end_date}")
     else:
         days_ahead = args.days
@@ -1255,8 +1271,8 @@ def main():
             yh_start = datetime.strptime(args.start_date, "%Y-%m-%d").date()
             yh_end = datetime.strptime(args.end_date, "%Y-%m-%d").date()
         else:
-            yh_start = datetime.now().date() - timedelta(days=1)
-            yh_end = datetime.now().date() + timedelta(days=7)
+            yh_start = _market_today() - timedelta(days=1)
+            yh_end = _market_today() + timedelta(days=7)
 
         yh_df = fetch_yahoo_earnings(yh_start, yh_end)
         if not yh_df.empty:
@@ -1280,7 +1296,7 @@ def main():
     if args.start_date and args.end_date:
         clamp_start, clamp_end = args.start_date, args.end_date
     else:
-        today = datetime.now().date()
+        today = _market_today()
         clamp_start = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         clamp_end = (today + timedelta(days=7)).strftime("%Y-%m-%d")
     print(f"Filtering between {clamp_start} and {clamp_end}...")
@@ -1303,7 +1319,7 @@ def main():
         else:
             scope = _resolve_scope(getattr(args, 'scope', None))
             snapshot_date = (args.av_options_snapshot_date
-                             or _previous_trading_weekday(datetime.now().date())
+                             or _previous_trading_weekday(_market_today())
                                  .strftime('%Y-%m-%d'))
             all_rows_df = enrich_with_av_options(
                 all_rows_df, snapshot_date, av_key, scope=scope,

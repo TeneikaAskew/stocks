@@ -18,7 +18,6 @@ from unittest.mock import patch
 
 import pytest
 
-from gcp import backfill_ticker as bt
 from gcp.fetchers import fetch_alphavantage_intraday as fai
 from gcp.fetchers import fetch_market_data as fmd
 
@@ -47,10 +46,7 @@ def _sent_params(module, call):
         return _Resp({"Note": "rate limit"})
 
     with patch.object(module.requests, "get", side_effect=fake_get):
-        try:
-            call()
-        except RuntimeError:
-            pass  # backfill_ticker raises on a vendor note, by design
+        call()
     assert len(seen) == 1, seen
     return seen[0]
 
@@ -76,11 +72,6 @@ def test_asking_for_adjusted_minute_bars_is_refused():
         with patch.object(fmd.requests, "get") as get, pytest.raises(ValueError, match="as traded only"):
             fn("SPY", "2025-11-14", "key", adjusted=True)
         get.assert_not_called()
-
-
-def test_backfill_ticker_month_fetch_requests_as_traded():
-    p = _sent_params(bt, lambda: bt.av_intraday_month("SPY", "2025-11", "key"))
-    assert p["function"] == "TIME_SERIES_INTRADAY" and p["adjusted"] == "false"
 
 
 def intraday_requests(tree):
@@ -139,10 +130,13 @@ def test_every_intraday_request_in_the_repo_asks_for_as_traded():
             sites += [(rel, line) for line, _, _ in intraday_requests(tree)]
             bad += [f"{rel}:{line} {why}" for line, why in violations(tree)]
     files = {f for f, _ in sites}
-    assert {"gcp/fetchers/fetch_alphavantage_intraday.py", "gcp/fetchers/fetch_market_data.py", "gcp/backfill_ticker.py",
+    assert {"gcp/fetchers/fetch_alphavantage_intraday.py", "gcp/fetchers/fetch_market_data.py",
             "gcp/signal_monitor.py", "scripts/fetch_alphavantage_intraday.py", "scripts/fetch_market_data.py",
             "platform/api/routers/live.py"} <= files, sorted(files)
-    assert len(sites) >= 8, sites                      # live.py holds two
+    assert len(sites) >= 7, sites                      # live.py holds two
+    # The backfill-ticker job no longer asks the vendor for 1-min bars: only
+    # the two fetchers write market_data_intraday (FEAT-DATA-001).
+    assert "gcp/backfill_ticker.py" not in files, sites
     assert not bad, "TIME_SERIES_INTRADAY requests not on adjusted=false:\n  " + "\n  ".join(bad)
 
 

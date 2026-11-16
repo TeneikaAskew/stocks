@@ -13,12 +13,14 @@ Usage:
 import argparse
 import logging
 import os
+import re
 import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Sequence, Tuple
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -26,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from lib.eastern_time import (
     eastern_index_to_utc,
     intraday_month_window,
+    market_today,
     place_stored_rows,
     session_minute_readings,
     session_schedule,
@@ -449,6 +452,13 @@ REPLACE_DRY = 'dry_run'
 REPLACE_INCOMPLETE = 'incomplete_refetch'   # vendor returned fewer sessions than we hold
 REPLACE_NOTHING_HELD = 'nothing_held'       # window holds no session; never delete blind
 REPLACE_CHANGED = 'changed_during_replace'  # a writer changed the month mid-replace; rolled back
+# More of the window than REPLACE_MAX_UNCOUNTED_SHARE would be deleted and
+# written back nowhere; nothing is handed to the swap.
+REPLACE_UNCOUNTED_OVER = 'uncounted_over_bound'
+# The month's window was replaced and committed; its late bars past the window
+# end were not written (their strip changed, or the second swap failed) and are
+# as they were before the run. A second run converges.
+REPLACE_TAIL_NOT_WRITTEN = 'tail_not_written'
 
 
 class _HeldChanged(Exception):
@@ -484,10 +494,15 @@ DERIVED_TS_TABLES = (
 # they hold outcomes people have read, so invalidating them is a separate,
 # approved recompute step, not a side effect of the replace (Codex P1 on
 # #1185). The run lists every replaced ticker-month (REPLACED lines) and, per
-# table, the recompute path or that none exists yet (RECOMPUTE lines). Two
-# tables have no correct path today, so a committed run is gated on #1190
-# (CLAUDE.md Rule 0.1: the runbook says "do not run X until Y lands" rather
-# than naming a command that does not do the job).
+# table, its recompute path (RECOMPUTE lines). Every table has one:
+# historical_signals by a full regeneration (scripts/run_historical_signals.py),
+# premarket_analysis outcomes by the playbook resolver's force
+# (gcp/premarket_playbook_resolver.py), signal_alerts exits by the end-of-day
+# resolver's --re-resolve (gcp/signal_monitor_eod_resolver.py) and the daily
+# premarket fields by the daily fetcher's --recompute-premarket. The last two
+# read only bars that are proven true UTC, write a ledger row per overwrite
+# and can be reverted (gcp/bar_recompute.py). Each named command does the job
+# it is named for (CLAUDE.md Rule 0.1).
 BAR_DERIVED_RESULTS = {
     "historical_signals / signal_metrics":
         "FULL regeneration only: run_historical_signals --force deletes every row "
@@ -498,14 +513,25 @@ BAR_DERIVED_RESULTS = {
         "PLAYBOOK_RESOLVE_FORCE=true python -m gcp.premarket_playbook_resolver, "
         "per replaced session",
     "signal_alerts exits":
-        "NO PATH YET: the EOD resolver never re-selects resolved alerts (#1190)",
+        "python -m gcp.signal_monitor_eod_resolver --re-resolve "
+        "--from <first session> --to <last session>, dry run first, then with --commit",
     "market_data_daily premarket fields (pre_high/pre_low/pre_vwap/gap_pct)":
-        "NO PATH YET: only fetch_market_data computes them, right after its fetch (#1190)",
+        "python -m gcp.fetchers.fetch_market_data --recompute-premarket "
+        "--from <first session> --to <last session>, dry run first, then with --commit",
 }
 # A refetched session may hold this share fewer bars than already held
 # (rounded down, so a session under 50 bars must be complete) before the
 # month is refused as incomplete.
 REPLACE_SHORT_TOLERANCE = 0.02
+# The largest share of a window's stored rows that may be uncounted: label
+# rows that lost their Eastern minute plus discounted label copies, which the
+# swap deletes and writes back nowhere. Above it the month is refused, dry or
+# committed. A session with a bar on every minute stored in both conventions
+# gives 240 of 1,201 (19.98%), 300 of 1,261 (23.79%) in winter; the largest
+# measured for SPY, QQQ and IWM is an estimated 22.51% (IWM 2026-08). Set from
+# those three tickers: re-derive it before running the tool for another
+# (spec 2026-11-14-feat-data-001-replace-held-session-window, Design 6).
+REPLACE_MAX_UNCOUNTED_SHARE = 0.25
 
 
 def _held_session_dates(symbol: str, start: datetime, end: datetime, conn=None) -> dict:
@@ -533,11 +559,170 @@ def _held_session_dates(symbol: str, start: datetime, end: datetime, conn=None) 
         import sqlalchemy
         res = conn.execute(sqlalchemy.text(sql), params)
         df = pd.DataFrame(res.fetchall(), columns=['ts', 'volume'])
-    if df.empty:
+    return _placed_session_counts(df)
+
+
+def _placed_session_counts(rows: pd.DataFrame) -> dict:
+    """{Eastern session date: distinct bars} for stored rows (``ts``,
+    ``volume``), placed by stored_intraday_to_eastern. Weekday sessions only."""
+    if rows.empty:
         return {}
-    idx, keep = stored_intraday_to_eastern(df['ts'], df['volume'])
+    idx, keep = stored_intraday_to_eastern(rows['ts'], rows['volume'])
     days = pd.Series(idx[keep].date).value_counts()
     return {d: int(n) for d, n in days.items() if d.weekday() < 5}
+
+
+def _stored_window_rows(symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
+    """The window's stored rows with their five fields: replace_month's
+    snapshot. One read gives the placed counts (as _held_session_dates would)
+    and what classify_stored_rows compares with the refetch. Strict: a DB
+    error must never read as "nothing held"."""
+    return query_to_dataframe_strict(
+        """
+        SELECT ts, open, high, low, close, volume
+          FROM market_data_intraday
+         WHERE ticker = :t AND interval = '1min' AND ts >= :s AND ts < :e
+        """, {'t': symbol, 's': start, 'e': end}, timeout_s=120)
+
+
+def _eastern_midnight_utc(year: int, month: int) -> pd.Timestamp:
+    """(year, month)-01 00:00 Eastern, as a UTC instant."""
+    return eastern_index_to_utc(pd.DatetimeIndex([pd.Timestamp(year=year, month=month, day=1)]))[0]
+
+
+_BAR_FIELDS = ('open', 'high', 'low', 'close', 'volume')
+
+
+class StoredClassification(NamedTuple):
+    """What a month's window holds, judged against its refetch."""
+
+    held: dict            # {Eastern session date: bars the refetch must return}, weekdays only
+    rows: int             # stored rows of the window
+    label_dropped: int    # rows read as Eastern labels that lost their Eastern minute
+    label_copies: int     # label copies not counted as held
+    by_utc_hour: dict     # {UTC hour of the key: label_dropped + label_copies rows}
+    carry_in_keys: list   # keys of the previous month's late bars, ascending
+
+
+def classify_stored_rows(stored: pd.DataFrame, refetch: pd.DataFrame,
+                         year: int, month: int) -> StoredClassification:
+    """Which stored rows of month (year, month)'s window the refetch must
+    return, decided from the refetch itself. Pure: nothing is read.
+
+    *stored* is the window's rows (``ts``, ``open``, ``high``, ``low``,
+    ``close``, ``volume``); *refetch* is the vendor month with its naive
+    Eastern stamp in ``ts_et`` beside the UTC key in ``ts``.
+
+    A **label copy** is a stored row for which the refetch holds a bar whose
+    naive Eastern time is the row's UTC clock reading and whose five fields all
+    equal the row's. The comparison is exact and a missing field never equals.
+
+    Rows are placed once over the whole window by stored_intraday_to_eastern,
+    as _held_session_dates places them, one row kept per Eastern minute. Each
+    row then takes the first class that applies:
+
+      1. **carry-in**: before the month's Eastern midnight and not a label
+         copy. Read as a true instant it is a late bar of the previous month's
+         last session. Not counted here, and the swap spares it.
+      2. **lost its Eastern minute** to another row. Counted as
+         ``label_dropped`` if it was read as an Eastern label; a true-read
+         duplicate is in neither count (the swap re-inserts a returned bar at
+         that key).
+      3. **discounted label copy**: read as a true instant, at a key no
+         refetched bar has, a label copy, and the only stored row on its
+         Eastern minute. Its five fields are those of a bar the refetch
+         returns, which the swap inserts at its true key.
+      4. **held**: counted toward its Eastern date.
+
+    The last condition of class 3 is narrower than the rule as the spec words
+    it. A copy that took its Eastern minute from another stored row took it
+    from the Eastern-label row of the bar that really belongs there, which the
+    vendor returned once and does not return now. That label row is then the
+    only stored copy of a real bar, and its minute stays counted, as it was
+    before label copies were told apart.
+
+    A row read as an Eastern label that kept its minute is always held, so a
+    month stored only under the label keeps the floor it has today.
+    """
+    inst = pd.DatetimeIndex(pd.to_datetime(stored['ts']))
+    if inst.tz is None:
+        inst = inst.tz_localize('UTC')   # pg8000 TIMESTAMPTZ read in a UTC session
+    inst = inst.tz_convert('UTC')
+    order = np.argsort(inst.asi8, kind='stable')
+    inst = inst[order]
+    rows = stored.iloc[order].reset_index(drop=True)
+    if not len(rows):
+        return StoredClassification({}, 0, 0, 0, {}, [])
+
+    idx, keep = stored_intraday_to_eastern(inst, rows['volume'])
+    keep = np.asarray(keep, dtype=bool)
+    as_true = np.asarray(idx == utc_to_eastern_naive(inst))
+
+    # The key each refetched bar would have under the Eastern label: its
+    # Eastern clock stamped as UTC, which is what the legacy writers stored.
+    # Rebuilt here on purpose, to find their rows; it is never written.
+    label_key = pd.DatetimeIndex(refetch['ts_et']).tz_localize('UTC')
+    by_label = pd.DataFrame({f: pd.to_numeric(refetch[f]).to_numpy(dtype='float64')
+                             for f in _BAR_FIELDS}, index=label_key)
+    if by_label.index.has_duplicates:
+        raise ValueError("classify_stored_rows: the refetch holds one Eastern minute twice")
+    twin = by_label.reindex(inst)
+    copy = np.ones(len(rows), dtype=bool)
+    for f in _BAR_FIELDS:
+        own = pd.to_numeric(rows[f]).to_numpy(dtype='float64')
+        # NaN == NaN is False: a missing field, or no bar at that minute, never equals.
+        copy &= own == twin[f].to_numpy()
+
+    returned = np.asarray(inst.isin(pd.DatetimeIndex(refetch['ts'])))
+    carry = np.asarray(inst < _eastern_midnight_utc(year, month)) & ~copy
+    label_dropped = ~keep & ~carry & ~as_true
+    alone = ~pd.Index(idx).duplicated(keep=False)     # no other stored row on its Eastern minute
+    discounted = keep & ~carry & as_true & ~returned & copy & alone
+    counted = keep & ~carry & ~discounted
+
+    days = pd.Series(idx[counted].date).value_counts()
+    uncounted = label_dropped | discounted
+    hours = pd.Series(inst.hour[uncounted]).value_counts().sort_index()
+    return StoredClassification(
+        held={d: int(n) for d, n in days.items() if d.weekday() < 5},
+        rows=len(rows),
+        label_dropped=int(label_dropped.sum()),
+        label_copies=int(discounted.sum()),
+        by_utc_hour={int(h): int(n) for h, n in hours.items()},
+        carry_in_keys=list(inst[carry]),
+    )
+
+
+def _stored_keys(symbol: str, start: datetime, end: datetime) -> list:
+    """Every stored key of ``[start, end)``, ascending, as aware-UTC
+    timestamps. Strict: a DB error is raised, never read as "no keys"."""
+    df = query_to_dataframe_strict(
+        "SELECT ts FROM market_data_intraday "
+        "WHERE ticker = :t AND interval = '1min' AND ts >= :s AND ts < :e ORDER BY ts",
+        {'t': symbol, 's': start, 'e': end}, timeout_s=120)
+    inst = pd.DatetimeIndex(pd.to_datetime(df['ts']))
+    if inst.tz is None:
+        inst = inst.tz_localize('UTC')   # pg8000 TIMESTAMPTZ read in a UTC session
+    return list(inst.tz_convert('UTC'))
+
+
+def split_tail(frame: pd.DataFrame, end: datetime,
+               next_midnight) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split a month's refetched rows at its window end: ``(main, tail)``.
+
+    The tail is the month's own late bars: rows of a held session whose key is
+    at or after the window end (a bar at or after 22:00 Eastern on the last
+    day, 21:00 in winter). A row at or after *next_midnight*, the next month's
+    Eastern midnight, is not a bar of this month and is refused.
+    """
+    ts = pd.DatetimeIndex(frame['ts'])
+    beyond = int((ts >= pd.Timestamp(next_midnight)).sum())
+    if beyond:
+        raise ValueError(
+            f"replace_month: {beyond} refetched row(s) at or after {next_midnight} are "
+            "not a bar of the month; refusing to write them")
+    past_end = np.asarray(ts >= pd.Timestamp(end))
+    return frame[~past_end], frame[past_end]
 
 
 def _held_digest(symbol: str, start: datetime, end: datetime, conn=None) -> str:
@@ -575,33 +760,87 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     table did not have. Nothing is deleted unless the refetch succeeded AND
     contains every held session; a shortfall is reported and the month is left
     untouched.
+
+    What is held is decided from the refetch (classify_stored_rows). Two kinds
+    of stored row are not bars this refetch must return: the previous month's
+    late bars, which lie in this window and are spared by the swap, and
+    Eastern-label copies of bars the refetch does return. Both sides of the
+    guard are counted over the window only. The month's own late bars past the
+    window end go in by a second swap that deletes only the keys the refetch
+    returns and rolls back if their strip changed since the snapshot; when it
+    does not go through, the status is ``tail_not_written``.
     """
     start, end = month_replace_window(year, month)
+    # The tail strip: where this month's late bars past the window end are
+    # stored, up to the next month's Eastern midnight.
+    strip_end = _eastern_midnight_utc(*((year + 1, 1) if month == 12 else (year, month + 1)))
     out = {'symbol': symbol, 'month': f"{year}-{month:02d}", 'deleted': 0,
-           'inserted': 0, 'held_sessions': None, 'missing_sessions': 0}
+           'inserted': 0, 'held_sessions': None, 'missing_sessions': 0,
+           # What the window holds that is not counted as held. None until the
+           # refetch is in: they are decided from it (classify_stored_rows).
+           'rows': None, 'uncounted': None, 'label_dropped': None,
+           'label_copies': None, 'by_utc_hour': None, 'carry_in': None,
+           'tail': None}
     # Snapshot BEFORE the refetch: a writer that commits while the request is
     # in flight then differs from this snapshot, and the locked re-check in
     # verify() below refuses the month. Snapshotting after the fetch let such
     # bars into ``held`` but not into the refetch, where the shortfall
     # tolerance could pass them and the DELETE erase them (Codex P1 on #1185).
-    held = _held_session_dates(symbol, start, end)
-    out['held_sessions'] = len(held)
-    if not held:
+    # Content, not just counts: a same-count upsert must also refuse the month.
+    # Only a committed run deletes, so only it needs the baseline. Read BEFORE
+    # the rows that are classified: a writer that commits between the two reads
+    # then differs from this digest under the lock, and the month is refused.
+    # Read after them, the digest would hold the newer values while the
+    # classification used the older ones, and the re-check would pass (Codex
+    # P1 on #1955). The tail strip below keeps the same order: digest, then keys.
+    digest = _held_digest(symbol, start, end) if commit else None
+    stored = _stored_window_rows(symbol, start, end)
+    # The window's bars as _held_session_dates places them; verify() re-reads
+    # exactly this under the lock.
+    placed = _placed_session_counts(stored)
+    out['rows'] = len(stored)
+    out['held_sessions'] = len(placed)
+    if not placed:
         # Nothing to re-frame: deleting would only remove rows (code review
         # H2), and there is no reason to spend a vendor call finding that out.
         out['status'] = REPLACE_NOTHING_HELD
         return out
-    # Content, not just counts: a same-count upsert must also refuse the month.
-    # Only a committed run deletes, so only it needs the baseline.
-    digest = _held_digest(symbol, start, end) if commit else None
+    # The same for the tail strip, also before the refetch: the baseline of
+    # the second swap's re-check. A key-only check there would let this run's
+    # refetch overwrite a row another writer rewrote in the meantime.
+    tail_digest = _held_digest(symbol, end, strip_end) if commit else None
     df, reason = fetch_month(symbol, year, month, api_key)
     if df is None or df.empty or reason != FETCH_OK:
         out['status'] = reason if reason != FETCH_OK else FETCH_NO_TIMESERIES
         return out
+    # The vendor's naive Eastern stamp stays beside the UTC key: the label-copy
+    # test compares it with the stored rows' UTC clock readings.
+    df['ts_et'] = df['ts']
     df['ts'] = eastern_index_to_utc(df['ts'])
     df = df.drop_duplicates(subset=['ticker', 'interval', 'ts'])
+    # What must come back is decided from the refetch: the previous month's
+    # late bars and Eastern-label copies of returned bars are not bars this
+    # refetch can be short of. Every other row counts exactly as before.
+    c = classify_stored_rows(stored, df, year, month)
+    held = c.held
+    out.update(held_sessions=len(held), label_dropped=c.label_dropped,
+               label_copies=c.label_copies, uncounted=c.label_dropped + c.label_copies,
+               by_utc_hour=c.by_utc_hour, carry_in=len(c.carry_in_keys))
+    if not held:
+        # Only uncounted rows: there is no session to hold the refetch to, so
+        # nothing is deleted (code review H2).
+        out['status'] = REPLACE_NOTHING_HELD
+        return out
+    df = df.drop(columns='ts_et')
     session = utc_to_eastern_naive(df['ts']).dt.date
-    fetched = session.value_counts()
+    # Both sides of the guard are counted over the window and nothing else:
+    # ``held`` comes from the window's stored rows, so a refetched bar counts
+    # for its session only if its key is inside the window. A session's late
+    # bars past the window end are stored outside the snapshot; counted for the
+    # refetch alone they would stand in for a window bar the refetch lacks, and
+    # the swap would delete that bar.
+    in_window = (df['ts'] >= start) & (df['ts'] < end)
+    fetched = session[in_window].value_counts()
     # A held session is missing if the refetch lacks it, or returns fewer
     # bars than the distinct bars already held (a partial vendor month that
     # still touches every day, Codex P1 on #1185). REPLACE_SHORT_TOLERANCE
@@ -620,22 +859,37 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
         out['missing'] = [f"{d.isoformat()} ({int(fetched.get(d, 0))}/{held[d]})"
                           for d in missing[:10]]
         return out
+    if out['uncounted'] > REPLACE_MAX_UNCOUNTED_SHARE * c.rows:
+        out['status'] = REPLACE_UNCOUNTED_OVER
+        return out
     df = df[session.isin(set(held))]
     if df.empty:
         out['status'] = REPLACE_NOTHING_HELD
         return out
+    # The month's own late bars lie past the window end and cannot go through
+    # the window's swap. They are written by a second, small swap below.
+    df, tail = split_tail(df, end, strip_end)
+    out['tail'] = len(tail)
     if not commit:
         out['status'] = REPLACE_DRY
-        out['inserted'] = len(df)
+        out['inserted'] = len(df) + len(tail)
         return out
+    tail_end = tail_spare = None
+    if len(tail):
+        # Read before the first write, so a failed read leaves nothing half
+        # done. Every stored key of the range that the tail does not hold is
+        # spared: the second swap deletes only keys the refetch returns.
+        tail_end = (pd.DatetimeIndex(tail['ts']).max() + pd.Timedelta(minutes=1)).to_pydatetime()
+        tail_keys = set(pd.DatetimeIndex(tail['ts']))
+        tail_spare = [k for k in _stored_keys(symbol, end, tail_end) if k not in tail_keys]
     def verify(conn) -> None:
         # Under the row locks: the month must still hold exactly what it held
         # before the refetch, in sessions, bar counts and row content. A writer
         # that landed in between would otherwise lose its rows (or its newer
         # values) to the DELETE.
         now = _held_session_dates(symbol, start, end, conn=conn)
-        if now != held:
-            raise _HeldChanged(f"held sessions changed: {len(held)} -> {len(now)}")
+        if now != placed:
+            raise _HeldChanged(f"held sessions changed: {len(placed)} -> {len(now)}")
         if _held_digest(symbol, start, end, conn=conn) != digest:
             raise _HeldChanged("held rows changed (same bar counts, new content)")
 
@@ -645,12 +899,46 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
             df, 'market_data_intraday', {'ticker': symbol, 'interval': '1min'},
             'ts', start, end, chunksize=5000,
             max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify,
-            clear_tables=DERIVED_TS_TABLES, cleared=cleared)
+            clear_tables=DERIVED_TS_TABLES, cleared=cleared,
+            # The previous month's late bars: this month's refetch cannot
+            # return them, so they are left as they are, inserted_at included.
+            # Their own month rewrites them (the tail swap below).
+            spare_ts=c.carry_in_keys)
     except (_HeldChanged, WindowChanged) as e:
         out.update(status=REPLACE_CHANGED, detail=str(e))
         return out
     out.update(status=REPLACE_OK, deleted=deleted, inserted=inserted,
                derived_cleared={k: v for k, v in cleared.items() if v})
+    if not len(tail):
+        return out
+
+    def verify_tail(conn) -> None:
+        # Under the row locks: the strip must hold exactly what it held before
+        # the refetch, in keys, values and inserted_at.
+        if _held_digest(symbol, end, strip_end, conn=conn) != tail_digest:
+            raise _HeldChanged("the tail strip changed since the snapshot")
+
+    tail_cleared: dict = {}
+    try:
+        t_deleted, t_inserted = replace_rows_in_window(
+            tail, 'market_data_intraday', {'ticker': symbol, 'interval': '1min'},
+            'ts', end, tail_end, chunksize=5000,
+            max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify_tail,
+            clear_tables=DERIVED_TS_TABLES, cleared=tail_cleared,
+            spare_ts=tail_spare)
+    except Exception as e:
+        # The window's swap has committed, so this month is neither untouched
+        # nor done. Whatever stopped the second swap, the status says the late
+        # bars are as they were, the run prints RETRY and exits non-zero, and a
+        # second run converges (the window's swap is idempotent).
+        log.error("  %s %s tail not written (%d late bars past the window end): %s",
+                  symbol, out['month'], len(tail), e)
+        out.update(status=REPLACE_TAIL_NOT_WRITTEN, detail=str(e))
+        return out
+    for table, n in tail_cleared.items():
+        if n:
+            out['derived_cleared'][table] = out['derived_cleared'].get(table, 0) + n
+    out.update(deleted=deleted + t_deleted, inserted=inserted + t_inserted)
     return out
 
 
@@ -677,6 +965,37 @@ def _read_replace_list(path: str) -> list[tuple[str, int, int]]:
         y, m = ym.split('-')
         items.append((sym.upper(), int(y), int(m)))
     return items
+
+
+def _uncounted_line(r: dict) -> str:
+    """The month's ``UNCOUNTED`` line: what its window holds that is not
+    counted as held, and so what a swap deletes and writes back nowhere.
+
+    ``rows``: stored rows of the window. ``label_dropped``: rows read as
+    Eastern labels that lost their Eastern minute to another row.
+    ``label_copies``: Eastern-label copies of refetched bars. ``uncounted``:
+    their sum, with its share of ``rows`` and its split by the UTC hour of the
+    key. ``carry_in``: the previous month's late bars, spared. ``tail``: this
+    month's late bars past the window end.
+
+    A figure that was not worked out prints ``n/a``, never 0: all but ``rows``
+    are decided from the refetch, and a month whose fetch failed has none.
+    """
+    def n(key):
+        return 'n/a' if r.get(key) is None else str(r[key])
+
+    rows, uncounted, hours = r.get('rows'), r.get('uncounted'), r.get('by_utc_hour')
+    if uncounted is None or rows is None:
+        share = 'n/a'
+    else:
+        share = f"{100.0 * uncounted / rows:.2f}%" if rows else "0.00%"
+    if hours is None:
+        by_hour = 'n/a'
+    else:
+        by_hour = ','.join(f"{h:02d}:{hours[h]}" for h in sorted(hours)) or '-'
+    return (f"UNCOUNTED {r['symbol']},{r['month']} rows={n('rows')} uncounted={n('uncounted')} "
+            f"share={share} label_dropped={n('label_dropped')} label_copies={n('label_copies')} "
+            f"by_utc_hour={by_hour} carry_in={n('carry_in')} tail={n('tail')}")
 
 
 def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
@@ -727,7 +1046,8 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
             retry.append(f"{sym},{y}-{m:02d}")
             continue
         counts[r['status']] = counts.get(r['status'], 0) + 1
-        if r['status'] == REPLACE_OK:
+        if r['status'] in (REPLACE_OK, REPLACE_TAIL_NOT_WRITTEN):
+            # tail_not_written: the window's swap committed all the same.
             replaced.append(f"{r['symbol']},{r['month']}")
         for t, n in (r.get('derived_cleared') or {}).items():
             rebuild[t] = rebuild.get(t, 0) + n
@@ -738,6 +1058,7 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
                  r['status'], r['held_sessions'], r['missing_sessions'],
                  r['deleted'], r['inserted'],
                  f" missing={r['missing']}" if r.get('missing') else "")
+        log.info("%s", _uncounted_line(r))
     log.info("replace-months summary: %s (expected %s for all %d)",
              counts, expected, len(items))
     if rebuild:
@@ -752,9 +1073,6 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
             log.warning("REPLACED %s", item)
         for table, how in BAR_DERIVED_RESULTS.items():
             log.warning("RECOMPUTE %s: %s", table, how)
-        if commit:
-            log.warning("Tables marked NO PATH YET stay computed from the old bars "
-                        "until #1190 lands; the reader cutover is not complete.")
     if retry:
         for item in retry:
             log.error("RETRY %s", item)
@@ -1120,6 +1438,78 @@ def run_verify_basis(path: str, now_utc: Optional[datetime] = None) -> int:
     return 3 if unproven else 0
 
 
+# -- Bucket files of the bars (FEAT-DATA-001, Design E) ------------------------
+
+
+def _run_bars_export(tickers: Sequence[str], months: Sequence[tuple[int, int]]) -> bool:
+    """Write *months* of *tickers* to the bucket; True only when every month
+    was written.
+
+    The bars are already in Cloud SQL when this runs, so a failed export does
+    not undo the fetch, but it is never reported as success: the failure is
+    logged with its traceback, as an outage or as a defect
+    (lib.infra_errors), False is returned, and main() exits 1.
+    """
+    from gcp.fetchers import export_intraday_bars  # noqa: PLC0415
+    from lib.infra_errors import is_infrastructure_error  # noqa: PLC0415
+
+    try:
+        done = export_intraday_bars.export_window(tickers, months)
+    except Exception as exc:
+        kind = "outage" if is_infrastructure_error(exc) else "defect"
+        log.error("bars export failed (%s): %s", kind, exc, exc_info=True)
+        return False
+    log.info("bars export: %d months, %d rows, %.1f s",
+             done["months"], done["rows"], done["seconds"])
+    return True
+
+
+def run_export_bars_from(first: tuple[int, int], symbol: str) -> int:
+    """Write every month from *first* (year, month) to the current Eastern
+    month to the bucket, for SPY, QQQ and IWM (*symbol* ``ALL``) or the one of
+    them *symbol* names. Fetches nothing and needs no API key. Returns the
+    exit code.
+
+    An explicit export never ends quietly: more than one Cloud Run task (each
+    would write the same months at once), a ticker other than the three, the
+    database not configured, ``GCS_BUCKET`` unset, or no month to write all
+    return 1, each before any query. The manifest is written after each
+    month, so a run that stops keeps what it wrote and a rerun converges.
+    """
+    from gcp.fetchers.export_intraday_bars import (  # noqa: PLC0415
+        EXPORT_TICKERS,
+        months_between,
+    )
+
+    task_cnt = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1'))
+    if task_cnt > 1:
+        log.error("export-bars-from: %d Cloud Run tasks would each write the same "
+                  "months; run it as one task. Nothing was read.", task_cnt)
+        return 1
+    name = symbol.strip().upper()
+    if name == 'ALL':
+        tickers = tuple(EXPORT_TICKERS)
+    elif name in EXPORT_TICKERS:
+        tickers = (name,)
+    else:
+        log.error("export-bars-from: --symbol %r; only ALL or one of %s is exported. "
+                  "Nothing was read.", symbol, ", ".join(EXPORT_TICKERS))
+        return 1
+    if not is_cloud_sql_configured():
+        log.error("export-bars-from: the database is not configured. Nothing was read.")
+        return 1
+    if not os.environ.get('GCS_BUCKET', '').strip():
+        log.error("export-bars-from: GCS_BUCKET is not set. Nothing was read.")
+        return 1
+    today = market_today()
+    months = months_between(tuple(first), (today.year, today.month))
+    if not months:
+        log.error("export-bars-from: %d-%02d is after the current Eastern month "
+                  "%d-%02d. Nothing was read.", first[0], first[1], today.year, today.month)
+        return 1
+    return 0 if _run_bars_export(tickers, months) else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
@@ -1160,14 +1550,36 @@ def main():
                              'intraday-lists/<name>.csv. Exits 1 on a BASIS-FAIL or EMPTY '
                              'line, 3 when a line rests on a row that is not proven a '
                              'true instant, else 0.')
+    parser.add_argument('--export-bars-from', default=None, metavar='YYYY-MM',
+                        help='Fetches nothing: writes every month from the one given '
+                             'to the current Eastern month of the stored 1-min bars '
+                             'to the bucket, one file per ticker-month and a manifest, '
+                             'for SPY, QQQ and IWM or the one of them named by '
+                             '--symbol. One task. Run per ticker, e.g. '
+                             '--args="--export-bars-from=2015-01,--symbol=SPY".')
     args = parser.parse_args()
 
     list_modes = [flag for flag, value in (
         ('--replace-months', args.replace_months),
         ('--verify-months', args.verify_months),
-        ('--verify-basis', args.verify_basis)) if value]
+        ('--verify-basis', args.verify_basis),
+        ('--export-bars-from', args.export_bars_from)) if value]
     if len(list_modes) > 1:
         parser.error(f"{' and '.join(list_modes)} are separate runs")
+    if args.export_bars_from:
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", args.export_bars_from):
+            parser.error(f"--export-bars-from takes a month as YYYY-MM, "
+                         f"not {args.export_bars_from!r}")
+        export_first = (int(args.export_bars_from[:4]), int(args.export_bars_from[5:]))
+        export_today = market_today()
+        if export_first > (export_today.year, export_today.month):
+            parser.error(f"--export-bars-from {args.export_bars_from} is after the "
+                         f"current Eastern month "
+                         f"{export_today.year}-{export_today.month:02d}")
+        if args.symbols_file or args.start_date or args.end_date:
+            parser.error("--export-bars-from fetches nothing: it takes --symbol and "
+                         "no --symbols-file, --start-date or --end-date")
+        sys.exit(run_export_bars_from(export_first, args.symbol))
     if args.replace_months:
         sys.exit(run_replace_months(args.replace_months, args.commit, args.limit))
     if args.verify_months:
@@ -1269,8 +1681,33 @@ def main():
         except Exception as e:
             log.error("Failed to file data-quality issue (dead tickers "
                       "already logged above): %s", e)
+
+    # The nightly run also writes the bars of SPY, QQQ and IWM to the bucket,
+    # after its fetch: the current Eastern month and the one before it. The
+    # trigger is the nightly's own argument shape (--symbol=ALL --force, no
+    # dates, no symbols file, one task), so the monthly run, a dated run and
+    # the striped bulk backfill never export. It runs when a ticker failed
+    # too; the exit is 1 if either failed. The months come from the exchange's
+    # date: at 21:00 ET the container's date is already the next day.
+    export_failed = False
+    if (args.symbol == 'ALL' and not args.symbols_file and args.force
+            and not args.start_date and not args.end_date and task_cnt == 1):
+        if os.environ.get('INTRADAY_BARS_EXPORT', '').strip().lower() == 'off':
+            log.info("bars export skipped: INTRADAY_BARS_EXPORT is off")
+        elif not is_cloud_sql_configured():
+            log.info("bars export skipped: the database is not configured")
+        else:
+            from gcp.fetchers.export_intraday_bars import (  # noqa: PLC0415
+                EXPORT_TICKERS,
+                nightly_months,
+            )
+            export_failed = not _run_bars_export(
+                EXPORT_TICKERS, nightly_months(market_today()))
+
     if systemic_errors:
         log.error("Systemic failures: %s", systemic_errors)
+        sys.exit(1)
+    if export_failed:
         sys.exit(1)
 
     log.info("Done.")

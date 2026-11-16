@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from lib.config import AlphaVantageConfig
-from lib.eastern_time import sessions_between
+from lib.eastern_time import market_today, sessions_between
 
 from lib.logging_config import setup_logging
 setup_logging()
@@ -205,7 +205,7 @@ def _resolve_start_from_latest(tickers: list[str]) -> date:
     from gcp.database import query_to_dataframe
 
     if not tickers:
-        return date.today()
+        return market_today()
 
     placeholders = ",".join(f":t{i}" for i in range(len(tickers)))
     params = {f"t{i}": t for i, t in enumerate(tickers)}
@@ -238,7 +238,7 @@ def _resolve_start_from_latest(tickers: list[str]) -> date:
             "start to today",
             tickers,
         )
-        return date.today()
+        return market_today()
 
     oldest = min(watermarks)
     return oldest + timedelta(days=1)
@@ -297,8 +297,8 @@ def main():
     # Resolve date list: range mode wins if either bound is given.
     is_range_mode = bool(args.start_date or args.end_date)
     if is_range_mode:
-        start = date.fromisoformat(args.start_date) if args.start_date else date.today()
-        end = date.fromisoformat(args.end_date) if args.end_date else date.today()
+        start = date.fromisoformat(args.start_date) if args.start_date else market_today()
+        end = date.fromisoformat(args.end_date) if args.end_date else market_today()
         if start > end:
             log.info("start_date %s > end_date %s — nothing to fetch (already current)",
                      start, end)
@@ -306,7 +306,7 @@ def main():
         fetch_dates = _trading_days(start, end)
         log.info("Backfill range: %s → %s (%d trading days)", start, end, len(fetch_dates))
     else:
-        fetch_dates = [args.date or date.today().strftime('%Y-%m-%d')]
+        fetch_dates = [args.date or market_today().strftime('%Y-%m-%d')]
 
     # Auto-enable --skip-existing in range/backfill mode.
     skip_existing = args.skip_existing or is_range_mode
