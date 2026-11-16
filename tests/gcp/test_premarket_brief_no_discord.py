@@ -161,3 +161,187 @@ def test_post_to_discord_false_still_suppresses():
     """Regression check: =false still suppresses (case-insensitive)."""
     assert _resolve_no_discord(False, {'BRIEF_POST_TO_DISCORD': 'FALSE'}) is True
     assert _resolve_no_discord(False, {'BRIEF_POST_TO_DISCORD': 'false'}) is True
+
+
+# ── FEAT-PLAYBOOK-001 B9: a replay that writes nothing ──────────────────
+
+import json  # noqa: E402
+
+import pandas as pd  # noqa: E402
+import pytest  # noqa: E402
+
+from tests.gcp import brief_dry_run_helpers as dry  # noqa: E402
+
+ROWS_HEAD = '--- rows (no-persist) ---'
+ROWS_END = '--- end rows (no-persist) ---'
+WRITERS = ('execute_sql', 'upsert_dataframe', 'bulk_insert_dataframe', 'persist_level_map',
+           '_delete_null_close_rows', 'persist_to_cloud_sql')
+
+
+def _plain(value):
+    """A stored value as JSON would carry it: a missing number is None."""
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if value is None or (isinstance(value, float) and value != value):
+        return None
+    if pd.api.types.is_scalar(value) and pd.isna(value):
+        return None
+    return json.loads(json.dumps(value, default=str))
+
+
+def _records(rows) -> list:
+    return [_plain(dict(r)) for r in rows]
+
+
+def _dry_run(monkeypatch, argv=('--no-persist',), env=None, **install_kw):
+    db = dry.RecordingDb(dry.brief_frames())
+    pb = dry.install(monkeypatch, db, **install_kw)
+    for key, value in (env or {}).items():
+        monkeypatch.setenv(key, value)
+    code = dry.run_main(pb, argv)
+    return pb, db, code
+
+
+class TestNoPersist:
+    def test_the_flag_off_run_writes(self, monkeypatch):
+        """The control: the recorder sees the writes of a run without the
+        flag, the null-close delete and the strat_levels upsert among them."""
+        _pb, db, code = _dry_run(monkeypatch, argv=())
+        assert code == 0
+        assert db.calls['_delete_null_close_rows'] == 1
+        assert db.calls['persist_level_map'] == 3 and db.commits == 3
+        assert db.calls['persist_to_cloud_sql'] == 1
+        assert db.calls['execute_sql'] == 1
+        assert db.calls['upsert_dataframe'] == 1 and db.calls['bulk_insert_dataframe'] == 1
+        written = db.not_reads()
+        assert any(t.startswith('DELETE FROM market_data_daily') for t in written)
+        assert sum(t.startswith('INSERT INTO strat_levels') for t in written) == 3
+
+    @pytest.mark.parametrize('argv, env', [
+        (('--no-persist',), {}),
+        ((), {'BRIEF_NO_PERSIST': 'true'}),
+    ], ids=['flag', 'env'])
+    def test_no_statement_but_a_select(self, monkeypatch, argv, env):
+        _pb, db, code = _dry_run(monkeypatch, argv=argv, env=env)
+        assert code == 0
+        assert len(db.briefs) == 1          # the whole brief ran
+        assert db.texts, 'the run read nothing: the recorder is not in the path'
+        for text in db.texts:
+            assert text.strip().upper().startswith(('SELECT', 'SET LOCAL STATEMENT_TIMEOUT')), text
+        assert db.commits == 0
+        for name in WRITERS:
+            assert db.calls[name] == 0, name
+        assert db.calls['send_to_discord'] == 0
+        # The two tickers that write early in a normal run were both built.
+        tickers = db.briefs[0]['tickers']
+        assert tickers['SPY'].get('level_basis') and tickers['QQQ'].get('level_basis')
+
+    def test_it_says_what_it_skipped(self, monkeypatch, capsys):
+        _dry_run(monkeypatch)
+        err = capsys.readouterr().err
+        assert '[brief:SPY] null-close cleanup skipped (no-persist)' in err
+        for ticker in dry.TICKERS:
+            assert f'[brief:{ticker}] strat_levels persist skipped (no-persist)' in err
+
+    def test_it_prints_the_brief_the_rows_and_the_payloads(self, monkeypatch, capsys):
+        pb, db, code = _dry_run(monkeypatch)
+        assert code == 0
+        out = capsys.readouterr().out
+        brief = db.briefs[0]
+        assert json.dumps(brief, indent=2, default=str) in out
+        assert out.count(ROWS_HEAD) == 1 and out.count(ROWS_END) == 1
+        printed = json.loads(out.split(ROWS_HEAD, 1)[1].split(ROWS_END, 1)[0])
+        built = pb.build_persist_rows(brief)
+        assert _records(printed) == _records(built.canonical)
+        assert [r['ticker'] for r in printed] == list(dry.TICKERS)
+        assert {r['run_kind'] for r in printed} == {'replay'}      # BRIEF_AS_OF is set
+        routed = pb.format_discord_messages_routed(brief)
+        assert routed
+        for i, (kind, message) in enumerate(routed, start=1):
+            assert f'--- payload {i}/{len(routed)} (channel={kind}) ---' in out
+            assert json.dumps(message, indent=2) in out
+        assert db.calls['send_to_discord'] == 0
+        assert 'Persisted' not in out
+
+    def test_the_built_rows(self, monkeypatch):
+        """build_persist_rows makes no query, names the canonical run_kind by
+        BRIEF_AS_OF, and keeps a failed or stale ticker out of the canonical
+        rows and in the history rows."""
+        pb, db, _code = _dry_run(monkeypatch)
+        brief = db.briefs[0]
+        before = len(db.statements)
+        built = pb.build_persist_rows(brief)
+        assert len(db.statements) == before
+        assert [r['ticker'] for r in built.rows] == list(dry.TICKERS)
+        assert all('run_kind' not in r and 'notes' not in r and 'triggered_by' not in r
+                   for r in built.rows)
+        assert {r['run_kind'] for r in built.canonical} == {'replay'}
+        assert built.playbook_failed == frozenset() and built.stale_data == frozenset()
+        monkeypatch.delenv('BRIEF_AS_OF')
+        assert {r['run_kind'] for r in pb.build_persist_rows(brief).canonical} == {'live'}
+
+        marked = {**brief, 'tickers': {
+            **brief['tickers'],
+            'SPY': {**brief['tickers']['SPY'], 'status': 'PLAYBOOK_FAILED'},
+            'QQQ': {**brief['tickers']['QQQ'], 'status': 'STALE_DAILY_DATA'},
+            'DIA': {'status': 'NO DATA'}}}
+        built = pb.build_persist_rows(marked)
+        assert [r['ticker'] for r in built.rows] == list(dry.TICKERS)
+        assert [r['ticker'] for r in built.canonical] == ['IWM']
+        assert built.playbook_failed == frozenset({'SPY'})
+        assert built.stale_data == frozenset({'QQQ'})
+
+    def test_persist_writes_exactly_the_built_rows(self, monkeypatch):
+        pb, db, code = _dry_run(monkeypatch, argv=())
+        assert code == 0
+        built = pb.build_persist_rows(db.briefs[0])
+        (hist_table, hist), = db.frames['bulk_insert_dataframe']
+        (canon_table, canon), = db.frames['upsert_dataframe']
+        assert (hist_table, canon_table) == ('premarket_analysis_history', 'premarket_analysis')
+        added = ['run_kind', 'triggered_by', 'notes']
+        assert set(added) <= set(hist.columns)
+        assert _records(hist.drop(columns=added).to_dict('records')) == _records(built.rows)
+        assert _records(canon.to_dict('records')) == _records(built.canonical)
+        assert list(canon['run_kind']) == ['replay'] * 3
+
+    @pytest.mark.parametrize('argv, env', [
+        (('--no-persist',), {'BRIEF_RUN_SLOT': 'late'}),
+        (('--no-persist', '--update'), {}),
+        (('--no-persist',), {'BRIEF_UPDATE': 'true'}),
+        ((), {'BRIEF_NO_PERSIST': 'true', 'BRIEF_RUN_SLOT': 'late'}),
+        (('--no-persist', '--post-existing', 'SPY', '2026-11-06'), {}),
+    ], ids=['late-slot', 'update-flag', 'update-env', 'env-late-slot', 'post-existing'])
+    def test_refusals_exit_2_before_any_query(self, monkeypatch, argv, env):
+        db = dry.RecordingDb(dry.brief_frames())
+        pb = dry.install(monkeypatch, db)
+        monkeypatch.setattr(pb, 'load_config',
+                            lambda: pytest.fail('the configuration was loaded before the refusal'))
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        with pytest.raises(SystemExit) as exc:
+            pb.main(list(argv))
+        assert exc.value.code == 2
+        assert db.statements == [] and not db.calls and not db.briefs
+
+    @pytest.mark.parametrize('value, on', [
+        ('true', True), ('TRUE', True), (' true ', True), ('True', True),
+        ('yes', False), ('1', False), ('false', False), ('', False),
+    ])
+    def test_what_an_operator_types(self, monkeypatch, value, on):
+        import argparse
+        from gcp import premarket_brief as pb
+        monkeypatch.setenv('BRIEF_NO_PERSIST', value)
+        assert pb._resolve_no_persist(argparse.Namespace(no_persist=False)) is on
+        assert pb._resolve_no_persist(argparse.Namespace(no_persist=True)) is True
+
+    def test_force_posting_does_not_post_a_dry_run(self, monkeypatch):
+        env = {'BRIEF_POST_TO_DISCORD': 'true', 'DISCORD_WEBHOOK_URL': 'https://example.invalid/hook'}
+        # The control: without the flag the same settings post.
+        _pb, db, _code = _dry_run(monkeypatch, argv=(), env=env)
+        assert db.calls['send_to_discord'] > 0
+        _pb, db, code = _dry_run(monkeypatch, env=env)
+        assert code == 0
+        assert db.calls['send_to_discord'] == 0 and db.sent == []
+        assert db.not_reads() == [] and db.commits == 0

@@ -1015,7 +1015,9 @@ def _level_params_query(sql: str, params: dict):
     return database.query_to_dataframe_strict(sql, params)
 
 
-def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
+def generate_premarket_brief(cfg=None, data_dir: str = None, *,
+                             no_persist: bool = False,
+                             premarket_from_bars: bool = False) -> dict:
     """Generate pre-market brief for all tickers.
 
     Returns a dict with per-ticker analysis and economic events.
@@ -1023,6 +1025,12 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     Honours BRIEF_AS_OF (historical replay) and BRIEF_TICKERS (override
     the config ticker list) — used by the Discord /replay command and
     ad-hoc backfills.
+
+    `no_persist` (the dry run, --no-persist) skips the two writes this
+    function makes on its own, the null-close cleanup of market_data_daily
+    and the strat_levels upsert, and prints one line for each skip. The
+    stale-source refusal lives inside that upsert, so a dry run does not
+    make it.
     """
     if cfg is None:
         cfg = load_config()
@@ -1092,7 +1100,11 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             )
             # Opportunistic cleanup so future runs don't re-encounter
             # these rows. Fire-and-forget — failure here is non-fatal.
-            _delete_null_close_rows(ticker, analysis_date)
+            if no_persist:
+                print(f"[brief:{ticker}] null-close cleanup skipped (no-persist)",
+                      file=sys.stderr, flush=True)
+            else:
+                _delete_null_close_rows(ticker, analysis_date)
         if df.empty or len(df) < 2:
             brief['tickers'][ticker] = {'status': 'NO DATA (all rows null)'}
             continue
@@ -1501,6 +1513,11 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             # every downstream reader trusted them. The data layer's
             # #322/#323/#325 guards catch the upstream freeze, but this
             # is defense-in-depth at the level-write boundary.
+            if no_persist:
+                # The dry run writes nothing: no strat_levels upsert, no commit.
+                print(f"[brief:{ticker}] strat_levels persist skipped (no-persist)",
+                      file=sys.stderr, flush=True)
+                continue
             try:
                 from gcp.database import get_engine
                 from lib.strat_levels import persist_level_map, StaleSourceDataError
@@ -3612,56 +3629,21 @@ def _resolve_run_kind_and_update(allow_update_arg: bool) -> tuple[bool, str]:
     return False, 'manual_replay'
 
 
-def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
-                         run_kind: str = 'scheduled',
-                         triggered_by: Optional[str] = None,
-                         late_slot: Optional[LateSlotWrite] = None) -> int:
-    """Write premarket analysis rows to Cloud SQL.
+class PersistRows(NamedTuple):
+    """What a brief would write (build_persist_rows). `rows` is every history
+    row before run_kind, triggered_by and notes are added; `canonical` is the
+    rows the canonical table would take, each with its run_kind."""
+    rows: list
+    canonical: list
+    playbook_failed: frozenset
+    stale_data: frozenset
 
-    Always INSERTs a row into `premarket_analysis_history` (audit
-    trail; append-only). Then, per-ticker:
-      - If a row already exists in `premarket_analysis` for
-        (analysis_date, ticker) and `allow_update` is False:
-        SKIP the current-table write; log a warning. Protects the
-        canonical morning row.
-      - Otherwise: UPSERT (INSERT, or UPDATE on conflict). Used for
-        the first run of the day and for explicit --update overrides.
 
-    With `late_slot` (a LateSlotWrite; BRIEF_RUN_SLOT=late) the function
-    is the one scheduled path that replaces a live canonical row, and only
-    when all four hold: the date is an NYSE session; every brief ticker's
-    premarket snapshot was fetched at or after 09:20:00 America/New_York
-    with its prints filtered; the write check is before 09:29:30; the rows
-    are unchanged since the run read them. The caller establishes the
-    first two (the session gate, the wait and the build check, handed in
-    as `late_slot.refusal`); this function re-reads the rows and checks
-    the clock. Then ONE upsert writes every brief ticker's row with
-    run_kind live and analysis_ts set to the instant of the check (no
-    other write moves analysis_ts), followed by the history rows with
-    notes LATE_SLOT_APPLIED. All tickers or none: a refusal writes history
-    rows only, with LATE_SLOT_NOT_APPLIED: <outcome> <reason>, and returns
-    0. What happened is on `late_slot.outcome`. `late_slot` with
-    `allow_update` or BRIEF_AS_OF raises ValueError.
-
-    See docs/plans/MORNING_RUN_PROTECTION_PLAN.md for the rationale.
-    """
-    if late_slot is not None and (allow_update or _as_of_override() is not None):
-        # The operator's overwrite and a replay have their own rules; the
-        # late slot's guarded overwrite is neither (decision G).
-        raise ValueError("late_slot cannot be combined with allow_update or BRIEF_AS_OF")
-    try:
-        from gcp.database import (
-            is_cloud_sql_configured, upsert_dataframe, bulk_insert_dataframe,
-            row_exists,
-        )
-    except ImportError:
-        logger.warning("gcp.database not available -- skipping DB persist")
-        return 0
-
-    if not is_cloud_sql_configured():
-        logger.info("Cloud SQL not configured -- skipping DB persist")
-        return 0
-
+def build_persist_rows(brief: dict) -> PersistRows:
+    """The row-building half of persist_to_cloud_sql. It makes no query, so
+    a dry run (--no-persist) can print exactly what would have been written.
+    The canonical rows carry run_kind 'replay' under BRIEF_AS_OF and 'live'
+    otherwise, and leave out PLAYBOOK_FAILED and STALE_DAILY_DATA tickers."""
     # Honour the brief's resolved analysis_date (BRIEF_AS_OF) so
     # historical replays write to the correct date row, not today's.
     # Falls back to the exchange's date when the brief carries none
@@ -3791,6 +3773,86 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'level_basis': data.get('level_basis'),
         })
 
+    # Provenance on the canonical row (audit 2026-09-14). The history
+    # table's `run_kind` is a four-value operational taxonomy
+    # ('scheduled' / 'manual_update' / 'replay_refresh' / 'manual_replay');
+    # the canonical table takes the three-value data taxonomy shared with
+    # trades and signal_alerts, because that is what readers filter on.
+    # A BRIEF_AS_OF run reconstructs a past morning, so its row is
+    # 'replay': real analysis, but not the brief that was actually
+    # published that day, and /api/dashboard must not serve it as one.
+    canonical_run_kind = 'replay' if _as_of_override() else 'live'
+    skip_canonical = playbook_failed | stale_data
+    canonical = [{**r, 'run_kind': canonical_run_kind}
+                 for r in rows if r['ticker'] not in skip_canonical]
+    return PersistRows(rows=rows, canonical=canonical,
+                       playbook_failed=frozenset(playbook_failed),
+                       stale_data=frozenset(stale_data))
+
+
+def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
+                         run_kind: str = 'scheduled',
+                         triggered_by: Optional[str] = None,
+                         late_slot: Optional[LateSlotWrite] = None) -> int:
+    """Write premarket analysis rows to Cloud SQL.
+
+    Always INSERTs a row into `premarket_analysis_history` (audit
+    trail; append-only). Then, per-ticker:
+      - If a row already exists in `premarket_analysis` for
+        (analysis_date, ticker) and `allow_update` is False:
+        SKIP the current-table write; log a warning. Protects the
+        canonical morning row.
+      - Otherwise: UPSERT (INSERT, or UPDATE on conflict). Used for
+        the first run of the day and for explicit --update overrides.
+
+    With `late_slot` (a LateSlotWrite; BRIEF_RUN_SLOT=late) the function
+    is the one scheduled path that replaces a live canonical row, and only
+    when all four hold: the date is an NYSE session; every brief ticker's
+    premarket snapshot was fetched at or after 09:20:00 America/New_York
+    with its prints filtered; the write check is before 09:29:30; the rows
+    are unchanged since the run read them. The caller establishes the
+    first two (the session gate, the wait and the build check, handed in
+    as `late_slot.refusal`); this function re-reads the rows and checks
+    the clock. Then ONE upsert writes every brief ticker's row with
+    run_kind live and analysis_ts set to the instant of the check (no
+    other write moves analysis_ts), followed by the history rows with
+    notes LATE_SLOT_APPLIED. All tickers or none: a refusal writes history
+    rows only, with LATE_SLOT_NOT_APPLIED: <outcome> <reason>, and returns
+    0. What happened is on `late_slot.outcome`. `late_slot` with
+    `allow_update` or BRIEF_AS_OF raises ValueError.
+
+    See docs/plans/MORNING_RUN_PROTECTION_PLAN.md for the rationale.
+    """
+    if late_slot is not None and (allow_update or _as_of_override() is not None):
+        # The operator's overwrite and a replay have their own rules; the
+        # late slot's guarded overwrite is neither (decision G).
+        raise ValueError("late_slot cannot be combined with allow_update or BRIEF_AS_OF")
+    try:
+        from gcp.database import (
+            is_cloud_sql_configured, upsert_dataframe, bulk_insert_dataframe,
+            row_exists,
+        )
+    except ImportError:
+        logger.warning("gcp.database not available -- skipping DB persist")
+        return 0
+
+    if not is_cloud_sql_configured():
+        logger.info("Cloud SQL not configured -- skipping DB persist")
+        return 0
+
+    # Honour the brief's resolved analysis_date (BRIEF_AS_OF) so
+    # historical replays write to the correct date row, not today's.
+    # Falls back to the exchange's date when the brief carries none
+    # (the container's UTC date is already tomorrow in the evening).
+    analysis_date = brief.get('analysis_date') or market_today()
+    # The rows, built with no query (build_persist_rows). PLAYBOOK_FAILED and
+    # STALE_DAILY_DATA tickers still go to premarket_analysis_history (the
+    # audit trail records the failure, with notes) and never to the
+    # canonical premarket_analysis row.
+    built = build_persist_rows(brief)
+    rows = built.rows
+    playbook_failed, stale_data = built.playbook_failed, built.stale_data
+
     # When a ticker is stale, populate the `notes` column with a
     # human-readable explanation so a SELECT on history rows can
     # immediately distinguish "the brief ran healthy" from "the
@@ -3903,18 +3965,10 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
     # write path; both kinds of rows have NULL signal data and would
     # corrupt the canonical row by overwriting it with stale or
     # empty values.
-    skip_canonical = playbook_failed | stale_data
-    # Provenance on the canonical row (audit 2026-09-14). The history
-    # table's `run_kind` is a four-value operational taxonomy
-    # ('scheduled' / 'manual_update' / 'replay_refresh' / 'manual_replay');
-    # the canonical table takes the three-value data taxonomy shared with
-    # trades and signal_alerts, because that is what readers filter on.
-    # A BRIEF_AS_OF run reconstructs a past morning, so its row is
-    # 'replay': real analysis, but not the brief that was actually
-    # published that day, and /api/dashboard must not serve it as one.
+    # The canonical rows and their run_kind ('replay' under BRIEF_AS_OF,
+    # 'live' otherwise) are build_persist_rows' own.
     canonical_run_kind = 'replay' if _as_of_override() else 'live'
-    canonical_rows = [{**r, 'run_kind': canonical_run_kind}
-                      for r in rows if r['ticker'] not in skip_canonical]
+    canonical_rows = built.canonical
     if playbook_failed:
         logger.warning(
             "Skipped premarket_analysis write for %d PLAYBOOK_FAILED "
@@ -4222,6 +4276,36 @@ def _late_slot_flow(*, cfg, data_dir: str, run_kind: str, triggered_by: str,
     return _not_applied(late.outcome, late.reason, rows=late.rows_now or rows, wait=wait)
 
 
+def _env_true(name: str) -> bool:
+    """An on/off environment variable as an operator types it: on only for
+    `true`, in any letter case and with spaces around it."""
+    return os.environ.get(name, '').strip().lower() == 'true'
+
+
+def _resolve_no_persist(args) -> bool:
+    """The dry run: --no-persist, or BRIEF_NO_PERSIST=true."""
+    return bool(getattr(args, 'no_persist', False)) or _env_true('BRIEF_NO_PERSIST')
+
+
+def _print_dry_run(brief: dict) -> None:
+    """What a dry run would have written and posted, on stdout: the canonical
+    rows build_persist_rows gives, each with its run_kind, then every Discord
+    payload. Nothing is written and nothing is posted."""
+    built = build_persist_rows(brief)
+    print("\n--- rows (no-persist) ---")
+    print(json.dumps(built.canonical, indent=2, default=str))
+    print("--- end rows (no-persist) ---")
+    history_only = sorted(built.playbook_failed | built.stale_data)
+    print(f"no-persist: {len(built.canonical)} canonical row(s) and {len(built.rows)} "
+          f"history row(s) built, none written"
+          + (f"; history only: {', '.join(history_only)}" if history_only else ""))
+    routed = format_discord_messages_routed(brief)
+    print("\nno-persist: nothing posted -- printing payloads only")
+    for i, (kind, message) in enumerate(routed, start=1):
+        print(f"\n--- payload {i}/{len(routed)} (channel={kind}) ---")
+        print(json.dumps(message, indent=2))
+
+
 def main(argv: Optional[list[str]] = None):
     # Cloud Run Jobs pass overrides via env vars, not CLI flags. Translate
     # the env-var equivalent of --post-existing into argv when the caller
@@ -4263,7 +4347,41 @@ def main(argv: Optional[list[str]] = None):
              "(replay) — historical replays would post stale content "
              "to a real-time Discord channel.",
     )
+    parser.add_argument(
+        '--no-persist', action='store_true',
+        help="Dry run: build the whole brief and write nothing. No "
+             "premarket_analysis or premarket_analysis_history row, no "
+             "strat_levels upsert, no null-close cleanup, no Discord post "
+             "(BRIEF_POST_TO_DISCORD=true does not override it). Prints the "
+             "brief, the rows that would have been written and the "
+             "payloads. Refused with --update, BRIEF_UPDATE=true, "
+             "--post-existing and BRIEF_RUN_SLOT=late. Equivalent env var: "
+             "BRIEF_NO_PERSIST=true.",
+    )
     args = parser.parse_args(argv)
+
+    # The dry run's refusals, before the configuration is loaded and before
+    # any query: a run that asked both to write nothing and to overwrite, to
+    # post a stored row, or to take the late slot's guarded overwrite would
+    # have neither's rules.
+    no_persist = _resolve_no_persist(args)
+    if no_persist:
+        refused = None
+        if args.update or os.environ.get('BRIEF_UPDATE') == 'true':
+            refused = "--update or BRIEF_UPDATE=true"
+        elif args.post_existing:
+            refused = "--post-existing"
+        else:
+            try:
+                if _resolve_run_slot() == 'late':
+                    refused = "BRIEF_RUN_SLOT=late"
+            except ValueError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                sys.exit(2)
+        if refused:
+            print(f"ERROR: --no-persist (BRIEF_NO_PERSIST=true) cannot be combined "
+                  f"with {refused}", file=sys.stderr)
+            sys.exit(2)
 
     if args.post_existing:
         ticker, date_str = args.post_existing
@@ -4318,7 +4436,9 @@ def main(argv: Optional[list[str]] = None):
     # of this — premarket_analysis + premarket_analysis_history rows
     # are always written regardless of the Discord policy.
     post_to_discord_env = os.environ.get('BRIEF_POST_TO_DISCORD', '').lower()
-    if post_to_discord_env == 'true':
+    if no_persist:
+        no_discord = True   # a dry run posts nothing, force-on included
+    elif post_to_discord_env == 'true':
         no_discord = False  # explicit force-on; wins over AS_OF auto-suppress
     else:
         no_discord = (
@@ -4345,16 +4465,29 @@ def main(argv: Optional[list[str]] = None):
         sys.exit(_run_late_slot(cfg=cfg, data_dir=data_dir, run_kind=run_kind,
                                 triggered_by=triggered_by, webhook_url=webhook_url))
 
-    print(f"Generating pre-market brief... (allow_update={allow_update}, "
-          f"run_kind={run_kind}, triggered_by={triggered_by})")
+    if no_persist:
+        print(f"Generating pre-market brief... (no-persist: nothing is written "
+              f"or posted, triggered_by={triggered_by})")
+    else:
+        print(f"Generating pre-market brief... (allow_update={allow_update}, "
+              f"run_kind={run_kind}, triggered_by={triggered_by})")
     try:
-        brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
+        if no_persist:
+            brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir, no_persist=True)
+        else:
+            brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
     except LevelParamsUnavailable as exc:
         # INTERNAL failure (CLAUDE.md 3.7): no premarket_analysis row is
         # written for any ticker; the job goes red.
         logger.error("premarket brief aborted: %s (%s)", exc.reason, exc)
         sys.exit(1)
     print(json.dumps(brief, indent=2, default=str))
+
+    if no_persist:
+        # The dry run: persist_to_cloud_sql is not called and nothing is
+        # posted. The rows and the payloads are printed instead.
+        _print_dry_run(brief)
+        return
 
     # Persist to Cloud SQL — always writes history; current-table
     # write is conditional on allow_update + per-ticker existence.
