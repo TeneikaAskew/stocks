@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from lib.config import AlphaVantageConfig
+from lib.eastern_time import market_today, sessions_between
 
 from lib.logging_config import setup_logging
 setup_logging()
@@ -166,27 +167,12 @@ def process_ticker(ticker: str, fetch_date: str, api_key: str,
 def _trading_days(start: date, end: date) -> list[str]:
     """Return YYYY-MM-DD strings for every NYSE TRADING day in [start, end].
 
-    Uses pandas_market_calendars so weekends AND market holidays (e.g. Memorial
-    Day) are skipped — otherwise the backfill wastes an AV call fetching a chain
-    that doesn't exist for that date. Falls back to a plain Mon-Fri filter if the
-    calendar package is unavailable; that just restores the prior behaviour (a
-    holiday returns an empty chain and is skipped a step later).
+    Reads the shared NYSE calendar (`lib.eastern_time`, FEAT-DATA-001) so
+    weekends AND market holidays (e.g. Memorial Day) are skipped; otherwise
+    the backfill wastes an AV call fetching a chain that doesn't exist for
+    that date. There is no weekday fallback: a missing calendar raises.
     """
-    try:
-        import pandas_market_calendars as mcal
-    except ImportError:
-        log.warning("pandas_market_calendars unavailable — backfill will include "
-                    "market holidays (they return empty chains and are skipped)")
-        out = []
-        cur = start
-        while cur <= end:
-            if cur.weekday() < 5:  # Mon-Fri
-                out.append(cur.strftime('%Y-%m-%d'))
-            cur += timedelta(days=1)
-        return out
-
-    days = mcal.get_calendar('NYSE').valid_days(start_date=start, end_date=end)
-    return [d.strftime('%Y-%m-%d') for d in days]
+    return [d.strftime('%Y-%m-%d') for d in sessions_between(start, end)]
 
 
 def _resolve_start_from_latest(tickers: list[str]) -> date:
@@ -219,7 +205,7 @@ def _resolve_start_from_latest(tickers: list[str]) -> date:
     from gcp.database import query_to_dataframe
 
     if not tickers:
-        return date.today()
+        return market_today()
 
     placeholders = ",".join(f":t{i}" for i in range(len(tickers)))
     params = {f"t{i}": t for i, t in enumerate(tickers)}
@@ -252,7 +238,7 @@ def _resolve_start_from_latest(tickers: list[str]) -> date:
             "start to today",
             tickers,
         )
-        return date.today()
+        return market_today()
 
     oldest = min(watermarks)
     return oldest + timedelta(days=1)
@@ -311,8 +297,8 @@ def main():
     # Resolve date list: range mode wins if either bound is given.
     is_range_mode = bool(args.start_date or args.end_date)
     if is_range_mode:
-        start = date.fromisoformat(args.start_date) if args.start_date else date.today()
-        end = date.fromisoformat(args.end_date) if args.end_date else date.today()
+        start = date.fromisoformat(args.start_date) if args.start_date else market_today()
+        end = date.fromisoformat(args.end_date) if args.end_date else market_today()
         if start > end:
             log.info("start_date %s > end_date %s — nothing to fetch (already current)",
                      start, end)
@@ -320,7 +306,7 @@ def main():
         fetch_dates = _trading_days(start, end)
         log.info("Backfill range: %s → %s (%d trading days)", start, end, len(fetch_dates))
     else:
-        fetch_dates = [args.date or date.today().strftime('%Y-%m-%d')]
+        fetch_dates = [args.date or market_today().strftime('%Y-%m-%d')]
 
     # Auto-enable --skip-existing in range/backfill mode.
     skip_existing = args.skip_existing or is_range_mode

@@ -27,17 +27,15 @@ NOW = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 # This file is two levels below the repo root (tests/scripts/).
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-# The display titles the owning workflow's `run-name:` produces, which is the
-# only record of a dry run any REST endpoint exposes. Built from the module's
-# own markers so a fixture cannot drift from the code it exercises.
-#
-# BOTH branches are marked, so absence means exactly one thing -- "this run
-# predates the marker" -- rather than meaning that AND "delivered" at once.
-# `AMBIGUOUS_TITLE` is what every run made before `run-name:` landed carries.
-_RUN_NAME = "Monthly architecture doc refresh"
-LIVE_TITLE = f"{_RUN_NAME} {m.DELIVERING_MARKER}"
-DRY_TITLE = f"{_RUN_NAME} {m.DRY_RUN_MARKER}"
-AMBIGUOUS_TITLE = _RUN_NAME
+
+
+def test_site_import_slot_rename_is_drift_while_ordinary_pure_rename_stays_exempt():
+    """The same bytes newly named json.py change startup, unlike a pure move."""
+    sha = "a" * 40
+    history = sha + "\tfeat: move existing bytes into a startup slot\n\nR100\tlib/helper.py\tjson.py\n"
+    assert m.drift_commits(history, ["lib"]) == []
+    assert m.drift_commits(history, ["lib"], import_shadow=lambda p: p == "json.py") == [history.splitlines()[0]]
+    assert m.drift_commits(history, ["unrelated"]) == []
 
 
 # ── registry parsing ────────────────────────────────────────────────────────
@@ -1132,41 +1130,7 @@ def test_ordinary_pull_request_lineage_is_still_ignored():
     assert m.check_closed_issues("d.md", line, states) == []
 
 
-# ── owning-job delivery ─────────────────────────────────────────────────────
-
-def test_owning_job_check_flags_an_unmerged_refresh_pr(monkeypatch):
-    """PR #1060 sat open and unmerged for 8 days while 05-a/05-c still said
-    `Generated 2026-09-07`. A Generated stamp records that a job ran, not that
-    its output ever landed, and nothing was watching that gap."""
-    def fake_run(cmd, **kw):
-        if "runs?per_page=10" in " ".join(cmd):
-            return "success\t2026-09-09T13:46:36Z\n"
-        return "1060\topen\t\t2026-09-08T15:46:57Z\tMonthly architecture doc refresh: 2026-09\n"
-    monkeypatch.setattr(m, "run", fake_run)
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    out = m.check_owning_job("2026-09-16")
-    assert any(f["severity"] == "P1" and "#1060" in f["detail"] and "8d" in f["detail"] for f in out)
-
-
-def test_owning_job_check_flags_a_failed_last_run(monkeypatch):
-    def fake_run(cmd, **kw):
-        if "runs?per_page=10" in " ".join(cmd):
-            return "failure\t2026-09-09T12:41:22Z\n"
-        return ""
-    monkeypatch.setattr(m, "run", fake_run)
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    out = m.check_owning_job("2026-09-16")
-    assert any(f["severity"] == "P1" and "failure" in f["detail"] for f in out)
-
-
-def test_owning_job_check_is_quiet_when_the_job_delivered(monkeypatch):
-    def fake_run(cmd, **kw):
-        if "runs?per_page=10" in " ".join(cmd):
-            return "success\t2026-09-16T06:00:00Z\n"
-        return "1200\tclosed\t2026-09-16T07:00:00Z\t2026-09-16T06:10:00Z\tMonthly architecture doc refresh: 2026-09\n"
-    monkeypatch.setattr(m, "run", fake_run)
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    assert m.check_owning_job("2026-09-16") == []
+# ── subprocess helper ──────────────────────────────────────────────────────
 
 
 def test_run_returns_empty_for_a_tolerated_non_zero_exit():
@@ -1204,36 +1168,6 @@ def test_changed_since_aborts_on_an_unknown_sha_rather_than_reporting_no_drift()
         m.check_changed_since("d.md", "0000000", ["lib"], "HEAD")
 
 
-def test_a_failed_refresh_superseded_by_a_later_delivery_is_not_reported(monkeypatch):
-    """#963/#1012/#1021 failed, then a later refresh merged. They are history.
-
-    Reporting them forever kept --check red with findings whose only remedy
-    would be reviving obsolete PRs.
-    """
-    prs = "\n".join([
-        "1060\tclosed\t2026-09-10T00:00:00Z\t2026-09-08T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
-        "1021\tclosed\t\t2026-09-05T00:00:00Z\tFix: Monthly architecture doc refresh failed",
-        "963\tclosed\t\t2026-08-20T00:00:00Z\tFix: Monthly architecture doc refresh failed",
-    ])
-    monkeypatch.setattr(m, "run", lambda cmd, **k: "success\t2026-09-10T00:00:00Z\n"
-                        if "runs?" in " ".join(cmd) else prs)
-    findings = m.check_owning_job("2026-09-17")
-    assert [f for f in findings if "963" in f["detail"] or "1021" in f["detail"]] == []
-
-
-def test_a_failed_refresh_with_no_later_delivery_is_still_reported(monkeypatch):
-    """The supersede rule must not swallow the case the check exists for."""
-    prs = "\n".join([
-        "1060\topen\t\t2026-09-08T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
-        "1021\tclosed\t\t2026-09-05T00:00:00Z\tFix: Monthly architecture doc refresh failed",
-    ])
-    monkeypatch.setattr(m, "run", lambda cmd, **k: "success\t2026-09-10T00:00:00Z\n"
-                        if "runs?" in " ".join(cmd) else prs)
-    findings = m.check_owning_job("2026-09-17")
-    assert any("1060" in f["detail"] and f["severity"] == "P1" for f in findings)
-    assert any("1021" in f["detail"] for f in findings)
-
-
 def test_registered_non_markdown_artifacts_are_in_the_document_set():
     """The .drawio companions are Class A with `all` ownership.
 
@@ -1260,20 +1194,6 @@ def test_unknown_is_not_a_future_review_date():
     assert m.is_future_date("unknown", "2026-09-17") is False
     assert m.is_future_date("2026-09-18", "2026-09-17") is True
     assert m.is_future_date("2026-09-16", "2026-09-17") is False
-
-
-def test_an_owning_job_read_failure_aborts_instead_of_becoming_a_finding(monkeypatch):
-    """"The docs are stale" and "I never learned whether they are" differ.
-
-    Collapsing them let a default run exit 0 and a --check run exit 1, neither
-    of which is the documented exit 2 for an incomplete audit, so a caller
-    could not tell a stale document from an audit that never ran.
-    """
-    def boom(cmd, **k):
-        raise m.AuditError("gh: authentication failed")
-    monkeypatch.setattr(m, "run", boom)
-    with pytest.raises(m.AuditError, match="authentication"):
-        m.check_owning_job("2026-09-18")
 
 
 def test_zero_byte_generated_artifact_has_no_lines():
@@ -2168,102 +2088,6 @@ def test_a_citation_that_climbs_above_the_repo_is_not_a_finding():
 
 # ── the delivery audit, round three ────────────────────────────────────────
 
-def test_ten_dry_runs_cannot_push_the_last_delivery_out_of_view(monkeypatch, tmp_path):
-    """A fixed ten-run window plus the dry-run filter is a hole the two open
-    together and neither has alone: the workflow permits repeated manual dry
-    runs, and ten of them hide the failed scheduled refresh behind them."""
-    monkeypatch.setattr(m, "REPO", tmp_path)
-    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
-    page1 = "\n".join(
-        [f"success\t2026-09-18T06:00:00Z\tworkflow_dispatch\t{DRY_TITLE}"] * 10)
-    page2 = f"failure\t2026-09-16T06:00:00Z\tschedule\t{LIVE_TITLE}"
-    pages = {1: page1, 2: page2}
-
-    def fake(cmd, **kw):
-        joined = " ".join(cmd)
-        if "runs?per_page" in joined:
-            return pages.get(int(joined.split("&page=")[1].split()[0]), "")
-        return ""
-
-    monkeypatch.setattr(m, "run", fake)
-    out = m.check_owning_job("2026-09-18")
-    assert [f for f in out if "failure" in f["detail"]], out
-
-
-def test_the_run_walk_stops_at_the_first_delivering_run(monkeypatch, tmp_path):
-    """Cost scales with the answer: once a non-dry run is in hand there is
-    nothing older that can change the verdict."""
-    monkeypatch.setattr(m, "REPO", tmp_path)
-    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
-    calls = {"n": 0}
-
-    def fake(cmd, **kw):
-        if "runs?per_page" in " ".join(cmd):
-            calls["n"] += 1
-            return "success\t2026-09-18T06:00:00Z\tschedule\t"
-        return ""
-
-    monkeypatch.setattr(m, "run", fake)
-    m.check_owning_job("2026-09-18")
-    assert calls["n"] == 1
-
-
-def test_a_repair_pr_does_not_count_as_a_delivery():
-    """The broad pattern catches failed ATTEMPTS, which belong on the report.
-    It also matches maintenance like "fix architecture doc refresh
-    authentication", and computing `delivered` from every merged match let a
-    workflow repair supersede a refresh that never delivered a document."""
-    assert m.OWNING_JOB["pr_title_re"].search("Fix architecture doc refresh authentication")
-    assert not m.OWNING_JOB["delivery_title_re"].search(
-        "Fix architecture doc refresh authentication")
-    assert m.OWNING_JOB["delivery_title_re"].search(
-        "Monthly architecture doc refresh: 2026-09")
-
-
-def test_a_merged_repair_pr_does_not_supersede_an_open_refresh(monkeypatch, tmp_path):
-    """Through check_owning_job, not just against the two regexes: `delivered`
-    is computed from merged matches, so a merged workflow REPAIR could hide a
-    refresh that never delivered a document."""
-    monkeypatch.setattr(m, "REPO", tmp_path)
-    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
-    pages = ["\n".join([
-        "1060\topen\t\t2026-09-08T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
-        "1059\tclosed\t2026-09-10T00:00:00Z\t2026-09-09T00:00:00Z\t"
-        "Fix architecture doc refresh authentication",
-    ])]
-    monkeypatch.setattr(m, "run", _pr_pages(pages))
-    out = m.check_owning_job("2026-09-17")
-    assert [f for f in out if "1060" in f["detail"]], out
-
-
-def test_a_merged_refresh_still_supersedes(monkeypatch, tmp_path):
-    """The stricter delivery pattern must not stop a real delivery from
-    clearing older attempts."""
-    monkeypatch.setattr(m, "REPO", tmp_path)
-    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
-    pages = ["\n".join([
-        "1060\topen\t\t2026-09-08T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
-        "1059\tclosed\t2026-09-10T00:00:00Z\t2026-09-09T00:00:00Z\t"
-        "Monthly architecture doc refresh: 2026-09",
-    ])]
-    monkeypatch.setattr(m, "run", _pr_pages(pages))
-    assert [f for f in m.check_owning_job("2026-09-17") if "1060" in f["detail"]] == []
-
-
-def test_disagreeing_generated_stamps_are_reported(tmp_path, monkeypatch):
-    """05-c carries a stamp in its header AND its footer. max() reads the
-    document as current when a partial refresh moved only one, while the other
-    visible provenance claim stays stale."""
-    out = _owning_doc(tmp_path, monkeypatch,
-                      "# G\n\nGenerated 2026-09-15\n\nbody\n\nGenerated 2026-08-01\n")
-    assert [f for f in out if "stamps disagree" in f["detail"]], out
-
-
-def test_agreeing_generated_stamps_are_quiet(tmp_path, monkeypatch):
-    out = _owning_doc(tmp_path, monkeypatch,
-                      "# G\n\nGenerated 2026-09-15\n\nbody\n\nGenerated 2026-09-15\n")
-    assert [f for f in out if f["doc"] == "g.md"] == [], out
-
 
 def test_a_type_change_is_drift(tmp_path, monkeypatch):
     """git files a regular-file-to-symlink conversion as T, which AMDR dropped
@@ -2461,49 +2285,6 @@ def test_the_clause_is_bounded_by_the_citation_not_the_sentence():
 
 # ── the delivery audit answers to its own flag ─────────────────────────────
 
-def test_a_null_conclusion_does_not_shift_the_columns(monkeypatch, tmp_path):
-    """A queued or in-progress run has a null conclusion, so its TSV row BEGINS
-    with a tab. Stripping the whole response removes that tab from the first
-    row and every column shifts left, so the timestamp reads as the conclusion
-    and the run is reported as a failure concluding "2026-09-18T..."."""
-    monkeypatch.setattr(m, "REPO", tmp_path)
-    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
-    runs = "\t2026-09-18T06:00:00Z\tschedule\t\nsuccess\t2026-09-17T06:00:00Z\tschedule\t\n"
-    monkeypatch.setattr(m, "run", _pr_pages([""], runs=runs))
-    out = m.check_owning_job("2026-09-18")
-    assert [f for f in out if "2026-09-18T06:00:00Z" in f["detail"]] == [], out
-
-
-def test_the_owning_job_check_is_not_disabled_by_the_issues_snapshot(audit_repo):
-    """Keying the Class A delivery audit off an unrelated flag meant an offline
-    issue run reported Class A clean however badly the refresh was failing."""
-    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
-    _commit(audit_repo, "tree")
-    calls = []
-    real = m.run
-
-    def fake_run(cmd, **kw):
-        joined = " ".join(cmd)
-        calls.append(joined)
-        # Let the local git reads through; only the GitHub calls are faked, so
-        # the run reaches the delivery audit instead of aborting before it.
-        if cmd[0] == "git":
-            return real(cmd, **kw)
-        return ""
-
-    import pytest as _pytest
-    with _pytest.MonkeyPatch.context() as mp:
-        mp.setattr(m, "run", fake_run)
-        try:
-            # Deliberately WITHOUT --no-owning-job-check: the point of this
-            # test is that --issues-snapshot alone no longer suppresses the
-            # delivery audit. `run` is faked, so no network is touched.
-            m.main(["--json", "--date", "2026-09-18",
-                    "--issues-snapshot", str(audit_repo / "issues.json")])
-        except Exception:
-            pass
-    assert any("actions/workflows" in c for c in calls), calls[-5:]
-
 
 def test_the_owning_job_check_can_still_be_turned_off(audit_repo):
     """It needs the GitHub API, so an offline run has to be able to skip it --
@@ -2624,186 +2405,7 @@ def test_a_directory_target_still_resolves(tmp_path, monkeypatch):
     assert m.check_dead_links("d.md", "see [x](lib/)\n", {"d.md", "lib/a.py"}) == []
 
 
-# ── the owning job, and what its success does not prove ────────────────────
-
-def _pr_pages(pages, runs="success\t2026-09-16T06:00:00Z\tschedule\t\n"):
-    """A fake `run` serving one PR page per call, then the workflow-runs read."""
-    calls = {"n": 0}
-
-    def fake_run(cmd, **kw):
-        joined = " ".join(cmd)
-        if "runs?per_page=10" in joined:
-            return runs
-        calls["n"] += 1
-        return pages[calls["n"] - 1] if calls["n"] <= len(pages) else ""
-    fake_run.calls = calls
-    return fake_run
-
-
-def test_the_refresh_pr_lookup_reads_past_the_first_page(monkeypatch):
-    """A single `per_page=100` page covers the 100 newest PRs of ANY kind.
-
-    Measured on this repo on 2026-09-18: page 1 reaches #1130 down to #959, a
-    15-day window, and the refresh PR that actually delivered (#953, merged
-    2026-09-02) is on page 2 -- invisible to the single-page lookup, so the
-    supersede rule saw no delivery at all.
-    """
-    page1 = "\n".join(
-        [f"{n}\tclosed\t2026-09-1{n % 10}T00:00:00Z\t"
-         f"2026-09-1{n % 10}T00:00:00Z\tfix: unrelated {n}"
-         for n in range(1130, 1030, -1)])
-    page2 = "\n".join([
-        "1021\tclosed\t\t2026-09-07T13:07:48Z\tFix: Monthly architecture doc refresh failed",
-        "953\tclosed\t2026-09-02T22:27:07Z\t2026-09-01T06:24:17Z\t"
-        "Monthly architecture doc refresh: 2026-09",
-    ])
-    monkeypatch.setattr(m, "run", _pr_pages([page1, page2]))
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    out = m.check_owning_job("2026-09-17")
-    assert any("1021" in f["detail"] for f in out), out
-
-
-def _filler(lo, hi, created="2026-09-01T00:00:00Z"):
-    return [f"{n}\tclosed\t\t{created}\tfix: filler {n}" for n in range(lo, hi)]
-
-
-def test_the_pr_lookup_stops_once_every_pending_refresh_is_superseded(monkeypatch):
-    """Cost scales with the answer (CLAUDE.md §3.8), but the stop rule is
-    "every pending candidate is already superseded", not "a merge exists".
-
-    Here the open refresh was CREATED before the merge that delivered, so the
-    supersede rule skips it and no later page can change that: a later page
-    holds only older-created PRs, which the same merge supersedes too."""
-    pages = ["\n".join([
-        "1060\topen\t\t2026-09-01T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
-        "953\tclosed\t2026-09-10T22:27:07Z\t2026-08-28T06:24:17Z\t"
-        "Monthly architecture doc refresh: 2026-09",
-    ] + _filler(900, 998))]
-    fake = _pr_pages(pages)
-    monkeypatch.setattr(m, "run", fake)
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    m.check_owning_job("2026-09-17")
-    assert fake.calls["n"] == 1
-
-
-def test_the_pr_lookup_reads_on_while_a_pending_refresh_postdates_every_merge(monkeypatch):
-    """The walk must not stop while an unsuperseded refresh is still pending.
-
-    Page 1 holds #1060 (open, `refresh: 2026-09`, created 09-08) and #953
-    (`refresh: 2026-09`, merged 09-02) -- which does NOT supersede it, because
-    a September refresh opened AFTER a September refresh merged is a
-    re-attempt. So the walk reads on.
-
-    What #900 on page 2 does NOT do is supersede it either, and that changed in
-    round 13: it is `refresh: 2026-08`, and an August delivery cannot establish
-    that September's documents landed, however late it merged. Before that this
-    case asserted #1060 was silenced, on a pure creation-versus-merge
-    comparison -- and the round-13 generation fix kept it green for the WRONG
-    reason, because delivered_gen was a max over ALL deliveries and #953 put
-    2026-09 into it. Making supersession per-delivery is what exposed that.
-    """
-    pages = ["\n".join([
-        "1060\topen\t\t2026-09-08T15:46:57Z\tMonthly architecture doc refresh: 2026-09",
-        "953\tclosed\t2026-09-02T22:27:07Z\t2026-09-01T06:24:17Z\t"
-        "Monthly architecture doc refresh: 2026-09",
-    ] + _filler(1000, 1098)),
-        "900\tclosed\t2026-09-20T00:00:00Z\t2026-08-01T00:00:00Z\t"
-        "Monthly architecture doc refresh: 2026-08"]
-    fake = _pr_pages(pages)
-    monkeypatch.setattr(m, "run", fake)
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    out = m.check_owning_job("2026-09-21")
-    assert fake.calls["n"] == 2, "stopped while an unsuperseded refresh was pending"
-    assert [f for f in out if "1060" in f["detail"]], out
-
-
-def _owning_doc(tmp_path, monkeypatch, body):
-    """check_owning_job over a single throwaway owned document."""
-    (tmp_path / "g.md").write_text(body)
-    monkeypatch.setattr(m, "REPO", tmp_path)
-    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": ["g.md"]})
-    monkeypatch.setattr(m, "run", _pr_pages([
-        "1060\tclosed\t2026-09-10T00:00:00Z\t2026-09-01T00:00:00Z\t"
-        "Monthly architecture doc refresh: 2026-09"]))
-    return m.check_owning_job("2026-09-17")
-
-
-def test_an_owned_document_with_no_generated_stamp_is_reported(tmp_path, monkeypatch):
-    """`if not stamps: continue` is a clean run produced by missing evidence.
-
-    For 05-a, 05-c and 05-d the stamp is not a separately declared generated
-    region, so a refresh that dropped it leaves a green workflow, a merged PR,
-    and a document carrying nothing about when it was produced. All four owned
-    docs carry a stamp today, so this changes no current finding.
-    """
-    out = _owning_doc(tmp_path, monkeypatch, "# G\n\nno stamp here\n")
-    assert [f["detail"] for f in out if "no `Generated <date>` stamp" in f["detail"]], out
-
-
-def test_an_impossible_generated_date_is_a_finding_not_a_traceback(tmp_path, monkeypatch):
-    """`fromisoformat("2026-02-31")` raised straight past the AuditError
-    handler, so documentation corruption exited 1 with a traceback -- the
-    status that means "the docs have findings" -- instead of being one."""
-    out = _owning_doc(tmp_path, monkeypatch, "# G\n\nGenerated 2026-02-31\n")
-    assert [f for f in out if "not a real calendar day" in f["detail"]], out
-
-
-def test_a_future_generated_date_cannot_pass_forever(tmp_path, monkeypatch):
-    """A future stamp yields a negative age, which is under every staleness
-    threshold permanently: the one value that can never go stale."""
-    out = _owning_doc(tmp_path, monkeypatch, "# G\n\nGenerated 2099-01-01\n")
-    assert [f for f in out if "in the future" in f["detail"]], out
-
-
-def test_a_current_generated_date_is_quiet(tmp_path, monkeypatch):
-    out = _owning_doc(tmp_path, monkeypatch, "# G\n\nGenerated 2026-09-15\n")
-    assert [f for f in out if f["doc"] == "g.md"] == [], out
-
-
-def test_a_dry_run_is_not_evidence_that_the_refresh_delivered(monkeypatch, tmp_path):
-    """refresh-architecture-docs.yml declares a `dry_run` input and skips its
-    "Open refresh PR" step for it, so a successful manual dry run opens no PR
-    and delivers nothing. Reading only the most recent run let one erase a
-    failed scheduled refresh from the report until the 40-day stamp threshold
-    fired."""
-    monkeypatch.setattr(m, "REPO", tmp_path)
-    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
-    runs = (f"success\t2026-09-17T06:00:00Z\tworkflow_dispatch\t{DRY_TITLE}\n"
-            f"failure\t2026-09-16T06:00:00Z\tschedule\t{LIVE_TITLE}\n")
-    monkeypatch.setattr(m, "run", _pr_pages([""], runs=runs))
-    out = m.check_owning_job("2026-09-17")
-    assert [f for f in out if "failure" in f["detail"]], out
-
-
-def test_a_real_run_after_a_dry_one_still_clears_it(monkeypatch, tmp_path):
-    """The guard must not make a genuine recovery invisible."""
-    monkeypatch.setattr(m, "REPO", tmp_path)
-    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
-    runs = (f"success\t2026-09-17T06:00:00Z\tschedule\t{LIVE_TITLE}\n"
-            f"failure\t2026-09-16T06:00:00Z\tschedule\t{LIVE_TITLE}\n")
-    monkeypatch.setattr(m, "run", _pr_pages([""], runs=runs))
-    assert [f for f in m.check_owning_job("2026-09-17") if "failure" in f["detail"]] == []
-
-
-def test_only_a_marked_title_is_a_dry_run():
-    """Read from the run's DISPLAY TITLE, because no REST endpoint exposes a
-    workflow_dispatch run's `inputs`. The previous version read
-    `(.inputs // {}).dry_run` and got "" for every run ever made, so the filter
-    was dead and a dry run counted as a delivery.
-
-    Everything unmarked is delivering, which is the safe direction: a run that
-    predates the `run-name:` line can only keep a failure on the report."""
-    assert m._is_dry_run(["success", "t", "workflow_dispatch", DRY_TITLE]) is True
-    assert m._is_dry_run(["success", "t", "workflow_dispatch", LIVE_TITLE]) is False
-    assert m._is_dry_run(["success", "t", "schedule", LIVE_TITLE]) is False
-    # The value the dead projection produced. It must not read as a dry run,
-    # or the audit would walk past every run in a history read before this.
-    assert m._is_dry_run(["success", "t", "workflow_dispatch", ""]) is False
-    # Nor may the old column's own values keep working by accident -- that is
-    # what would let the two spellings drift apart again unnoticed.
-    assert m._is_dry_run(["success", "t", "workflow_dispatch", "true"]) is False
-    # A row from a read that predates the column is treated as delivering.
-    assert m._is_dry_run(["success", "t"]) is False
+# ── stamping ───────────────────────────────────────────────────────────────
 
 
 def test_a_scan_only_stamp_records_no_baseline_of_its_own():
@@ -2888,117 +2490,6 @@ def test_a_reference_link_gets_the_same_pr_cue_rule():
     assert len(m.check_closed_issues("docs/d.md", live, _CLOSED_PR)) == 1
 
 
-def test_an_unmarked_dispatch_is_not_evidence_of_delivery():
-    """"Unmarked is delivering" was the wrong call, and it was mine.
-
-    It IS safe for a run being judged -- an unmarked run can only keep a
-    failure on the report -- but not for one being walked PAST: an unmarked
-    dry run newer than a failed scheduled refresh ends the search at itself.
-    Measured against this workflow's real 36-run history, where the newest run
-    is a 2026-09-09 `workflow_dispatch` success sitting directly above eight
-    failures:
-
-        BEFORE  last_delivering_conclusion -> ('success', '2026-09-09T13:46')
-        AFTER                              -> ('failure', '2026-09-09T12:41')
-
-    Codex filed it (stocks#1121)."""
-    rows = [["success", "2026-09-09T13:46:36Z", "workflow_dispatch", AMBIGUOUS_TITLE],
-            ["failure", "2026-09-09T12:41:22Z", "schedule", AMBIGUOUS_TITLE]]
-    assert m._run_delivered(rows[0]) is None
-    assert m.last_delivering_conclusion(rows) == ("failure", "2026-09-09T12:41:22Z")
-    # A MARKED dry run reaches the same verdict, by the determinate route.
-    rows[0][3] = DRY_TITLE
-    assert m.last_delivering_conclusion(rows) == ("failure", "2026-09-09T12:41:22Z")
-    # And a marked delivering success is still a delivery, or the walk could
-    # never stop and the guard would just be a slower way to report nothing.
-    rows[0][3] = LIVE_TITLE
-    assert m.last_delivering_conclusion(rows) == ("success", "2026-09-09T13:46:36Z")
-
-
-def test_only_a_dispatch_can_be_ambiguous():
-    """`dry_run` is a `workflow_dispatch` INPUT, so a scheduled or push run
-    has none and its absence of a marker answers itself.
-
-    That keeps the ambiguity where it belongs: 30 of this workflow's 36 runs
-    are dispatches, and the other 6 (4 `schedule`, 2 `push`) are answerable
-    from the event alone rather than being swept into "cannot tell"."""
-    at = "2026-09-01T06:12:35Z"
-    assert m._run_delivered(["success", at, "schedule", AMBIGUOUS_TITLE]) is True
-    assert m._run_delivered(["success", at, "push", AMBIGUOUS_TITLE]) is True
-    assert m._run_delivered(["success", at, "workflow_dispatch", AMBIGUOUS_TITLE]) is None
-    # A row with no title COLUMN is not a title carrying no MARKER: the first
-    # means the reader never asked, and treating it as delivering keeps any
-    # failure it carries on the report.
-    assert m._run_delivered(["failure", at]) is True
-
-
-def test_the_ambiguity_itself_is_reported(monkeypatch, tmp_path):
-    """Neither direction is safe for an unmarked dispatch -- calling it a
-    delivery lets a dry run hide a failure below it, skipping it lets the same
-    failure pass unexamined -- so the audit reports that it cannot tell
-    instead of picking one and calling it an answer."""
-    monkeypatch.setattr(m, "REPO", tmp_path)
-    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": []})
-    runs = (f"failure\t2026-09-09T12:41:22Z\tworkflow_dispatch\t{AMBIGUOUS_TITLE}\n"
-            f"success\t2026-09-01T06:12:35Z\tschedule\t{LIVE_TITLE}\n")
-    monkeypatch.setattr(m, "run", _pr_pages([""], runs=runs))
-    out = m.check_owning_job("2026-09-18")
-    unclear = [f for f in out if "predate the dry-run marker" in f["detail"]]
-    assert len(unclear) == 1, out
-    # It names the failure it cannot classify rather than only counting rows.
-    assert "1 of them failed" in unclear[0]["detail"], unclear
-    # And it goes away once every newer run is marked. Built explicitly, not
-    # by substitution: AMBIGUOUS_TITLE is a PREFIX of LIVE_TITLE, so replacing
-    # it marks the scheduled row as a dry run too and the history becomes
-    # all-dry, which is a different refusal entirely.
-    marked = (f"failure\t2026-09-09T12:41:22Z\tworkflow_dispatch\t{DRY_TITLE}\n"
-              f"success\t2026-09-01T06:12:35Z\tschedule\t{LIVE_TITLE}\n")
-    monkeypatch.setattr(m, "run", _pr_pages([""], runs=marked))
-    assert [f for f in m.check_owning_job("2026-09-18")
-            if "predate the dry-run marker" in f["detail"]] == []
-
-
-def test_the_runs_query_asks_for_a_field_the_response_has(monkeypatch):
-    """The other half of the same boundary: what the audit REQUESTS.
-
-    `(.inputs // {}).dry_run` is valid jq against a response with no `inputs`
-    key -- it yields "" and fails silently, for every run, for ever. Measured
-    against all 36 runs of this workflow, none of them carries `inputs`, and
-    `GET /actions/runs/{id}` does not carry it either. So the projection is
-    asserted directly: a fallback that can never fire is indistinguishable
-    from a working read at every other layer."""
-    seen = []
-
-    def fake(cmd, **kw):
-        seen.append(cmd)
-        return f"success\t2026-09-20T00:00:00Z\tschedule\t{LIVE_TITLE}"
-
-    monkeypatch.setattr(m, "run", fake)
-    m.fetch_owning_runs(page_size=2)
-    jq = seen[0][seen[0].index("--jq") + 1]
-    assert ".display_title" in jq, jq
-    assert "inputs" not in jq, jq
-
-
-def test_the_workflow_writes_the_marker_the_audit_reads():
-    """The two halves of this rule live in different files and nothing but
-    this test holds them together: `refresh-architecture-docs.yml` writes the
-    marker into `run-name:`, `_is_dry_run` looks for it. The dead `inputs`
-    projection it replaced was invisible precisely because no test crossed
-    that boundary -- every fixture fed a synthetic fourth column, which proved
-    the helper reads column four and never that column four exists."""
-    wf = (REPO_ROOT / ".github" / "workflows" / "refresh-architecture-docs.yml").read_text()
-    run_name = [ln for ln in wf.splitlines() if "dry_run == 'true'" in ln]
-    assert run_name, "run-name: no longer branches on the dry_run input"
-    assert f"'{m.DRY_RUN_MARKER}'" in run_name[0], run_name
-    # BOTH branches, or absence could not be read: after this line lands, a
-    # `dry_run: false` dispatch would carry the same bare title as every run
-    # from before it existed.
-    assert f"'{m.DELIVERING_MARKER}'" in run_name[0], run_name
-    # And the workflow still HAS the input the marker reports on.
-    assert "dry_run:" in wf
-
-
 def test_the_issue_walk_has_no_silent_ceiling(monkeypatch):
     """`range(1, 40)` stopped at 3,900 combined issues and PRs and said
     nothing, so every older cited blocker past that point would read as
@@ -3026,18 +2517,6 @@ def test_the_issue_walk_refuses_rather_than_truncating(monkeypatch):
         f"{k}\topen\t\tISSUE" for k in range(m.ISSUE_PAGE_SIZE)))
     with pytest.raises(m.AuditError, match="truncated read"):
         m.fetch_issue_states("stocks")
-
-
-def test_a_short_page_ends_the_pr_lookup(monkeypatch):
-    """A page holding fewer than 100 rows is the last page; asking for the
-    next one is a request that cannot return anything."""
-    fake = _pr_pages(["1060\topen\t\t2026-09-08T15:46:57Z\t"
-                      "Monthly architecture doc refresh: 2026-09"])
-    monkeypatch.setattr(m, "run", fake)
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    out = m.check_owning_job("2026-09-17")
-    assert fake.calls["n"] == 1
-    assert any("1060" in f["detail"] for f in out), out
 
 
 CAL_REGION = ("<!-- BEGIN cal -->\nlatest calibration {}\n<!-- END cal -->\n")
@@ -3068,12 +2547,9 @@ def test_a_best_effort_region_that_is_absent_is_a_finding(audit_repo):
 
 
 def test_a_best_effort_artifact_carries_its_own_freshness_evidence(audit_repo):
-    """refresh-architecture-docs.yml runs `scripts.refresh_calibration_table`
-    followed by `|| echo ... continuing`, so a Cloud SQL outage leaves
-    docs/INVESTMENT_MODELS_SUMMARY.md stale while the run still concludes
-    success AND the refresh PR still merges. Workflow success is not evidence
-    that THIS artifact was refreshed; the only evidence is the date the
-    artifact itself carries.
+    """`scripts.refresh_calibration_table` is run by hand and needs Cloud SQL,
+    so nothing records that a refresh happened. The only evidence that THIS
+    artifact was refreshed is the date the artifact itself carries.
     """
     art = [{"doc": "docs/cal.md", "region": "cal",
             "date_re": m.re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
@@ -3139,7 +2615,7 @@ def test_plain_output_names_the_region_and_its_owner(audit_repo, capsys):
     line = [row for row in out.split("\n") if "gone.py" in row]
     assert len(line) == 1, out
     assert "region: generated" in line[0], line
-    assert m.OWNING_JOB["workflow"] in line[0], line
+    assert m.GENERATED_OWNER in line[0], line
 
 
 def test_plain_output_names_the_prompt_for_a_model_prose_finding(audit_repo, capsys):
@@ -3163,13 +2639,13 @@ def test_the_region_owner_is_carried_in_json_too(audit_repo, capsys):
     report = json.loads(capsys.readouterr().out)
     dead = [f for f in report["findings"] if f["check"] == "dead-link"]
     assert len(dead) == 1 and dead[0]["region"] == "generated"
-    assert dead[0]["region_owner"] == m.OWNING_JOB["workflow"], dead
+    assert dead[0]["region_owner"] == m.GENERATED_OWNER, dead
 
 
 def test_a_stale_best_effort_artifact_is_reported_by_a_whole_run(audit_repo, capsys, monkeypatch):
     """Through main(), and under --issues-snapshot: the evidence is what the
     artifact says about itself, so it must not be gated on the GitHub reads
-    the way check_owning_job is."""
+    the way the retired delivery audit was."""
     monkeypatch.setattr(m, "BEST_EFFORT_ARTIFACTS", [{
         "doc": "docs/cal.md", "region": "cal",
         "date_re": m.re.compile(r"latest calibration (\d{4}-\d{2}-\d{2})"),
@@ -3483,30 +2959,6 @@ def test_rules_of_different_specificity_are_not_ambiguous():
             if "equal specificity" in f["detail"]] == []
 
 
-def test_a_workflow_with_no_runs_at_all_is_refused(monkeypatch):
-    """Returning [] made check_owning_job emit no run-status finding, so the
-    delivery audit passed with no evidence the owning job ever executed."""
-    monkeypatch.setattr(m, "run", lambda *a, **k: "")
-    with pytest.raises(m.AuditError, match="no runs at all"):
-        m.fetch_owning_runs(page_size=2)
-
-
-def test_a_run_history_that_is_all_dry_runs_is_refused(monkeypatch):
-    """Exhausting the page limit with nothing but dry runs is a TRUNCATED read.
-    Returning it silently let consecutive manual dry runs hide a failed
-    scheduled run behind them."""
-    monkeypatch.setattr(m, "run",
-                        lambda *a, **k: f"success\t2026-01-01\tworkflow_dispatch\t{DRY_TITLE}\n" * 2)
-    with pytest.raises(m.AuditError, match="every one is a dry run"):
-        m.fetch_owning_runs(page_size=2)
-
-
-def test_a_history_with_a_delivering_run_still_returns(monkeypatch):
-    monkeypatch.setattr(m, "run",
-                        lambda *a, **k: "success\t2026-01-01\tschedule\t\n")
-    assert len(m.fetch_owning_runs(page_size=2)) == 1
-
-
 def test_a_document_deleted_from_the_working_tree_is_simply_gone(audit_repo, capsys):
     """Round 12 made this an AuditError, because the list came from HEAD and
     the contents from the working tree so an ordinary deletion raised
@@ -3537,30 +2989,6 @@ def test_a_cited_path_is_checked_on_any_extension_the_tree_tracks():
         m.TOP_LEVEL_DIRS.discard("notebooks")
 
 
-def test_the_refresh_pr_limit_applies_after_the_merged_filter(monkeypatch):
-    """Slicing the raw list meant six newer merged maintenance PRs -- which the
-    attempt pattern is deliberately broad enough to match, and which never
-    contribute to the strict `delivered` timestamp -- pushed an older
-    unsuperseded OPEN refresh PR out of view."""
-    # Six merged maintenance PRs the BROAD attempt pattern matches, newest
-    # first as the API returns them, then the old open refresh at position 7.
-    merged = "\n".join(
-        f"{i}\tclosed\t2026-09-1{i}T00:00:00Z\t2026-09-1{i}T00:00:00Z\t"
-        "fix architecture doc refresh authentication" for i in range(1, 7))
-    stale_open = ("99\topen\t\t2026-01-01T00:00:00Z\t"
-                  "Fix: Monthly architecture doc refresh failed")
-
-    def fake_run(cmd, **kw):
-        if "runs?per_page=10" in " ".join(cmd):
-            return "success\t2026-09-18T06:00:00Z\tschedule\t\n"
-        return f"{merged}\n{stale_open}\n"
-
-    monkeypatch.setattr(m, "run", fake_run)
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    out = m.check_owning_job("2026-09-18")
-    assert any("#99" in f["detail"] for f in out), [f["detail"] for f in out]
-
-
 def test_a_pr_needs_a_cue_in_its_own_clause_not_the_rows():
     """Measured on docs/product/12-PR-ISSUE-TRACEABILITY.md: extending the
     line-level fallback to PRs attributed a row's cue to whichever PR shared
@@ -3588,7 +3016,7 @@ def test_a_url_mask_stops_before_trailing_sentence_punctuation():
 
 def test_verify_without_stamp_is_rejected_before_any_side_effect(audit_repo, tmp_path):
     """The check ran after the issue-state reads, the snapshot write and the
-    owning-job API calls, so an invalid invocation could fail with an unrelated
+    later API calls, so an invalid invocation could fail with an unrelated
     GitHub authentication error -- and write the snapshot first."""
     out = tmp_path / "written.json"
     with pytest.raises(m.AuditError, match="requires --stamp"):
@@ -3694,23 +3122,6 @@ def test_a_since_commit_that_is_not_an_ancestor_is_refused():
             m.resolve_marker_sha("other-branch", "HEAD", runner=fake_run)
     finally:
         m.subprocess.run = orig
-
-
-def test_an_august_delivery_does_not_supersede_a_september_refresh(monkeypatch):
-    """Comparing September's creation time with August's merge time treated the
-    older delivery as superseding the newer attempt, so a still-unmerged
-    September refresh was skipped -- though August's output says nothing about
-    whether September's documents landed."""
-    prs = "\n".join([
-        "1100\topen\t\t2026-09-01T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
-        "1050\tclosed\t2026-09-10T00:00:00Z\t2026-08-01T00:00:00Z\t"
-        "Monthly architecture doc refresh: 2026-08",
-    ])
-    monkeypatch.setattr(m, "run", lambda cmd, **k: "success\t2026-09-10T00:00:00Z\n"
-                        if "runs?" in " ".join(cmd) else prs)
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    findings = m.check_owning_job("2026-09-17")
-    assert any("#1100" in f["detail"] for f in findings), [f["detail"] for f in findings]
 
 
 def test_only_a_written_stamp_counts_as_changed(audit_repo, capsys):
@@ -3916,57 +3327,6 @@ def test_a_pure_rename_into_a_declared_path_is_not_drift(tmp_path):
     g("add", "-A")
     g("commit", "-qm", "edit")
     assert len(m.check_changed_since("d.md", sha, ["lib/new.py"], "HEAD", cwd=tmp_path)) == 1
-
-
-def test_an_unfinished_run_does_not_end_the_walk(monkeypatch):
-    """A queued or in-progress run has an empty conclusion. Stopping on it
-    treated "the rerun has not finished" as sufficient history, so a completed
-    delivering run that FAILED, pushed onto an earlier page by dry runs, was
-    never examined."""
-    pages = {1: "\t2026-09-18T00:00:00Z\tschedule\t\n\t2026-09-17T00:00:00Z\tschedule\t\n",
-             2: "failure\t2026-09-16T00:00:00Z\tschedule\t\n"}
-    seen = []
-
-    def fake_run(cmd, **kw):
-        joined = " ".join(cmd)
-        # `&page=`, not `page=`: the URL also carries `per_page=2`, and matching
-        # the bare substring sent EVERY call to page 2 -- so the first version
-        # of this test asserted `2 in seen` against a walk that never visited
-        # page 1 and passed no matter what the pagination did.
-        page = 2 if "&page=2" in joined else 1
-        seen.append(page)
-        return pages[page]
-
-    monkeypatch.setattr(m, "run", fake_run)
-    rows = m.fetch_owning_runs(page_size=2)
-    assert seen == [1, 2], seen
-    assert any(r[0] == "failure" for r in rows), rows
-
-
-def test_a_successful_no_op_refresh_is_freshness_evidence(audit_repo, monkeypatch):
-    """refresh-architecture-docs.yml reverts every timestamp-only file and
-    opens its PR only when `meaningful == '1'`, so a month that regenerated
-    identical content leaves the old Generated date in place BY DESIGN. Two of
-    those in a row put every owned document past 40 days and the audit called
-    them all stale -- a finding whose only remedy would be forcing a cosmetic
-    change."""
-    (audit_repo / "docs" / "arch.md").write_text("# A\n\nGenerated 2026-07-01\n")
-    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": ["docs/arch.md"]})
-    monkeypatch.setattr(m, "run", lambda cmd, **k: (
-        "success\t2026-09-15T00:00:00Z\tschedule\t\n" if "runs?" in " ".join(cmd) else ""))
-    out = [f for f in m.check_owning_job("2026-09-18") if f["doc"] == "docs/arch.md"]
-    assert [f["severity"] for f in out] == ["P3"], out
-    assert "no-op refresh" in out[0]["detail"], out[0]["detail"]
-
-
-def test_an_old_stamp_with_no_recent_success_is_still_stale(audit_repo, monkeypatch):
-    """The no-op allowance must not swallow the case the check exists for."""
-    (audit_repo / "docs" / "arch.md").write_text("# A\n\nGenerated 2026-07-01\n")
-    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": ["docs/arch.md"]})
-    monkeypatch.setattr(m, "run", lambda cmd, **k: (
-        "success\t2026-07-01T00:00:00Z\tschedule\t\n" if "runs?" in " ".join(cmd) else ""))
-    out = [f for f in m.check_owning_job("2026-09-18") if f["doc"] == "docs/arch.md"]
-    assert [f["severity"] for f in out] == ["P2"], out
 
 
 # ── round 16 ────────────────────────────────────────────────────────────────
@@ -4264,23 +3624,6 @@ def test_a_commented_reference_definition_is_not_a_definition():
     assert m.check_dead_links("d.md", doc, {"src/a.py"}) == []
 
 
-def test_a_generated_date_in_an_example_is_not_provenance(audit_repo, monkeypatch):
-    """A whole-document scan let any `Generated YYYY-MM-DD` in sample output
-    stand in for a missing footer, so removing the real stamp while keeping a
-    recent example passed the freshness check with no production date."""
-    # Through check_owning_job, because recomputing the filter in the test
-    # proves only that the expression works, not that anything calls it.
-    (audit_repo / "docs" / "arch.md").write_text(
-        "# A\n\n```\nGenerated 2026-09-17\n```\n\n<!-- Generated 2026-09-16 -->\n")
-    monkeypatch.setattr(m, "OWNING_JOB", {**m.OWNING_JOB, "docs": ["docs/arch.md"]})
-    monkeypatch.setattr(m, "run", lambda cmd, **k: (
-        "success\t2026-09-18T00:00:00Z\tschedule\t\n" if "runs?" in " ".join(cmd) else ""))
-    out = [f for f in m.check_owning_job("2026-09-18") if f["doc"] == "docs/arch.md"]
-    assert [f["detail"] for f in out] == [
-        "no `Generated <date>` stamp, so nothing in the document shows when the "
-        "owning job produced it"], out
-
-
 def test_a_registered_non_markdown_artifact_skips_the_markdown_checks(audit_repo, capsys):
     """A registered `.drawio` is XML. Scanning it as Markdown turned a diagram
     label reading `[x](missing.md)` into a gating dead-link finding for a
@@ -4311,52 +3654,6 @@ def test_a_staged_deletion_leaves_the_audited_tree(audit_repo, capsys):
             "--issues-snapshot", str(audit_repo / "issues.json")])
     report = json.loads(capsys.readouterr().out)
     assert [f for f in report["findings"] if f["check"] == "dead-link"], report["findings"]
-
-
-@pytest.mark.parametrize("delivery,expected", [
-    # Same generation merged BEFORE the attempt opened: a re-attempt, live.
-    (("2026-09", "2026-09-02T00:00:00Z"), False),
-    # Older generation merged after: says nothing about this generation.
-    (("2026-08", "2026-09-20T00:00:00Z"), False),
-    # Newer generation: this attempt is history.
-    (("2026-10", "2026-10-02T00:00:00Z"), True),
-    # Same generation merged after the attempt opened: delivered.
-    (("2026-09", "2026-09-20T00:00:00Z"), True),
-])
-def test_supersession_needs_both_generation_and_time(delivery, expected):
-    """Each half was learned from a case, and the per-delivery form is what
-    exposed that the round-13 generation fix had been passing an existing test
-    for the wrong reason -- delivered_gen was a max over ALL deliveries."""
-    gen, merged = delivery
-    pr = {"num": "1060", "title": "Monthly architecture doc refresh: 2026-09",
-          "merged": "", "created": "2026-09-08T00:00:00Z"}
-    d = [{"num": "d", "title": f"Monthly architecture doc refresh: {gen}",
-          "merged": merged, "created": "2026-01-01T00:00:00Z"}]
-    assert m.superseded(pr, d) is expected
-
-
-def test_the_walk_stops_on_the_same_rule_that_reports(monkeypatch):
-    """A timestamp stop and a generation report can disagree, and when they do
-    the walk ends before the PR the report would name.
-
-    Page 1: #1200 open (`refresh: 2026-10`, created 10-01) and #900 merged
-    (`refresh: 2026-08`, merged 10-05). Under a creation-versus-merge stop the
-    walk ends here -- 10-01 < 10-05 -- while the report says #1200 is NOT
-    superseded, because August's output cannot establish that October's
-    documents landed. The walk must read on."""
-    pages = ["\n".join([
-        "1200\topen\t\t2026-10-01T00:00:00Z\tMonthly architecture doc refresh: 2026-10",
-        "900\tclosed\t2026-10-05T00:00:00Z\t2026-08-01T00:00:00Z\t"
-        "Monthly architecture doc refresh: 2026-08",
-    ] + _filler(1000, 1098)),
-        "800\tclosed\t2026-07-02T00:00:00Z\t2026-07-01T00:00:00Z\t"
-        "Monthly architecture doc refresh: 2026-07"]
-    fake = _pr_pages(pages)
-    monkeypatch.setattr(m, "run", fake)
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    out = m.check_owning_job("2026-10-20")
-    assert fake.calls["n"] == 2, "stopped on a rule the report does not use"
-    assert [f for f in out if "1200" in f["detail"]], out
 
 
 def test_an_intraword_underscore_survives_into_the_anchor():
@@ -4861,15 +4158,6 @@ def test_stamping_an_lf_document_does_not_gain_carriage_returns(tmp_path, monkey
     assert b"\r" not in doc.read_bytes()
 
 
-def test_a_delivery_title_must_match_the_workflow_output_exactly():
-    """`Fix Monthly architecture doc refresh: 2026-09 authentication` is a
-    repair PR, not a delivery. Counting it let a repair supersede an unmerged
-    refresh with no generated document having landed."""
-    assert m._refresh_generation("Monthly architecture doc refresh: 2026-09") == "2026-09"
-    assert m._refresh_generation("Fix Monthly architecture doc refresh: 2026-09 auth") == ""
-    assert m._refresh_generation("chore: bump 2026-09 deps") == ""
-
-
 def test_an_unparsed_marker_is_reported_by_a_whole_run(audit_repo, capsys):
     """Through main(), not beside it. The helper had a test and the call site
     did not, so a mutation deleting the wiring left the suite green -- the same
@@ -4880,29 +4168,6 @@ def test_an_unparsed_marker_is_reported_by_a_whole_run(audit_repo, capsys):
     bad = [f for f in report["findings"]
            if f["doc"] == "docs/d.md" and "parses as neither" in f["detail"]]
     assert len(bad) == 1 and bad[0]["severity"] == "P2", report["findings"]
-
-
-def test_a_run_still_in_flight_does_not_hide_the_failure_beneath_it(monkeypatch):
-    """`delivering[0][0] not in {"success", ""}` accepted an empty conclusion,
-    which is what a queued or in-progress run has. The completed run beneath
-    it -- the one that actually failed -- was never examined, so the delivery
-    audit reported clean while the rerun had delivered nothing. The pagination
-    fix fetched that row; this condition ignored it."""
-    rows = [["", "2026-09-18T10:00:00Z"], ["failure", "2026-09-17T10:00:00Z"]]
-    monkeypatch.setattr(m, "fetch_owning_runs", lambda **k: rows)
-    monkeypatch.setattr(m, "run", lambda *a, **k: "")
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    out = m.check_owning_job("2026-09-18")
-    bad = [f for f in out if "concluded failure" in f["detail"]]
-    assert len(bad) == 1 and bad[0]["severity"] == "P1", out
-
-
-def test_a_completed_success_beneath_an_in_flight_run_is_still_clean():
-    """The other direction: an in-flight run is not evidence of a problem
-    either, so the last COMPLETED delivering run is what decides."""
-    rows = [("", "2026-09-18T10:00:00Z"), ("success", "2026-09-17T10:00:00Z")]
-    assert m.last_delivering_conclusion(rows) == ("success", "2026-09-17T10:00:00Z")
-    assert m.last_delivering_conclusion([("", "x")]) is None
 
 
 # ── round 22 ────────────────────────────────────────────────────────────────
@@ -5366,19 +4631,6 @@ def test_an_anchor_fragment_is_compared_case_sensitively(audit_repo):
     assert m.check_dead_links("docs/d.md", "# D\n\n[x](t.md#details)\n", tracked) == []
 
 
-def test_an_anchored_delivery_title_excludes_a_repair_pr():
-    """Only the generation regex had been anchored; the filter actually passed
-    to fetch_owned_prs stayed unanchored, so a merged `Fix Monthly architecture
-    doc refresh: 2026-09 authentication` entered `deliveries` while carrying no
-    generation -- and superseded() then fell back to merge time."""
-    rx = m.OWNING_JOB["delivery_title_re"]
-    assert rx.search("Monthly architecture doc refresh: 2026-09")
-    assert not rx.search("Fix Monthly architecture doc refresh: 2026-09 authentication")
-    # The broad ATTEMPT pattern still matches the repair, which is its job.
-    assert m.OWNING_JOB["pr_title_re"].search(
-        "Fix: Monthly architecture doc refresh failed")
-
-
 def test_an_extension_emptied_by_a_deletion_is_still_checkable():
     """`tracked` has staged deletions removed, so deriving the allowed suffixes
     from it alone defeated the guarantee in the case it was written for:
@@ -5487,53 +4739,6 @@ def test_a_c_quoted_path_is_compared_decoded():
     assert not m._touches("M\tsrc/other.py", ["src/café.py"])
 
 
-def test_a_history_with_no_finished_run_is_refused(monkeypatch):
-    """A history of only QUEUED or in-progress non-dry runs is not a dry-run
-    history, so that guard is false -- but last_delivering_conclusion() yields
-    None and the delivery audit passed with no completed execution behind it."""
-    def rows(rs):
-        return lambda cmd, **kw: "\n".join("\t".join(r) for r in rs)
-
-    monkeypatch.setattr(m, "run", rows([["", "2026-09-20T00:00:00Z", "schedule", ""]] * 3))
-    with pytest.raises(m.AuditError, match="completed delivering execution"):
-        m.fetch_owning_runs(page_size=10)
-    # The dry-run case is a subset and keeps its own, more specific message.
-    monkeypatch.setattr(m, "run", rows(
-        [["success", "2026-09-20T00:00:00Z", "workflow_dispatch", DRY_TITLE]] * 2))
-    with pytest.raises(m.AuditError, match="dry run"):
-        m.fetch_owning_runs(page_size=10)
-    # One finished delivering run is evidence, so the walk returns.
-    monkeypatch.setattr(m, "run", rows([
-        ["", "2026-09-20T00:00:00Z", "schedule", ""],
-        ["failure", "2026-09-19T00:00:00Z", "schedule", ""]]))
-    assert len(m.fetch_owning_runs(page_size=10)) == 2
-
-
-def test_an_indented_generated_date_is_not_production_provenance():
-    """`indented_code_lines` was missing from the freshness scan's filter, so a
-    four-space example carrying a recent `Generated` date stood in for a missing
-    real stamp -- the same defect as the fenced case, one syntax over."""
-    def drive(doc_body, monkeypatch):
-        def fake_run(cmd, **kw):
-            if "runs?per_page=10" in " ".join(cmd):
-                return "success\t2026-09-16T06:00:00Z\t schedule\t\n"
-            return ("1200\tclosed\t2026-09-16T07:00:00Z\t2026-09-16T06:10:00Z\t"
-                    "Monthly architecture doc refresh: 2026-09\n")
-        monkeypatch.setattr(m, "run", fake_run)
-        monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: True)
-        monkeypatch.setattr(m.pathlib.Path, "read_text",
-                            lambda self, **kw: doc_body)
-        return m.check_owning_job("2026-09-16")
-
-    with pytest.MonkeyPatch.context() as mp:
-        # No real stamp anywhere, only one inside an indented example.
-        out = drive("# T\n\nprose\n\n    Generated 2026-09-16\n\nmore\n", mp)
-        assert any(f["check"] == "class-a" for f in out), out
-    with pytest.MonkeyPatch.context() as mp:
-        # A REAL stamp is still read, so the fix is not "never find one".
-        assert drive("# T\n\nGenerated 2026-09-16\n\nprose\n", mp) == []
-
-
 _M29 = ("**Last reviewed:** 2026-01-01 · **Depth:** scanned · "
         "**Against:** `abc123def456` · **Last scanned:** 2026-02-02 · **Owner:** me")
 
@@ -5605,71 +4810,6 @@ def test_a_backticked_path_may_hold_a_non_ascii_character():
     # that actually keeps it out of the report.
     root = m.backtick_root_file_re().search("`café.md`")
     assert root and root.group("path") == "café.md"
-
-
-def test_a_truncated_pull_request_history_is_refused(monkeypatch):
-    """Reaching PR_PAGE_LIMIT is NOT the same as reading a short final page,
-    and falling out of the loop treated them alike: every older page was
-    dropped in silence. An omitted merged delivery leaves superseded failures
-    looking actionable; an omitted unsuperseded refresh attempt makes the
-    Class A delivery audit report CLEAN -- the direction this whole check
-    exists to prevent. Codex filed it three times."""
-    # Every page FULL -- `_filler(lo, hi)` is a half-open range, so the count
-    # has to be page_size exactly or the loop takes the short-page exit -- and
-    # no bounded early stop, so the walk runs out of pages.
-    full = "\n".join(_filler(1000, 1000 + 100))
-    assert full.count("\n") + 1 == 100
-    fake = _pr_pages([full] * (m.PR_PAGE_LIMIT + 2))
-    monkeypatch.setattr(m, "run", fake)
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    with pytest.raises(m.AuditError, match="history is truncated"):
-        m.check_owning_job("2026-10-06")
-    assert fake.calls["n"] == m.PR_PAGE_LIMIT, fake.calls
-
-    # A SHORT final page is the ordinary end of the walk and still returns.
-    short = _pr_pages([full, "\n".join(_filler(1200, 1209))])
-    monkeypatch.setattr(m, "run", short)
-    m.check_owning_job("2026-10-06")
-    assert short.calls["n"] == 2, short.calls
-
-
-def test_the_pr_walk_continues_past_an_older_generation_delivery(monkeypatch):
-    """The old stop reasoned that a later page holds only older-CREATED PRs,
-    which the same delivery supersedes too. That is about time; `superseded` is
-    about GENERATION. A 2026-10 attempt created BEFORE a later-created 2026-09
-    delivery sits on a later page and nothing seen so far supersedes it."""
-    pages = [
-        "\n".join([
-            "1200\tclosed\t2026-10-05T00:00:00Z\t2026-09-20T00:00:00Z\t"
-            "Monthly architecture doc refresh: 2026-09",
-        ] + _filler(1000, 1099)),
-        "\n".join([
-            "900\topen\t\t2026-09-01T00:00:00Z\t"
-            "Monthly architecture doc refresh: 2026-10",
-        ]),
-    ]
-    fake = _pr_pages(pages)
-    monkeypatch.setattr(m, "run", fake)
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    out = m.check_owning_job("2026-10-06")
-    assert fake.calls["n"] > 1, "the walk stopped before the newer-generation attempt"
-    assert any("#900" in f["detail"] for f in out), out
-
-
-def test_the_pr_walk_still_stops_once_the_current_generation_delivered(monkeypatch):
-    """The bound has to keep the cost optimisation it replaced: with this
-    month's refresh merged, nothing newer can exist and one request is enough
-    (CLAUDE.md §3.8)."""
-    pages = ["\n".join([
-        "1060\topen\t\t2026-09-01T00:00:00Z\tMonthly architecture doc refresh: 2026-09",
-        "953\tclosed\t2026-09-10T22:27:07Z\t2026-08-28T06:24:17Z\t"
-        "Monthly architecture doc refresh: 2026-09",
-    ] + _filler(900, 998))]
-    fake = _pr_pages(pages)
-    monkeypatch.setattr(m, "run", fake)
-    monkeypatch.setattr(m.pathlib.Path, "exists", lambda self: False)
-    m.check_owning_job("2026-09-17")
-    assert fake.calls["n"] == 1
 
 
 def test_a_staged_directory_is_a_directory_of_this_repository(audit_repo, capsys):
@@ -5911,31 +5051,6 @@ def test_an_ordinary_document_is_still_read(audit_repo, capsys):
 
 
 # ── round 34 (Codex on 3f39d446) ────────────────────────────────────────────
-
-def test_an_inline_generated_example_is_not_production_evidence(tmp_path, monkeypatch):
-    """A third syntax for a defect already fixed twice, after the fenced and
-    indented forms. A document that LOST its real footer but still shows
-    `` `Generated 2026-09-20` `` as an example had the example accepted as
-    evidence, so the delivery audit reported it current although readers see
-    no production date in it at all.
-
-    Driven through check_owning_job, not the comprehension: the skip set and
-    the span set are computed there, and a test asserting code_spans alone
-    passes with the call site still reading raw lines."""
-    doc = m.OWNING_JOB["docs"][0]
-    monkeypatch.setattr(m, "REPO", tmp_path)
-    (tmp_path / doc).parent.mkdir(parents=True)
-    monkeypatch.setattr(m, "run", lambda cmd, **k: "success\t2026-09-10T00:00:00Z\n"
-                        if "runs?" in " ".join(cmd) else "")
-    (tmp_path / doc).write_text(
-        "# A\n\nThe footer reads `Generated 2026-09-20`.\n")
-    detail = [f["detail"] for f in m.check_owning_job("2026-09-21")
-              if f["doc"] == doc]
-    assert any("no `Generated <date>` stamp" in d for d in detail), detail
-    # A REAL stamp is still evidence -- the fix is not "never find one".
-    (tmp_path / doc).write_text("# A\n\nGenerated 2026-09-20\n")
-    assert [f for f in m.check_owning_job("2026-09-21")
-            if f["doc"] == doc and "no `Generated" in f["detail"]] == []
 
 
 def test_a_registry_cell_may_carry_an_escaped_pipe():
@@ -7064,20 +6179,6 @@ def test_front_matter_is_metadata_not_a_body_link():
     # The same link in the BODY is still a real link.
     out = m.check_dead_links("d.md", "# T\n\n[guide](missing.md)\n", {"d.md"})
     assert [f["check"] for f in out] == ["dead-link"]
-
-
-def test_a_generated_date_in_a_raw_text_html_example_is_not_provenance(
-        tmp_path, monkeypatch):
-    """A `<pre>` block displays its contents literally, so the date in it is
-    sample output. Accepting it let a document that lost its real stamp report
-    as current though readers see no production date in it."""
-    out = _owning_doc(tmp_path, monkeypatch,
-                      "# G\n\n<pre>\nGenerated 2026-09-15\n</pre>\n")
-    assert [f["detail"] for f in out if "no `Generated <date>` stamp" in f["detail"]], out
-    # A RENDERED block shows its text, so a stamp inside one is a stamp.
-    out = _owning_doc(tmp_path, monkeypatch,
-                      "# G\n\n<div>\nGenerated 2026-09-15\n</div>\n")
-    assert [f for f in out if "no `Generated <date>` stamp" in f["detail"]] == [], out
 
 
 def test_a_crlf_document_is_detected_past_an_eight_kilobyte_line(tmp_path):
@@ -8566,26 +7667,6 @@ def test_an_html_attribute_value_is_metadata_not_a_citation():
         {1: [(13, 23)]}
 
 
-def test_a_generated_stamp_inside_markup_is_not_a_stamp():
-    """A document that lost its real stamp but still carries `<div
-    title="Generated 2026-09-20">` had that date suppress BOTH the
-    missing-stamp and the stale-stamp finding, while a reader sees no
-    Generated line at all."""
-    assert m.visible_generated_stamps(
-        ['<div title="Generated 2026-09-20">x</div>']) == []
-    # A stamp a reader CAN see is still evidence, including inside a rendered
-    # `<div>`, whose text is visible even though Markdown is not parsed there.
-    assert m.visible_generated_stamps(["Generated 2026-09-20"]) == ["2026-09-20"]
-    assert m.visible_generated_stamps(
-        ["<div>", "Generated 2026-09-20", "</div>"]) == ["2026-09-20"]
-    # The four hiding mechanisms this rule already knew are unchanged.
-    assert m.visible_generated_stamps(["```", "Generated 2026-09-20", "```"]) == []
-    assert m.visible_generated_stamps(["x <!-- Generated 2026-09-20 -->"]) == []
-    assert m.visible_generated_stamps(["see `Generated 2026-09-20`"]) == []
-    assert m.visible_generated_stamps(
-        ["<pre>", "Generated 2026-09-20", "</pre>"]) == []
-
-
 def test_a_marker_inside_raw_html_is_not_the_documents_provenance():
     """Markdown inside `<pre>` or `<div>` is not parsed, so a marker-shaped
     line there renders as literal characters. Accepting it let `--stamp
@@ -9196,3 +8277,50 @@ def test_a_protocol_relative_citation_is_still_a_citation():
     # The case the comment above the pattern exists to exclude: a `//` that is
     # NOT the start of the destination still names example.com, not GitHub.
     assert refs(f"blocked by https://example.com//{bare}\n") == []
+
+
+# ── the Class A delivery audit is retired (FEAT-CICD-001) ───────────────────
+
+def test_the_class_a_delivery_audit_is_retired():
+    for name in ("OWNING_JOB", "check_owning_job", "fetch_owning_runs", "fetch_owned_prs",
+                 "DRY_RUN_MARKER", "DELIVERING_MARKER"):
+        assert not hasattr(m, name), name
+    assert "refresh-architecture-docs" not in (REPO_ROOT / "scripts/maintenance/docs_audit.py").read_text(encoding="utf-8")
+
+
+def test_the_retired_owning_job_flag_is_accepted_and_changes_nothing(audit_repo, capsys, monkeypatch):
+    calls, real = [], m.run
+    monkeypatch.setattr(m, "run", lambda cmd, **kw: calls.append(" ".join(cmd)) or (real(cmd, **kw) if cmd[0] == "git" else ""))
+    (audit_repo / "docs" / "d.md").write_text("# D\n\nbody\n")
+    _commit(audit_repo, "tree")
+    argv = ["--json", "--date", "2026-09-18", "--issues-snapshot", str(audit_repo / "issues.json")]
+    reports = []
+    for extra in (["--no-owning-job-check"], []):
+        m.main(argv + extra)
+        reports.append(json.loads(capsys.readouterr().out)["findings"])
+    assert reports[0] == reports[1]
+    assert not [c for c in calls if "actions/workflows" in c], calls
+
+
+def test_a_generated_region_is_routed_to_its_renderer():
+    owner = m.region_owner("generated", None)
+    for renderer in ("doc_inventory", "refresh_calibration_table", "refresh_architecture_drawio", "export_model_registry"):
+        assert renderer in owner, owner
+    assert "workflow" not in owner and ".yml" not in owner
+
+
+def test_the_calibration_staleness_finding_names_the_manual_command(audit_repo):
+    art = [dict(m.BEST_EFFORT_ARTIFACTS[0], doc="docs/cal.md", region="cal")]   # the registered bound and regex
+    today = datetime.date(2026, 9, 18)
+    found = {}
+    for days in (181, 180):
+        (audit_repo / "docs" / "cal.md").write_text(CAL_REGION.format((today - datetime.timedelta(days=days)).isoformat()))
+        found[days] = m.check_best_effort_artifacts(today.isoformat(), artifacts=art)
+    assert found[180] == []
+    assert [(f["check"], f["severity"]) for f in found[181]] == [("class-a", "P2")]
+    detail = found[181][0]["detail"]
+    assert "python -m scripts.refresh_calibration_table" in detail
+    # Re-rendering does not move the date: it is the latest calibration_date in
+    # the database, so the operator is told what to check when it does not move.
+    assert "ticker_calibration" in detail and "run it again" not in detail
+    assert "workflow" not in detail.lower() and ".yml" not in detail and "refresh PR" not in detail

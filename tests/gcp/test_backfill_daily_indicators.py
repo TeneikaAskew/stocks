@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 
 from gcp.fetchers import backfill_daily_indicators as mod
+from lib.eastern_time import market_today, market_today_sql
 
 
 def _synth_bars(n: int = 60) -> pd.DataFrame:
@@ -47,7 +48,7 @@ class TestTickerResolution:
         assert 'ema_9' in sql        # part of the OR-list
         assert 'macd' in sql         # part of the OR-list
         assert 'strat_candle' in sql # strat included too
-        assert 'CURRENT_DATE' in sql
+        assert market_today_sql() in sql
         assert params == {'d': 7}
 
     def test_gap_check_covers_every_derived_column(self):
@@ -79,7 +80,7 @@ class TestTickerResolution:
             mod._tickers_with_gaps(7)
         sql, _params = qm.call_args[0]
         # Same-day partial rows (intraday snapshot writers) are not gaps.
-        assert 'm.date < CURRENT_DATE' in sql
+        assert f'm.date < {market_today_sql()}' in sql
         # Rows whose raw OHLCV is null are uncomputable — never flag them.
         assert 'num_nulls(m.open, m.high, m.low, m.close, m.volume) = 0' in sql
         # Warmup gating: a young ticker structurally cannot fill
@@ -199,6 +200,42 @@ class TestComputePass:
                     )
 
 
+    def test_persisted_strat_columns_keep_the_legacy_rule(self):
+        """market_data_daily.strat_candle / strat_combo are unversioned and
+        feed research features, so the backfill keeps legacy-pattern-v1
+        until a versioned migration exists (Codex r4480286402)."""
+        from lib.strat import StratClassifier
+        bars = _synth_bars(40)
+        last = bars['date'].iloc[-1]
+        tail = pd.DataFrame(
+            [(o, h, l, c) for (o, h, l, c) in
+             [(10, 12, 8, 11), (10, 11, 7, 8), (10, 13, 6, 12), (11, 14, 7, 13)]],
+            columns=['Open', 'High', 'Low', 'Close'])
+        tail['date'] = [last + timedelta(days=i + 1) for i in range(len(tail))]
+        tail['Volume'] = 2_000_000
+        bars = pd.concat([bars, tail[bars.columns]], ignore_index=True)
+        rows = {r['date']: r for r in mod._build_indicator_rows('TEST', bars)}
+        assert rows[tail['date'].iloc[-1]].get('strat_combo') == 'clean_2u_bull'
+        ohlc = bars.set_index('date')[['Open', 'High', 'Low', 'Close']].astype(float)
+        legacy = StratClassifier(rule_version='legacy-pattern-v1')
+        combos = legacy.detect_combos(ohlc, legacy.classify_series(ohlc))['strat_combo']
+        for day, combo in combos.items():
+            if day in rows:
+                assert rows[day].get('strat_combo') == (None if combo == 'none' else combo)
+
+
+    @pytest.mark.parametrize('path', ['gcp/fetchers/backfill_daily_indicators.py',
+                                      'gcp/fetchers/fetch_market_data.py',
+                                      'gcp/backfill_ticker.py'])
+    def test_every_market_data_daily_strat_writer_pins_the_legacy_rule(self, path):
+        """The live writer and both backfills write the same unversioned
+        columns; one of them on the new rule would mix semantics there."""
+        from pathlib import Path
+        source = Path(__file__).resolve().parents[2].joinpath(path).read_text()
+        assert 'StratClassifier(rule_version="legacy-pattern-v1")' in source
+        assert 'StratClassifier()' not in source
+
+
 class TestBackfillTicker:
     def test_backfill_ticker_upserts_rows(self):
         bars = _synth_bars(40)
@@ -227,7 +264,7 @@ class TestBackfillTicker:
         is what blew the 3h task-timeout."""
         bars = _synth_bars(60)
         # Re-date the synthetic bars to end today so a recent window exists.
-        today = date.today()
+        today = market_today()
         bars['date'] = [today - timedelta(days=59 - i) for i in range(60)]
         with patch.object(mod, '_full_history', return_value=bars), \
              patch.object(mod, 'upsert_dataframe') as ups:
@@ -242,7 +279,7 @@ class TestBackfillTicker:
     def test_filter_recent_rows_shared_helper(self):
         """--dry-run must preview the same rows the live path writes
         (Codex review on PR #756): both go through _filter_recent_rows."""
-        today = date.today()
+        today = market_today()
         rows = [
             {'ticker': 'SPY', 'date': today, 'atr_14': 1.0},
             {'ticker': 'SPY', 'date': today - timedelta(days=3), 'atr_14': 1.0},

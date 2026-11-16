@@ -105,6 +105,7 @@ from gcp.database import (
     record_job_run,
     upsert_dataframe,
 )
+from lib.eastern_time import market_today, market_today_sql
 
 log = logging.getLogger(__name__)
 
@@ -214,15 +215,15 @@ def _tickers_with_gaps(lookback_days: int) -> list[str]:
             -- flag (weekly full mode still heals it), never re-queue.
             SELECT ticker, count(*) AS n_bars
             FROM market_data_daily
-            WHERE date >= CURRENT_DATE - INTERVAL '450 days'
+            WHERE date >= {market_today_sql()} - INTERVAL '450 days'
               AND num_nulls(open, high, low, close, volume) = 0
             GROUP BY ticker
         )
         SELECT DISTINCT m.ticker
         FROM market_data_daily m
         JOIN bar_counts c ON c.ticker = m.ticker
-        WHERE m.date >= CURRENT_DATE - (:d || ' days')::interval
-          AND m.date < CURRENT_DATE
+        WHERE m.date >= {market_today_sql()} - (:d || ' days')::interval
+          AND m.date < {market_today_sql()}
           AND num_nulls(m.open, m.high, m.low, m.close, m.volume) = 0
           AND (
                 (c.n_bars >= {_WARMUP_SHORT_MIN_BARS}
@@ -318,7 +319,7 @@ def _build_indicator_rows(ticker: str, df: pd.DataFrame) -> list[dict]:
     # deterministically since they're a function of OHLC at that bar.
     try:
         from lib.strat import StratClassifier
-        clf = StratClassifier()
+        clf = StratClassifier(rule_version="legacy-pattern-v1")
         labels = clf.classify_series(
             enriched[['Open', 'High', 'Low', 'Close']]
         )
@@ -384,8 +385,8 @@ def _filter_recent_rows(rows: list[dict],
     """
     if recent_days is None or not rows:
         return rows
-    from datetime import date as _date, timedelta as _timedelta
-    cutoff = _date.today() - _timedelta(days=recent_days)
+    from datetime import timedelta as _timedelta
+    cutoff = market_today() - _timedelta(days=recent_days)
     return [r for r in rows if r['date'] >= cutoff]
 
 

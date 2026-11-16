@@ -14,9 +14,10 @@ which CLAUDE.md Rule 2.5 sends here; and a person. stocks and solyra carry the s
 ### The first review is the complete one
 
 A reviewer's first review of a pull request is the complete one. A pull request gets at most two
-review rounds (CLAUDE.md, "Review cap"), an approved spec does not change in place, and Codex's code
-review runs again when new commits are pushed to a pull request open for review, so a finding held
-back costs a round, and on a spec PR a whole re-cut PR. Before it posts:
+review rounds (CLAUDE.md, "Review cap"), and Codex's code review runs again when new commits are
+pushed to a pull request open for review, so a finding held back costs a round. A spec PR is fixed
+in place by a push, like any other pull request; once `main` holds a spec, it changes only through a
+new spec that supersedes it. Before it posts:
 
 - It reads every changed file in full, generated files included, and the direct callers and callees
   of what changed, and where a changed file's generator runs in the reviewer's environment it re-runs
@@ -30,9 +31,12 @@ back costs a round, and on a spec PR a whole re-cut PR. Before it posts:
   that cite what changed). Empty and null data are judged by this repository's no-silent-fallbacks
   rule, CLAUDE.md Rule 3.7.
 - A spec PR is reviewed against the code it will change: the reviewer opens each file the spec names
-  and checks that every `done_when` item can be met, and each `done_when` item that describes
-  behavior must fail against a broken implementation. Items that record delivery (the gate, the docs
-  audit, the catalog row) are only checked for being met.
+  and checks that every `done_when` item can be met, and that each `done_when` item that describes
+  behavior names a test or check that fails on `main` (or on the prior state the item names) and
+  passes on the design. A broken implementation that would still pass is posted as a finding. It
+  blocks the merge, whatever its severity, only when it shows a realistic path to a user-visible
+  defect, and otherwise gets a reply. Items that record delivery (the gate, the docs audit, the
+  catalog row) are only checked for being met.
 
 ### Later reviews
 
@@ -44,6 +48,16 @@ Rule 2.5.
 
 A problem the pull request neither introduces nor makes worse is not posted as a finding (a reviewer
 who can open an issue may open one), since every thread holds the merge (REQ-GOV-001).
+
+### What blocks the merge
+
+Blocking threshold: P1. Severity runs from P0, the most severe, to P3, as Codex's badges show; a
+finding without a badge states its severity, and only the owner changes a reviewer's severity. A
+finding at or above the threshold blocks the merge until it is fixed, unless it is a spec PR's
+finding of a broken implementation that would still pass, which blocks only as the spec-PR rule
+in "The first review is the complete one" says. A finding below the threshold, or one that rule
+excuses, gets a reply on its thread, and an issue the reply links when it is real; the thread is
+then resolved and the pull request merges without the fix.
 
 ### Browser proof
 

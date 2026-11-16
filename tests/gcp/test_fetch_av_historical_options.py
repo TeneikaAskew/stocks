@@ -18,6 +18,11 @@ from datetime import date
 import pandas as pd
 import pytest
 
+from tests.fixtures.market_clock import freeze_market_clock
+
+# Thursday 2026-11-12 21:00 EST: the container's UTC date is already 2026-11-13.
+THURSDAY_21_EST = "2026-11-13T02:00:00Z"
+
 
 # ──────────────────────────────────────────────────────────────────────
 # fetch_av_options — error / rate-limit handling
@@ -346,6 +351,24 @@ def test_trading_days_skips_market_holiday():
     assert out == ["2026-05-22", "2026-05-26", "2026-05-27"]
 
 
+def test_trading_days_raises_without_calendar(monkeypatch):
+    """No Mon-Fri fallback: with the library unimportable the weekday list used
+    to include Memorial Day, so a backfill spent an AV call on a closed day."""
+    import sys
+
+    from gcp.fetchers.fetch_av_historical_options import _trading_days
+    from lib import eastern_time
+
+    eastern_time._reset_session_cache()
+    monkeypatch.setitem(sys.modules, "pandas_market_calendars", None)
+    try:
+        with pytest.raises(ImportError):
+            _trading_days(date(2026, 5, 22), date(2026, 5, 26))
+    finally:
+        monkeypatch.undo()
+        eastern_time._reset_session_cache()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # _resolve_start_from_latest — self-resuming start date
 # ──────────────────────────────────────────────────────────────────────
@@ -437,8 +460,9 @@ def test_resolve_start_from_latest_no_rows_at_all_falls_back_to_today(monkeypatc
         "gcp.database.query_to_dataframe",
         lambda *a, **k: pd.DataFrame(columns=["ticker", "d"]),
     )
+    freeze_market_clock(monkeypatch, THURSDAY_21_EST, mod)
     out = mod._resolve_start_from_latest(["NEW_TICKER"])
-    assert out == date.today()
+    assert out == date(2026, 11, 12)
 
 
 def test_resolve_start_from_latest_filters_null_d(monkeypatch):
@@ -456,12 +480,13 @@ def test_resolve_start_from_latest_filters_null_d(monkeypatch):
     assert out == date(2026, 5, 1)  # SPY's MAX+1, BAD ignored
 
 
-def test_resolve_start_from_latest_no_tickers():
+def test_resolve_start_from_latest_no_tickers(monkeypatch):
     """Empty ticker list → today fallback (no SQL query attempted)."""
     from gcp.fetchers import fetch_av_historical_options as mod
 
+    freeze_market_clock(monkeypatch, THURSDAY_21_EST, mod)
     out = mod._resolve_start_from_latest([])
-    assert out == date.today()
+    assert out == date(2026, 11, 12)
 
 
 def test_resolve_start_from_latest_sql_shape(monkeypatch):

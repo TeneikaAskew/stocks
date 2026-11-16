@@ -5,11 +5,15 @@ asserts the gate now turns it into a finding.
 """
 from __future__ import annotations
 
+import ast
+import collections
 import datetime
+import itertools
 import json
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 
 import pytest
@@ -169,13 +173,13 @@ def test_diff_stats_report_names_what_moved(tmp_path):
     for d in DOCS:
         _copy(REPO / d, root / d)
         _copy(REPO / d, prev / d)
-    text = (root / gate.COST).read_text()
-    (root / gate.COST).write_text(text + "\n## A brand new section\n\nbody\n")
+    text = (root / gate.ARCH).read_text()
+    (root / gate.ARCH).write_text(text + "\n## A brand new section\n\nbody\n")
     stats = gate.diff_stats(root, prev)
     report = gate.render_report(stats)
     assert "A brand new section" in report and "+added" in report
-    cost = next(st for st in stats if st["doc"] == gate.COST)
-    assert cost["added"] >= 3 and cost["removed"] == 0 and cost["churn"] == 0.0
+    arch = next(st for st in stats if st["doc"] == gate.ARCH)
+    assert arch["added"] >= 3 and arch["removed"] == 0 and arch["churn"] == 0.0
 
 
 def test_the_2026_09_02_regeneration_would_have_been_stopped(tmp_path):
@@ -195,7 +199,6 @@ def test_the_2026_09_02_regeneration_would_have_been_stopped(tmp_path):
     # paths the gate reads today.
     four = (("ARCHITECTURE.md", gate.ARCH),
             ("DATA_DEPENDENCIES.md", gate.DEPS),
-            ("COST_ANALYSIS.md", gate.COST),
             ("README.md", "README.md"))
     for was, now in four:
         for rev, dest in (("b3b5271", prev), ("e50c759", root)):
@@ -292,6 +295,19 @@ def test_truncated_transcript_is_a_finding(tmp_path):
     assert gate.gate_transcripts(t) == []
 
 
+def _off_by_one(token: str) -> str:
+    """token's count plus one, in token's form: a WORD_NUMBERS word while the table has one, digits beyond it,
+    as the renderer writes a count above twelve."""
+    if token.isdigit():
+        return str(int(token) + 1)
+    return {v: k for k, v in gate.WORD_NUMBERS.items()}.get(gate.WORD_NUMBERS[token] + 1, str(gate.WORD_NUMBERS[token] + 1))
+
+
+# The §6 list as 05-a states it, read by these tests' own pattern rather than by the renderer's.
+SECTION_6_LIST = re.compile(r"`--max-retries 0` for (?P<n0>\d+) of the (?P<total>\d+) declared jobs, "
+                            r"`1` for (?P<n1>\d+) and `2` for (?P<c>\d+|[a-z]+)")
+
+
 def test_the_retry_split_must_match_deploy_sh(live, repo, tmp_path):
     """Three rounds each corrected ONE instance of this number and left
     another standing, because the corrections were made by reading rather than
@@ -303,11 +319,15 @@ def test_the_retry_split_must_match_deploy_sh(live, repo, tmp_path):
         _copy(REPO / d, root / d)
     assert gate.gate_derived_numbers(root, repo, live) == []
     a = root / gate.ARCH
-    a.write_text(a.read_text().replace(
-        "`--max-retries 0` for 43 of the 68 declared jobs, `1` for 24",
-        "`--max-retries 0` for 56 jobs and `1` for 27"))
+    # The split is rendered (doc_inventory.RETRY_SPLIT), so the wrong counts are derived from the §6 list as the
+    # document states it, not typed: main's 43/24 become 56/27, as this test always injected.
+    text = a.read_text()
+    m = SECTION_6_LIST.search(text)
+    assert m, "the §6 retry list is not in 05-a"
+    n0, n1 = int(m.group("n0")), int(m.group("n1"))
+    a.write_text(text.replace(m.group(0), f"`--max-retries 0` for {n0 + 13} jobs and `1` for {n1 + 3}", 1))
     findings = gate.gate_derived_numbers(root, repo, live)
-    assert any("claims 56 jobs at --max-retries 0" in f for f in findings), findings
+    assert any(f"claims {n0 + 13} jobs at --max-retries 0" in f for f in findings), findings
 
 
 def test_the_runtime_relation_count_must_match_the_snapshot(live, repo, tmp_path):
@@ -377,9 +397,15 @@ def test_a_spelled_out_retry_count_is_validated(live, repo, tmp_path):
     for d in DOCS:
         _copy(REPO / d, root / d)
     a = root / gate.ARCH
-    a.write_text(a.read_text().replace("`2` for one", "`2` for two"))
+    # Derived from the §6 list as the document states it: main's "one" becomes "two", as this test always injected.
+    text = a.read_text()
+    m = SECTION_6_LIST.search(text)
+    assert m, "the §6 retry list is not in 05-a"
+    word = _off_by_one(m.group("c"))
+    c = gate.WORD_NUMBERS.get(word, word)
+    a.write_text(text.replace(m.group(0), m.group(0)[:m.start("c") - m.start()] + word, 1))
     findings = gate.gate_derived_numbers(root, repo, live)
-    assert any("claims 2 jobs at --max-retries 2" in f for f in findings), findings
+    assert any(f"claims {c} jobs at --max-retries 2" in f for f in findings), findings
 
 
 def test_a_fixed_min_instances_for_a_windowed_service_is_a_finding(repo, tmp_path):
@@ -413,89 +439,13 @@ def test_the_windowed_set_is_derived_not_hardcoded(tmp_path):
     assert gate.gate_scheduled_scaling(root, none) == []
 
 
-def _cost_pair(tmp_path):
-    """The previous COST_ANALYSIS.md and a regeneration of it, in run 17's
-    shape: the five promised sections kept, every data-bearing subheading
-    changed, fewer lines but more bytes."""
-    root, prev = tmp_path / "r", tmp_path / "p"
-    (root / ".github/prompts").mkdir(parents=True); prev.mkdir()
-    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
-    for d in (gate.ARCH, gate.DEPS, "README.md"):
-        _copy(REPO / d, root / d); _copy(REPO / d, prev / d)
-    _copy(REPO / gate.COST, prev / gate.COST)
-    body = [
-        "# Cost Analysis", "", "Total 90-day spend is $222.71.", "",
-        "## 1. Total spend by month", "", "| Month | Spend | Notes |", "|---|---|---|", "",
-        "## 2. Top 10 cost line items by SKU", "", "| Rank | Service | SKU |", "|---|---|---|", "",
-        "## 3. Per-component cost estimate", "",
-        "### Cloud Run (Jobs & Services) — $101.44", "", "Allocation by runs-per-month.", "",
-        "### Cloud SQL (`trading-db`) — $68.10", "", "Tier db-g1-small.", "",
-        "## 4. Anomalies", "", "### A. Artifact Registry down 59% month over month", "", "Cause.", "",
-        "## 5. Cost-reduction recommendations", "",
-        "### #1 — Optimize expensive Cloud Run jobs (estimated saving: $5-10/mo)", "", "Change.", "",
-        "Generated 2026-09-07 by .github/workflows/refresh-architecture-docs.yml",
-    ]
-    while len(body) < 81:
-        body.append("A detail line carrying real content from the billing export.")
-    text = "\n".join(body) + "\n"
-    text += "x" * max(0, 8027 - len(text.encode()))
-    (root / gate.COST).write_text(text)
-    return root, prev
-
-
-def test_a_regenerated_cost_report_may_change_its_data_bearing_headings(tmp_path):
-    """Run 17 failed COST_ANALYSIS.md on twelve "lost" headings, every one of
-    which embeds that month's data — `Cloud Run (Jobs & Services) — $94.26`,
-    `A. Month-over-month comparison not possible`. Its prompt says
-    "Regenerate", not "update in place". Demanding those persist demands this
-    month's report keep last month's numbers.
-
-    The count is derived from the committed document, not pinned: the report
-    is regenerated monthly and its headings move every time, so a literal
-    number here would go stale on the next refresh and fail the refresh's own
-    pull request."""
-    root, prev = _cost_pair(tmp_path)
-    findings = gate.gate_headings_and_size(root, prev)
-    assert [f for f in findings if gate.COST in f] == [], findings
-    # and the previous behaviour is what run 17 saw
-    saved = gate.REGENERATED
-    try:
-        gate.REGENERATED = ()
-        lost = [f for f in gate.gate_headings_and_size(root, prev) if gate.COST in f]
-        subheads = [h for h in gate._headings((prev / gate.COST).read_text())
-                    if not re.match(r"^\d+\.", h.strip())]
-        assert len(lost) >= len(subheads) > 5, (len(lost), len(subheads))
-    finally:
-        gate.REGENERATED = saved
-
-
-def test_a_regenerated_doc_is_measured_in_bytes_not_lines(tmp_path):
-    """Run 17's regeneration lost 21 lines while gaining 1,884 bytes. Lines are
-    the wrong unit for a document rebuilt from data; mass is the measure."""
-    root, prev = _cost_pair(tmp_path)
-    assert gate.gate_headings_and_size(root, prev) == []
-    (root / gate.COST).write_text((root / gate.COST).read_text()[:3000])
-    findings = gate.gate_headings_and_size(root, prev)
-    assert any("bytes (< 80%)" in f and "not regenerated" in f for f in findings), findings
-
-
-def test_a_regenerated_doc_must_carry_every_section_its_prompt_promises(tmp_path):
-    """Dropping heading-persistence would leave the cost report unguarded, so
-    the sections are checked against the prompt instead — derived from it, so a
-    section added to the prompt moves the gate with it."""
-    root, prev = _cost_pair(tmp_path)
-    assert gate.gate_regenerated_structure(root) == []
-    assert [n for n, _ in gate._promised_sections(root, "cost-analysis.md")] == list("12345")
-    c = root / gate.COST
-    c.write_text(c.read_text().replace("## 4. Anomalies", "## Anomalies of note"))
-    findings = gate.gate_regenerated_structure(root)
-    assert any("must be exactly '4. Anomalies'" in f for f in findings), findings
-
-
 def test_the_other_documents_keep_heading_persistence(tmp_path):
-    """The exemption is for the one regenerated document, not a general
-    loosening: an in-place-updated doc that loses a heading still fails."""
-    root, prev = _cost_pair(tmp_path)
+    """An in-place-updated doc that loses a heading still fails."""
+    root, prev = tmp_path / "r", tmp_path / "p"
+    prev.mkdir()
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+        _copy(REPO / d, prev / d)
     a = root / gate.ARCH
     heads = [h for h in gate._headings(a.read_text())]
     a.write_text(a.read_text().replace(f"## {heads[3]}", "## Something Else Entirely", 1))
@@ -953,9 +903,10 @@ def test_the_committed_asof_labels_match_their_own_snapshot():
     text = (gate.REPO / gate.ARCH).read_text()
     day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*", text).group(1)
     assert gate.gate_stale_asof(gate.REPO, {"read_at": f"{day}T04:35:16Z"}) == []
-    # Three labels: the header note, §3's table column, and the snapshot date
-    # in the closing line.
-    assert len(gate.gate_stale_asof(gate.REPO, {"read_at": "1999-01-01T00:00:00Z"})) == 3
+    # Four labels: the header note, §3's table column, and the snapshot date
+    # in the closing line, plus README's closing line, which names the same
+    # snapshot date now that nothing re-renders it on a schedule.
+    assert len(gate.gate_stale_asof(gate.REPO, {"read_at": "1999-01-01T00:00:00Z"})) == 4
 
 
 def test_no_snapshot_means_no_asof_finding(tmp_path):
@@ -1172,26 +1123,6 @@ def test_the_other_documents_are_not_required_to_carry_asof_labels(live, repo, t
     assert set(gate.REQUIRED_ASOF) == {gate.ARCH}
 
 
-def test_the_cost_report_is_exempt_from_the_churn_ceiling(tmp_path):
-    """Its prompt says "Regenerate ... with write_file", so a full rewrite is
-    the specified behaviour and churn answers "did this month's billing differ
-    from last month's" -- which it always does. Run 28 measured 81% and run 29
-    96%, so a 0.85 ceiling sat inside the normal range and fired at random on
-    good output, which is worse than no ceiling: it teaches the operator to
-    disregard a red run. (Run 29.)"""
-    root, prev = tmp_path, tmp_path / "previous"
-    prev.mkdir()
-    for d in DOCS:
-        _copy(REPO / d, root / d)
-        _copy(REPO / d, prev / d)
-    old = (prev / gate.COST).read_text().splitlines()
-    (root / gate.COST).write_text(
-        "\n".join(f"Every line rewritten, number {i}." for i in range(len(old))) + "\n")
-    stats = {st["doc"]: st for st in gate.diff_stats(root, prev)}
-    assert stats[gate.COST]["churn"] == 1.0, stats[gate.COST]["churn"]
-    assert gate.gate_diff_budget(list(stats.values())) == []
-
-
 def test_every_other_document_still_has_a_churn_ceiling(tmp_path):
     """The exemption is one document wide. 05-a and 05-c are updated in place,
     so a rewrite there is the 2026-09-02 failure mode and must still stop the
@@ -1208,91 +1139,7 @@ def test_every_other_document_still_has_a_churn_ceiling(tmp_path):
     findings = gate.gate_diff_budget(gate.diff_stats(root, prev))
     for doc in (gate.ARCH, gate.DEPS, "README.md"):
         assert any(doc in f and "rewrite" in f for f in findings), (doc, findings)
-    assert gate.CHURN_EXEMPT == (gate.COST,)
-
-
-def test_an_emptied_cost_report_is_still_caught_without_the_ceiling(tmp_path):
-    """What replaces churn for that document. Removing a gate is only safe if
-    the degradation it was meant to catch is still caught: the byte floor stops
-    a rewrite that loses mass, and the structure gate stops one that drops a
-    section the prompt promises."""
-    root, prev = tmp_path, tmp_path / "previous"
-    prev.mkdir()
-    for d in DOCS:
-        _copy(REPO / d, root / d)
-        _copy(REPO / d, prev / d)
-    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
-    (root / gate.COST).write_text("# Cost Analysis\n\nSpend was $1.00.\n")
-    assert any("bytes" in f or "%" in f for f in gate.gate_headings_and_size(root, prev))
-    assert len(gate.gate_regenerated_structure(root)) == 5
-
-
-def test_the_whole_heading_must_match_not_a_prefix_of_it(tmp_path):
-    """A prefix test tolerated an appended qualifier, so `2. ... by SKU
-    (90-day trailing)` passed while the prompt said to copy the heading
-    exactly -- a rule stated and not enforced, which is how the drift it
-    exists to prevent gets in. Run 29 retitled all five headings; only the one
-    that changed a word INSIDE the title was caught. (Codex, PR #1063.)
-
-    Case is folded, because GitHub lowercases heading anchors: Title Case
-    breaks no link, adding or rewording a word does."""
-    root = tmp_path
-    _copy(REPO / gate.COST, root / gate.COST)
-    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
-    body = (root / gate.COST).read_text()
-    for bad in ("## 2. Top 10 Cost Line Items (90-Day Trailing)",
-                "## 2. Top 10 cost line items by SKU (90-day trailing)",
-                "## 2. Top 10 cost line items"):
-        (root / gate.COST).write_text(body.replace("## 2. Top 10 cost line items by SKU", bad))
-        findings = gate.gate_regenerated_structure(root)
-        assert any("must be exactly '2. Top 10 cost line items by SKU'" in f
-                   for f in findings), (bad, findings)
-    # capitalisation alone is accepted
-    (root / gate.COST).write_text(body.replace(
-        "## 2. Top 10 cost line items by SKU", "## 2. TOP 10 COST LINE ITEMS BY SKU"))
-    assert gate.gate_regenerated_structure(root) == []
-
-
-def test_prose_shaped_like_a_cost_report_is_a_finding(tmp_path):
-    """Dropping the churn ceiling removed the only check that noticed a
-    wholesale replacement, and nothing that remained looked at what is IN the
-    document. This is the exact scenario: generic prose carrying the five
-    headings, one dollar figure and plenty of bytes. (Codex, PR #1063.)"""
-    root = tmp_path
-    (root / gate.COST).parent.mkdir(parents=True, exist_ok=True)
-    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
-    body = ["# Cost Analysis (Trailing 90 days)", "", "Total spend was $222.71.", ""]
-    for num, title in gate._promised_sections(REPO, "cost-analysis.md"):
-        body += [f"## {num}. {title}", "",
-                 "This section discusses the relevant costs at length without stating any.",
-                 "Further discussion follows here.", ""]
-    (root / gate.COST).write_text("\n".join(body) + "\n")
-    assert gate.gate_regenerated_structure(root) == [], "it keeps every promised heading"
-    findings = gate.gate_cost_content(root)
-    assert any("monetary values" in f for f in findings), findings
-    assert any("§1 has 0 table row" in f for f in findings), findings
-    assert any("§2 has 0 table row" in f for f in findings), findings
-    assert any("§5 lists 0 recommendation" in f for f in findings), findings
-
-
-def test_every_real_version_of_the_cost_report_passes_the_content_floors(tmp_path):
-    """Calibration, not invention. Every floor was measured against the three
-    real versions -- the copy on main, run 28's and run 29's -- and set below
-    the minimum observed. A floor that failed an honest report would be worse
-    than no floor at all, so the committed document is checked here."""
-    assert gate.gate_cost_content(REPO) == []
-
-
-def test_a_heading_with_nothing_under_it_is_a_finding(tmp_path):
-    root = tmp_path
-    (root / gate.COST).parent.mkdir(parents=True, exist_ok=True)
-    _copy(REPO / gate.COST, root / gate.COST)
-    text = (root / gate.COST).read_text()
-    head = "## 4. Anomalies"
-    body, _, tail = text.partition(head)
-    (root / gate.COST).write_text(body + head + "\n\n" + tail.split("\n## ", 1)[-1].join(["## ", ""]))
-    assert any("nothing beneath it" in f for f in gate.gate_cost_content(root)), \
-        gate.gate_cost_content(root)
+    assert gate.CHURN_EXEMPT == ()
 
 
 def test_a_rule_with_text_welded_onto_it_is_a_finding(tmp_path):
@@ -1415,57 +1262,6 @@ def test_no_generated_document_cites_a_dated_filename_in_its_closing_line(tmp_pa
             f"{doc}: closing line links a path carrying a date, which the model will bump"
 
 
-def test_a_recommendation_heading_stays_inside_section_five(tmp_path):
-    """A report that ranks its recommendations as `### 1. Reduce ...` is
-    valid — the prompt does not prescribe the `#### #1` spelling — but
-    accepting `###` as a section delimiter read those three headings as new
-    top-level sections, leaving §5 empty and its recommendation count zero.
-    Only `## N.` delimits a section. (Codex, PR #1064.)"""
-    root = tmp_path
-    (root / gate.COST).parent.mkdir(parents=True, exist_ok=True)
-    _copy(REPO / ".github/prompts/cost-analysis.md", root / ".github/prompts/cost-analysis.md")
-    body = ["# Cost Analysis", "", "Total spend was $222.71.", ""]
-    for num, title in gate._promised_sections(REPO, "cost-analysis.md"):
-        body += [f"## {num}. {title}", ""]
-        if num == "1":
-            body += ["Month | Spend (USD) | Notes", "--- | --- | ---",
-                     "2026-07 | $4.77 | partial", "2026-08 | $211.00 | full", ""]
-        elif num == "2":
-            body += ["Rank | Service | SKU | Cost", "--- | --- | --- | ---"] + \
-                    [f"{i} | Cloud Run | SKU {i} | ${i}.00" for i in range(1, 11)] + [""]
-        elif num == "5":
-            for i in (1, 2, 3):
-                body += [f"### {i}. Reduce something {i}", "", f"Saves ~${i}0/month.", ""]
-        else:
-            body += ["Some substance here.", "And another line.", ""]
-    (root / gate.COST).write_text("\n".join(body) + "\n")
-    assert gate.gate_cost_content(root) == [], gate.gate_cost_content(root)
-    assert sorted(gate._numbered_sections((root / gate.COST).read_text())) == list("12345")
-
-
-def test_a_table_without_outer_pipes_still_counts(tmp_path):
-    """`Rank | Service | SKU` with no leading or trailing pipe is a valid
-    markdown table. Requiring the outer pipes rejected an otherwise compliant
-    report for its formatting. (Codex, PR #1064.)"""
-    # four lines: the separator is skipped and the header is not a data row
-    assert gate._table_rows(["Month | Spend | Notes", "--- | --- | ---",
-                             "2026-07 | $4.77 | partial", "2026-08 | $211.00 | full"]) == 2
-    assert gate._table_rows(["| Month | Spend |", "|---|---|", "| 2026-07 | $4.77 |"]) == 1
-    # prose carrying a single pipe is not a table
-    assert gate._table_rows(["Run `a | b` to pipe one into the other."]) == 0
-
-
-def test_only_monetary_values_count_toward_the_cost_floor(tmp_path):
-    """The optional `$` let any decimal satisfy the floor, so the workflow's
-    one required dollar figure plus eleven percentages scored twelve.
-    (Codex, PR #1064.)"""
-    assert gate.COST_FIGURE.findall("spend was $222.71 and $4.77") == ["$222.71", "$4.77"]
-    assert gate.COST_FIGURE.findall("utilisation 50.00%, latency 1.25s") == []
-    # every real version stays above the floor
-    for doc in (REPO / gate.COST,):
-        assert len(gate.COST_FIGURE.findall(doc.read_text())) >= gate.COST_MIN_FIGURES
-
-
 def test_each_asof_label_is_required_in_its_own_location(tmp_path):
     """Counting a pattern anywhere let §3's table header be reworded away
     while another sentence carrying `Live <date>` kept the count non-zero, so
@@ -1559,7 +1355,7 @@ def test_the_runtime_relations_are_not_claimed_to_have_no_schema_file(tmp_path):
 
 def test_a_pipe_table_separator_is_not_a_welded_rule(tmp_path):
     """`--- | --- | ---` is the separator of a table written without outer
-    pipes, which `_table_rows` accepts. Reading it as a rule with text welded
+    pipes, which `_is_table_sep` accepts. Reading it as a rule with text welded
     on failed a document for the formatting this module had just started
     allowing. (Codex, PR #1064.)"""
     doc = tmp_path / gate.ARCH
@@ -1606,31 +1402,6 @@ def test_a_relation_count_binds_to_the_file_it_names(tmp_path, repo):
     assert any("declared relations" in f for f in gate.gate_derived_numbers(tmp_path, repo, None))
 
 
-def test_a_bare_decimal_in_a_money_cell_counts_as_a_cost_figure(tmp_path):
-    """Requiring `$` counted the wrong population: under headers named
-    `Spend (USD)` the model writes `222.71`. Measured over the four real
-    documents, $-prefixed / bare: main 43/0, run 28 15/13, run 29 14/22,
-    run 30 11/22. (Codex, PR #1064.)"""
-    rows = "".join(f"| svc-{i} | {100 + i}.00 |\n" for i in range(20))
-    assert gate.cost_figures("| SKU | Spend (USD) |\n|---|---|\n" + rows) == 20
-    # a percentage in a cell is not an amount, and neither is prose
-    assert gate.cost_figures("| a | b |\n|---|---|\n" + "| x | 50.00% |\n" * 11 + "cost $1.00\n") == 1
-    for doc in (REPO / gate.COST,):
-        assert gate.cost_figures(doc.read_text()) >= gate.COST_MIN_FIGURES
-
-
-def test_pipe_shaped_prose_is_not_a_table(tmp_path):
-    """Counting every two-pipe line and subtracting a header let nine lines of
-    `1 | Cloud Run | $1.00` -- no header, no separator -- clear §2's floor of 8
-    exactly, so the floor that exists to catch a report with no tables was
-    failing open. A table is a separator with rows attached. (Codex, PR #1064.)"""
-    assert gate._table_rows([f"{i} | Cloud Run | $1.00" for i in range(1, 10)]) == 0
-    assert gate._table_rows(["Run `a | b` to pipe one into the other."]) == 0
-    # both real styles still parse, including two columns without outer pipes
-    assert gate._table_rows(["Month | Spend", "--- | ---", "a | 1.00", "b | 2.00"]) == 2
-    assert gate._table_rows(["| M | S | N |", "|---|---|---|", "| a | 1 | x |"]) == 1
-
-
 def test_the_header_note_is_located_by_shape_not_by_its_sentence(tmp_path, live):
     """`Live state below was read on` rejected `Infrastructure state below was
     read on **DATE**`. The prompt specifies the location and the
@@ -1660,21 +1431,6 @@ def test_the_runtime_relation_ddl_provenance_matches_the_files(tmp_path):
     assert "strat_data_builder.py" in body, "the one just-in-time exception should be named"
 
 
-def test_a_delimiter_row_needs_hyphens_in_every_cell(tmp_path):
-    """`: | :` and `| | |` satisfy the old character class while containing no
-    hyphen, and anchoring the row count on one let nine lines of prose beneath
-    a pseudo-separator clear §2's floor of 8. A delimiter cell is `-`, `:-`,
-    `-:` or `:-:`. (Codex, PR #1064.)"""
-    for good in ("--- | ---", ":--- | ---:", "|---|---|", "-|-", "| :-: |"):
-        assert gate._is_table_sep(good), good
-    for bad in (": | :", "| | |", "a | b", "   |   ", ""):
-        assert not gate._is_table_sep(bad), bad
-    rows = ["Rank | Cost", ": | :"] + [f"{i} | 1.00" for i in range(9)]
-    assert gate._table_rows(rows) == 0, "a pseudo-separator does not make prose a table"
-    rows[1] = "--- | ---"
-    assert gate._table_rows(rows) == 9
-
-
 def test_a_fence_closes_only_on_a_bare_delimiter(tmp_path):
     """A closing fence carries nothing but whitespace after its run. Accepting
     a run with content after it meant a content line inside a fence -- a
@@ -1687,41 +1443,6 @@ def test_a_fence_closes_only_on_a_bare_delimiter(tmp_path):
     doc.write_text("```python\nsample = '```python'\n```\n\n--- welded onto prose\n")
     out = gate.gate_inline_rule(tmp_path)
     assert len(out) == 1 and "welded onto prose" in out[0], out
-
-
-def test_a_bare_amount_counts_in_any_cell_and_in_the_usd_form(tmp_path):
-    """Requiring a pipe on both sides saw only cells in the MIDDLE of a row, so
-    the first and last column of a table written without outer pipes were
-    invisible, and so was `222.71 USD` in prose. At their floors the two
-    required tables contribute 2 + 8 = 10 amounts against a floor of 15, so a
-    report whose §3 is prose could have been rejected. (Codex, PR #1064.)"""
-    # An outer-pipe-free table, whose first and last columns a pipe-on-both-sides
-    # lookaround could not see. The header is what marks the money column, so
-    # these are written as real tables rather than bare fragments.
-    assert gate.cost_figures("Spend (USD) | SKU\n--- | ---\n222.71 | svc") == 1, "first column"
-    assert gate.cost_figures("SKU | Spend (USD)\n--- | ---\nsvc | 222.71") == 1, "last column"
-    assert gate.cost_figures("| SKU | Spend (USD) |\n|---|---|\n| svc | 222.71 |") == 1
-    assert gate.cost_figures("Cloud SQL: 222.71 USD") == 1
-    # a unit means it is not an amount, and a decimal in a sentence is not a cell
-    assert gate.cost_figures("| a | Spend |\n|---|---|\n| a | 50.00% |") == 0
-    assert gate.cost_figures("| a | Spend |\n|---|---|\n| a | 1.5 GiB |") == 0
-    assert gate.cost_figures("we saw 222.71 in prose") == 0
-    # the two floors together must be reachable by the required tables alone
-    minimum = gate.COST_MIN_ROWS["1"] + gate.COST_MIN_ROWS["2"]
-    table = ("| SKU | Spend (USD) |\n|---|---|\n"
-             + "".join(f"| svc-{i} | {100 + i}.00 |\n" for i in range(minimum)))
-    assert gate.cost_figures(table) == minimum
-
-
-def test_a_row_may_omit_its_trailing_cells(tmp_path):
-    """Markdown pads a row that omits trailing cells, so `| 2026-08 | 211.00 |`
-    under a three-column header is a valid row with an empty Notes cell.
-    Requiring an identical pipe count stopped the scan there and could report
-    0 rows against a floor of 2. (Codex, PR #1064.)"""
-    assert gate._table_rows(["Month | Spend | Notes", "--- | --- | ---",
-                             "| 2026-07 | 4.77 | partial |", "| 2026-08 | 211.00 |"]) == 2
-    # and a row cannot claim MORE cells than the table has
-    assert gate._table_rows(["A | B", "--- | ---", "1 | 2", "1 | 2 | 3"]) == 1
 
 
 def test_a_linked_schema_path_still_binds_its_count(tmp_path, repo):
@@ -1743,19 +1464,6 @@ def test_a_linked_schema_path_still_binds_its_count(tmp_path, repo):
         f"({breakdown}).\n")
     out = gate.gate_derived_numbers(tmp_path, repo, None)
     assert any(f"claims {total + 1} declared relations" in f for f in out), out
-
-
-def test_a_bare_decimal_counts_only_under_a_money_column(tmp_path):
-    """Counting every decimal cell let a `Duration (s)` or utilisation column
-    feed a floor named for money: one dollar amount plus eleven non-cost
-    decimals cleared it while the billing tables held no usable costs.
-    (Codex, PR #1064.)"""
-    rows = "".join(f"| step-{i} | {10 + i}.00 |\n" for i in range(11))
-    assert gate.cost_figures("| Step | Duration (s) |\n|---|---|\n" + rows + "cost $1.00\n") == 1
-    assert gate.cost_figures("| SKU | Spend (USD) |\n|---|---|\n" + rows) == 11
-    assert gate.cost_figures("| SKU | 90-day cost |\n|---|---|\n" + rows) == 11
-    # the four real documents are unaffected
-    assert gate.cost_figures((REPO / gate.COST).read_text()) >= gate.COST_MIN_FIGURES
 
 
 def test_the_asof_locations_must_be_the_real_header_and_footer(tmp_path, live):
@@ -1814,27 +1522,6 @@ def test_the_runtime_relations_have_three_distinct_creation_paths(tmp_path):
         "05-a claimed these tables have no DDL; the archived job defines it"
 
 
-def test_one_amount_written_two_ways_counts_once(tmp_path):
-    """`$1.00 USD` matches both the symbol form and the spelled-out form, and
-    counting it twice let six values satisfy a floor of twelve.
-    (Codex, PR #1064.)"""
-    assert gate.cost_figures("the charge was $1.00 USD today") == 1
-    assert gate.cost_figures("$1.00 and 2.00 USD are different amounts") == 2
-
-
-def test_an_emphasised_amount_still_counts(tmp_path):
-    """`| Cloud SQL | **222.71** |` is an amount with emphasis, and matching the
-    raw markdown missed it, so a complete report whose costs are bolded would
-    have fallen under the floor. Two of the real documents do bold amounts:
-    counting them moved run 29 from 36 to 37 and run 30 from 33 to 35.
-    (Codex, PR #1064.)"""
-    head = "| SKU | Spend (USD) |\n|---|---|\n"
-    assert gate.cost_figures(head + "| Cloud SQL | **222.71** |") == 1
-    assert gate.cost_figures(head + "| Cloud SQL | `222.71` |") == 1
-    assert gate.cost_figures(head + "| Cloud SQL | 222.71 |") == 1
-    assert gate.cost_figures(head + "| Cloud SQL | **50.00%** |") == 0
-
-
 def test_a_count_first_claim_names_its_own_schema(tmp_path, repo):
     """`N declared in \u0060gcp/schema.sql\u0060` carries the path INSIDE the match, so it
     needs no neighbouring anchor. Applying one rejected it whenever another
@@ -1851,23 +1538,6 @@ def test_a_count_first_claim_names_its_own_schema(tmp_path, repo):
     (tmp_path / gate.ARCH).write_text(line.format(n=total + 1, bd=bd))
     out = gate.gate_derived_numbers(tmp_path, repo, None)
     assert any(f"claims {total + 1} declared relations" in f for f in out), out
-
-
-def test_the_bare_amount_pattern_accepts_what_the_csv_emits(tmp_path):
-    """The workflow writes `round(c, 2)` through csv.writer, so a value ending
-    in zero is emitted as `1.2` or `0.0`, and the cost prompt tells the model to
-    copy the CSV value without rounding. Requiring exactly two decimals rejected
-    every such amount. (Codex, PR #1064.)"""
-    for good in ("1.2", "0.0", "100.0", "1234.5", "222.71", "1,234.50"):
-        assert gate.COST_BARE.fullmatch(good), good
-    for bad in ("12", "2026", "1", "1.234"):
-        assert not gate.COST_BARE.fullmatch(bad), bad
-    # this is what csv.writer actually produces for those values
-    import csv, io
-    out = io.StringIO()
-    csv.writer(out).writerows([["svc", round(c, 2)] for c in (1.2, 0.0, 222.71, 100.0)])
-    for row in out.getvalue().splitlines():
-        assert gate.COST_BARE.fullmatch(row.split(",")[1].strip()), row
 
 
 def test_a_quote_under_a_section_heading_is_not_the_header_note(tmp_path, live):
@@ -1890,11 +1560,11 @@ def test_a_quote_under_a_section_heading_is_not_the_header_note(tmp_path, live):
 
 
 def test_the_provenance_citations_carry_file_line_links(tmp_path):
-    """`.github/prompts/architecture.md:74` requires every claim about code to
-    carry a `file:line` markdown link, and I wrote the creation-path inventory
-    with bare code spans — a document breaking the rule its own prompt states,
-    which the next refresh would read as an example. `gate_links` cannot see the
-    omission because it only validates links that exist. (Codex, PR #1064.)"""
+    """The architecture document's rule is that a claim about code carries a
+    `file:line` markdown link. The creation-path inventory was once written
+    with bare code spans, a document breaking its own rule. `gate_links` cannot
+    see the omission because it only validates links that exist.
+    (Codex, PR #1064.)"""
     body = (REPO / gate.ARCH).read_text()
     for path, line in (("gcp/research/p2_build_gamma_levels.py", 81),
                        ("gcp/research/p2_outcomes_grid.py", 72),
@@ -1929,27 +1599,6 @@ def test_the_levels_tables_are_attributed_to_their_real_creator(tmp_path):
     body = (REPO / gate.ARCH).read_text()
     assert "strat_enrich_levels.py#L130" in body and "strat_enrich_levels.py#L138" in body
     assert "for the other `strat_features_*` timeframes" not in body
-
-
-def test_a_generic_total_header_is_not_a_money_column(tmp_path):
-    """`Total duration (s)` and `Total utilization` are headers a cost report
-    legitimately carries, and eleven decimal cells under one fed the monetary
-    floor. (Codex, PR #1064.)"""
-    for not_money in ("Total duration (s)", "Total utilization", "Total requests"):
-        assert not gate.MONEY_HEADER.search(not_money), not_money
-    for money in ("Total cost (USD)", "Spend (USD)", "90-day cost", "Amount", "$"):
-        assert gate.MONEY_HEADER.search(money), money
-    rows = "".join(f"| step-{i} | {10 + i}.00 |\n" for i in range(11))
-    assert gate.cost_figures("| Step | Total duration (s) |\n|---|---|\n" + rows) == 0
-
-
-def test_an_escaped_pipe_is_content_not_a_column(tmp_path):
-    r"""`\|` inside a cell is a literal pipe, and splitting on it invented a
-    column, changing the row's width so it could drop out of the count.
-    (Codex, PR #1064.)"""
-    assert gate._table_cells(r"| a \| b | 222.71 |") == ["a | b", "222.71"]
-    assert gate._table_rows([r"SKU | Spend", "--- | ---",
-                             r"a \| b | 1.00", "c | 2.00"]) == 2
 
 
 def test_an_inline_code_span_does_not_open_a_fence(tmp_path):
@@ -2072,9 +1721,8 @@ def test_the_readme_badges_are_rendered_not_asked_for(tmp_path, repo, live):
     assert f"cloud_run_jobs-{live['counts']['jobs']}_live_%2F_{len(repo['jobs'])}_declared" in body
     assert f"schedulers-{live['counts']['schedulers']}_live" in body
     assert f"schema_relations-{declared}_declared_%2F_{len(live['db_tables'])}_live" in body
-    # the workflow badge names the workflow that actually exists
-    assert "refresh-architecture-docs.yml/badge.svg" in body
-    assert (REPO / ".github/workflows/refresh-architecture-docs.yml").exists()
+    # no workflow badge is rendered, and a README that carried one loses it
+    assert "/actions/workflows/" not in body
     assert "refresh-documentation.yml" not in body
     # idempotent, and it leaves the rest of the file alone
     assert not inv.insert_readme_badges(readme, repo, live, "2026-11-02")
@@ -2082,7 +1730,10 @@ def test_the_readme_badges_are_rendered_not_asked_for(tmp_path, repo, live):
 
 
 def _readme_with(*extra_lines, day="2020-01-01") -> str:
-    """README carrying the five owned badges plus whatever else is given."""
+    """README carrying the five owned badges plus whatever else is given.
+
+    Five lines, not four: this models a README rendered before the workflow
+    badge was retired, which the render must still claim and remove."""
     owned = [
         f"![Last audit](https://img.shields.io/badge/docs_verified-{day.replace('-', '--')}-blue)",
         "![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-1_live_%2F_1_declared-blue)",
@@ -2096,6 +1747,17 @@ def _readme_with(*extra_lines, day="2020-01-01") -> str:
             + f"\nGenerated {day} by the monthly documentation refresh.\n")
 
 
+def test_the_readme_carries_no_workflow_badge(tmp_path, repo, live):
+    lines = inv.readme_badges(repo, live, "2026-11-02").split("\n")
+    assert len(lines) == 4 and all("](https://img.shields.io/badge/" in l for l in lines), lines
+    assert not any("/actions/workflows/" in l for l in lines)
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with())                    # still carries the Architecture refresh badge
+    inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert "/actions/workflows/" not in readme.read_text()
+    assert "/actions/workflows/" not in (REPO / "README.md").read_text(encoding="utf-8")
+
+
 def test_the_badge_render_does_not_swallow_later_shield_links(tmp_path, repo, live):
     """A shields.io link further down the document is content, not a badge to
     overwrite."""
@@ -2106,7 +1768,7 @@ def test_the_badge_render_does_not_swallow_later_shield_links(tmp_path, repo, li
     body = readme.read_text()
     assert "keep--me-9-red" in body, "a later shields link was swallowed"
     assert "docs_verified-2026--11--02-blue" in body
-    assert body.count("refresh-architecture-docs.yml/badge.svg") == 1
+    assert body.count("refresh-architecture-docs.yml/badge.svg") == 0
 
 
 def test_a_maintainer_badge_beside_the_block_survives(tmp_path, repo, live):
@@ -2130,7 +1792,7 @@ def test_a_maintainer_badge_beside_the_block_survives(tmp_path, repo, live):
         assert "build-passing-green" in body, \
             f"a maintainer's badge {placement} the block was deleted"
         assert "docs_verified-2026--11--02-blue" in body
-        assert body.count("refresh-architecture-docs.yml/badge.svg") == 1
+        assert body.count("refresh-architecture-docs.yml/badge.svg") == 0
 
 
 def test_a_foreign_line_inside_the_block_is_an_error_not_a_deletion(tmp_path, repo, live):
@@ -2281,7 +1943,7 @@ def test_which_workflow_badges_this_renderer_owns(line, owned, why):
 
 
 def test_a_dead_workflow_badge_is_replaced_not_duplicated(tmp_path, repo, live):
-    """End to end: the render must leave exactly one workflow badge."""
+    """End to end: the dead badge is removed, not replaced."""
     readme = tmp_path / "README.md"
     readme.write_text(_readme_with().replace(
         "workflows/refresh-architecture-docs.yml/badge.svg",
@@ -2289,7 +1951,7 @@ def test_a_dead_workflow_badge_is_replaced_not_duplicated(tmp_path, repo, live):
     inv.insert_readme_badges(readme, repo, live, "2026-11-02")
     body = readme.read_text()
     assert "refresh-documentation.yml" not in body, "the dead badge survived"
-    assert body.count("/actions/workflows/") == 1, "the workflow badge was duplicated"
+    assert body.count("/actions/workflows/") == 0, "the dead badge is removed, not replaced"
 
 
 def test_a_second_generated_line_is_refused_not_restamped(tmp_path, repo, live):
@@ -2343,3 +2005,269 @@ def test_the_restore_path_leaves_a_wrong_breakdown_for_the_gate(tmp_path, repo, 
 ])
 def test_which_breakdowns_the_renderer_recognises(text, ok):
     assert bool(inv.RELATION_BREAKDOWN.fullmatch(text)) is ok
+
+
+def test_the_render_moves_the_declared_total_with_its_breakdown(live, repo, tmp_path):
+    """A schema change that adds tables used to get a new breakdown and the old
+    total ("72 (71 tables, 2 materialized views, 1 view)"), which the derived-
+    number gate then refused, so no committed 05-a could pass both the render
+    check and this gate. Both shapes 05-a writes the total in are rendered
+    from the same counts as the breakdown."""
+    two_more = dict(repo, tables=list(repo["tables"]) + [{"name": "x1"}, {"name": "x2"}])
+    t = len(two_more["tables"])
+    m_, v = len(repo["materialized_views"]), len(repo["views"])
+    doc = tmp_path / "05-a-ARCHITECTURE.md"
+    doc.write_text("# x\n\n`gcp/schema.sql` declares **70 relations** "
+                   "(67 tables, 2 materialized views, 1 view).\n\n"
+                   "| a | that file declares 70 (67 tables, 2 materialized views, 1 view), a set |\n")
+    inv.insert_blocks(doc, two_more, live, root=REPO, counts=True)
+    text = doc.read_text()
+    breakdown = (f"({t} tables, {m_} materialized view{'' if m_ == 1 else 's'}, "
+                 f"{v} view{'' if v == 1 else 's'})")
+    assert f"declares **{t + m_ + v} relations** {breakdown}" in text, text
+    assert f"that file declares {t + m_ + v} {breakdown}" in text, text
+
+
+def test_the_total_moves_only_beside_a_breakdown(live, repo, tmp_path):
+    doc = tmp_path / "05-a-ARCHITECTURE.md"
+    doc.write_text("# x\n\nthe live database declares 95 relations, unrelated.\n")
+    inv.insert_blocks(doc, repo, live, root=REPO, counts=True)
+    assert "declares 95 relations, unrelated." in doc.read_text()
+
+
+def test_the_cost_report_is_no_generated_document():
+    for name in ("DOCS", "MODEL_DOCS", "DIFF_DOCS", "REGENERATED", "CHURN_EXEMPT"):
+        assert gate.COST not in getattr(gate, name), name
+    for name in ("gate_regenerated_structure", "gate_cost_content"):
+        assert not hasattr(gate, name), name
+    assert ".github/prompts" not in (REPO / "scripts/maintenance/check_generated_docs.py").read_text(encoding="utf-8")
+
+
+def test_what_the_spec_gate_imports_is_unchanged():
+    # main 4f552e93's values; spec_gate.py reads EXPECTED_MARKERS and _MARKER_LINE (4043 to 4047, 4196 to 4198)
+    infra = "docs/product/infrastructure"
+    assert gate.README_REQUIRED_LINKS == (
+        f"{infra}/05-a-ARCHITECTURE.md", f"{infra}/05-c-DATA_DEPENDENCIES.md", f"{infra}/05-d-COST_ANALYSIS.md",
+        "RUNBOOK.md", f"{infra}/05-b-ERD.md", f"{infra}/05-f-PIPELINE.md", f"{infra}/05-g-DATA_PIPELINE.md",
+        f"{infra}/05-e-API.md", f"{infra}/05-i-GCP_IMPLEMENTATION_GUIDE.md", "docs/product/README.md",
+        "docs/audits/", "gcp/cloudbuild/README.md", "CLAUDE.md", "SETUP.md")
+    assert gate.EXPECTED_MARKERS == {
+        f"{infra}/05-a-ARCHITECTURE.md": ("jobs", "schedulers", "tables", "dbtables", "routes", "services", "reconcile", "modules"),
+        f"{infra}/05-c-DATA_DEPENDENCIES.md": ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast", "graph"),
+        f"{infra}/05-e-API.md": ("routers", "routes")}
+    assert gate._MARKER_LINE.pattern == r"^\s*<!--\s*inventory:[A-Za-z0-9_]+:(start|end)\s*-->\s*$"
+
+
+def test_the_cli_runs_clean_on_the_repository_docs():
+    r = subprocess.run([sys.executable, "-m", "scripts.maintenance.check_generated_docs",
+                        "--snapshot", str(SNAPSHOT)], cwd=REPO, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout[-2000:]
+
+
+# ── no maintenance doc claims a scheduled refresh ──────────────────────────
+CLAIM = re.compile(r"refresh-architecture-docs|rerun-transient-doc-refresh|monthly (architecture |documentation |doc )?(doc )?refresh"
+                   r"|(re)?generated monthly|auto-refreshed monthly|on the 1st of (each|every) month|1st of month 06:00", re.I)
+RETIRE_WORD = re.compile(r"\bretire(?:d|ment)?\b", re.I)
+CLAIM_DOCS = ("README.md", "SETUP.md", ".github/workflows/README.md", "docs/DOC_REGISTRY.md", "docs/INVESTMENT_MODELS_SUMMARY.md",
+              "docs/product/05-INFRASTRUCTURE.md", "docs/product/09-SECURITY-AUTH.md", "docs/product/infrastructure/05-a-ARCHITECTURE.md",
+              "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md", "docs/product/infrastructure/05-e-API.md",
+              "docs/product/infrastructure/manual/README.md")
+RETIRED_PATH = re.compile(r"\.github/workflows/(?:refresh-architecture-docs|rerun-transient-doc-refresh)\.yml(?!\.disabled)"
+                          r"|\.github/prompts/(?:architecture|cost-analysis|data-dependencies)\.md"
+                          r"|\.github/scripts/is_transient_gemini_failure\.sh|scripts/maintenance/render_doc_prompts\.py")
+STEPS = ("python -m scripts.maintenance.doc_inventory --snapshot tests/fixtures/live_gcp_snapshot_2026-09-07.json --insert "
+         "docs/product/infrastructure/05-a-ARCHITECTURE.md docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md "
+         "docs/product/infrastructure/05-e-API.md",
+         "python -m pytest tests/scripts/test_check_generated_docs.py tests/scripts/test_refresh_architecture_drawio.py -k committed",
+         "python -m scripts.refresh_calibration_table")
+
+
+@pytest.mark.parametrize("claim", CLAIM_DOCS + ("README specifics", "manual README title", "doc_inventory.py"))
+def test_no_maintenance_doc_claims_a_scheduled_refresh(claim):
+    if claim in CLAIM_DOCS:
+        bad = [l for l in (REPO / claim).read_text(encoding="utf-8").splitlines() if CLAIM.search(l) and not RETIRE_WORD.search(l)]
+        assert bad == [], bad
+    elif claim == "README specifics":
+        body = (REPO / "README.md").read_text(encoding="utf-8")
+        assert not re.search(r"(?m)^#+\s*Removed since last refresh\s*$", body)
+        assert "on each refresh" not in body and "on the 1st" not in body
+        row = next(l for l in body.splitlines() if l.startswith("| [05-d-COST_ANALYSIS.md]"))
+        assert "monthly" not in row.lower(), row
+    elif claim == "manual README title":
+        title = (REPO / "docs/product/infrastructure/manual/README.md").read_text(encoding="utf-8").splitlines()[0]
+        assert "auto-refreshed" not in title.lower(), title
+    else:
+        src = (REPO / "scripts/maintenance/doc_inventory.py").read_text(encoding="utf-8")
+        node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign)
+                    and getattr(n.targets[0], "id", "") == "OWNED_BADGE")
+        outside = src.splitlines()[:node.lineno - 1] + src.splitlines()[node.end_lineno:]
+        assert not [l for l in outside if "refresh-architecture-docs" in l]
+        assert not re.search(r"(?i)refresh workflow", src)
+
+
+@pytest.mark.parametrize("doc", [d for d in CLAIM_DOCS if "/manual/" not in d])
+def test_no_living_doc_cites_a_retired_file(doc):
+    assert not RETIRED_PATH.findall((REPO / doc).read_text(encoding="utf-8"))
+
+
+def test_the_readme_maintenance_section_is_the_on_demand_procedure():
+    section = (REPO / "README.md").read_text(encoding="utf-8").split("\n## Maintenance\n", 1)[1].split("\n## ", 1)[0]
+    assert RETIRE_WORD.search(section) and re.search(r"\boptional\b", section, re.I)
+    assert re.findall(r"`(python3? -m [^`]+)`", section) == list(STEPS)
+    assert "live_gcp_snapshot_" not in section.replace(STEPS[0], "")
+
+
+SPEC_PATH = "docs/superpowers/specs/2026-11-10-feat-cicd-001-retire-arch-refresh.md"
+
+
+def test_the_monthly_refresh_is_retired():
+    wf = REPO / ".github/workflows"
+    for name in ("refresh-architecture-docs.yml", "rerun-transient-doc-refresh.yml"):
+        assert not (wf / name).exists(), name
+        lines = (wf / f"{name}.disabled").read_text(encoding="utf-8").splitlines()
+        assert lines and lines[0].startswith("#"), name
+        header = "\n".join(itertools.takewhile(lambda l: l.startswith("#"), lines))
+        assert "2026-11-10" in header and SPEC_PATH in header, header
+    prompts = REPO / ".github/prompts"
+    assert not (prompts.exists() and any(p.is_file() for p in prompts.rglob("*")))
+    assert not (REPO / ".github/scripts/is_transient_gemini_failure.sh").exists()
+    assert not (REPO / "scripts/maintenance/render_doc_prompts.py").exists()
+
+
+def test_marker_names_agree_between_module_docs_and_gate():
+    from scripts.maintenance import doc_inventory as inv
+    from scripts.maintenance import check_generated_docs as gate
+    arch = (REPO / gate.ARCH).read_text()
+    deps = (REPO / gate.DEPS).read_text()
+    for name in ("jobs", "schedulers", "tables", "routes", "services", "reconcile", "modules", "dbtables"):
+        assert inv.MARKER_START.format(name=name) in arch, name
+    for name in ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast"):
+        assert inv.MARKER_START.format(name=name) in deps, name
+    api = (REPO / gate.API).read_text()
+    for name in ("routers", "routes"):
+        assert inv.MARKER_START.format(name=name) in api, name
+    assert set(gate.MARKER_DOCS) == {gate.ARCH, gate.DEPS, gate.API}
+
+
+# --- final-review fixes: SETUP anchors, manual/ link guard, kept helpers ----
+
+
+def test_every_link_into_setup_resolves_to_an_anchor_setup_defines():
+    """05-a links `SETUP.md#3-grant-the-iam-roles`; the roles section was
+    renumbered to 2, so the link was dead until the old id was kept as an
+    explicit anchor. Every relative link into SETUP.md from the docs and the
+    README must land on a heading slug or an explicit `id=` it defines."""
+    from scripts.maintenance import docs_audit as audit
+
+    anchors = audit.heading_anchors((REPO / "SETUP.md").read_text())
+    skipped = ("docs/product/infrastructure/manual/", "docs/audit/",
+               "docs/audits/", "docs/superpowers/")
+    sources = [REPO / "README.md"] + sorted((REPO / "docs").rglob("*.md"))
+    link = re.compile(r"\]\(([^)\s]*SETUP\.md)#([^)\s]+)\)")
+    dead = []
+    for src in sources:
+        rel = src.relative_to(REPO).as_posix()
+        if rel.startswith(skipped):
+            continue
+        for m in link.finditer(src.read_text()):
+            if (src.parent / m.group(1)).resolve() != (REPO / "SETUP.md"):
+                continue
+            if m.group(2) not in anchors:
+                dead.append((rel, m.group(2)))
+    assert not dead, dead
+
+
+# These three links point at the workflow retired on 2026-11-10. The copies
+# under manual/ are frozen 2026-09-08 snapshots and are not edited, so the
+# links stay dead on purpose; any other dead link there is a real defect.
+_MANUAL_RETIRED_WORKFLOW_LINKS = {
+    ("05-a-ARCHITECTURE.md",
+     "../../../../.github/workflows/refresh-architecture-docs.yml"): 2,
+    ("ROOT-README.md",
+     "../../../../.github/workflows/refresh-architecture-docs.yml"): 1,
+}
+
+
+def test_the_hand_maintained_copies_exist_and_link_correctly():
+    manual = REPO / "docs/product/infrastructure/manual"
+    for doc in ("05-a-ARCHITECTURE.md", "05-c-DATA_DEPENDENCIES.md",
+                "05-d-COST_ANALYSIS.md", "ROOT-README.md", "README.md"):
+        assert (manual / doc).exists(), doc
+    seen: dict[tuple[str, str], int] = {}
+    dead = []
+    for f in sorted(manual.glob("*.md")):
+        for m in re.finditer(r"\]\(([^)\s#`]+)", f.read_text()):
+            target = m.group(1)
+            if target.startswith(("http", "mailto:")):
+                continue
+            if (f.parent / target).resolve().exists():
+                continue
+            key = (f.name, target)
+            seen[key] = seen.get(key, 0) + 1
+            dead.append(key)
+    unexpected = [k for k in dead if k not in _MANUAL_RETIRED_WORKFLOW_LINKS]
+    assert not unexpected, unexpected
+    assert seen == _MANUAL_RETIRED_WORKFLOW_LINKS, (
+        "an allowlisted dead link no longer occurs (or occurs a different "
+        "number of times): trim the allowlist", seen)
+
+
+def test_a_delimiter_row_needs_hyphens_in_every_cell():
+    """`: | :` and `| | |` satisfy a character class while containing no
+    hyphen. A delimiter cell is `-`, `:-`, `-:` or `:-:`."""
+    for good in ("--- | ---", ":--- | ---:", "|---|---|", "-|-", "| :-: |"):
+        assert gate._is_table_sep(good), good
+    for bad in (": | :", "| | |", "a | b", "   |   ", ""):
+        assert not gate._is_table_sep(bad), bad
+
+
+def test_an_escaped_pipe_is_content_not_a_column():
+    r"""`\|` inside a cell is a literal pipe; splitting on it invented a
+    column and changed the row's width."""
+    assert gate._table_cells(r"| a \| b | 222.71 |") == ["a | b", "222.71"]
+
+
+# ── each owned retry count is read by the unchanged check (FEAT-CICD-001 retry-split spec, done_when[1]) ────────
+
+
+
+# (shape, group of the owned per-flag count, the flag that count is for, as a group of the same match)
+OWNED_COUNTS = [("list", 4, 2), ("list", 10, 8), ("list", 14, 12), ("norm", 4, 2), ("jobs", 2, 4)]
+
+
+@pytest.mark.parametrize("shape, count_group, flag_group", OWNED_COUNTS,
+                         ids=["list n0", "list n1", "list c", "norm n", "jobs n"])
+def test_each_owned_retry_count_off_by_one_is_reported(live, repo, tmp_path, shape, count_group, flag_group):
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    assert gate.gate_derived_numbers(root, repo, live) == []
+    a = root / gate.ARCH
+    text = a.read_text()
+    m = inv.RETRY_SPLIT[shape].search(text)
+    assert m, shape
+    token = m.group(count_group)
+    wrong = _off_by_one(token)
+    s, e = m.span(count_group)
+    a.write_text(text[:s] + wrong + text[e:])
+    want = gate.WORD_NUMBERS.get(wrong, wrong)
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any(f"claims {want} jobs at --max-retries {m.group(flag_group)}" in f for f in findings), findings
+
+
+def test_a_non_owned_retry_phrasing_is_still_checked(live, repo, tmp_path):
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    text = a.read_text()
+    n0 = collections.Counter(j.get("max_retries") for j in repo["jobs"])["0"]
+    a.write_text(text + f"\n{n0 + 1} jobs use `--max-retries 0` in this sentence.\n")
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any(f"claims {n0 + 1} jobs at --max-retries 0" in f for f in findings), findings
+
+
+def test_the_derived_wrong_count_keeps_working_past_the_word_table():
+    """A consumer whose retries-2 count reaches twelve renders "`2` for twelve"; the derived wrong count is then 13,
+    written in digits as the renderer writes a count above twelve, and the check reads digits too."""
+    assert [_off_by_one(t) for t in ("one", "eleven", "twelve", "12", "43")] == ["two", "twelve", "13", "13", "44"]

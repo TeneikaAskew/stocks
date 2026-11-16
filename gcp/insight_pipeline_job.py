@@ -68,6 +68,7 @@ from gcp.insight_tasks import (  # noqa: E402
 from lib.agents.model_routing import connect, load_routes_snapshot  # noqa: E402
 from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
+from lib.strat_levels import LevelParamsUnavailable  # noqa: E402
 import lib.agents.vertex_adapter  # noqa: F401, E402 — registers adapter
 
 logging.basicConfig(
@@ -540,6 +541,12 @@ async def _run_one(
             report.run_latency_ms,
         )
         return True
+    except LevelParamsUnavailable as exc:
+        # FEAT-STRAT-001: the level parameter tables cannot be read. The run
+        # fails with the reason named, not a degraded section.
+        logger.error("[run_id=%s] %s: %s", run_id, exc.reason, exc)
+        _transition(run_id, "failed", error=f"{exc.reason}: {exc}")
+        return False
     except Exception as exc:
         logger.exception("[run_id=%s] pipeline failed", run_id)
         _transition(run_id, "failed", error=str(exc))

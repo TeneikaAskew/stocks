@@ -59,7 +59,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("indicator_correlation_job")
 
-from lib.eastern_time import utc_to_eastern_naive  # noqa: E402
+from lib.eastern_time import market_today, utc_to_eastern_naive  # noqa: E402
 from lib.config import IndicatorConfig  # noqa: E402
 from lib.indicators import add_all_indicators, FEATURE_GROUPS  # noqa: E402
 
@@ -741,7 +741,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     horizons = sorted({int(h) for h in args.horizons.split(",") if h.strip()})
     as_of = (datetime.strptime(args.as_of, "%Y-%m-%d").date()
-             if args.as_of else date.today())
+             if args.as_of else market_today())
 
     if not tickers:
         logger.error("No tickers resolved; nothing to do.")

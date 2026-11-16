@@ -1,0 +1,11 @@
+tests/gcp/test_strat_snapshot_parity.py::test_foundation_brief_unavailable_is_not_inside
+tests/gcp/test_strat_snapshot_parity.py::test_nov5_brief_strat_box_shows_tf_bias_and_ftfc[QQQ-FTFC: bearish (Q red, M red, W red)-TF bias: +0.5 (bullish)-1D:2U 1W:2D 1M:2D-bearish]
+tests/gcp/test_strat_snapshot_parity.py::test_nov5_brief_strat_box_shows_tf_bias_and_ftfc[IWM-FTFC: bullish (Q green, M green, W green)-TF bias: +1.0 (bullish)-1D:2U 1W:2U 1M:2U-bullish]
+tests/gcp/test_strat_snapshot_parity.py::test_nov5_brief_strat_box_shows_tf_bias_and_ftfc[SPY-FTFC: bullish (Q green, M green, W green)-TF bias: +1.0 (bullish)-1D:2U 1W:2U 1M:1-bullish]
+tests/gcp/test_strat_snapshot_parity.py::test_first_session_of_month_and_week_keeps_judged_frames[QQQ-FTFC: unavailable (Q red, M opens today, W opens today)]
+tests/gcp/test_strat_snapshot_parity.py::test_first_session_of_month_and_week_keeps_judged_frames[IWM-FTFC: unavailable (Q green, M opens today, W opens today)]
+tests/gcp/test_strat_snapshot_parity.py::test_first_session_of_month_and_week_keeps_judged_frames[SPY-FTFC: unavailable (Q red, M opens today, W opens today)]
+tests/gcp/test_strat_snapshot_parity.py::test_captured_foundation_diagnostic_matches_actual_producers
+tests/api/test_brief_level_break_response.py::test_a_level_break_changes_the_published_brief_status
+
+9 tests collected in 0.07s

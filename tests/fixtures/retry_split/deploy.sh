@@ -1,0 +1,5624 @@
+#!/bin/bash
+# Deploy GCP pipeline components.
+#
+# Prerequisites:
+#   gcloud auth login
+#   gcloud config set project adept-mountain-474619-d4
+#   Run setup first: ./gcp/deploy.sh setup
+#
+# Usage:
+#   ./gcp/deploy.sh setup      # provision Cloud SQL, GCS bucket, service account
+#   ./gcp/deploy.sh migrate    # migrate local Parquet data → GCS + Cloud SQL
+#   ./gcp/deploy.sh build      # build & push Docker image only
+#   ./gcp/deploy.sh pin-images # tag every image digest a Cloud Run job/service pins
+#   ./gcp/deploy.sh registry-cleanup # apply the Artifact Registry cleanup policy
+#   ./gcp/deploy.sh premarket  # deploy pre-market brief job
+#   ./gcp/deploy.sh monitor    # deploy signal monitor service
+#   ./gcp/deploy.sh weekend    # deploy weekend review job
+#   ./gcp/deploy.sh fetchers   # deploy all data-fetching Cloud Run jobs
+#   ./gcp/deploy.sh insights   # deploy insight-pipeline job + Cloud Tasks queue
+#   ./gcp/deploy.sh schedulers # create/update all Cloud Scheduler triggers
+#   ./gcp/deploy.sh all        # build + deploy everything + schedulers
+
+set -euo pipefail
+# Every gcloud call runs in PROJECT_ID, never the active config's project (#1189).
+PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"; [ "${1:-help}" = help ] || : "${PROJECT_ID:?set PROJECT_ID or run: gcloud config set project <id>}"; export PROJECT_ID CLOUDSDK_CORE_PROJECT="${PROJECT_ID}"
+REGION="${REGION:-us-east1}"
+IMAGE="us-east1-docker.pkg.dev/${PROJECT_ID}/trading/trading-system"
+SA_EMAIL="trading-runner@${PROJECT_ID}.iam.gserviceaccount.com"
+
+# Read a value from Secret Manager. FAILS LOUD: this used to `|| echo ''`,
+# and the value lands in --set-env-vars / --set-secrets, which REPLACE the
+# job's set, so a transient read failure would have written
+# CLOUD_SQL_CONNECTION_NAME= onto a live job and every later run of it
+# would have exited 2 as "not configured" (internal review of #1022,
+# schema-apply round; CLAUDE.md 3.7). Callers that can legitimately run
+# without a secret say so at the call site (`2>/dev/null || true`).
+_secret() {
+    # stdout is the value, stderr is only ever the diagnostic. Capturing
+    # with `2>&1` folded a nonfatal gcloud warning ("Your active project
+    # does not match the quota project", and friends) into the value on
+    # SUCCESS, and --set-env-vars REPLACES a job's set, so one harmless
+    # warning would have deployed a warning-plus-value as
+    # CLOUD_SQL_CONNECTION_NAME and broken every redeployed job (Codex on
+    # #1022).
+    local v err rc
+    err=$(mktemp)
+    v=$(gcloud secrets versions access latest --secret="$1" --quiet 2>"${err}")
+    rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        echo "ERROR: cannot read secret '$1': $(head -n 1 "${err}")" >&2
+        rm -f "${err}"
+        return 1
+    fi
+    rm -f "${err}"
+    printf '%s' "${v}"
+}
+
+echo "Project: ${PROJECT_ID}"
+echo "Region:  ${REGION}"
+
+# ── Setup ─────────────────────────────────────────────────────────────────────
+setup() {
+    echo "Running infrastructure setup..."
+    chmod +x gcp/setup_cloud_sql.sh
+    ./gcp/setup_cloud_sql.sh
+}
+
+# ── Migration ─────────────────────────────────────────────────────────────────
+migrate() {
+    echo "Running data migration..."
+    GCS_BUCKET="${PROJECT_ID}-trading-data" \
+    CLOUD_SQL_CONNECTION_NAME="$(_secret cloud-sql-connection-name)" \
+    DB_USER="$(_secret db-trading-user)" \
+    DB_PASS="$(_secret db-trading-pass)" \
+    DB_NAME="trading" \
+    python gcp/migrate_to_gcp.py "$@"
+}
+
+# ── Image build ───────────────────────────────────────────────────────────────
+_stamp_build_info() {
+    # _stamp_build_info <build-context-dir>
+    # Bake the source revision into the image as gcp/build_info.json. The
+    # container copies lib/ gcp/ scripts/ and no .git, so a runtime
+    # `git rev-parse` there cannot answer; mag_walk_forward reads this file
+    # for the provenance every walk-forward records (Codex P1 on #1193).
+    local dir=$1 commit dirty
+    commit=$(git rev-parse HEAD) || { echo "ERROR: cannot read HEAD for the build stamp" >&2; return 1; }
+    # `git status --porcelain`, not `git diff HEAD`: an untracked file under
+    # lib/ gcp/ scripts/ ships in the image too (Codex P2 on #1193). The path
+    # list is EVERY build input build_image / build_research_image copy:
+    # the root requirements files, the lock and alert_config.json change the
+    # image's behaviour as surely as a source file (Codex P2 on #1193).
+    dirty=false
+    [ -z "$(git status --porcelain -- lib gcp scripts \
+            requirements-gcp.txt requirements-research.txt requirements-gcp.lock \
+            alert_config.json 2>/dev/null)" ] || dirty=true
+    printf '{"git_commit": "%s", "git_dirty": %s, "built_at": "%s"}\n' \
+        "${commit}" "${dirty}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${dir}/gcp/build_info.json"
+}
+
+build_image() {
+    echo "Building Docker image..."
+    # Use a minimal build context — only the files gcp/Dockerfile actually COPYs.
+    # This avoids sending the 4GB data/ directory to Cloud Build.
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    cp requirements-gcp.txt    "$tmpdir/"
+    cp alert_config.json       "$tmpdir/"
+    cp gcp/Dockerfile          "$tmpdir/Dockerfile"
+    cp -r lib/                 "$tmpdir/lib/"
+    cp -r gcp/                 "$tmpdir/gcp/"
+    cp -r scripts/             "$tmpdir/scripts/"
+    _stamp_build_info "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
+    # Re-pin before the tag moves: every build re-points :latest, which
+    # untags the digest the currently deployed jobs still run on. The
+    # cleanup policy only deletes UNTAGGED versions, so pinning first keeps
+    # those digests alive until the jobs are redeployed (see pin_image_tags).
+    pin_image_tags || { echo "ERROR: pinning failed; not building (the build would move :latest off an unpinned digest)." >&2; rm -rf "$tmpdir"; return 1; }
+    IMAGE_REF=$(_submit_build "${IMAGE}" "$tmpdir") || { IMAGE_REF=""; echo "ERROR: build failed; nothing to deploy." >&2; rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"; echo "Built ${IMAGE_REF}: every job this run deploys names this digest, never :latest (#1171)."
+}
+
+# ── Artifact Registry hygiene ─────────────────────────────────────────────────
+# Why this exists: every `gcloud builds submit --tag IMAGE` moves :latest and
+# leaves the previous digest untagged. Nothing ever deleted them, so by
+# 2026-09 the `trading` repo held 448 versions / 282 GiB (~$30/month, the
+# third-largest line on the bill) for an image that has 7 tags.
+#
+# Deleting untagged versions blindly is NOT safe: a job's next execution needs its digest.
+# A spec naming a TAG is re-resolved at EACH execution (measured 2026-09-25, #1171: untouched
+# jobs ran the next build's digest), so deploys now pass the build's digest, IMAGE_REF. The
+# 2026-09-06 note here (tags resolve once, from signal-monitor) was never reproduced. On 2026-09-06
+# the 76 jobs pinned 30 distinct digests, 23 of them untagged, the oldest
+# from April. Deleting one of those would fail the job's next execution
+# with "image not found". Services are the same: every revision that still
+# receives traffic or carries a tag can scale out from its own digest.
+#
+# So the policy is two-part:
+#   1. pin_image_tags — tag every digest a job or service can still run as
+#      `inuse-job-<job>` / `inuse-svc-<revision>`. Tags move to the new
+#      digest when the job is redeployed and pinned again, so an old digest
+#      is released only once nothing runs it. Stale inuse-* tags (job or
+#      revision gone) are removed. Runs before every build (so :latest
+#      cannot move off an unpinned digest) and after every deploy command
+#      (see the dispatcher), so a job deployed through this script is
+#      pinned the moment it is updated.
+#   2. setup_registry_cleanup — a cleanup policy that KEEPS every tagged
+#      version and the 10 most recent versions, and DELETES untagged
+#      versions older than 14 days. The 10-version / 14-day slack covers a
+#      job updated by hand (outside this script) and not yet executed: its
+#      digest is the then-current tag, still tagged until the next build
+#      and inside the recent-10 window after.
+#
+# Everything here fails CLOSED (CLAUDE.md Rule 3.7): an inventory read that
+# fails, a revision without a digest, or a tag that cannot be written aborts
+# the run with a nonzero status. An unreadable inventory is never treated
+# as an empty one, because the stale-tag sweep would then release every pin.
+#
+# How a job's deployed digest is found: the job's latest execution records
+# the resolved digest AND the job generation it ran
+# (metadata.labels['run.googleapis.com/jobGeneration']). When that matches
+# the job's current metadata.generation the execution digest is exactly what
+# the job will run next. When the job has been updated since (or never run),
+# the template's image reference is resolved to a digest now — exact when
+# the job was deployed through this script (pinned right after deploy), and
+# the best available otherwise.
+
+# Split a gcloud `value(a,b,c)` row on TABS, preserving empty columns.
+# `IFS=$'\t' read` cannot do this: tab is IFS whitespace, so adjacent tabs
+# collapse and an empty middle field (a job that has never executed has no
+# latestCreatedExecution) shifts every later column left (Codex, PR #1004).
+# Usage: _split_tsv "<row>" var1 var2 var3
+_split_tsv() {
+    local row=$1; shift
+    local name
+    for name in "$@"; do
+        if [[ "${row}" == *$'\t'* ]]; then
+            printf -v "${name}" '%s' "${row%%$'\t'*}"
+            row=${row#*$'\t'}
+        else
+            printf -v "${name}" '%s' "${row}"
+            row=""
+        fi
+    done
+}
+
+# gcr.io/<project>/<pkg> -> us-docker.pkg.dev/<project>/gcr.io/<pkg>. Cloud
+# Run reports legacy images by their gcr.io host; the artifacts CLI only
+# accepts the pkg.dev form of the gcr.io-redirect repo.
+_pkgdev_path() {
+    local ref=$1
+    if [[ "${ref}" == gcr.io/* ]]; then
+        ref="us-docker.pkg.dev/${ref#gcr.io/}"
+        ref="${ref/${PROJECT_ID}\//${PROJECT_ID}/gcr.io/}"
+    fi
+    echo "${ref}"
+}
+
+# Per-run cache of `tags list` per repo image, so pinning ~80 targets does
+# not issue ~80 list calls. Keyed by repo image; value is "tag<TAB>version"
+# lines. Invalidated by _pin_tag after it writes a tag. _load_tags must be
+# called directly (never inside $(...)), otherwise the assignment lands in a
+# subshell and is lost (Codex, PR #1004); callers then read
+# ${_TAG_CACHE[<repo_image>]} themselves.
+declare -A _TAG_CACHE=()
+# Every repo image _pin_tag wrote or checked a tag on during this run, so the
+# stale-tag sweep visits each package that can hold an inuse-* tag rather
+# than a hard-coded list (Codex, PR #1004).
+declare -A _SEEN_REPOS=()
+
+_load_tags() {
+    # _load_tags <repo_image>  -> fills _TAG_CACHE[<repo_image>]; nonzero on failure.
+    # A package that does not exist (retired, e.g. trading-platform after
+    # retire-legacy-images) has no tags and is NOT a failure; any other
+    # error (permission, API) is, because a sweep over an unreadable
+    # package could release nothing or the wrong thing.
+    local repo_image=$1
+    if [ -z "${_TAG_CACHE[${repo_image}]+x}" ]; then
+        local out err errf
+        errf=$(mktemp)
+        if out=$(gcloud artifacts docker tags list "${repo_image}" \
+                --format="value(tag,version)" 2>"${errf}"); then
+            _TAG_CACHE[${repo_image}]="${out}"
+        else
+            err=$(cat "${errf}" 2>/dev/null)
+            if [[ "${err}" == *NOT_FOUND* || "${err}" == *"not found"* ]]; then
+                _TAG_CACHE[${repo_image}]=""
+            else
+                rm -f "${errf}"
+                echo "  ERROR: cannot list tags on ${repo_image}: ${err%%$'\n'*}" >&2
+                return 1
+            fi
+        fi
+        rm -f "${errf}"
+    fi
+}
+
+_pin_tag() {
+    # _pin_tag <image@sha256:...> <tag-name>   nonzero when the tag is not in place
+    local ref=$1 tag=$2
+    local repo_image
+    repo_image=$(_pkgdev_path "${ref%%@*}")
+    ref="${repo_image}@${ref#*@}"
+    local existing
+    _SEEN_REPOS[${repo_image}]=1
+    _load_tags "${repo_image}" || return 1
+    existing=$(printf '%s\n' "${_TAG_CACHE[${repo_image}]}" \
+        | awk -F'\t' -v t="${tag}" '{n=split($1,p,"/"); if (p[n]==t) print $2}' \
+        | sed 's/.*@//')
+    if [ "${existing}" = "${ref#*@}" ]; then
+        return 0
+    fi
+    local short=${ref#*@sha256:}
+    # Surface gcloud's own reason. The first trigger run of this step
+    # (build b76462ad, 2026-09-07, #1033) failed six pins, every one a tag
+    # that already existed on another digest, and printed nothing but
+    # "could not tag" because stderr was discarded here; the same six moves
+    # succeeded from an operator shell minutes later, so the reason was the
+    # one thing needed and the one thing not shown.
+    local errf err
+    errf=$(mktemp)
+    if gcloud artifacts docker tags add "${ref}" "${repo_image}:${tag}" --quiet >/dev/null 2>"${errf}"; then
+        rm -f "${errf}"
+        if [ -n "${existing}" ]; then
+            echo "  moved  ${tag}: ${existing#sha256:}"
+            echo "         -> ${short:0:12}"
+        else
+            echo "  pinned ${tag} -> ${short:0:12}"
+        fi
+        unset "_TAG_CACHE[${repo_image}]"
+        return 0
+    fi
+    # `|| true`: under pipefail an empty stderr makes grep exit 1, which
+    # would abort the function here and skip the fallback line and the
+    # caller's per-pin accounting (Codex, #1040).
+    err=$(grep -v '^$' "${errf}" | head -n 1 || true)
+    rm -f "${errf}"
+    echo "  ERROR: could not tag ${ref} as ${tag}: ${err:-<no stderr>}" >&2
+    return 1
+}
+
+_resolve_image_ref() {
+    # _resolve_image_ref <image[:tag]>  -> prints image@sha256:...; nonzero on failure
+    local ref=$1 base tag digest
+    if [[ "${ref}" == *@sha256:* ]]; then
+        echo "${ref}"; return 0
+    fi
+    local name=${ref##*/}
+    if [[ "${name}" == *:* ]]; then
+        base=${ref%:*}; tag=${name#*:}
+    else
+        base=${ref}; tag=latest
+    fi
+    base=$(_pkgdev_path "${base}")
+    digest=$(gcloud artifacts docker images describe "${base}:${tag}" \
+        --format="value(image_summary.digest)" 2>/dev/null) || {
+        echo "  ERROR: cannot resolve ${base}:${tag}" >&2; return 1; }
+    [[ "${digest}" == sha256:* ]] || { echo "  ERROR: no digest for ${base}:${tag}" >&2; return 1; }
+    echo "${base}@${digest}"
+}
+
+_job_pinned_image() {
+    # _job_pinned_image <job>  -> prints the digest ref the job will run next
+    local job=$1 out gen exec_name ref exec_out exec_gen img
+    out=$(gcloud run jobs describe "${job}" --region "${REGION}" \
+        --format="value(metadata.generation,status.latestCreatedExecution.name,spec.template.spec.template.spec.containers[0].image)" 2>/dev/null) \
+        || { echo "  ERROR: cannot describe job ${job}" >&2; return 1; }
+    _split_tsv "${out}" gen exec_name ref
+    if [ -n "${exec_name}" ]; then
+        exec_out=$(gcloud run jobs executions describe "${exec_name}" --region "${REGION}" \
+            --format="value(metadata.labels['run.googleapis.com/jobGeneration'],spec.template.spec.containers[0].image)" 2>/dev/null) \
+            || { echo "  ERROR: cannot describe execution ${exec_name}" >&2; return 1; }
+        _split_tsv "${exec_out}" exec_gen img
+        if [ "${exec_gen}" = "${gen}" ] && [[ "${img}" == *@sha256:* ]]; then
+            echo "${img}"; return 0
+        fi
+    fi
+    _resolve_image_ref "${ref}"
+}
+
+_service_live_images() {
+    # _service_live_images <service> -> "revision<TAB>image@digest" for every
+    # revision that can still serve: each status.traffic target (percent > 0
+    # or tagged) plus the latest ready revision. Nonzero on any read failure.
+    local svc=$1 out rev img
+    out=$(gcloud run services describe "${svc}" --region "${REGION}" \
+        --format="value(status.traffic[].revisionName,status.latestReadyRevisionName)" 2>/dev/null) \
+        || { echo "  ERROR: cannot describe service ${svc}" >&2; return 1; }
+    local -a revs=()
+    for rev in $(printf '%s' "${out}" | tr ';\t' '  '); do
+        [ -n "${rev}" ] || continue
+        revs+=("${rev}")
+    done
+    [ "${#revs[@]}" -gt 0 ] || { echo "  ERROR: ${svc} reports no revisions" >&2; return 1; }
+    for rev in $(printf '%s\n' "${revs[@]}" | sort -u); do
+        img=$(gcloud run revisions describe "${rev}" --region "${REGION}" \
+            --format="value(status.imageDigest)" 2>/dev/null) \
+            || { echo "  ERROR: cannot describe revision ${rev}" >&2; return 1; }
+        [[ "${img}" == *@sha256:* ]] || { echo "  ERROR: ${rev} reports no imageDigest" >&2; return 1; }
+        printf '%s\t%s\n' "${rev}" "${img}"
+    done
+}
+
+# pin_image_tags [--no-sweep]
+# Pins every in-use digest; then, unless --no-sweep, releases inuse-* tags
+# that no job or revision needs any more. The sweep needs
+# artifactregistry.tags.delete, which roles/artifactregistry.writer (the
+# Cloud Build trigger identity, trading-runner@) does NOT include, while
+# pinning itself only needs tags.create/update. platform/deploy.sh, which
+# runs under that identity, therefore calls this with --no-sweep: pinning
+# is the safety step and must succeed there; releasing stale pins is
+# hygiene the interactive deploy path does (Codex, PR #1004).
+pin_image_tags() {
+    local sweep=1
+    [ "${1:-}" = "--no-sweep" ] && sweep=0
+    echo "Pinning in-use image digests as inuse-* tags..."
+    local jobs services failures=0
+    local -a wanted=()   # "<repo_image>:<tag>" pairs, keyed by package so a
+                         # job that moved packages releases its old pin
+                         # (Codex, PR #1004)
+    local job svc lines rev img tag repo_image tags
+
+    # Inventory first; refuse to proceed on any read failure (an unreadable
+    # inventory must never look like an empty one).
+    jobs=$(gcloud run jobs list --region "${REGION}" --format="value(metadata.name)" 2>/dev/null) \
+        || { echo "ERROR: cannot list Cloud Run jobs; no tags changed." >&2; return 1; }
+    services=$(gcloud run services list --region "${REGION}" --format="value(metadata.name)" 2>/dev/null) \
+        || { echo "ERROR: cannot list Cloud Run services; no tags changed." >&2; return 1; }
+    if [ -z "${jobs}" ] && [ -z "${services}" ]; then
+        echo "ERROR: inventory returned no jobs and no services; refusing to touch tags." >&2
+        return 1
+    fi
+
+    for job in ${jobs}; do
+        if img=$(_job_pinned_image "${job}"); then
+            _pin_tag "${img}" "inuse-job-${job}" || failures=$((failures + 1))
+            wanted+=("$(_pkgdev_path "${img%%@*}"):inuse-job-${job}")
+        else
+            failures=$((failures + 1))
+        fi
+    done
+
+    for svc in ${services}; do
+        if lines=$(_service_live_images "${svc}"); then
+            while IFS=$'\t' read -r rev img; do
+                [ -n "${rev}" ] || continue
+                _pin_tag "${img}" "inuse-svc-${rev}" || failures=$((failures + 1))
+                wanted+=("$(_pkgdev_path "${img%%@*}"):inuse-svc-${rev}")
+            done <<<"${lines}"
+        else
+            failures=$((failures + 1))
+        fi
+    done
+
+    if [ "${failures}" -ne 0 ]; then
+        echo "ERROR: ${failures} pin(s) failed; stale-tag sweep skipped, no tag released." >&2
+        return 1
+    fi
+    if [ "${sweep}" -eq 0 ]; then
+        echo "Pinned ${#wanted[@]} in-use tags (stale-tag sweep skipped: --no-sweep)."
+        return 0
+    fi
+
+    # Release inuse-* tags whose job/revision no longer exists so their
+    # digests become eligible for cleanup. Only reached when every pin above
+    # succeeded, so `wanted` is the complete in-use set.
+    for repo_image in "${IMAGE}" \
+            "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/trading-platform" \
+            "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/trading-platform-staging" \
+            "us-docker.pkg.dev/${PROJECT_ID}/gcr.io/solyra-api"; do
+        _SEEN_REPOS[${repo_image}]=1
+    done
+    for repo_image in "${!_SEEN_REPOS[@]}"; do
+        _load_tags "${repo_image}" || { failures=$((failures + 1)); continue; }
+        tags=${_TAG_CACHE[${repo_image}]}
+        while IFS=$'\t' read -r tag _; do
+            tag=${tag##*/}
+            [[ "${tag}" == inuse-* ]] || continue
+            if ! printf '%s\n' "${wanted[@]}" | grep -qxF "${repo_image}:${tag}"; then
+                # Drop the cached listing either way: a later pass in the
+                # same process (build_image pins, then the post-deploy pin)
+                # must re-read rather than try to delete this tag again.
+                unset "_TAG_CACHE[${repo_image}]"
+                if gcloud artifacts docker tags delete "${repo_image}:${tag}" --quiet >/dev/null 2>&1; then
+                    echo "  released stale ${tag}"
+                else
+                    echo "  ERROR: could not release ${repo_image}:${tag}" >&2
+                    failures=$((failures + 1))
+                fi
+            fi
+        done <<<"${tags}"
+    done
+    if [ "${failures}" -ne 0 ]; then
+        echo "ERROR: stale-tag sweep hit ${failures} failure(s)." >&2
+        return 1
+    fi
+    echo "Pinned ${#wanted[@]} in-use tags."
+}
+
+# Delete the pre-#990 API image packages once no live service can run them.
+# Refuses while any traffic-receiving, tagged, or latest-ready revision of
+# any service references trading-platform(-staging), and refuses on any read
+# failure, so running it early or during an API blip cannot break prod.
+retire_legacy_images() {
+    local legacy_repo="us-docker.pkg.dev/${PROJECT_ID}/gcr.io"
+    local services svc live rev img blocked=0
+    services=$(gcloud run services list --region "${REGION}" --format="value(metadata.name)" 2>/dev/null) \
+        || { echo "ERROR: cannot list Cloud Run services; nothing deleted." >&2; return 1; }
+    [ -n "${services}" ] || { echo "ERROR: service inventory is empty; nothing deleted." >&2; return 1; }
+    for svc in ${services}; do
+        live=$(_service_live_images "${svc}") || { echo "ERROR: could not inspect ${svc}; nothing deleted." >&2; return 1; }
+        while IFS=$'\t' read -r rev img; do
+            [ -n "${rev}" ] || continue
+            if [[ "${img}" == */trading-platform@* || "${img}" == */trading-platform-staging@* ]]; then
+                echo "  ${svc} revision ${rev} still runs ${img#*/}" >&2
+                blocked=1
+            fi
+        done <<<"${live}"
+    done
+    if [ "${blocked}" -eq 1 ]; then
+        echo "ERROR: a live revision still runs a legacy image. Redeploy that" \
+             "service onto a current solyra-api digest first, then re-run." >&2
+        return 1
+    fi
+    local pkg versions rc=0
+    for pkg in trading-platform trading-platform-staging; do
+        versions=$(gcloud artifacts docker images list "${legacy_repo}/${pkg}" \
+            --format="value(version)" 2>/dev/null) \
+            || { echo "  ERROR: cannot list ${legacy_repo}/${pkg}" >&2; rc=1; continue; }
+        if [ -z "${versions}" ]; then
+            echo "  ${pkg}: nothing to delete"
+            continue
+        fi
+        echo "Deleting ${legacy_repo}/${pkg} ($(printf '%s\n' "${versions}" | wc -l) versions)..."
+        if gcloud artifacts docker images delete "${legacy_repo}/${pkg}" --delete-tags --quiet; then
+            echo "  deleted ${pkg}"
+        else
+            echo "  ERROR: delete failed for ${pkg}" >&2
+            rc=1
+        fi
+    done
+    return "${rc}"
+}
+
+setup_registry_cleanup() {
+    echo "Applying Artifact Registry cleanup policy..."
+    local policy
+    policy=$(mktemp)
+    cat > "${policy}" <<'EOF'
+[
+  {
+    "name": "keep-tagged",
+    "action": {"type": "Keep"},
+    "condition": {"tagState": "TAGGED"}
+  },
+  {
+    "name": "keep-10-most-recent",
+    "action": {"type": "Keep"},
+    "mostRecentVersions": {"keepCount": 10}
+  },
+  {
+    "name": "delete-untagged-older-than-14d",
+    "action": {"type": "Delete"},
+    "condition": {"tagState": "UNTAGGED", "olderThan": "1209600s"}
+  }
+]
+EOF
+    # `gcr.io` (multi-region us) is the legacy gcr.io-redirect repo holding
+    # the API service images.
+    #
+    # `keep-tagged` is gone, and it has to be: every push to main that touches
+    # platform/ leaves a `solyra-api:<short sha>` tag, so a blanket keep-tagged
+    # rule meant the repository grew forever -- the unbounded growth this
+    # cleanup machinery exists to prevent, reintroduced by the immutable tag
+    # scheme #990 added (Codex, PR #990). Build tags older than 30 days are
+    # deleted now.
+    #
+    # That is only safe because the digests actually in use are TAGGED
+    # `inuse-*`, which the first Keep rule preserves. #1004 left this scoped
+    # to the retired trading-platform* packages precisely because the
+    # deploy-solyra-api-staging trigger did not pin; it does now (a `pin`
+    # step after its deploy), and so does the prod promote config, which is
+    # the condition that note said to widen on.
+    local gcr_policy
+    gcr_policy=$(mktemp)
+    cat > "${gcr_policy}" <<'EOF'
+[
+  {
+    "name": "keep-in-use-and-latest",
+    "action": {"type": "Keep"},
+    "condition": {"tagState": "TAGGED", "tagPrefixes": ["inuse-", "latest"]}
+  },
+  {
+    "name": "keep-10-most-recent",
+    "action": {"type": "Keep"},
+    "mostRecentVersions": {"keepCount": 10}
+  },
+  {
+    "name": "delete-untagged-legacy-older-than-14d",
+    "action": {"type": "Delete"},
+    "condition": {
+      "tagState": "UNTAGGED",
+      "olderThan": "1209600s",
+      "packageNamePrefixes": ["trading-platform"]
+    }
+  },
+  {
+    "name": "delete-old-solyra-api-build-tags",
+    "action": {"type": "Delete"},
+    "condition": {
+      "olderThan": "2592000s",
+      "packageNamePrefixes": ["solyra-api"]
+    }
+  }
+]
+EOF
+    # `trading` (us-east1) holds the jobs image; every path that moves its
+    # tags (build_image, build_research_image) pins first.
+    gcloud artifacts repositories set-cleanup-policies trading \
+        --location "${REGION}" --policy "${policy}" --no-dry-run --quiet
+    gcloud artifacts repositories set-cleanup-policies gcr.io \
+        --location us --policy "${gcr_policy}" --no-dry-run --quiet
+    rm -f "${policy}" "${gcr_policy}"
+    echo "Cleanup policy applied to trading (${REGION}) and gcr.io (us, delete scoped to trading-platform*)."
+    echo "  Deletions run asynchronously (Artifact Registry sweeps roughly daily)."
+}
+
+# ── AI Insights pipeline (Cloud Run Job) ─────────────────────────────────────
+# The same image runs scheduled daily batches and on-demand runs enqueued via
+# Cloud Tasks from the platform API. The refresh endpoint passes the run_id
+# and ticker as env-var overrides on the job execution.
+deploy_insight_pipeline() {
+    echo "Deploying insight-pipeline job..."
+    local admin_token admin_env
+    admin_token="$(_secret admin-token 2>/dev/null || true)"
+    admin_env="${ENV_STRING}${admin_token:+,ADMIN_TOKEN=${admin_token}}"
+
+    # 8Gi/2 vCPU, raised from 4Gi/1 vCPU on 2026-09-17 after the 4Gi ceiling
+    # (itself a raise from 2Gi on 2026-09-15, #1116) OOM'd again. Measured
+    # (gcloud logging + the monitoring timeSeries REST API) against the live
+    # job on 2026-09-17: insight-pipeline-6b276 (NVDA, manual_batch) was
+    # SIGKILLed on BOTH attempts (task_attempt 0 at 03:32:54, task_attempt 1
+    # at 03:35:10), each preceded by "Out-of-memory event detected in
+    # container"; the same day, two of three auto_refresh fan-out children
+    # (AVGO in insight-pipeline-qh7pj, AMD in insight-pipeline-hqcr8) OOM'd on
+    # their first attempt and only read as job-level "success" because the
+    # compare-and-swap retry-claim added in #1094/#1116 stood down cleanly
+    # rather than re-running — so both tickers produced no report despite a
+    # green execution. run.googleapis.com/container/memory/utilizations
+    # measured mean=0.9968 (99.68% of the 4Gi limit) in the one-minute bucket
+    # containing the AMD OOM, confirming the container is still saturating
+    # the limit, not something else killing it. AMD OOM'd on 2026-09-15 too
+    # (insight-pipeline-bpqnv) — the same ticker exceeding the limit twice
+    # across two separate raises is why this is a further doubling per
+    # CLAUDE.md Rule 0.5, not a one-off retry.
+    #
+    # 1 vCPU caps memory at 4Gi (Cloud Run limit: memory scales with CPU —
+    # 1 vCPU -> 4Gi max, 2 vCPU -> 8Gi max), so 4Gi was already the ceiling
+    # for --cpu 1. Doubling memory again requires doubling CPU alongside it;
+    # --cpu must therefore be on BOTH the create and update paths for the
+    # same reason --memory has to be (see below) — a CPU bump on create
+    # alone would fail validation on create (cpu/memory mismatch) and read
+    # as shipped while never reaching the live job.
+    #
+    # --memory and --cpu must be on BOTH paths. The job already exists, so
+    # `create` fails and `update` is what actually runs; before the #1116
+    # fix, `update` passed no --memory at all, and a change to the `create`
+    # line alone would have silently no-op'd against the live job forever.
+    #
+    # 8Gi is again a doubling per Rule 0.5, NOT a measured requirement: the
+    # utilization metric is censored at the limit, so this incident only
+    # rules out 4Gi. Verify post-deploy by re-running NVDA and AMD and
+    # reading the now-uncensored peak; raise again (with another CPU step)
+    # if it lands above ~50% of 8Gi.
+    gcloud run jobs create insight-pipeline \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 8Gi --cpu 2 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.insight_pipeline_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${admin_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update insight-pipeline \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 8Gi --cpu 2 \
+        --command "python,-m,gcp.insight_pipeline_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${admin_env}" \
+        --quiet
+}
+
+# ── AI Insights Discord push (Cloud Run Job) ────────────────────────────────
+# Reads today's insight_reports rows and posts them to Discord as a
+# multi-embed message. Cloud Scheduler triggers this at 9:15 AM ET
+# weekdays — ~30 min after the 8:45 insight-pipeline cron finishes.
+deploy_insight_discord_push() {
+    echo "Deploying insight-discord-push job..."
+
+    gcloud run jobs create insight-discord-push \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 120 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.insight_discord_push" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update insight-discord-push \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 120 \
+        --command "python,-m,gcp.insight_discord_push" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Historical signals — watchlist iterator (Cloud Run Job) ─────────────────
+# Runs the trading_analysis voter against every active ticker in the
+# Cloud SQL watchlists table and upserts results to historical_signals.
+# Idempotent (ON CONFLICT DO NOTHING) so re-running on already-covered
+# date ranges is a no-op. Caps at --max-tickers=25 unless overridden.
+deploy_historical_signals_watchlist() {
+    echo "Deploying historical-signals-watchlist job..."
+
+    # NOTE: `--args="--from-watchlist"` MUST use the `=` form (no space).
+    # When the arg value starts with `-`, gcloud's argparse interprets a
+    # space-separated form (`--args "--from-watchlist"`) as a new flag
+    # named `--from-watchlist` and errors with "argument --args: expected
+    # one argument". See CLAUDE.md rule 5.4 ("Cloud Run Job sizing
+    # checklist"). Pre-fix this aborted ./gcp/deploy.sh insights and
+    # ./gcp/deploy.sh all mid-way through the deploy bundle.
+    gcloud run jobs create historical-signals-watchlist \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.run_historical_signals" \
+        --args="--from-watchlist" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update historical-signals-watchlist \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,scripts.run_historical_signals" \
+        --args="--from-watchlist" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Signal-quality report (Cloud Run Job) ───────────────────────────────────
+# Phase 0.5 spec items #3-#4. Persists per-signal classifications +
+# returns + ATR-normalized MFE into signal_metrics. Runs in two modes
+# under the same image:
+#   --mode=rolling     hourly during market hours (10–16 ET, scheduler)
+#   --mode=historical  once nightly (Tue–Sat 01:00 ET, scheduler) to
+#                      promote rolling 'pending' rows to 'final'
+# 1 GiB / 10-min timeout per the spec; the script chunks per-ticker
+# intraday queries so memory stays well under the cap even on the
+# month-long historical backfill window.
+deploy_signal_quality_report() {
+    echo "Deploying signal-quality-report job..."
+
+    # NB: --args="--mode=rolling" (with =) is required because the
+    # arg value itself starts with `-`. With the space form
+    # `--args "--mode=rolling"`, gcloud parses `--mode=rolling` as a
+    # new flag and bails with "argument --args: expected one
+    # argument". Same applies to anywhere args begin with `-`.
+    #
+    # task-timeout: 3600s (1 h). Original spec said 600s, calibrated
+    # for rolling mode (~50 signals/4h, finishes in <2 min). But the
+    # SAME job is invoked with --mode=historical for monthly backfills
+    # (~1000+ signals, ~15-20 min) — those hit the 600s wall. Bumping
+    # to 3600 gives both modes headroom; rolling still bills for ~2
+    # min (Cloud Run charges actual runtime, not the configured cap).
+    #
+    # max-retries 0: the script exits clean on success and non-zero
+    # only on legitimate failure (DB outage, bug). Cloud Run can't
+    # distinguish "transient" from "permanent" failure, so any retry
+    # double-sends failure emails for free. The hourly scheduler tick
+    # provides natural retry cadence — if the 14:00 ET run hits a DB
+    # blip, the 15:00 ET run picks up where it left off (rolling
+    # mode is incremental).
+    gcloud run jobs create signal-quality-report \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.signal_quality_report" \
+        --args="--mode=rolling" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-quality-report \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --max-retries 0 \
+        --task-timeout 3600 \
+        --command "python,-m,scripts.signal_quality_report" \
+        --args="--mode=rolling" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Signal-quality alarm (Cloud Run Job) ───────────────────────────────────
+# Phase 0.5 spec item #6. Compares trailing-7d clean-rate vs prior-7d
+# clean-rate; alarms when delta < -3pp. Posts to the SIGNAL_QA_WEBHOOK_URL
+# Discord channel and exits non-zero so the failure-notifier sink picks
+# it up and creates a GitHub issue. ~10s runtime, 256 MiB is plenty.
+deploy_signal_quality_alarm() {
+    echo "Deploying signal-quality-alarm job..."
+
+    # --max-retries 0: the alarm script INTENTIONALLY exits 1 on a
+    # detected regression so the failure-notifier sink picks it up.
+    # Cloud Run can't distinguish that from a crash, so any positive
+    # retries double-post the Discord alarm. We accept that a real
+    # crash (DB outage etc.) won't auto-retry — the next day's run
+    # picks up the regression anyway.
+    #
+    # Memory: 512Mi is Cloud Run's gen2-with-CPU-always-allocated
+    # minimum. Tried 256Mi originally — gcloud rejects with "Total
+    # memory < 512 Mi is not supported with gen2 execution environment
+    # with cpu always allocated (unthrottled)". The actual workload
+    # (one DB query + small Discord POST) runs comfortably in <100Mi.
+    gcloud run jobs create signal-quality-alarm \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 120 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.signal_quality_alarm" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-quality-alarm \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 120 \
+        --command "python,-m,gcp.signal_quality_alarm" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Indicator → forward-return correlation (Cloud Run Job) ───────────────────
+# Computes the full production indicator suite on 1-min RTH bars and ranks
+# each indicator by Information Coefficient (Spearman) vs forward returns.
+# Writes to indicator_correlation. Read-only on market_data_intraday; one
+# upsert at the end.
+#
+# Capacity (CLAUDE.md Rule 0): 3 tickers × ~30 sessions × 390 RTH bars
+# ≈ 35k bars total, held in memory at once (~tens of MB). 3 SELECTs total
+# (one per ticker, batched by date range — NOT per-bar). Pandas corr over
+# ~74 cols × 3 horizons is seconds. 1800s timeout is ~10× headroom.
+# --max-retries 1: pure read+single-upsert, idempotent, transient-retry safe.
+#
+# Uses the RESEARCH image: the target-modular classification targets (regime/
+# strat/signal) compute per-class mutual information via sklearn's
+# mutual_info_classif, and sklearn + scipy are deliberately excluded from the
+# main image (dev-only in requirements-gcp.txt) to keep signal-monitor's
+# cold-start lean. On the main image the MI helper hits its ImportError path
+# and writes mutual_info=NULL for every row (class_lift/rank_ic still populate);
+# the research image is the right home so all three metrics compute.
+deploy_indicator_correlation() {
+    echo "Deploying indicator-correlation job..."
+    local research_image; research_image=$(_research_image_ref) || return 1
+    gcloud run jobs create indicator-correlation \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.indicator_correlation_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update indicator-correlation \
+        --image "${research_image}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.indicator_correlation_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Regime combination miner (Cloud Run Job — Effort A) ──────────────────────
+# Mines indicator-value COMBINATIONS predictive of forward regime (BIG/UP/DOWN/
+# FLAT) and upserts to regime_combo_results. Read-only on market_data_intraday;
+# one upsert at the end.
+#
+# Capacity (Rule 0): 3 tickers × ~1yr × ~390 RTH bars ≈ 290k bars total, held
+# in memory at once (~tens of MB). 3 batched SELECTs (one per ticker, NOT
+# per-bar). The cost driver is sklearn permutation_importance + mutual_info,
+# both row-capped in lib.combo_mining (perm 8k, MI 30k, train fit 80k) so
+# wall-clock is bounded ~2 min/ticker. 2 vCPU / 2Gi gives headroom; 3600s
+# timeout is ~5× the wall estimate. --max-retries 1: pure read + single
+# idempotent upsert.
+deploy_regime_combo() {
+    echo "Deploying regime-combo job..."
+    # Uses the RESEARCH image: model_lift/select_top_features need scikit-learn +
+    # scipy, which are deliberately excluded from the main image (dev-only in
+    # requirements-gcp.txt) to keep signal-monitor's cold-start lean. regime-combo
+    # is a Lane-2 research job, so the heavier image is the right home.
+    local research_image; research_image=$(_research_image_ref) || return 1
+    gcloud run jobs create regime-combo \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 --max-retries 1 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.regime_combo_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update regime-combo \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 \
+        --task-timeout 3600 \
+        --command "python,-m,gcp.regime_combo_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Signal replay (Cloud Run Job — on-demand) ────────────────────────────────
+# Re-posts stored signal_alerts to the signals Discord channel for a
+# historical date + ET time block. Triggered by the /replay-signals
+# slash command (dispatched with per-execution SIGNAL_REPLAY_* env
+# overrides) or manually via `gcloud run jobs execute`.
+#
+# task-timeout 900: the job paces posts ~2s apart, capped at 200 alerts
+# (200 * 2s = 400s) + Discord 429 back-off headroom.
+deploy_signal_replay() {
+    echo "Deploying signal-replay job..."
+    gcloud run jobs create signal-replay \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 900 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.signal_replay" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-replay \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 900 \
+        --command "python,-m,gcp.signal_replay" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Auto-refresh top-N (Cloud Run Job) ───────────────────────────────────────
+# Pre-warms the AI insight cache for the highest-scoring ranker tickers.
+# Calls lib.agents.ranker.rank_tickers, picks top N, enqueues a Cloud
+# Tasks message per ticker that triggers the existing insight-pipeline
+# job in on-demand mode. Cost is bounded by INSIGHT_AUTO_REFRESH_TOP_N
+# (default 3 → ~$0.30-1.50/day at typical model costs).
+deploy_auto_refresh_top_n() {
+    echo "Deploying auto-refresh-top-n job..."
+    local env
+    env="${ENV_STRING},INSIGHT_AUTO_REFRESH_TOP_N=3"
+
+    gcloud run jobs create auto-refresh-top-n \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.auto_refresh_top_n" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update auto-refresh-top-n \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 600 \
+        --command "python,-m,gcp.auto_refresh_top_n" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${env}" \
+        --quiet
+}
+
+# ── Cloud Tasks queue for on-demand pipeline runs ────────────────────────────
+# The refresh endpoint enqueues a task that triggers this Cloud Run job with
+# INSIGHT_RUN_ID / INSIGHT_TICKER env overrides. Queue creation is idempotent.
+setup_insight_tasks_queue() {
+    echo "Ensuring Cloud Tasks queue insight-pipeline-queue exists..."
+    gcloud tasks queues create insight-pipeline-queue \
+        --location "${REGION}" \
+        --max-attempts 2 \
+        --max-concurrent-dispatches 5 \
+        --quiet 2>/dev/null || echo "  insight-pipeline-queue: already exists"
+
+    # The scheduled insight-pipeline batch now fans out one Cloud Tasks
+    # message per ticker, so the JOB's own identity enqueues — previously
+    # only the API service did. Verified 2026-09-14: trading-runner@ held
+    # no cloudtasks role at project level. actAs for the task's oauth_token
+    # is already covered by a service-account-level
+    # roles/iam.serviceAccountUser binding on the SA itself.
+    #
+    # CHECK, then try, then print — never an unconditional setIamPolicy.
+    # setIamPolicy on the project is owner-only, and the documented deploy
+    # identity here is claude-web@ with roles/editor, which cannot do it
+    # (same limitation _schedule_min_instances handles below). Under
+    # `set -euo pipefail` an unconditional binding call would abort every
+    # routine `deploy.sh insights` run before the jobs were updated.
+    #
+    # Missing the grant is not fatal to the DEPLOY, so warn loudly and carry
+    # on rather than blocking on an owner-only action. It is not harmless at
+    # RUNTIME though, and the two consumers differ: insight-pipeline's
+    # _dispatch_fanout falls back to running those tickers in-process and
+    # still writes every report, while auto_refresh_top_n deliberately has no
+    # such fallback and exits 1 when it dispatched nothing it had work for
+    # (bc27284, from the #1094 review). Keep the warning below in step with
+    # that asymmetry — it described only the first half until 2026-09-15.
+    local enq_policy
+    if ! enq_policy=$(gcloud projects get-iam-policy "${PROJECT_ID}" \
+            --flatten="bindings[].members" \
+            --filter="bindings.role=roles/cloudtasks.enqueuer AND bindings.members=serviceAccount:${SA_EMAIL}" \
+            --format="value(bindings.role)" 2>/dev/null); then
+        echo "  WARNING: cannot read project IAM policy; skipping the" >&2
+        echo "           cloudtasks.enqueuer check. If the binding is absent the" >&2
+        echo "           daily batch falls back to its in-process loop." >&2
+        return 0
+    fi
+    if [ -n "${enq_policy}" ]; then
+        echo "  cloudtasks.enqueuer: already granted to ${SA_EMAIL}"
+        return 0
+    fi
+    if gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+            --member="serviceAccount:${SA_EMAIL}" \
+            --role=roles/cloudtasks.enqueuer \
+            --condition=None \
+            --quiet >/dev/null 2>&1; then
+        echo "  cloudtasks.enqueuer: granted to ${SA_EMAIL}"
+        return 0
+    fi
+    echo "  WARNING: ${SA_EMAIL} lacks roles/cloudtasks.enqueuer and this" >&2
+    echo "           identity cannot grant it. Two DIFFERENT consequences:" >&2
+    echo "             insight-pipeline  — falls back to running tickers" >&2
+    echo "                                 in-process (correct, slower)." >&2
+    echo "             auto-refresh-top-n — has NO in-process fallback and" >&2
+    echo "                                 exits 1 on every run, by design." >&2
+    echo "           A project owner can enable it with:" >&2
+    echo "           gcloud projects add-iam-policy-binding ${PROJECT_ID} \\" >&2
+    echo "             --member=serviceAccount:${SA_EMAIL} \\" >&2
+    echo "             --role=roles/cloudtasks.enqueuer --condition=None" >&2
+}
+
+# Sensitive values are passed via Cloud Run --set-secrets so they never
+# traverse bash CLI args and aren't visible to anyone with `roles/run.viewer`
+# via `gcloud run jobs describe`. Each mapping is `ENV_NAME=secret-id:version`.
+#
+# Originally only DB_PASS was secret-bound — the variable name reflects that
+# narrower history. Track D audit § 8.12 / G.P0.9 expanded the set to cover
+# the four additional API keys that were previously baked as literal env
+# values via _env_string. See:
+#   docs/audit/2026-05-08/track-D.md § 8.12
+#   docs/audit/2026-05-08/track-G.md G.P0.9
+#
+# Mechanism: --set-secrets resolves Secret Manager versions at container
+# start time, sidestepping the shell-quoting/MSYS-path-conversion mess that
+# bit DB_PASS on 2026-04-30. AV is mapped to two env names (AV_API_KEY +
+# ALPHA_VANTAGE_API_KEY) because callers are split across the legacy and
+# canonical names; both resolve to the same Secret Manager secret.
+#
+# Required vs optional secrets:
+#   * DB_PASS, av-api-key, discord-webhook-insights are created by
+#     setup_cloud_sql.sh — assumed present; deploy fails fast if missing.
+#   * fred-api-key, benzinga-api-key are optional add-ons — deploys
+#     gracefully skip them when not provisioned, preserving the
+#     pre-PR-318 behaviour from `_env_string`'s `[ -n "$key" ] && ...`
+#     conditional. Codex P1 review on PR #318 caught the regression
+#     where requiring all 5 broke fresh deploys missing the optionals.
+# Adds an optional secret to `pairs` when it exists. Only a NOT_FOUND
+# means "not provisioned, skip"; any other failure (auth, quota, API) is
+# unknown and stops the deploy, because the flag REPLACES the job's secret
+# set and a dropped pair would strip a live credential (internal review of
+# #1022, schema-apply round; CLAUDE.md 3.7). The probe is `versions
+# access` (discarded), not `secrets describe`: the deploy SA
+# (trading-runner@, which runs pin-images inside the trigger builds) holds
+# roles/secretmanager.secretAccessor, which grants versions.access but not
+# secrets.get, and a NOT_FOUND here also covers a secret with no versions,
+# which Cloud Run could not mount either.
+_optional_secret_pair() {
+    local var="$1" secret="$2" out
+    if out=$(gcloud secrets versions access latest --secret="${secret}" --project="${PROJECT_ID}" 2>&1 >/dev/null); then
+        printf ',%s=%s:latest' "${var}" "${secret}"
+        return 0
+    fi
+    if printf '%s' "${out}" | grep -qiE 'NOT_FOUND|not found|could not be found|cannot find'; then
+        echo "  (skipping ${var} — secret '${secret}' not in project)" >&2
+        return 0
+    fi
+    echo "ERROR: cannot tell whether secret '${secret}' exists (${out%%$'\n'*}); not building the secret flag." >&2
+    return 1
+}
+
+_build_secret_flag() {
+    local pairs="DB_PASS=db-trading-pass:latest" extra
+    pairs="${pairs},AV_API_KEY=av-api-key:latest"
+    pairs="${pairs},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+    pairs="${pairs},DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
+    # Earnings-specific channel — the Earnings embed routes here; analytics
+    # + calendar stay on DISCORD_WEBHOOK_URL. premarket_brief.py falls back
+    # to the main webhook when this is unset, so deploys without the secret
+    # remain functional. Skipped only when not provisioned.
+    extra=$(_optional_secret_pair DISCORD_WEBHOOK_EARNINGS_URL discord-webhook-earnings) || return 1
+    pairs="${pairs}${extra}"
+    # Signals-specific channel — signal_monitor (entries/exits/ORB), the EOD
+    # resolver, signal_quality_alarm and signal_quality_report route here.
+    # Each consumer falls back to DISCORD_WEBHOOK_URL when this is unset, so
+    # deploys without the secret remain functional. Skipped only when not
+    # provisioned.
+    extra=$(_optional_secret_pair DISCORD_WEBHOOK_SIGNALS_URL discord-webhook-signals) || return 1
+    pairs="${pairs}${extra}"
+    extra=$(_optional_secret_pair FRED_API_KEY fred-api-key) || return 1
+    pairs="${pairs}${extra}"
+    extra=$(_optional_secret_pair BENZINGA_API_KEY benzinga-api-key) || return 1
+    pairs="${pairs}${extra}"
+    echo "--set-secrets=${pairs}"
+}
+# Subcommands that mutate no Cloud Run job need no secret set, and two of
+# them must not even READ Secret Manager: `setup` is the command that
+# ENABLES the API (gcp/setup_cloud_sql.sh:34) and `setup-notifier-secrets`
+# is what creates secrets, so probing first made the bootstrap unreachable
+# on a fresh project — the probe cannot tell an API-disabled error from a
+# real one, returns nonzero, and `set -e` exits before the dispatcher runs
+# (Codex on #1022). The rest here build images, pin tags, import build
+# configs, execute jobs or grant IAM.
+#
+# `schedulers`, `pg-dump` and `audit-infra-drift` are exempt for a third
+# reason: they DO mutate, but nothing they mutate carries a Secret Manager
+# payload. deploy_schedulers and its seven _schedule* helpers reference
+# neither gated variable; deploy_weekly_pg_dump builds its env string from
+# literals; deploy_audit_infra_drift passes `--set-secrets` a secret NAME,
+# which Cloud Run resolves at run time and the deployer never reads. Gating
+# them made `./gcp/deploy.sh schedulers` resolve db-trading-pass, four API
+# keys, cloud-sql-connection-name and db-trading-user before the dispatcher
+# ran, so `set -e` on a failed probe left a scheduler administrator without
+# payload access unable to repair a cron at all (Codex on #1022).
+#
+# Every other subcommand deploys something that consumes the flag and
+# resolves it up front, so a read failure aborts before any mutation. The
+# split is pinned in BOTH directions by
+# tests/gcp/test_deploy_reachability.py: an exempt target that reached
+# ${DB_SECRET_FLAG} would deploy with an empty --set-secrets and silently
+# strip that job's credentials, and a gated target that reads no secret
+# demands access it has no use for.
+case "${1:-}" in
+    setup|setup-notifier-secrets|setup-pg-dump-iam|migrate|build|build-research|\
+    backfill|registry-cleanup|retire-legacy-images|pin-images|pin-floating|\
+    cloudbuild-triggers|p7b-classifier|schedulers|pg-dump|audit-infra-drift|notifier|\
+    help|"") _NEEDS_DEPLOY_CREDS=0 ;;
+    *) _NEEDS_DEPLOY_CREDS=1 ;;
+esac
+
+if [ "${_NEEDS_DEPLOY_CREDS}" = 1 ]; then
+    DB_SECRET_FLAG="$(_build_secret_flag)"
+else
+    DB_SECRET_FLAG=""
+fi
+
+# ── Shared env vars injected into every Cloud Run job ─────────────────────────
+# Only non-secret values land here. The 4 API keys + DB_PASS go through
+# DB_SECRET_FLAG above. CLOUD_SQL_CONNECTION_NAME and DB_USER are stored
+# in Secret Manager for centralized rotation but aren't sensitive (the
+# connection name is project-region-instance, the username is the role
+# label "trading-app"); leaving them in env-vars keeps deploy-script
+# simplicity without leaking real credentials.
+_env_string() {
+    local env conn user
+    # Each lookup is checked and its status propagated. `_secret` fails
+    # loud, but this function is only ever invoked as `${ENV_STRING}`
+    # inside a gcloud argument, and a command substitution in that
+    # position does not abort the script: measured on this code, both
+    # reads failed and gcloud was still called with
+    # `--set-env-vars CLOUD_SQL_CONNECTION_NAME=,DB_USER=,DB_NAME=trading`
+    # on BOTH the create and the update branch. `--set-env-vars` REPLACES
+    # the job's set, so that writes an empty connection name onto a live
+    # job and every later run of it exits 2 as "not configured" — the
+    # outcome the fail-loud change exists to prevent (Codex on #1022).
+    conn=$(_secret cloud-sql-connection-name) || return 1
+    user=$(_secret db-trading-user) || return 1
+    env="CLOUD_SQL_CONNECTION_NAME=${conn}"
+    env="${env},DB_USER=${user}"
+    env="${env},DB_NAME=trading"
+    env="${env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+    # User-preference flag — set to true so the morning brief
+    # recommends LONG STRADDLE / LONG CALL / LONG PUT / SKIP instead
+    # of IC. The user explicitly only buys premium ("I would always
+    # buy them sell" — 2026-05-22). See
+    # lib/earnings_reactions.recommended_structure() for the logic.
+    env="${env},RECOMMEND_LONG_ONLY=true"
+    echo "$env"
+}
+
+# Resolved ONCE, here, so a failed read aborts before the first mutation —
+# the same contract as DB_SECRET_FLAG above, and the only place the failure
+# CAN abort. It also removes 104 duplicate Secret Manager reads from an
+# `all)` run, since every job takes the same string.
+if [ "${_NEEDS_DEPLOY_CREDS}" = 1 ]; then
+    ENV_STRING="$(_env_string)"
+else
+    ENV_STRING=""
+fi
+
+# ── Discord interactions endpoint (Cloud Run SERVICE, not a Job) ────────────
+# HTTP service that receives slash-command webhooks from Discord, verifies
+# Ed25519 signatures, and dispatches Cloud Run Job executions for /replay,
+# /validate, /backtest, /watchlist (latter three stubbed in Slice 1).
+#
+# Setup prerequisites (one-time, before deploy):
+#   1. Use your EXISTING Discord app (the one whose webhook posts the
+#      morning briefs). No need to create a new app — the webhook URL
+#      and the application identity are independent properties of the
+#      same app and can coexist.
+#   2. Grab three values from Dev Portal → Your App:
+#        General Information  →  Application ID
+#        General Information  →  Public Key
+#        Bot                  →  Reset Token  (one-time copy; the
+#                                webhook flow doesn't need this so
+#                                you may have never generated it)
+#   3. Store each in GCP Secret Manager (paste value, then Ctrl+D):
+#        gcloud secrets create discord-app-id --data-file=-
+#        gcloud secrets create discord-public-key --data-file=-
+#        gcloud secrets create discord-bot-token --data-file=-
+#   4. Grant the trading-runner SA `roles/run.developer` so it can
+#      dispatch other Cloud Run Jobs:
+#        gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+#            --member=serviceAccount:${SA_EMAIL} \
+#            --role=roles/run.developer
+#   5. Bot must be in the guild with `applications.commands` + `bot`
+#      OAuth scopes. If your existing bot is already in the guild
+#      (because it posts the morning brief), slash commands work
+#      once registered — no re-invite needed.
+#   6. After this script runs, set the service URL as the "Interactions
+#      Endpoint URL" in Discord Dev Portal → General Information.
+#   7. Run scripts/discord/register_commands.py to register the commands.
+# 1 during the discord-warm window (Mon-Fri 09:00-16:29 ET), else 0 — but
+# ONLY when both discord-warm-open and discord-warm-close exist and are
+# ENABLED. Without a scheduler to raise it again, deploying 0 outside the
+# window would leave the bot cold through every following market day
+# (Codex, PR #1004); any read failure counts as "not verified" and keeps it
+# warm.
+_discord_min_instances_now() {
+    local name state
+    for name in discord-warm-open discord-warm-close; do
+        state=$(gcloud scheduler jobs describe "${name}" --location "${REGION}" \
+            --format="value(state)" 2>/dev/null) || state=""
+        if [ "${state}" != "ENABLED" ]; then
+            echo "  ${name} not verified ENABLED; keeping min-instances=1 (run ./gcp/deploy.sh schedulers)" >&2
+            echo 1
+            return 0
+        fi
+    done
+    local dow hhmm
+    dow=$(TZ=America/New_York date +%u); hhmm=$(TZ=America/New_York date +%H%M)
+    if [ "${dow}" -le 5 ] && [ "${hhmm}" -ge 0900 ] && [ "${hhmm}" -lt 1630 ]; then
+        echo 1
+    else
+        echo 0
+    fi
+}
+
+deploy_discord_interactions() {
+    echo "Deploying discord-interactions SERVICE..."
+
+    # Discord-specific configuration — the service queries Cloud SQL via
+    # the same connector path as the rest of the platform.
+    #
+    # DISCORD_APP_ID and DISCORD_PUBLIC_KEY are public identifiers (the
+    # public key is Discord's Ed25519 *verification* key) and ride as plain
+    # env vars. DISCORD_BOT_TOKEN is a credential and is bound by
+    # reference with --set-secrets like every other credential on this
+    # service (DB_PASS, AV_API_KEY, the webhooks, FRED, Benzinga). It used
+    # to be read into this shell and pasted into --set-env-vars, which put
+    # the token in plaintext in the revision spec of a public
+    # (--allow-unauthenticated) service, in `gcloud run services describe`
+    # output, and in every deploy log (#830, audit K2). The value is never
+    # read here any more — only its existence is checked.
+    local discord_app_id discord_public_key
+    discord_app_id="$(_secret discord-app-id 2>/dev/null || true)"
+    discord_public_key="$(_secret discord-public-key 2>/dev/null || true)"
+    if [ -z "${discord_app_id}" ] || [ -z "${discord_public_key}" ] \
+       || ! gcloud secrets describe discord-bot-token --project="${PROJECT_ID}" >/dev/null 2>&1; then
+        echo "ERROR: Discord secrets missing. Create discord-app-id, " \
+             "discord-public-key, discord-bot-token in Secret Manager first." >&2
+        return 1
+    fi
+
+    local env
+    env="${ENV_STRING}"
+    env="${env},DISCORD_APP_ID=${discord_app_id}"
+    env="${env},DISCORD_PUBLIC_KEY=${discord_public_key}"
+    env="${env},GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
+    # DB_SECRET_FLAG is "--set-secrets=K=secret:ver,..."; append the token.
+    local discord_secret_flag
+    discord_secret_flag="${DB_SECRET_FLAG},DISCORD_BOT_TOKEN=discord-bot-token:latest"
+
+    # Cloud Run service deploy. One warm container (min-instances=1) keeps
+    # Discord's 3-sec interaction-ack window from blowing up on cold start
+    # (measured: 4-10 s cold start on this image, well past the 3-s limit),
+    # but a warm instance is ~$51/month at 24x7. Since 2026-09-06 the
+    # discord-warm-open / discord-warm-close schedulers (deploy_schedulers)
+    # set min-instances to 1 at 09:00 ET and 0 at 16:30 ET on weekdays, so
+    # this deploy picks whichever value the schedule would have in force
+    # right now rather than resetting to 1 until the next boundary.
+    local discord_min
+    discord_min=$(_discord_min_instances_now)
+    echo "  min-instances=${discord_min} (market-hours schedule; see discord-warm-open/close)"
+    # --no-cpu-throttling keeps CPU on between requests so FastAPI
+    # BackgroundTasks (replay_in_background, validate_in_background,
+    # backtest_in_background) finish their work and edit the deferred reply
+    # instead of stalling at ~0 CPU after the response is sent.
+    # max-instances=5 caps autocomplete-burst cost.
+    gcloud run deploy discord-interactions \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 \
+        --min-instances "${discord_min}" --max-instances 5 \
+        --no-cpu-throttling \
+        --timeout 600 \
+        --port 8080 \
+        --allow-unauthenticated \
+        --service-account "${SA_EMAIL}" \
+        --command "uvicorn" \
+        --args "gcp.discord_interactions.main:app,--host,0.0.0.0,--port,8080" \
+        ${discord_secret_flag} \
+        --set-env-vars "${env}" \
+        --quiet
+
+    echo
+    echo "Service URL:"
+    gcloud run services describe discord-interactions \
+        --region "${REGION}" --format="value(status.url)"
+    echo
+    echo "Next steps:"
+    echo "  1. Copy the URL above + '/discord/interactions' into the"
+    echo "     'Interactions Endpoint URL' field in Discord Dev Portal."
+    echo "  2. Run: python -m scripts.discord.register_commands"
+}
+
+
+# ── Per-ticker backfill (Cloud Run Job) ──────────────────────────────────────
+# One-shot backfill of a single ticker — daily history + intraday + news +
+# indicators + pre-market context + watchlist insert. Triggered by the
+# Discord /replay command when the user requests a ticker that isn't yet
+# in market_data_daily. Idempotent (ON CONFLICT) so re-runs are cheap.
+# max-retries 0 (Rule 0.5): a retry cannot tell a bad ticker or an AV
+# outage from a blip, so it only doubled the AV calls and the caller's
+# wait (scripts/backfill_and_replay.py dispatches one execution per
+# calendar month with --wait and stops at the first failure; /replay
+# reports the failure to the user). Declared on both branches so a live
+# job converges (internal review of #1022, capacity round).
+deploy_backfill_ticker() {
+    echo "Deploying backfill-ticker job..."
+    gcloud run jobs create backfill-ticker \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.backfill_ticker" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backfill-ticker \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --max-retries 0 \
+        --task-timeout 600 \
+        --command "python,-m,gcp.backfill_ticker" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+
+# ── Brief/insight accuracy validator (Cloud Run Job) ─────────────────────────
+# Wraps scripts/validation/validate_brief_accuracy.py. Triggered by the
+# Discord /validate command. Posts results back to the channel via
+# DISCORD_WEBHOOK_URL so the 15-min Discord followup TTL doesn't bound
+# the job runtime.
+deploy_validate_brief() {
+    echo "Deploying validate-brief job..."
+    gcloud run jobs create validate-brief \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 300 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.validate_brief_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update validate-brief \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 300 \
+        --command "python,-m,gcp.validate_brief_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+
+# ── Strategy backtest (Cloud Run Job) ────────────────────────────────────────
+# Wraps scripts/run_backtest.py. Triggered by the Discord /backtest
+# command. Defaults to a 5y window with --use-strat (per plan §12 user
+# decision). Memory bumped to 2Gi because backtests over multi-year
+# windows aggregate large daily series in memory before signal sim.
+deploy_backtest() {
+    echo "Deploying backtest job..."
+    gcloud run jobs create backtest \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 1 \
+        --task-timeout 900 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.backtest_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backtest \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 900 \
+        --command "python,-m,gcp.backtest_job" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Pre-market brief (Cloud Run Job) ─────────────────────────────────────────
+# Capacity (CLAUDE.md Rule 0): LLM-summary + multiple Cloud SQL probes +
+# Discord webhook. Observed worst-case ~7-12 min on slow LLM responses or
+# large earnings calendars (issues #122, #377, #425, #466, #538 — five
+# documented timeouts at the default 600s task-timeout). 1800s = 30 min
+# is 3x the observed worst-case with comfortable headroom; Cloud Run
+# bills wall-time, not the cap, so headroom is free.
+#
+# --max-retries 0 because the brief is idempotent on its content but a
+# blind retry that succeeds posts a SECOND Discord embed for the same
+# session, AND a retry that ALSO times out files a second `gcp-job-
+# failure` issue against the same root cause. With 0 retries a timeout
+# is a single loud failure that the operator triages once.
+deploy_premarket() {
+    echo "Deploying pre-market brief job..."
+    gcloud run jobs create premarket-brief \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.premarket_brief" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update premarket-brief \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --max-retries 0 --task-timeout 1800 \
+        --command "python,-m,gcp.premarket_brief" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Earnings-reactions brief (Cloud Run Job) ─────────────────────────────────
+# On-demand job — posts a Discord brief ranking the next session's earnings
+# reporters by their historical post-earnings reaction pattern. Scheduled at
+# 8:35 AM ET weekdays (5 min after premarket-brief) by deploy_schedulers.
+#
+# Capacity: ~30-40 reporters/session. The job issues a FIXED number of
+# queries regardless of N (2 calendar reads + 2 batched history reads + 2
+# batched insider reads = 6 round-trips total — see CLAUDE.md Rule 0.4).
+# At pg8000 ≈ 2 s/round-trip that's ~12 s wall-clock; 600 s task-timeout is
+# 50x headroom. 1Gi/1CPU mirrors premarket-brief.
+deploy_earnings_reactions_brief() {
+    echo "Deploying earnings-reactions-brief job..."
+    gcloud run jobs create earnings-reactions-brief \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.earnings_reactions_brief" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update earnings-reactions-brief \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 600 \
+        --command "python,-m,gcp.earnings_reactions_brief" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Long-side "Next NVAX" weekly watchlist (Cloud Run Job, Sunday 7:45pm) ────
+# Joins upcoming earnings_calendar reporters against
+# earnings_options_strategy_winners to surface tickers with prior
+# long-side history. Posts a Discord embed to the standard
+# DISCORD_WEBHOOK_URL.
+#
+# Capacity (CLAUDE.md §0):
+#   Volume: ~1,500 upcoming reporters × 360 winner rows joined
+#   Velocity: 1 SQL query + 1 Discord POST = ~3-5s total
+#   Wall: ~10s typical
+#   timeout: 600s (5× headroom — Discord can take 30+ sec under load)
+#   memory: 512Mi (single query result + small DataFrame)
+#   retries: 0 (idempotent — Sunday cron, miss is recoverable manually)
+deploy_earnings_long_watchlist() {
+    echo "Deploying earnings-long-watchlist job..."
+    gcloud run jobs create earnings-long-watchlist \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.earnings_long_watchlist" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update earnings-long-watchlist \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --command "python,-m,gcp.earnings_long_watchlist" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Signal monitor (Cloud Run Job — runs during market hours, exits at close) ─
+deploy_monitor() {
+    echo "Deploying signal monitor job..."
+    gcloud run jobs create signal-monitor \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 0 \
+        --task-timeout 28800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.signal_monitor" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-monitor \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,gcp.signal_monitor" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Signal-monitor EOD resolver (Cloud Run Job — runs after close) ──────────
+# Per Track D audit § 2 / G.P0.10: closes positions still open at 16:00 ET
+# (the in-process exit-watcher in signal-monitor only resolves while the
+# Job is alive; anything still-open at close lands here). Replays the same
+# exit logic against historical intraday bars and records target_hit /
+# time_stop / rsi_extreme / eod_close.
+#
+# Capacity calc (CLAUDE.md §0):
+#   Volume:    ~1,209 alerts × 250KB intraday window ≈ 300 MB peak
+#   Velocity:  1 SQL query per (ticker, day) — backfill ~10 (ticker, day)
+#              pairs ≈ 10 round-trips × 1.5s pg8000 = 15s + per-row math
+#   Wall:      ~5 min for one-shot backfill, ~30s daily steady-state
+#   timeout:   3600s = 1hr (≥ 4× wall-clock headroom)
+#   memory:    1Gi (peak 300 MB × 2 safety factor + Python overhead)
+#   retries:   0 (idempotent via is_open=FALSE; transient retries don't help)
+deploy_signal_monitor_eod_resolver() {
+    echo "Deploying signal-monitor-eod-resolver job..."
+    gcloud run jobs create signal-monitor-eod-resolver \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.signal_monitor_eod_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-monitor-eod-resolver \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,gcp.signal_monitor_eod_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Premarket playbook resolver (Cloud Run Job) ──────────────────────────────
+# EOD resolver for premarket_analysis brief-playbook outcomes (2026-05-11).
+# Walks each (analysis_date, ticker) row's RTH 1-min bars and records
+# trigger_hit_ts / target_hit_ts / stop_hit_ts / reversal / MAE / MFE /
+# EOD pnl. Self-heals when structured input columns are NULL via
+# derive_level_map_from_daily — see gcp/premarket_playbook_resolver.py.
+#
+# Capacity (CLAUDE.md §0):
+#   Volume:    ~3 tier-1 ETFs/day × 1 row × ~3 KB intraday window = tiny
+#   Velocity:  3 SQL reads + 3 writes per run = 6 round-trips
+#   Wall:      ~30s daily steady-state, ~5 min for one-shot backfill
+#   timeout:   3600s = 1hr (≥ 4× wall-clock headroom for backfill mode)
+#   memory:    1Gi (peak 50 MB × overhead margin)
+#   retries:   0 (idempotent via outcome_resolved_at; transient retries don't help)
+deploy_premarket_playbook_resolver() {
+    echo "Deploying premarket-playbook-resolver job..."
+    gcloud run jobs create premarket-playbook-resolver \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.premarket_playbook_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update premarket-playbook-resolver \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,gcp.premarket_playbook_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Phase 6 playbook generator (Cloud Run Job) ──────────────────────────────
+# Builds the 12 structured setup cards per ticker and upserts them into the
+# playbook_cards Cloud SQL table (the typed source /api/playbook reads).
+# Daily run keys cards to today; --as-of <date> backfills a past card set for
+# the dashboard's historical "view as of" mode (loads only bars before the
+# date — no look-ahead).
+#
+# Capacity (CLAUDE.md §0), re-measured 2026-09-06 (#861):
+#   Volume:    2.0M (IWM) / 2.3M (QQQ) / 2.4M (SPY) raw 1-min bars per
+#              ticker in market_data_intraday (2015 → today, extended hours
+#              included; the RTH filter runs after load). Each ticker's
+#              enriched frame is ~50 indicator columns × 8 B × rows plus
+#              pandas copy overhead ≈ 4-6 GB peak.
+#   Velocity:  1 Cloud SQL load per ticker + 1 upsert per ticker. No per-row
+#              SQL — cards are vectorised over the in-memory frame.
+#   Wall:      ~5 min per ticker (measured: IWM alone finished in 5m00s on
+#              2026-09-06). Tasks run in parallel, so ~5 min per execution.
+#   tasks:     3, one ticker per task (scripts/analysis/phase6_playbook.py
+#              select_tickers_for_task). A single process walking all three
+#              tickers was OOM-killed (signal 9) at 8Gi on the SECOND ticker
+#              on 2026-09-06: the first ticker's frame is not returned to
+#              the OS, so the working set grew with the ticker count. Per
+#              task, peak = one ticker, independent of how many tickers run.
+#   memory:    16Gi (4 CPU) — ≥ 2× the ~6 GB single-ticker peak (Rule 0:
+#              estimate the working set, double it). 8Gi is proven for IWM
+#              alone but not for SPY, which carries 21% more bars.
+#   timeout:   3600s (≥ 4× the 5-min wall).
+#   retries:   0 (idempotent upsert on PK (ticker, card_num, analysis_date);
+#              a transient retry would just re-run the 5-min load).
+#   cost:      3 tasks × ~5 min × (4 vCPU + 16Gi) ≈ $0.12/run × 21 runs/mo
+#              ≈ $2.60/month.
+# Both branches carry the sizing flags so `deploy.sh phase6-playbook`
+# converges a hand-tweaked live job back to this spec (#854).
+deploy_phase6_playbook() {
+    echo "Deploying phase6-playbook job..."
+    gcloud run jobs create phase6-playbook \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 16Gi --cpu 4 --max-retries 0 \
+        --tasks 3 --parallelism 3 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.analysis.phase6_playbook" \
+        --args="--write-db" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update phase6-playbook \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 16Gi --cpu 4 --max-retries 0 \
+        --tasks 3 --parallelism 3 \
+        --task-timeout 3600 \
+        --command "python,-m,scripts.analysis.phase6_playbook" \
+        --args="--write-db" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Gamma levels EOD (Cloud Run Job, research image) ─────────────────────────
+# Builds gamma_levels_eod (Kings / Gates / Flip per ticker-date) from the
+# alphavantage EOD chains in etf_options_snapshots. Scheduled nightly by
+# gamma-levels-daily (22:30 ET, deploy_schedulers) and read by
+# strat-engine-daily (23:35 ET) for the gamma/vex/vix features.
+#
+# Captured from the live job on 2026-09-07 (#829 K1 / #834 D2): the job
+# had been created by hand and this scheduler was the only mention of it
+# in the repo, so its image, sizing and timeout were unversioned and a
+# fresh-environment rebuild would have produced a scheduler pointing at
+# nothing. Every flag below reproduces `gcloud run jobs describe
+# p2-build-gamma-levels`: trading-system:research, python -m
+# gcp.research.p2_build_gamma_levels (default args = current year only,
+# ~1 min/ticker), cpu 2, memory 2Gi, maxRetries 0, timeoutSeconds 5400,
+# SA trading-runner, DB env + DB_PASS secret. Sizing review is a separate
+# question from the capture; see the #834 follow-up note on PR #1022.
+#
+# DB_PASS is named explicitly rather than taken from ${DB_SECRET_FLAG}:
+# `gcloud run jobs describe` shows the live job holding that one secret,
+# and gcp/research/p2_build_gamma_levels.py reads no API key or webhook,
+# so the shared flag would have granted this job the AlphaVantage key and
+# three Discord webhooks it never uses — a capture that widens what it
+# captured. tests/gcp/test_deploy_reachability.py pins the spec.
+deploy_p2_build_gamma_levels() {
+    echo "Deploying p2-build-gamma-levels job..."
+    local research_image; research_image=$(_research_image_ref) || return 1
+    gcloud run jobs create p2-build-gamma-levels \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.p2_build_gamma_levels" \
+        --set-secrets=DB_PASS=db-trading-pass:latest \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update p2-build-gamma-levels \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 --max-retries 0 \
+        --task-timeout 5400 \
+        --command "python" \
+        --args="-m,gcp.research.p2_build_gamma_levels" \
+        --set-secrets=DB_PASS=db-trading-pass:latest \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Strat Directionality Engine (Cloud Run Job, research image) ─────────────
+# Replaces the P7-era `p7b-next-candle-classifier` job (which is now used
+# only to keep the prior modeling pipeline reachable for reference;
+# scripts moved to gcp/research/_archive/).
+#
+# This single job hosts the entire strat_engine pipeline. Different
+# entry points are selected via --args:
+#   --args="-m,gcp.research.strat_engine.strat_orchestrator,--mode=full,--ticker=IWM,--tf=15m"
+#   --args="-m,gcp.research.strat_engine.strat_data_pipelineer,--tickers=IWM,--tf-only=15m"
+#   --args="-m,gcp.research.strat_engine.strat_data_pipeline,--mode=summary"
+#   --args="-m,gcp.research.strat_engine.strat_enrich_levels,--mode=backfill,--ticker=IWM,--tf=15m"
+#
+# Image: research (lightgbm + scikit-learn + scipy + shap). Build it with the
+# `build-research` target below — `gcloud builds submit` has no -f/--file flag,
+# so the Dockerfile must be named `Dockerfile` in the build context (we stage a
+# tmpdir, exactly like build_image does for the main image).
+build_research_image() {
+    echo "Building RESEARCH Docker image (lightgbm + sklearn + scipy + shap)..."
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    cp requirements-gcp.txt requirements-research.txt "$tmpdir/"
+    cp requirements-gcp.lock "$tmpdir/" 2>/dev/null || true
+    cp alert_config.json "$tmpdir/"
+    cp gcp/Dockerfile.research "$tmpdir/Dockerfile"
+    cp -r lib/    "$tmpdir/lib/"
+    cp -r gcp/    "$tmpdir/gcp/"
+    cp -r scripts/ "$tmpdir/scripts/"
+    _stamp_build_info "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
+    # Same guard as build_image: this build moves :research, which the
+    # research jobs pin by digest (Codex, PR #1004).
+    pin_image_tags || { echo "ERROR: pinning failed; not building (the build would move :research off an unpinned digest)." >&2; rm -rf "$tmpdir"; return 1; }
+    RESEARCH_IMAGE_REF=$(_submit_build "${IMAGE}:research" "$tmpdir") || { RESEARCH_IMAGE_REF=""; echo "ERROR: research build failed; nothing to deploy." >&2; rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"; echo "Built ${RESEARCH_IMAGE_REF} (#1171)."
+}
+
+deploy_strat_engine() {
+    echo "Deploying strat-engine job..."
+    # 16Gi memory matches the live job (raised by hand from 8Gi after the
+    # daily incremental run outgrew it; docs/audits/2026-08-27-claude-
+    # codebase-review/08-infra-drift.md). Declared on both branches so `all`
+    # converges to it instead of halving the budget (Codex on #1022). Operator-only mode
+    # `--rebuild --start-date=2016-01-01` loads ~1M 1-min SPY bars +
+    # the equivalent for IWM/QQQ into memory before featurizing and
+    # has tripped OOM at 8Gi (rrjlc, 2026-06-01 05:53 UTC — see
+    # docs/incidents/2026-06-01-pipeline-failures-audit.md F3). To run
+    # a full-history rebuild, dispatch with --memory 32Gi:
+    #   gcloud run jobs update strat-engine --memory 32Gi --region us-east1
+    #   gcloud run jobs execute strat-engine \
+    #       --args="-m,gcp.research.strat_engine.strat_data_builder,--rebuild,--start-date=2016-01-01" \
+    #       --region us-east1 --wait
+    #   gcloud run jobs update strat-engine --memory 8Gi --region us-east1
+    local research_image; research_image=$(_research_image_ref) || return 1
+
+    # DAILY-INCREMENTAL args: bare strat_data_builder dispatch picks up
+    # TICKERS_DEFAULT = ['SPY','IWM','QQQ'] across every TF in TF_LIST
+    # and does an INCREMENTAL write (adds bars since the per-(ticker, tf)
+    # cached max bar_date). Closes the 2026-06-09 → 06-19 gap where
+    # strat_features_5m/15m/30m had no scheduled writer; every consumer
+    # downstream (mag_inference, signal_monitor's feature joins) went
+    # stale silently. Audit-infra-drift + freshness-watchdog can't
+    # detect a missing scheduler — only a stale writer. Hence the new
+    # `strat-engine-daily` cron registered below, paired with
+    # `audit_data_freshness.py` tracking the three strat_features_<tf>
+    # tables (this PR).
+    #
+    # Operator-discretion modes (override --args at execute time):
+    #   --recompute-cols=COLS    targeted recompute of specific columns
+    #                            (short-circuits incremental featurize)
+    #   --rebuild --start-date=  full historical rebuild — needs 32Gi:
+    #     gcloud run jobs update strat-engine --memory 32Gi
+    #     gcloud run jobs execute strat-engine \
+    #       --args="-m,gcp.research.strat_engine.strat_data_builder,--rebuild,--start-date=2016-01-01"
+    #     gcloud run jobs update strat-engine --memory 8Gi
+    local default_args="-m,gcp.research.strat_engine.strat_data_builder"
+
+    gcloud run jobs create strat-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 16Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="${default_args}" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update strat-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 16Gi --cpu 4 --max-retries 0 \
+        --command "python" \
+        --args="${default_args}" \
+        --task-timeout 5400 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Direction Probe (Cloud Run Job, research image) ─────────────────────────
+# Phase 1 of the directionality research program. Runs the LABEL-reframe probes
+# in gcp/research/strat_engine/strat_dir_probes.py (e1_horizon, e2_trigger)
+# through the exact production walk-forward harness the failed baseline used.
+# Research only — NO production hooks, NO scheduler. Same image as strat-engine
+# (build with `build-research`). Dedicated job so the shared strat-engine daily
+# job is never disturbed.
+#
+# Per-run variation is via --args at execute time, e.g.:
+#   gcloud run jobs execute direction-probe --region us-east1 --wait \
+#     --args="-m,gcp.research.strat_engine.strat_dir_probes,\
+#             --experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=5"
+deploy_direction_probe() {
+    echo "Deploying direction-probe job (Phase 1 directionality probes)..."
+    local research_image; research_image=$(_research_image_ref) || return 1
+    # 4 CPU / 8Gi mirrors strat-engine: featurize-once over ~5-15 yr of
+    # intraday bars for one ticker/tf, then 8 LightGBM folds. max-retries 0
+    # (Rule 0: a stuck run fails loud). task-timeout 5400 is ≥4× the ~3-min
+    # wall estimate (Rule 0 sizing checklist).
+    gcloud run jobs create direction-probe \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.strat_engine.strat_dir_probes,--experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=15" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update direction-probe \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.research.strat_engine.strat_dir_probes,--experiment=e1_horizon,--ticker=IWM,--tf=15m,--horizon=15" \
+        --task-timeout 5400 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Build Options Daily Greeks (Cloud Run Job, research image) ──────────────
+# Materializes etf_options_daily_greeks (daily DEX/vanna/charm per ticker) so
+# the flow-direction feature loader never re-scans the ~14M-row
+# etf_options_snapshots table per experiment (Rule 0). Backfill once, then run
+# incrementally after the EOD options fetch.
+#   Backfill (one-off, per ticker, sequential — avoid concurrent full scans):
+#     gcloud run jobs execute build-options-greeks --region us-east1 --wait \
+#       --args="-m,gcp.build_options_daily_greeks,--backfill,--ticker,IWM"
+#   Incremental (scheduled): default --args runs --incremental --days 7.
+# 4Gi/2CPU: the per-ticker daily frame is tiny; headroom is for the SPY
+# near-term contract pull. max-retries 0 (fail loud). 7200s task-timeout:
+# the value the live job carried when 0d942f0 declared the research jobs'
+# live sizing on 2026-09-07 (this file said 3600 while production ran
+# 7200). The scheduled incremental run measures 33-51 s (executions
+# 2026-08-29 .. 2026-09-05); the budget is for the sequential per-ticker
+# --backfill path above, which scans every stored session.
+deploy_build_options_greeks() {
+    echo "Deploying build-options-greeks job (materialized daily greeks)..."
+    local research_image; research_image=$(_research_image_ref) || return 1
+    gcloud run jobs create build-options-greeks \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 \
+        --task-timeout 7200 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.build_options_daily_greeks,--incremental,--days=7" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update build-options-greeks \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.build_options_daily_greeks,--incremental,--days=7" \
+        --task-timeout 7200 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── build-options-daily-features (Cloud Run Job, research image) ────────────
+# Materializes the daily options-flow features (PCR vol/OI, 25Δ IV skew, ATM IV)
+# into options_daily_features so the research harness reads ~2,600 rows/ticker
+# instead of re-scanning the ~52 GB etf_options_snapshots table on every
+# walk-forward run (the join dropped from ~9-20 min to ~0.8 s). Reuses the EXACT
+# live aggregation (lib/features/experimental/options_derived.build_materialized)
+# so stored values are byte-identical to recompute. Also the frontend-surfaceable
+# daily options-flow series.
+#   Backfill (one-off, per ticker — the 2026 REALTIME slice is slow, isolate it):
+#     gcloud run jobs execute build-options-daily-features --region us-east1 --wait \
+#       --task-timeout 10800 \
+#       --args="^|^-m|gcp.fetchers.build_options_daily_features|--tickers=IWM|--since=2016-01-01"
+#   Incremental (scheduled): default --args runs --incremental --days 7.
+# 4Gi/2CPU mirrors build-options-greeks; the daily frame is tiny. max-retries 0.
+deploy_build_options_daily_features() {
+    echo "Deploying build-options-daily-features job (materialized options flow)..."
+    local research_image; research_image=$(_research_image_ref) || return 1
+    gcloud run jobs create build-options-daily-features \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.fetchers.build_options_daily_features,--incremental,--days=7" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update build-options-daily-features \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.fetchers.build_options_daily_features,--incremental,--days=7" \
+        --task-timeout 3600 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── build-realtime-gex (Cloud Run Job, research image) ──────────────────────
+# Materializes REAL intraday dealer GEX/DEX from the av-options-realtime feed
+# into realtime_gex_15m (gcp/build_realtime_gex.py). Default = incremental last
+# 3 days (the scheduled daily path; scheduler `realtime-gex-daily` at 17:00 ET
+# weekdays, after close + the day's intraday bars land). Backfill the live
+# window with --args="-m,gcp.build_realtime_gex,--backfill". Exists so the
+# real-intraday-DEX LEAD accrues in a query-cheap table for a future walk-forward.
+deploy_build_realtime_gex() {
+    echo "Deploying build-realtime-gex job (real intraday GEX/DEX)..."
+    local research_image; research_image=$(_research_image_ref) || return 1
+    gcloud run jobs create build-realtime-gex \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.build_realtime_gex,--incremental,--days=3" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update build-realtime-gex \
+        --image "${research_image}" --region "${REGION}" \
+        --command "python" \
+        --args="-m,gcp.build_realtime_gex,--incremental,--days=3" \
+        --task-timeout 1800 \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Magnitude Engine (Cloud Run Job, research image) ────────────────────────
+# Predicts bucketed magnitude of next bar's |close - open| in ATR-20 multiples.
+# Walk-forward research only — NO production hooks. Same image as strat-engine.
+#
+# Common entry points:
+#   --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells"
+#   --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase1,--ticker=IWM,--tf=15m"
+#   --args="-m,gcp.research.magnitude_engine.mag_leakage_audit,--ticker=IWM,--tf=15m"
+deploy_magnitude_engine() {
+    echo "Deploying magnitude-engine job (task-parallel)..."
+    local research_image; research_image=$(_research_image_ref) || return 1
+    # Task-parallel design:
+    #   --tasks=27 --parallelism=27   — fan out to 27 independent workers,
+    #                                   one per (phase, ticker, tf) cell of
+    #                                   plan=no_backfill (3 phases × 9).
+    #   --task-timeout 5400           — 90 min per cell (one cell ≤ 60 min
+    #                                   in practice with all 4 CPUs to itself)
+    #   --memory 8Gi --cpu 4          — per-task allocation
+    #   --max-retries 0               — Rule 0: a stuck cell fails loud
+    # Run-time plan is chosen at EXECUTE time via --update-env-vars=MAG_PLAN=...
+    # (default plan stamped here is no_backfill so a bare execute works).
+    #
+    # MAG_PERSIST_PRODUCTION_MODEL / MAG_CLASS_WEIGHT_POWER live HERE, not
+    # on the job by hand: --set-env-vars replaces the whole set, and on
+    # 2026-09-08 a redeploy from this function silently dropped both (they
+    # had only ever been added to the live job out of band), so the next
+    # execution (magnitude-engine-2wv9z, ~$8) trained 27 cells and persisted
+    # nothing, with no gate run and LATEST untouched. Anything an execution
+    # depends on belongs in this list.
+    local plan_default=no_backfill
+    local plan_size=27
+    # ${research_image} is already a digest (_research_image_ref, #1189). Hand
+    # the job that same string as CONTAINER_IMAGE_DIGEST, so the provenance
+    # every walk-forward records names the image it actually ran, not a tag
+    # that moves under it (Codex P2 on #1193). The source revision travels
+    # inside the image (_stamp_build_info); nothing shells out to git at run
+    # time.
+    local mag_env="MAG_PLAN=${plan_default},MAG_PERSIST_PRODUCTION_MODEL=true,MAG_CLASS_WEIGHT_POWER=0.75,CONTAINER_IMAGE_DIGEST=${research_image}"
+    gcloud run jobs create magnitude-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${plan_size} --parallelism ${plan_size} \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING},${mag_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update magnitude-engine \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${plan_size} --parallelism ${plan_size} \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 5400 \
+        --command "python" \
+        --args="-m,gcp.research.magnitude_engine.mag_walk_forward" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING},${mag_env}" \
+        --quiet
+}
+
+# ── Direction-program baseline job (one-shot) ────────────────────────────────
+# Anchors the direction-predictability program: runs 3 axes (direction/size/
+# type) × 3 tickers = 9 walk-forward cells SERIALLY in a single task, records
+# a slice-ledger row per cell, and logs the pre-registered verdict. NOT
+# scheduled — executed on demand to establish the honest baseline every Phase-2
+# lever experiment must beat. The direction axis reproduces the 0/72 close-sign
+# control as a harness-trust check.
+#
+# Capacity (CLAUDE.md Rule 0 §2):
+#   Volume: 9 WF cells, each ~8 folds of LightGBM over the 5m feature surface.
+#   Velocity: 1 batched feature SELECT per cell; in-memory fold slicing (no N+1).
+#   Wall-clock: ≤ ~45 min p100 on a single 4-CPU task. task-timeout 10800s (3h)
+#               is ~4× headroom — Rule 0 §5 (CR bills runtime, headroom is free).
+#   Cost: ~$0.10 per manual run, on demand only. Effectively free.
+#   max-retries 0 — Rule 0: a stuck cell fails loud, no double-runs.
+deploy_direction_baseline() {
+    echo "Deploying direction-baseline job (one-shot 3-axis baseline)..."
+    local research_image; research_image=$(_research_image_ref) || return 1
+    gcloud run jobs create direction-baseline \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.baseline_runner,--tf=5m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update direction-baseline \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 10800 \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.baseline_runner,--tf=5m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Direction-program feature-importance / SHAP audit (one-shot) ─────────────
+# Ranks the ~75-143 baseline columns by LightGBM gain + mean|SHAP| for the
+# DIRECTION and SIZE engines, reusing each engine's exact production feature
+# path (loader -> featurize -> model factory -> same anchored cutoffs). Tells us
+# which columns carry the edge before Phase-2 adds new features. NOT scheduled.
+#
+# Capacity (CLAUDE.md Rule 0 §2):
+#   Volume: 2 axes × 3 tickers × ~8 folds = ~48 LightGBM fits + SHAP over the
+#           test slice each. SHAP TreeExplainer is the cost driver.
+#   Wall-clock: ≤ ~60 min p100 single 4-CPU task. task-timeout 10800s (3h) headroom.
+#   Cost: ~$0.15 per manual run, on demand only. max-retries 0 (fail loud).
+deploy_direction_importance() {
+    echo "Deploying direction-importance job (feature-importance/SHAP audit)..."
+    local research_image; research_image=$(_research_image_ref) || return 1
+    gcloud run jobs create direction-importance \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.feature_importance,--tf=5m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update direction-importance \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 8Gi --cpu 4 --max-retries 0 \
+        --task-timeout 10800 \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.feature_importance,--tf=5m" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Direction-program Phase-2 ablation (task-parallel, one task per config) ──
+# Volume: 14 configs (2 axes × [baseline + 5 isolation + 1 stack]) × 3 tickers
+#         × 8 folds. Velocity: 1 batched feature SELECT per (ticker,cfg); daily
+#         options read from the materialized options_daily_features table.
+# Wall-clock: one config ≈ baseline (~40 min); task-parallel => ~40 min total.
+# task-timeout 10800s (4×). max-retries 0 (fail loud). ~$0.15/run, on demand.
+# PREREQUISITE (run once, not in this job): materialize options daily features
+#   python -c "from gcp.database import get_engine; \
+#     from lib.features.experimental.options_derived import build_materialized; \
+#     e=get_engine(); [build_materialized(e,t,'2015-01-01','2026-07-08') \
+#       for t in ('IWM','SPY','QQQ')]"
+# ── Magnitude recalibration experiment (one-shot) ──────────────────────────
+# Phase-2 ablation found the SIZE baseline log-loss beat is ~-0.148 (worse than
+# the base-rate constant) with calibration=none + class_weight=balanced. Tests
+# whether isotonic calibration closes that gap. Runs phase0 --all-cells (3
+# tickers x 3 tfs) with --calibration=isotonic. Compare the 5m cells to the
+# phase-2 size baseline. One-shot, not scheduled. max-retries 0.
+deploy_magnitude_recal() {
+    echo "Deploying magnitude-recal job (isotonic calibration experiment)..."
+    local research_image; research_image=$(_research_image_ref) || return 1
+    gcloud run jobs create magnitude-recal         --image "${research_image}" --region "${REGION}"         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800         --service-account "${SA_EMAIL}"         --command "python"         --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells,--calibration=isotonic"         ${DB_SECRET_FLAG} --set-env-vars "${ENV_STRING}" --quiet 2>/dev/null ||     gcloud run jobs update magnitude-recal         --image "${research_image}" --region "${REGION}"         --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800         --command "python"         --args="-m,gcp.research.magnitude_engine.mag_walk_forward,--phase=phase0,--all-cells,--calibration=isotonic"         ${DB_SECRET_FLAG} --set-env-vars "${ENV_STRING}" --quiet
+}
+
+deploy_direction_phase2() {
+    echo "Deploying direction-phase2 ablation job (task-parallel)..."
+    local research_image; research_image=$(_research_image_ref) || return 1
+    local n=14
+    gcloud run jobs create direction-phase2 \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${n} --parallelism ${n} \
+        --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.phase2_ablation" \
+        ${DB_SECRET_FLAG} --set-env-vars "${ENV_STRING}" --quiet 2>/dev/null || \
+    gcloud run jobs update direction-phase2 \
+        --image "${research_image}" --region "${REGION}" \
+        --tasks ${n} --parallelism ${n} \
+        --memory 8Gi --cpu 4 --max-retries 0 --task-timeout 10800 \
+        --command "python" \
+        --args="-m,gcp.research.direction_program.phase2_ablation" \
+        ${DB_SECRET_FLAG} --set-env-vars "${ENV_STRING}" --quiet
+}
+
+# ── Magnitude live-inference job ──────────────────────────────────────────────
+# Phase B of magnitude productionization. Daily cron at 09:25 ET scores
+# the most-recent settled bars from strat_features_<tf> using the
+# canonical production model (gs://${PROJECT_ID}-trading-data/
+# magnitude-models/production/{ticker}/{tf}/model.joblib) and upserts
+# results to magnitude_per_bar_predictions with source='inference'.
+#
+# Capacity (CLAUDE.md Rule 0 §2):
+#   Volume: 3 cells × ~78 bars/24h = ~234 INSERT-target rows/day.
+#   Velocity: 1 SELECT per cell + 1 model.predict_proba + 1 INSERT.
+#   Wall-clock: < 30s for the whole job. 300s task-timeout is 10× p100.
+#
+# Cost: ~$0.0005/run × 252 sessions/yr ≈ $0.13/yr. Effectively free.
+#
+# Failure handling: half-or-more cell failures -> exit 1
+# (failure-notifier opens issue). Under-half -> WARN. Matches the F11
+# threshold pattern from 2026-06-01-pipeline-failures-audit F6/F11.
+deploy_magnitude_inference() {
+    echo "Deploying magnitude-inference job..."
+    local research_image; research_image=$(_research_image_ref) || return 1
+
+    gcloud run jobs create magnitude-inference \
+        --image "${research_image}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 300 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.research.magnitude_engine.mag_inference" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update magnitude-inference \
+        --image "${research_image}" --region "${REGION}" \
+        --task-timeout 300 \
+        --command "python,-m,gcp.research.magnitude_engine.mag_inference" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── (DEPRECATED) P7b next-candle classifier ─────────────────────────────────
+# Quarantined 2026-05-26 — script moved to gcp/research/_archive/. The
+# Cloud Run Job itself stays around briefly so any in-flight references
+# resolve, but new work should use deploy_strat_engine above.
+# Removing this function next: when no `p7b-next-candle-classifier-*`
+# executions are pending and no other code path dispatches it.
+deploy_p7b_classifier_DEPRECATED() {
+    echo "DEPRECATED — use deploy_strat_engine instead."
+    return 1
+}
+
+# ── Weekend review (Cloud Run Job) ───────────────────────────────────────────
+deploy_weekend() {
+    echo "Deploying weekend review job..."
+    gcloud run jobs create weekend-review \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.weekend_review" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update weekend-review \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,gcp.weekend_review" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# ── Data-fetching jobs ────────────────────────────────────────────────────────
+deploy_fetch_market_data() {
+    echo "Deploying fetch-market-data job..."
+    # 5400s (90 min) timeout: nightly path (EARNINGS_WINDOW_DAYS=7, ~100
+    # tickers at 150 RPM) finishes in ~5 min. The headroom is for
+    # `--backfill BACKFILL_ALL_HISTORY=true` runs against the full
+    # earnings_history universe (~1,700 tickers); at the premium-tier
+    # 1.0s AV pacing default that's ~30 min, plus per-ticker upsert.
+    # Headroom = ~3x; Cloud Run charges runtime, not the cap.
+    local env
+    env="${ENV_STRING},EARNINGS_WINDOW_DAYS=7"
+
+    gcloud run jobs create fetch-market-data \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 2 \
+        --task-timeout 5400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_market_data" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-market-data \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 5400 \
+        --command "python,-m,gcp.fetchers.fetch_market_data" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${env}" \
+        --quiet
+}
+
+deploy_backfill_daily_indicators() {
+    echo "Deploying backfill-daily-indicators job..."
+    # Self-healing job that fixes NULL derived-indicator columns in
+    # market_data_daily. Default mode=daily auto-discovers tickers with
+    # healable derived-column gaps in the last 7 days — cheap when
+    # healthy. Weekly --mode=full sweep catches anything daily missed.
+    #
+    # Sizing (re-measured 2026-08-24, issue #751 — the 3h timeout died
+    # daily once the universe hit ~2,580 tickers at ~5.5s each ≈ 3.9h):
+    #   worst-case daily  : 2,580 tickers × ~2.2s / 4 workers ≈ 35–95min
+    #   worst-case full   : 2,580 tickers × ~5s   / 4 workers ≈ 1.5–2.5h
+    #   healthy daily     : ≲100 tickers ≈ 2–4 min
+    # task-timeout 36000s (10h) ≈ 4× the full-mode estimate (Rule 0.5 —
+    # Cloud Run bills actual runtime, not the cap). cpu=2/2Gi: 4 worker
+    # threads overlap pg8000 I/O with pandas compute.
+    # Cost: typical day ≲$0.02; worst-case full sweep ≈ $0.45/run.
+    gcloud run jobs create backfill-daily-indicators \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 --max-retries 0 \
+        --task-timeout 36000 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backfill-daily-indicators \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 2Gi --cpu 2 \
+        --task-timeout 36000 \
+        --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+deploy_fetch_alphavantage() {
+    echo "Deploying fetch-alphavantage-intraday job..."
+    # ALPHA_VANTAGE_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per
+    # G.P0.9; no per-deploy resolution needed.
+    gcloud run jobs create fetch-alphavantage-intraday \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 1 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-alphavantage-intraday \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# AV HISTORICAL_OPTIONS audit-and-fill job (etf_options_snapshots writer).
+# Replaces the disabled .github/workflows/fetch-alphavantage-options-daily.yml.
+#
+# Spec design:
+# - --from-latest tells the fetcher to compute start-date = MAX(snapshot_date
+#   in etf_options_snapshots) + 1 day across the requested tickers. end-date
+#   defaults to today. This makes the job self-resuming: every Cloud Scheduler
+#   invocation catches up from wherever the last successful run left off, no
+#   spec edits or args overrides needed as time advances. Initial runs against
+#   an empty table fall through to start=today (caller can override with an
+#   explicit --start-date for a wide historical backfill).
+# - Range mode auto-enables --skip-existing in the fetcher, so re-runs only
+#   fetch (ticker, date) pairs missing from etf_options_snapshots — cheap
+#   incremental cost after the first full backfill.
+# - Secrets (DB_PASS, AV_API_KEY) are mounted via --set-secrets rather than
+#   inlined through _env_string. Inlined keys land as plaintext in the Job
+#   spec where anyone with run.viewer can read them via gcloud run jobs
+#   describe; secret refs require secretmanager.secretAccessor at runtime.
+#   This is the pattern the other deploy_fetch_* functions should migrate to.
+# - max-retries 0 because Cloud Run can't distinguish transient from
+#   permanent failures, and the job is idempotent (ON CONFLICT DO UPDATE)
+#   so a re-dispatch after failure converges without duplicate emails.
+# - 12h task-timeout sized for the worst case of an empty-SQL initial run
+#   (~10 years × 4 tickers ≈ 10K AV calls @ 150 RPM ≈ 70 min). Steady-state
+#   monthly runs finish in under a minute (~22 trading days × 4 tickers).
+#
+# Scheduler binding: av-options-monthly cron at 0 5 1 * * (5:00 UTC on the
+# 1st of every month) — see deploy_schedulers().
+deploy_av_options_backfill() {
+    echo "Deploying fetch-av-options-backfill job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    # Both branches pass the full set of runtime flags so an existing
+    # out-of-band job converges to the captured spec on every deploy.
+    # gcloud run jobs update leaves omitted flags untouched, so without
+    # mirroring memory/cpu/retries/timeout/SA on the update branch a
+    # hand-tweaked job would never reconverge from `deploy.sh fetchers`.
+    local common_flags=(
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
+        --memory 2Gi --cpu 1 --max-retries 0
+        --task-timeout 43200
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_av_historical_options"
+        # CLAUDE.md Rule 0 — `--args "value"` (space form) works ONLY if value
+        # contains no `=`. Empirically verified 2026-05-29: any `=` in the
+        # value (even after a comma, e.g. `--tickers,SPY,--from=2025`) makes
+        # gcloud's argparse reject it with "expected one argument". If you
+        # add a `--flag=value` here, switch to `--args=^|^arg1|arg2` form.
+        --args "--tickers,SPY IWM QQQ SPX,--from-latest"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create fetch-av-options-backfill "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update fetch-av-options-backfill "${common_flags[@]}"
+}
+
+# Companion to deploy_av_options_backfill — same image, same secrets,
+# different entrypoint. Runs every 5 min during RTH and writes
+# market_session='REALTIME' rows to etf_options_snapshots. Wired into the
+# scheduler via `av-options-realtime` (see deploy_schedulers).
+#
+# Added 2026-05-22 after AV subscription upgrade to the realtime-options
+# tier ($199.99/mo, 600 req/min). See
+# docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md for the
+# multi-track plan this job unlocks (Tracks 1-5).
+deploy_av_options_realtime() {
+    echo "Deploying fetch-av-options-realtime job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    # Sizing per CLAUDE.md Rule 0 back-of-envelope:
+    #   3 tickers × ~14k contracts/snapshot × 3-5s wall-clock per snapshot
+    #   = ~10-15s total wall-clock; --task-timeout=600 gives ~50x headroom.
+    #   --memory=512Mi peak working set is ~120 MiB (one ticker chain at a
+    #   time), 4x headroom. --max-retries=0 is the Rule 0 default — a
+    #   transient AV blip at 14:05 is recovered automatically by the 14:10
+    #   fire 5 min later; no need for Cloud Run-side retry to double-write.
+    local common_flags=(
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_av_realtime_options"
+        # Same `=`-trap as deploy_av_options_backfill above — if you add a
+        # `--flag=value` to args, switch to `--args=^|^arg1|arg2` form.
+        --args "--tickers,SPY IWM QQQ"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create fetch-av-options-realtime "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update fetch-av-options-realtime "${common_flags[@]}"
+}
+
+# Daily retention prune for etf_options_snapshots — deletes REALTIME rows older
+# than 30 days (EOD rows are never touched). Companion to the two options jobs
+# above: same image, same DB secrets, no AV key (it does no API calls). Wired
+# into the scheduler via `options-retention-daily` (see deploy_schedulers).
+# Entrypoint gcp/options_retention_job.py; policy + capacity math documented
+# there. Added 2026-06-11 to cap REALTIME's ~2.6M rows/day unbounded growth.
+deploy_options_retention() {
+    echo "Deploying etf-options-retention job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},RETENTION_DAYS=30"
+
+    # Sizing per CLAUDE.md Rule 0:
+    #   Steady state deletes ~2.6M rows/day in hourly snapshot_ts windows per
+    #   ticker. Row-delete + 3-index maintenance measured ~175k rows / ~52s, so
+    #   a full day's prune is ~13 min wall-clock; --task-timeout=3600 gives
+    #   ~4.6x headroom and covers a few-day backlog. A timeout mid-run is
+    #   non-fatal: each window commits and the next run resumes from min(ts).
+    #   --memory=512Mi (the job streams windows, holds none in memory).
+    #   --max-retries=0 (Rule 0 default); a missed day is recovered next run.
+    #   NB: the table is autovacuum-clean (0 dead tuples, autovacuum healthy).
+    #   Retention's daily deletes free space that autovacuum returns for REUSE
+    #   by the day's new inserts, so the physical file stays ~flat at live-data
+    #   size — no routine VACUUM FULL needed. VACUUM FULL only helps for a
+    #   one-time disk shrink after a large one-off delete (e.g. if the window is
+    #   ever cut below 30 days).
+    local common_flags=(
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 3600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.options_retention_job"
+        --set-secrets=DB_PASS=db-trading-pass:latest
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create etf-options-retention "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update etf-options-retention "${common_flags[@]}"
+}
+
+# REMOVED 2026-05-28: deploy_av_options_historical_intraday and the
+# companion fetcher gcp/fetchers/fetch_av_historical_options_intraday.py.
+# The premise was wrong — AV's HISTORICAL_OPTIONS endpoint accepts a
+# `date=YYYY-MM-DD` param (EOD snapshot only); there is no `datetime=`
+# param for historical intraday options. Empirical test on
+# 2022-01-03T09:50:00 ET returned the CURRENT chain (2026-05-26
+# expirations), not the 2022 chain — AV silently ignored the
+# unsupported param and returned the live snapshot.
+#
+# The options-exec-backtest pivots to use the EXISTING EOD path
+# (fetch_av_historical_options.py via deploy_av_options_backfill) +
+# lib/options_intraday.reprice_intraday_option for the intraday
+# minute-by-minute BSM walk anchored to T-1 EOD IV.
+
+# Options exec backtest — Track B' (parallels lib/exec_backtest but trades
+# IWM 0DTE ATM options instead of the underlying). Mode dispatched at execute
+# time via --update-args:
+#   gcloud run jobs execute options-exec-backtest \
+#     --update-args="--mode=emit_timestamps,--out=gs://..."  --wait
+#   gcloud run jobs execute options-exec-backtest \
+#     --update-args="--mode=base"  --wait
+#
+# Per Rule 0 sizing:
+# - Volume: IWM × 3 cells × 5 folds; each cell-fold trains 1 LGBM and
+#   replays ~3-10k setups against pre-loaded 1m bars + pre-loaded IV
+#   snapshots. ~50k total trades simulated.
+# - Velocity: 5 folds × 3 cells × ~60s per LGBM fit = ~15 min training.
+#   Setups replayed at ~0.5ms each in pure pandas/numpy.
+# - Wall-clock estimate: ~25 min; task-timeout 14400 (4hr) for headroom.
+# - Memory: 1m IWM bars 2018-2026 ~250 MiB + features matrix ~1 GiB per cell.
+#   8Gi allocation.
+# - max-retries 0; non-idempotent (writes to a new GCS run_id each time).
+deploy_options_exec_backtest() {
+    echo "Deploying options-exec-backtest job..."
+
+    # This job imports gcp.research.strat_engine.strat_pred_train which
+    # depends on lightgbm + scikit-learn — both are in the RESEARCH
+    # image, not the prod image. The research image must be built
+    # first (see deploy_strat_engine for the same dependency).
+    local research_image; research_image=$(_research_image_ref) || return 1
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+
+    local common_flags=(
+        --image "${research_image}" --region "${REGION}"
+        --memory 8Gi --cpu 2 --max-retries 0
+        --task-timeout 14400
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,lib.options_exec_backtest.cli"
+        # CLAUDE.md Rule 0: --args=VALUE (single token) when value starts
+        # with `-`, otherwise gcloud parses the value as a new flag.
+        "--args=--mode=base"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create options-exec-backtest "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update options-exec-backtest "${common_flags[@]}"
+}
+
+# Ad-hoc DB query Cloud Run Job — CR-native replacement for the GHA
+# `.github/workflows/db-query.yml` workflow. Reads SQL from env vars
+# (overridable at execute time via `gcloud run jobs execute db-query
+# --update-env-vars=DB_QUERY_SQL=...`); writes results to GCS at
+# `gs://${PROJECT_ID}-trading-data/query-results/${CLOUD_RUN_EXECUTION}/`.
+# The sandbox dispatches over 443 (no Cloud SQL port needed); reads
+# results back via `gcloud storage cat`. See gcp/db_query_job.py for the
+# entrypoint and scripts/db_query_cr.sh for the dispatcher.
+#
+# Why this exists 2026-05-30: the GHA workflow has been broken by a
+# repo-level Actions outage since 2026-05-29. The CR-native path
+# routes around it.
+#
+# Sizing: 1 vCPU, 512MiB, 10-min timeout. Same Postgres connector
+# code path as the other CR jobs.
+deploy_db_query() {
+    echo "Deploying db-query job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    # Default SQL — overridden at execute time via --update-env-vars.
+    # SELECT 1 is a safe sanity check that proves the job pipeline works.
+    non_secret_env="${non_secret_env},DB_QUERY_SQL=SELECT 1 AS sanity_check"
+
+    local secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+
+    local common_flags=(
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.db_query_job"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create db-query "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update db-query "${common_flags[@]}"
+}
+
+# Freshness watchdog — CR-native replacement for the GHA
+# `.github/workflows/freshness-watchdog.yml` workflow. Runs
+# `scripts/audit_data_freshness.py --strict` against Cloud SQL on a
+# schedule; any stale table makes the job exit non-zero, which the
+# existing failure-notifier Cloud Run Service catches via its log sink
+# and posts to Discord. Same coverage, same alerting, no GHA dependency.
+#
+# Triggered 2026-05-30 by the GHA-side outage that broke the GHA
+# watchdog (along with every other workflow in the repo).
+#
+# Sizing: 1 vCPU, 512MiB, 15-min timeout. The audit hits one SELECT
+# per table (~20 tables); first run on the CR image clocked 14m9s
+# end-to-end (vs the GHA runs that took ~1-2m). The wall-clock
+# difference is suspicious — likely Cloud SQL connector setup +
+# per-query handshake latency adds up, OR the script's tabulate
+# output is buffered and only flushes at the end (all log lines
+# stamp the same second). Functionally correct either way; 15-min
+# task-timeout (900s) gives 2x headroom over the observed worst case.
+# The hourly scheduler will queue overlapping invocations naturally
+# (max-retries=0 prevents snowball; concurrent runs are independent).
+# TODO: profile the script under CR — if connection-pool reuse fixes
+# the 14m, drop task-timeout back to 300s.
+deploy_freshness_watchdog() {
+    echo "Deploying freshness-watchdog job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+
+    local common_flags=(
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        # 3600s (1h) task-timeout: observed wall-clock floats 8m–14m9s
+        # across recent runs (variance >50%). The 900s budget had only
+        # 1.07x headroom and tripped a timeout on 2026-05-30 15:50
+        # (rndfd) and 2026-06-01 13:00 (nd4x2). Per CLAUDE.md Rule 0.5,
+        # task-timeout >= 4x wall-clock — 60 min is 4.3x the 14 min p100.
+        # Cloud Run charges runtime, not the cap. See
+        # docs/incidents/2026-06-01-pipeline-failures-audit.md F2.
+        --task-timeout 3600
+        --service-account "${SA_EMAIL}"
+        --command "python,scripts/audit_data_freshness.py"
+        # CLAUDE.md Rule 0: --args=VALUE because value starts with -.
+        "--args=--strict"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create freshness-watchdog "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update freshness-watchdog "${common_flags[@]}"
+}
+
+# ── Infra drift detector ─────────────────────────────────────────────────────
+# Daily check that surfaces production-impacting drift between deployed
+# GCP state and the repo's expected state. The 2026-06-01 audit
+# documented two patterns this catches:
+#
+#   * Image-pinning drift — Cloud Run pins the `:latest` digest at
+#     update-time, so a job can run an outdated image indefinitely while
+#     `:latest` advances. Direct cause of fetch-earnings-history-5t2hr
+#     running pre-PR-#580 code for ~12h after the fix merged.
+#   * Scheduler orphans — Cloud Scheduler entries pointing at deleted /
+#     renamed CR Jobs (stale issue #555 from p7b-next-candle-classifier).
+#
+# Posts findings to DISCORD_WEBHOOK_URL. Exits 0 always — Discord is
+# the output channel, not the exit code, so the failure-notifier
+# doesn't double-spam on every drift finding.
+deploy_audit_infra_drift() {
+    echo "Deploying audit-infra-drift job..."
+
+    local non_secret_env
+    non_secret_env="GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
+
+    local common_flags=(
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        # Drift detection is API-bound: two `list jobs` and two
+        # `list schedulers`, none per job since #1171 (the per-job
+        # `executions list` went with the old digest comparison). 300s
+        # is far above that; it covers the tail when the APIs throttle.
+        --task-timeout 300
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_infra_drift"
+        --set-secrets "DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-infra-drift "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-infra-drift "${common_flags[@]}" || return 1
+    _ensure_audit_scheduler_viewer
+}
+
+_ensure_audit_scheduler_viewer() {
+    # The audit's orphan and paused-scheduler checks list Cloud Scheduler
+    # jobs as ${SA_EMAIL}, which 403s without roles/cloudscheduler.viewer
+    # (#1201). Only a project owner can grant it, so check, try once, and
+    # otherwise print the owner's command. Never fail the deploy over it:
+    # the audit's other checks still run, and its post names the 403.
+    local held
+    held=$(gcloud projects get-iam-policy "${PROJECT_ID}" \
+        --flatten="bindings[].members" \
+        --filter="bindings.role=roles/cloudscheduler.viewer AND bindings.members=serviceAccount:${SA_EMAIL}" \
+        --format="value(bindings.role)" 2>/dev/null) \
+        || { echo "  WARNING: cannot read the IAM policy of ${PROJECT_ID}; the audit's scheduler role is unchecked (#1201)" >&2; return 0; }
+    [ -z "${held}" ] || return 0
+    if gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+            --member="serviceAccount:${SA_EMAIL}" --role="roles/cloudscheduler.viewer" \
+            --condition=None --quiet >/dev/null 2>&1; then
+        echo "  granted roles/cloudscheduler.viewer to ${SA_EMAIL} (#1201)"
+        return 0
+    fi
+    echo "  WARNING: ${SA_EMAIL} lacks roles/cloudscheduler.viewer, so audit-infra-drift's" >&2
+    echo "           scheduler checks will 403 (#1201). A project owner must run once:" >&2
+    echo "           gcloud projects add-iam-policy-binding ${PROJECT_ID} \\" >&2
+    echo "             --member=serviceAccount:${SA_EMAIL} --role=roles/cloudscheduler.viewer --condition=None" >&2
+    return 0
+}
+
+deploy_audit_magnitude_drift() {
+    echo "Deploying audit-magnitude-drift job..."
+
+    # DB credentials are required — fetch_distribution() queries
+    # magnitude_per_bar_predictions via gcp.database.get_engine().
+    # Codex P1 #641 caught the original env-only-stanza which would
+    # have crashed on every scheduled run.
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
+
+    local common_flags=(
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        # Model-quality drift check is one SQL aggregate over the last
+        # 7d of magnitude_per_bar_predictions (~3300 rows/cell × 3
+        # cells = ~10k rows max). The query is partition-keyed and
+        # returns ≤16 grouped rows. Local p100 ~200ms; 180s task-timeout
+        # is the same generous tail allowance audit-infra-drift uses.
+        #
+        # Cost (Rule 0.6): 512Mi + 1 vCPU, ~1s billable wall-clock/run.
+        # 1 vCPU-s + 0.5 GiB-s ≈ $0.000025/run. ~22 weekday runs/mo →
+        # $/run × runs/day × 30 ≈ $0.0006/mo. Effectively free; Cloud SQL
+        # query cost is $0 (instance always-on).
+        --task-timeout 180
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_magnitude_drift"
+        --set-secrets "DB_PASS=db-trading-pass:latest,DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-magnitude-drift "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-magnitude-drift "${common_flags[@]}"
+}
+
+# Per-factor walk-forward audit — CR-native replacement for the GHA
+# `.github/workflows/per-factor-walkforward.yml` workflow. Runs the
+# audit script weekly via the gcp/audit_job_runner.py wrapper which
+# uploads the report to GCS + posts a phone-friendly comment to the
+# tracking issue (variable AUDIT_TRACKING_ISSUE in the env block).
+#
+# Wired 2026-05-30 alongside db-query + freshness-watchdog as part of
+# the "everything on Cloud Run" consolidation triggered by the
+# GHA-platform outage.
+deploy_audit_walkforward() {
+    echo "Deploying audit-walkforward job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_MODULE=scripts.analysis.per_factor_walkforward"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_ARGS=--folds 4"
+    non_secret_env="${non_secret_env},AUDIT_WINDOW_DAYS=30"
+    non_secret_env="${non_secret_env},AUDIT_ALLOWED_EXIT_CODES=0,3"
+    non_secret_env="${non_secret_env},AUDIT_COMMENT_TITLE=🔁 Weekly walk-forward audit"
+    # Tracking issue lives in the env; an empty value disables the
+    # GitHub comment without breaking the run. Override per-execution
+    # if needed via --update-env-vars=AUDIT_TRACKING_ISSUE=NNN.
+    non_secret_env="${non_secret_env},AUDIT_TRACKING_ISSUE="
+
+    local common_flags=(
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 1800
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_job_runner"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-walkforward "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-walkforward "${common_flags[@]}"
+}
+
+# Brief bias verification audit — CR-native replacement for the GHA
+# `.github/workflows/verify-brief-bias.yml` workflow. Same pattern as
+# audit-walkforward but uses --since (not --start/--end) and exits
+# strictly on any NULL bias (no AUDIT_ALLOWED_EXIT_CODES tolerance for
+# exit 1, which is the "found NULL" signal).
+deploy_audit_brief_bias() {
+    echo "Deploying audit-brief-bias job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_MODULE=scripts.analysis.verify_brief_bias"
+    # Pass --since via AUDIT_SCRIPT_ARGS (defaults to 2026-05-12 per the
+    # script's docstring). The wrapper's auto-window logic only fires
+    # when --since / --start aren't already in args.
+    non_secret_env="${non_secret_env},AUDIT_SCRIPT_ARGS=--since 2026-05-12 --tickers SPY,IWM,QQQ"
+    non_secret_env="${non_secret_env},AUDIT_WINDOW_DAYS=0"   # disable auto-window
+    non_secret_env="${non_secret_env},AUDIT_ALLOWED_EXIT_CODES=0"
+    non_secret_env="${non_secret_env},AUDIT_COMMENT_TITLE=🔍 Weekly brief bias verification"
+    non_secret_env="${non_secret_env},AUDIT_TRACKING_ISSUE="
+
+    local common_flags=(
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 1800
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.audit_job_runner"
+        --set-secrets "DB_PASS=db-trading-pass:latest"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create audit-brief-bias "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update audit-brief-bias "${common_flags[@]}"
+}
+
+# Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
+# Backfill mode pulls full history from 2015 (~3000 daily rows, <60s).
+# Default mode is the 14-day incremental window — wire to a daily scheduler
+# at ~00:30 UTC after FRED's nightly publication.
+deploy_fetch_fred_rates() {
+    echo "Deploying fetch-fred-rates job..."
+    # FRED_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
+    gcloud run jobs create fetch-fred-rates \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_fred_rates" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-fred-rates \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_fred_rates" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+deploy_fetch_economic_events() {
+    # `--source all` invokes both ForexFactory (release times +
+    # forecast/previous values direct from source) AND FRED (US
+    # agency releases via the canonical-time lookup in
+    # gcp/fetchers/fetch_economic_events.py:FRED_RELEASE_TIMES_ET).
+    # The previous `--source fred` form silently dropped FF — every
+    # event ended up TBD because FRED's API doesn't expose times.
+    echo "Deploying fetch-economic-events job..."
+    # FRED_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
+    gcloud run jobs create fetch-economic-events \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-economic-events \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
+        --args="" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+deploy_fetch_earnings_calendar() {
+    echo "Deploying fetch-earnings-calendar job..."
+    local ew_user ew_pass ew_env
+    ew_user="$(_secret ew-user 2>/dev/null || true)"
+    ew_pass="$(_secret ew-pass 2>/dev/null || true)"
+    ew_env="${ENV_STRING}${ew_user:+,EW_USER=${ew_user}}${ew_pass:+,EW_PASS=${ew_pass}}"
+
+    # task-timeout 1800s (30 min): the AV HISTORICAL_OPTIONS enrichment
+    # adds 1 API call per unique earnings ticker in the today-1..today+7
+    # window. At ~800–2000 unique tickers × 150 RPM ≈ 5–14 min, plus
+    # source fetches (~3 min) = ~10–17 min total. 30 min gives 2× headroom.
+    gcloud run jobs create fetch-earnings-calendar \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ew_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-earnings-calendar \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ew_env}" \
+        --quiet
+}
+
+# Pre-market refresh — runs at 8:30 AM ET (15 min before the brief)
+# to populate today's gap_pct / pre_high / pre_low for earnings reporters
+# and watchlist tickers. Without this, the morning brief sees NULL gap
+# data because the 11pm fetcher runs after-the-fact.
+#
+# Universe: ~50 tickers (today's earnings reporters with options flow
+# + yesterday's AMC + watchlist). One AV TIME_SERIES_INTRADAY call per
+# ticker, well under the AV premium tier's 1200/day budget.
+deploy_fetch_premarket_refresh() {
+    echo "Deploying fetch-premarket-refresh job..."
+    gcloud run jobs create fetch-premarket-refresh \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 300 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_premarket_refresh" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-premarket-refresh \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_premarket_refresh" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# EW strike verdict evaluator: runs at 23:00 ET (evaluate-ew-strikes-daily)
+# and scores each Earnings Whispers pick from the last 7 days whose scoring
+# session has closed (the next session for an after-close report, #1151)
+# against that session's intraday bars. Populates ew_strike_verdict +
+# ew_strike_move_pct + ew_minutes_to_hit + ew_minutes_in_zone +
+# ew_day_change_pct on earnings_calendar. The next weekday's premarket
+# brief recaps that session's verdicts (#1168). Idempotent: scored rows skip
+# unless --force is passed, which also clears a row it cannot re-score.
+deploy_evaluate_ew_strikes() {
+    echo "Deploying evaluate-ew-strikes job..."
+    gcloud run jobs create evaluate-ew-strikes \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update evaluate-ew-strikes \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" --task-timeout 3600 \
+        --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# News sentiment is split into two Cloud Run jobs sharing the same image:
+# `fetch-news-sentiment` queries by ticker (always-on watchlist), while
+# `fetch-news-sentiment-topics` queries by AV catalyst topic to capture
+# single-name catalysts outside the watchlist. Selection is driven by
+# env vars (NEWS_TICKERS / NEWS_TOPICS) so the --command stays identical
+# across both jobs.
+#
+# The list-valued env vars are set via a follow-up --update-env-vars
+# call using gcloud's "^@^" delimiter syntax, because the default
+# comma delimiter would split SPY,IWM,QQQ into three separate vars.
+deploy_fetch_insider_transactions() {
+    echo "Deploying fetch-insider-transactions job..."
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
+    gcloud run jobs create fetch-insider-transactions \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-insider-transactions \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# This single job now backs TWO cadences, selected by --args at the
+# Cloud Scheduler layer (see deploy_schedulers()):
+#   - default (no args)      -> daily TOP_GAINERS_LOSERS snapshot -> top_movers_daily
+#   - --args="--intraday-snapshot" -> most_actively_traded only -> top_movers_intraday
+# Same pattern as fetch-alphavantage-intraday/av-intraday-nightly: one
+# persisted job + a _schedule_with_args() scheduler that overrides args
+# on that trigger only, rather than standing up a second Cloud Run Job
+# for the same image/entrypoint/secrets.
+#
+# Capacity (Rule 0): 1 AV TOP_GAINERS_LOSERS call (~30 most_actively_traded
+# rows) + 1 batched upsert per invocation, both cadences. Wall-clock is
+# network-bound (AV call + upsert), observed sub-10s. task-timeout=300 is
+# ~30-60x the estimate. max-retries=0 (not 1, unlike the sibling fetchers
+# below): the intraday variant now runs hourly during market hours, so a
+# transient failure self-heals at the next hourly tick without Cloud Run
+# auto-retrying and double-sending failure emails for a blip the next run
+# already covers — same rationale as signal-quality-report's max-retries 0.
+deploy_fetch_top_movers() {
+    echo "Deploying fetch-top-movers job..."
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
+    gcloud run jobs create fetch-top-movers \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 300 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_top_movers" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-top-movers \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --max-retries 0 \
+        --task-timeout 300 \
+        --command "python,-m,gcp.fetchers.fetch_top_movers" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+deploy_fetch_sec_filings() {
+    echo "Deploying fetch-sec-filings job..."
+    # SEC requires a descriptive User-Agent identifying the organization
+    # and a contact email. Pulled from Secret Manager so individual
+    # operators can set their own without touching the deploy script.
+    local sec_ua env
+    sec_ua="$(_secret sec-user-agent 2>/dev/null || true)"
+    env="${ENV_STRING}${sec_ua:+,SEC_USER_AGENT=${sec_ua}}"
+
+    gcloud run jobs create fetch-sec-filings \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_sec_filings" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-sec-filings \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.fetchers.fetch_sec_filings" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${env}" \
+        --quiet
+}
+
+deploy_fetch_earnings_history() {
+    echo "Deploying fetch-earnings-history job..."
+    # 7200s timeout: 45 tickers × ~50s/ticker (AV API + DB upsert, full-mode
+    # tickers can pull 1k+ bars) ≈ 2250s wall-clock — 1800s was 0.8× the
+    # estimate (issue #269 — task hit the 1800s cap at ticker [37/45] on
+    # 2026-05-04). 7200 = 3.2× the wall-clock per CLAUDE.md §0 rule 5.
+    #
+    # BACKFILL_ALL_HISTORY=true: when the chained _run_backfill step
+    # fires at the end of fetch_earnings_history, target EVERY ticker
+    # in earnings_history (not just those currently active in
+    # earnings_calendar with options_volume>0 + stock_volume>=500k).
+    # Smart-switch in _pick_backfill_outputsize skips tickers that
+    # already have ≥1500 bars + ≤1 day stale, so no AV calls are
+    # wasted on already-backfilled tickers — only NEW tickers and
+    # tickers with stale/missing bars actually trigger fetches.
+    # This self-heals the OHLCV coverage gap that blocked the
+    # 2026-05-13 reactions backfill (814 of 1148 past-90d reporters
+    # missing reaction rows because their bars weren't ever fetched).
+    # AV_BACKFILL_SLEEP_SECS=1.0: the chained _run_backfill step was
+    # tripping the 7200s timeout every night for 5+ consecutive runs
+    # (audit 2026-05-30 — t8jq5, 4v9br, xwsk8, hf92b, cwftn all died at
+    # ticker [518/627]). Root cause: the hardcoded 13s free-tier sleep
+    # in _run_backfill made ~600 non-skipped tickers cost 13s × 600 =
+    # 2.2h, blowing the budget on retry. We're on premium AV (75 RPM),
+    # so 1.0s/call is safe and cuts wall-clock to ~10 min.
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
+    # task-timeout 28800 (8h = 4x wall): the days_stale<=0 fix (PR #758)
+    # made the chained _run_backfill refresh the FULL ~2,400-ticker
+    # universe nightly — measured 77-120 min (2026-08-24..26), and the
+    # 08-25 run finished within seconds of the old 7200s cap. Rule 0:
+    # timeout >= 4x wall-clock; Cloud Run bills runtime, not the cap.
+    local env_string
+    env_string="${ENV_STRING},BACKFILL_ALL_HISTORY=true,AV_BACKFILL_SLEEP_SECS=1.0"
+    gcloud run jobs create fetch-earnings-history \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 28800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_earnings_history" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${env_string}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-earnings-history \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 28800 \
+        --command "python,-m,gcp.fetchers.fetch_earnings_history" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${env_string}" \
+        --quiet
+}
+
+deploy_compute_earnings_reactions() {
+    echo "Deploying compute-earnings-reactions job..."
+    # Phase 1.6 populator: joins earnings_history × market_data_daily
+    # (× earnings_calendar for timing fallback) to fill the
+    # earnings_reactions table the brief reads. Pure DB join, no
+    # external API calls — 1Gi/1CPU is plenty for ~300 tickers.
+    # 1800s timeout: ~1s per ticker × 320 tickers = ~5 min typical.
+    gcloud run jobs create compute-earnings-reactions \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.compute_earnings_reactions" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update compute-earnings-reactions \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.fetchers.compute_earnings_reactions" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+
+# ── refresh-earnings-views (frontend data prep, 2026-06-02) ───────────────────
+# Two modes via --args="--mode=weekly" or --args="--mode=daily":
+#   weekly: REFRESH MATERIALIZED VIEW × 2 (earnings_event_outcomes,
+#           earnings_ticker_lean). Heavy join, ~2-5 min wall-clock.
+#   daily:  Rebuilds earnings_upcoming_with_history (next 14 days,
+#           decorated with lean stats + both recommendation modes).
+#           Light query work, ~30s typical.
+# Single Cloud Run Job + two Scheduler entries with different --args.
+#
+# Capacity (Rule 0): weekly mode is the bottleneck — REFRESH
+# MATERIALIZED VIEW CONCURRENTLY on 46k+47k rows takes ~3 min. memory
+# 1Gi is plenty (no row materialisation in our process). task-timeout
+# 1200s (20 min) = ~4x headroom over the measured 3 min.
+deploy_refresh_earnings_views() {
+    echo "Deploying refresh-earnings-views job..."
+    gcloud run jobs create refresh-earnings-views \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 1200 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.refresh_earnings_views" \
+        --args="--mode=weekly" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update refresh-earnings-views \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 1200 \
+        --command "python,-m,gcp.refresh_earnings_views" \
+        --args="--mode=weekly" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+
+# Backtest pipeline (migrated off the .github/workflows/backtest-pipeline.yml
+# `report` job — that workload is data processing, not CI). Runs
+# scripts/run_pipeline.py: per ticker it simulates a base + strat backtest
+# and a timeframe sweep, then renders BACKTEST_RESULTS.md and records the
+# run in backtest_reports. The per-stage output (trades, sweeps) lands in
+# the backtest_trades / backtest_sweeps Cloud SQL tables, keyed by a
+# shared run_id the orchestrator generates.
+#
+# Capacity (3 tickers × {base, strat, sweep} ≈ 9 backtest-engine runs over
+# ~5y of 1-min bars) — MEASURED on the 2026-05-17 first production run:
+#   - Volume: ~9 × a few-thousand simulated trades → < 100k rows total.
+#   - Velocity: DB writes are batched per ticker/mode via upsert_dataframe
+#     (chunked, ON CONFLICT) — ~7 write round-trips total, not per-row. The
+#     cost is CPU-bound simulation, not SQL round-trips.
+#   - Wall-clock: MEASURED ~4h (14,360s) — base/strat backtests ~12min each,
+#     timeframe sweeps ~50min EACH (the dominant cost). The initial 14400s
+#     (4h) cap left only 40s of margin → bumped to 28800s (8h). Cloud Run
+#     charges runtime not the cap, so headroom is free.
+# memory 8Gi: MEASURED — 2Gi SIGKILL'd (OOM, exit -9) every step ~60s in.
+# run_backtest.py loads years of intraday 1-min history per ticker via
+# DataLoader.load_best_available; the sweep then resamples to 5 timeframes.
+# 8Gi/2CPU is the verified-sufficient floor (the GitHub runner was 16GB).
+# Cloud Run requires CPU >= 2 for memory > 4Gi.
+# max-retries 0: the job is idempotent (ON CONFLICT DO UPDATE keyed by
+# run_id) but a retry re-runs from scratch under a fresh run_id, doubling
+# spend without converging — re-dispatch manually if a run fails.
+#
+# On-demand only — NO Cloud Scheduler entry. Invoke with:
+#   gcloud run jobs execute backtest-pipeline --region us-east1 --wait
+deploy_backtest_pipeline() {
+    echo "Deploying backtest-pipeline job..."
+    # 8Gi / 2 CPU: run_backtest.py loads years of intraday 1-min history
+    # per ticker via DataLoader.load_best_available — at 2Gi every step
+    # was SIGKILL'd (exit -9 / OOM) ~60s in. The GitHub runner this
+    # migrated off of had 16GB; 8Gi is the verified-sufficient floor.
+    gcloud run jobs create backtest-pipeline \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 8Gi --cpu 2 --max-retries 0 \
+        --task-timeout 28800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.run_pipeline" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backtest-pipeline \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 8Gi --cpu 2 \
+        --task-timeout 28800 \
+        --command "python,-m,scripts.run_pipeline" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+deploy_fetch_news_sentiment() {
+    echo "Deploying fetch-news-sentiment (ticker mode) job..."
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
+    # Tickers come from alert_config.json `watchlist` at runtime via
+    # gcp/fetchers/_watchlist.load_watchlist(). No hardcoded NEWS_TICKERS
+    # env var — change the watchlist by editing alert_config.json + redeploy
+    # the image. --args="" defensively strips any leftover positional CLI
+    # args from prior manual gcloud edits that would break argparse.
+    gcloud run jobs create fetch-news-sentiment \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-news-sentiment \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --remove-env-vars "NEWS_TICKERS" \
+        --quiet
+}
+
+deploy_fetch_news_sentiment_earnings() {
+    echo "Deploying fetch-news-sentiment-earnings (upcoming-reporter mode) job..."
+    # Same Docker image as the ticker-mode job; differs only in env:
+    # EARNINGS_WINDOW_DAYS=7 makes the fetcher resolve its ticker
+    # universe to (earnings_calendar ±7d) ∪ watchlist. Runs once a day
+    # before the brief so tomorrow's reporters always have a 48h news
+    # cold-start cushion landed in news_sentiment before the embed
+    # consumes it. AV cost: ~30 cold-start reporters × 1 call = 30
+    # calls/day — well under the 150 RPM plan ceiling.
+    gcloud run jobs create fetch-news-sentiment-earnings \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-news-sentiment-earnings \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+
+    # EARNINGS_WINDOW_DAYS=7 → fetcher's main() unions earnings_calendar
+    # (±7d) with the watchlist. NEWS_SINCE_LAST=1 → incremental per-ticker
+    # floor so cold-start reporters pull 48h and steady-state reporters
+    # only pull deltas. MAX_TICKERS=300 caps the resolved set.
+    gcloud run jobs update fetch-news-sentiment-earnings \
+        --region "${REGION}" \
+        --update-env-vars "^@^EARNINGS_WINDOW_DAYS=7@NEWS_SINCE_LAST=1@MAX_TICKERS=300" \
+        --quiet
+}
+
+deploy_fetch_news_sentiment_topics() {
+    echo "Deploying fetch-news-sentiment-topics (topic mode) job..."
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
+    # NEWS_TOPICS env var (set below) is the source of truth; --args=""
+    # defensively strips any leftover CLI args from prior manual edits.
+    gcloud run jobs create fetch-news-sentiment-topics \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-news-sentiment-topics \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+
+    # 5 catalyst-rich topics — AV's hard cap per call.
+    gcloud run jobs update fetch-news-sentiment-topics \
+        --region "${REGION}" \
+        --update-env-vars "^@^NEWS_TOPICS=mergers_and_acquisitions,technology,financial_markets,earnings,life_sciences" \
+        --quiet
+}
+
+deploy_fetchers() {
+    deploy_fetch_market_data
+    deploy_backfill_daily_indicators
+    deploy_fetch_alphavantage
+    deploy_av_options_backfill
+    deploy_av_options_realtime
+    deploy_options_retention
+    deploy_fetch_fred_rates
+    deploy_fetch_economic_events
+    deploy_fetch_earnings_calendar
+    deploy_fetch_earnings_history
+    deploy_compute_earnings_reactions
+    deploy_fetch_premarket_refresh
+    deploy_evaluate_ew_strikes
+    deploy_fetch_sec_filings
+    deploy_fetch_insider_transactions
+    deploy_fetch_top_movers
+    deploy_fetch_news_sentiment
+    deploy_fetch_news_sentiment_topics
+    deploy_fetch_news_sentiment_earnings
+    deploy_backtest_pipeline
+    deploy_options_exec_backtest
+    deploy_db_query
+    deploy_freshness_watchdog
+    deploy_audit_infra_drift
+    deploy_audit_magnitude_drift
+    deploy_audit_walkforward
+    deploy_audit_brief_bias
+    # (deploy_av_options_historical_intraday removed 2026-05-28 — see comment
+    # above that function; AV has no historical intraday options endpoint.)
+}
+
+# ── Backup / disaster-recovery jobs ───────────────────────────────────────────
+# Weekly Cloud SQL → GCS logical backup. Replaces the GCS parquet backup
+# pattern (which only covered 2 of ~30 tables) with a full pg_dump that
+# captures every table on every run.
+#
+# Runs as a Cloud Run Job invoked by Cloud Scheduler weekly (Sunday 04:00 UTC,
+# wired in deploy_schedulers). Calls the Cloud SQL Admin API to trigger an
+# offload-mode SQL export — Cloud SQL itself writes the gzipped dump to GCS,
+# the calling SA only triggers + polls the operation. Combined with PITR
+# (enabled via `gcloud sql instances patch trading-db --enable-point-in-time-recovery`)
+# this gives ~daily snapshots + 7-day point-in-time recovery + weekly
+# cross-machinery dump in a different storage tier.
+#
+# Output path: gs://${PROJECT_ID}-trading-data/sql-dumps/trading-YYYYMMDD-HHMMSS.sql.gz
+#
+# IAM prerequisites — one-time, run via:
+#   ./gcp/deploy.sh setup-pg-dump-iam
+# 1. trading-runner SA needs roles/cloudsql.editor on the project (to invoke
+#    the export API).
+# 2. The Cloud SQL INSTANCE's service account (trading-db's
+#    serviceAccountEmailAddress, e.g.
+#    p<PROJECT_NUMBER>-<hash>@gcp-sa-cloud-sql.iam.gserviceaccount.com)
+#    needs roles/storage.objectAdmin on the destination bucket — Cloud SQL
+#    itself writes the file, NOT the calling SA. This is the PER-INSTANCE
+#    SA, NOT the service-<num>@gcp-sa-cloud-sql project service agent;
+#    granting the service agent leaves the export failing with HTTP 412
+#    "service account does not have the required permissions for the bucket".
+deploy_weekly_pg_dump() {
+    echo "Deploying cloud-sql-weekly-export job..."
+
+    local non_secret_env
+    non_secret_env="GCP_PROJECT=${PROJECT_ID}"
+    non_secret_env="${non_secret_env},CLOUD_SQL_INSTANCE=trading-db"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},SQL_DUMP_BUCKET=${PROJECT_ID}-trading-data"
+    non_secret_env="${non_secret_env},SQL_DUMP_PREFIX=sql-dumps"
+
+    # 21600s (6h): the 3600s (1h) original value was too tight — execution
+    # cloud-sql-weekly-export-bcmlz hit it and was killed on 2026-06-28
+    # after running ~60 min (see issue #657). A manual retry the same day
+    # (cloud-sql-weekly-export-cwh72) completed in ~60 min, so 21600s gives
+    # ~6x headroom over the observed worst case. This was already hot-patched
+    # onto the live job via `gcloud run jobs update`; this line had drifted
+    # out of sync and would have silently reverted the fix on the next
+    # `./gcp/deploy.sh cloud-sql-weekly-export` run.
+    local common_flags=(
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 21600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.sql_export_to_gcs"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create cloud-sql-weekly-export "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update cloud-sql-weekly-export "${common_flags[@]}"
+}
+
+# One-time IAM setup for the weekly pg_dump path. Idempotent — re-running
+# will report "already exists" but won't break.
+setup_pg_dump_iam() {
+    echo "=== Configuring IAM for cloud-sql-weekly-export ==="
+
+    # The Cloud SQL EXPORT API writes the dump as the INSTANCE's own
+    # service account (its serviceAccountEmailAddress), NOT the project
+    # gcp-sa-cloud-sql service agent. Resolve the instance SA directly —
+    # granting the service agent leaves the export with HTTP 412
+    # "service account does not have the required permissions for the bucket".
+    local cloud_sql_sa
+    cloud_sql_sa="$(gcloud sql instances describe trading-db \
+        --project="${PROJECT_ID}" \
+        --format='value(serviceAccountEmailAddress)')"
+    if [ -z "${cloud_sql_sa}" ]; then
+        echo "ERROR: could not resolve trading-db serviceAccountEmailAddress" >&2
+        return 1
+    fi
+    local bucket="${PROJECT_ID}-trading-data"
+
+    echo
+    echo "1) Granting roles/cloudsql.editor to trading-runner SA on project..."
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role=roles/cloudsql.editor \
+        --condition=None \
+        --quiet 2>&1 | tail -3
+
+    echo
+    echo "2) Granting roles/storage.objectAdmin to the Cloud SQL instance SA"
+    echo "   (${cloud_sql_sa}) on bucket gs://${bucket}/..."
+    # This is the instance's serviceAccountEmailAddress — the identity the
+    # managed export API actually writes as. It already exists (created with
+    # the instance), so no `gcloud beta services identity create` is needed.
+    gcloud storage buckets add-iam-policy-binding "gs://${bucket}" \
+        --member="serviceAccount:${cloud_sql_sa}" \
+        --role=roles/storage.objectAdmin \
+        --quiet 2>&1 | tail -3
+
+    echo
+    echo "3) Updating GCS lifecycle rules (sql-dumps/ → 30d, raw/ → 730d)"
+    # gcloud storage buckets update --lifecycle-file REPLACES the whole
+    # bucket lifecycle config, so we must include every rule we want to
+    # keep. The raw/ → 730d rule was originally set in setup_cloud_sql.sh
+    # for parquet retention; mirroring it here preserves that policy
+    # alongside the new sql-dumps/ → 30d rule. If gcp/setup_cloud_sql.sh
+    # ever changes its rule definition, update this block to match.
+    cat >/tmp/sql_dumps_lifecycle.json <<EOF
+{
+  "rule": [
+    {
+      "action": {"type": "Delete"},
+      "condition": {
+        "age": 30,
+        "matchesPrefix": ["sql-dumps/"]
+      }
+    },
+    {
+      "action": {"type": "Delete"},
+      "condition": {
+        "age": 730,
+        "matchesPrefix": ["raw/"]
+      }
+    }
+  ]
+}
+EOF
+    gcloud storage buckets update "gs://${bucket}" \
+        --lifecycle-file=/tmp/sql_dumps_lifecycle.json \
+        --quiet 2>&1 | tail -3
+    rm -f /tmp/sql_dumps_lifecycle.json
+
+    echo
+    echo "✓ IAM + lifecycle configured. Test with:"
+    echo "  gcloud run jobs execute cloud-sql-weekly-export --region ${REGION} --wait"
+}
+
+# ── One-shot maintenance jobs ─────────────────────────────────────────────────
+# Apply gcp/schema.sql — adds new tables / columns / indexes. Safe to re-run;
+# every statement is IF NOT EXISTS / OR REPLACE.
+#
+# BOOTSTRAP ONLY. This creates the job when it is missing and otherwise
+# leaves it alone: its image is moved and it is executed ONLY through the
+# serialized path (apply_schema_via_build below, and the two Cloud Build
+# triggers), which order every mutation of the shared job by build start
+# time via gcp/cloudbuild/wait_for_earlier_schema_builds.sh. A `jobs update`
+# from here could land between a trigger build's own `jobs update` and
+# `jobs execute`, repointing the job at the local image; the build would
+# then execute a different schema while recording its own revision as
+# applied, and the serializer cannot see a local mutation (Codex on #1022).
+# The job's declaration, ONE function used by both the bootstrap create
+# below and the serialized in-build update in apply_schema_via_build, so the
+# two converge on the same flags. Without this, once the bootstrap stopped
+# updating an existing job, nothing could change the live job's timeout,
+# env or secrets again (the trigger configs pass --image only; internal
+# review of #1022 round 14). 1800 s: a full apply measured 75 s
+# (execution apply-schema-migrations-8q6d5, 2026-09-07: 251 units
+# including the 22-46 s earnings mat-view refresh), so the budget is 24x
+# the measured wall-clock (Rule 0.5 asks for 4x). The two Cloud Build
+# trigger configs pass --image only, so a sizing change made here reaches
+# the live job through ./gcp/deploy.sh apply-schema (or all) before the
+# job exists), never through a trigger run.
+_apply_schema_job_flags() {
+    printf '%s' "--memory 512Mi --cpu 1 --max-retries 0 --task-timeout 1800 --service-account ${SA_EMAIL} --command python,-m,gcp.apply_schema ${DB_SECRET_FLAG} --set-env-vars ${ENV_STRING}"
+}
+
+deploy_apply_schema_migrations() {
+    local desc
+    if desc=$(gcloud run jobs describe apply-schema-migrations --region "${REGION}" \
+                --format='value(name)' 2>&1); then
+        echo "apply-schema-migrations exists; not touching it here. Its image and"
+        echo "  configuration move only through the serialized path: ./gcp/deploy.sh"
+        echo "  apply-schema, or the apply-schema-on-change / deploy-solyra-api-staging triggers."
+        return 0
+    fi
+    # Only a real NOT_FOUND means "create". A 503, quota or auth failure must
+    # not fall into `jobs create` (which then fails with ALREADY EXISTS and
+    # aborts `all)` at its first job; internal review of #1022 round 14).
+    # gcloud 583.0.0 (captured 2026-09-07): `jobs describe` says "Cannot find
+    # job [x].", `jobs update` says "Job [x] could not be found."; neither
+    # contains "not found", which is all the first version matched, so the
+    # bootstrap could never create the job (internal review of #1022).
+    if ! printf '%s' "${desc}" | grep -qiE 'NOT_FOUND|not found|could not be found|cannot find'; then
+        echo "ERROR: cannot tell whether apply-schema-migrations exists; not creating it." >&2
+        echo "       ${desc}" >&2
+        return 1
+    fi
+    echo "Creating apply-schema-migrations job..."
+    # shellcheck disable=SC2046  # the flags are deliberately word-split
+    gcloud run jobs create apply-schema-migrations \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        $(_apply_schema_job_flags) \
+        --quiet
+}
+
+# Move apply-schema-migrations to the image build_image just pushed and
+# execute it, THROUGH a Cloud Build that carries the same tag as the
+# triggers and runs the same serializer, so the manual path is ordered with
+# the trigger builds instead of racing them (Codex on #1022). The revision
+# guard arguments (gcp/apply_schema.py) come from this checkout: HEAD, its
+# committer time and its rev-list, exactly what the trigger builds pass.
+# Only the serializer script and the generated config are uploaded.
+apply_schema_via_build() {
+    local digest revision revision_time ancestors tmpdir flags rc pin_rc force_flag
+    digest=${IMAGE_REF:-}   # this run's build (#1171); :latest may have moved since
+    [ -n "${digest}" ] || digest=$(gcloud artifacts docker images describe "${IMAGE}:latest" --format='value(image_summary.fully_qualified_digest)') || return 1
+    if [ -z "${digest}" ]; then
+        echo "ERROR: cannot resolve ${IMAGE}:latest to a digest; run ./gcp/deploy.sh build first." >&2
+        return 1
+    fi
+    # The guard records HEAD. On main that is a main commit the ordering
+    # rule was written for. Off main, HEAD is a branch commit the rule
+    # cannot place: an earlier version recorded the merge-base instead, an
+    # OLD main commit, and once anything newer had been applied the guard
+    # refused it as an ancestor with no way past (build e4be0456,
+    # 2026-09-07). So off main the real HEAD is recorded and the guard's
+    # ordering check is bypassed with --force-revision, logged at ERROR by
+    # the applier and stored as forced=true. The next main apply orders
+    # against it by committer time (a squash commit is later than the
+    # branch commits it squashes).
+    git fetch -q origin main || { echo "ERROR: cannot fetch origin/main to place HEAD on main's history." >&2; return 1; }
+    revision=$(git rev-parse HEAD) || return 1
+    if git merge-base --is-ancestor HEAD origin/main; then
+        force_flag=""
+    else
+        force_flag=",--force-revision"
+        echo "WARNING: HEAD $(git rev-parse --short HEAD) is not on origin/main. The apply is FORCED:" >&2
+        echo "         the guard's ordering check is bypassed and schema_apply_history records" >&2
+        echo "         ${revision:0:12} as forced. Use this to validate a branch's schema; the" >&2
+        echo "         merge's own trigger build applies main's afterwards." >&2
+    fi
+    revision_time=$(git log -1 --format=%ct "${revision}") || return 1
+    ancestors=$(git rev-list --max-count=100 "${revision}" | tr '\n' ' ') || return 1
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "WARNING: the working tree has uncommitted changes; the schema applied is the one" >&2
+        echo "         build_image staged." >&2
+    fi
+    # The full declaration goes into the in-build update so the live job
+    # converges on it (timeout, env, secrets), not just the image. `$` is
+    # escaped for Cloud Build's substitution parser; \$BUILD_ID is left for
+    # it, and nothing else in the rendered file contains a $.
+    flags=$(_apply_schema_job_flags | sed 's/\$/$$/g')
+    tmpdir=$(mktemp -d)
+    cp gcp/cloudbuild/wait_for_earlier_schema_builds.sh "${tmpdir}/"
+    cat > "${tmpdir}/cloudbuild.yaml" <<EOF
+# Generated by gcp/deploy.sh apply_schema_via_build. Tagged and serialized
+# like gcp/cloudbuild/apply-schema-cloudbuild.yaml; see that file's header.
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: serialize
+    entrypoint: bash
+    args: ['-c', 'set -euo pipefail; bash wait_for_earlier_schema_builds.sh "\$BUILD_ID"']
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: apply
+    waitFor: [serialize]
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        echo ">> apply-schema-migrations -> ${digest} (revision ${revision})"
+        gcloud run jobs update apply-schema-migrations \\
+          --image=${digest} --region=${REGION} \\
+          ${flags} \\
+          --quiet
+        gcloud run jobs execute apply-schema-migrations --region=${REGION} \\
+          --args="--revision=${revision},--revision-time=${revision_time},--revision-ancestors=${ancestors}${force_flag}" \\
+          --wait
+serviceAccount: projects/${PROJECT_ID}/serviceAccounts/${SA_EMAIL}
+tags: [apply-schema-on-change]
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 7200s
+EOF
+    echo "Submitting the schema apply as a tagged, serialized Cloud Build (revision ${revision:0:12})..."
+    rc=0
+    # --timeout is passed explicitly so an operator's builds/timeout property
+    # cannot shrink the budget the serializer computes from, and --region so
+    # a builds/region property cannot submit it where the serializer's own
+    # (global) describe and list cannot see it.
+    gcloud builds submit --config "${tmpdir}/cloudbuild.yaml" --timeout=7200s --region=global "${tmpdir}" || rc=$?
+    rm -rf "${tmpdir}"
+    # Pin whatever the job runs now, whatever the build's outcome: a failed
+    # execute after a successful update leaves the job on a digest only
+    # :latest keeps alive, and the next build moves that tag. The build's
+    # own exit code is what this function reports; a pin failure only
+    # replaces a success.
+    pin_rc=0
+    pin_image_tags || pin_rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        echo "ERROR: the serialized schema apply failed (build exit ${rc}); see the build log above." >&2
+        return "${rc}"
+    fi
+    return "${pin_rc}"
+}
+
+# One-shot SPX Greeks backfill. Walks every historical SPX snapshot_date in
+# etf_options_snapshots and writes computed Greeks into the *_computed
+# sidecar columns. AV columns are NEVER touched. 12h timeout (typical run
+# 3-5h on db-g1-small for ~22.5M rows). Idempotent: skips dates whose
+# gamma_computed is already finite, unless --force is passed at execute time.
+deploy_compute_spx_greeks_backfill() {
+    echo "Deploying compute-spx-greeks-backfill job..."
+    gcloud run jobs create compute-spx-greeks-backfill \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 0 --task-timeout 43200 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.maintenance.compute_spx_greeks" \
+        --args "--ticker,SPX" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update compute-spx-greeks-backfill \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,scripts.maintenance.compute_spx_greeks" \
+        --args "--ticker,SPX" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+# NOTE: Replay mode for the signal monitor is now built into the
+# existing signal-monitor Cloud Run Job — no separate replay-signal-monitor
+# job is needed. The job's main() in gcp/signal_monitor.py supports a
+# --mode=replay flag that dispatches to scripts/replay_signal_monitor.py
+# (the canonical hermetic harness). Replay activates automatically when
+# REPLAY_DATE or REPLAY_TICKER env vars are set at execute time:
+#
+#   gcloud run jobs execute signal-monitor --region us-east1 \
+#     --update-env-vars=REPLAY_DATE=2026-05-07,REPLAY_TICKER=SPY --wait
+#
+# The replay path mocks Discord webhook + DB writes (hermetic), so it's
+# safe to run on the production job spec. Output is JSON-formatted alert
+# fires in Cloud Logging textPayload. No rows written to signal_alerts;
+# no Discord webhooks fired.
+#
+# Use cases:
+#   1. Validate a fresh signal-monitor deploy against held-out data
+#      BEFORE waiting for market open (Phase 0.5 spec item #8 —
+#      live-vs-offline parity test).
+#   2. Hermetic regression check after refactors that touch the
+#      signal-fire path (e.g. the 2026-05-09 Track B end-to-end
+#      validation).
+#   3. What-if: tune assign_timeframe thresholds and replay to see how
+#      the timeframe distribution shifts.
+
+
+# ── Phase 0.6 — quarterly per-ticker threshold calibration ───────────────────
+# Replaces the universal-across-tickers THRESHOLDS dict with per-ticker
+# calibrated values from rolling 60-day bar history. See
+# docs/plans/SIGNAL_QUALITY_TEST_PLAN.md §3.6 / Phase 0.6.
+#
+# Cadence: quarterly (1st of Jan / Apr / Jul / Oct) — see deploy_schedulers().
+# Manual run any time: `gcloud run jobs execute calibrate-thresholds`.
+deploy_calibrate_thresholds() {
+    echo "Deploying calibrate-thresholds job..."
+    gcloud run jobs create calibrate-thresholds \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.calibrate_thresholds" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update calibrate-thresholds \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --command "python,-m,scripts.calibrate_thresholds" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+
+# ── Walk-forward parameter calibration sweep (on-demand Cloud Run Job) ────────
+# Sweeps the four exit params (call/put target, call/put time-stop) per
+# ticker with walk-forward validation, then auto-applies the winning
+# combo to exit_config_overrides. Sibling to calibrate-thresholds.
+#
+# On-demand only (no Cloud Scheduler entry — run when you want a fresh
+# calibration): `gcloud run jobs execute param-sweep --region us-east1`.
+# Loops SPY/IWM/QQQ sequentially; --max-retries 0 so a partial failure
+# does not silently re-run and double-write exit_config_overrides.
+deploy_param_sweep() {
+    echo "Deploying param-sweep job..."
+    # --tasks 3 / --parallelism 3 fan-out one ticker per task (SPY/IWM/QQQ
+    # via stride sharding on CLOUD_RUN_TASK_INDEX in run_param_sweep.py).
+    # Sequential was ~3.5h/ticker × 3 = 10.5h (blew the 8h timeout);
+    # parallel = ~3.5h wall-clock. --task-timeout is per-task, so 6h is
+    # ample for the one-ticker workload each task handles.
+    gcloud run jobs create param-sweep \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 21600 \
+        --tasks 3 --parallelism 3 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.run_param_sweep" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update param-sweep \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 21600 \
+        --tasks 3 --parallelism 3 \
+        --command "python,-m,scripts.run_param_sweep" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+
+# ── Earnings playability calibration sweep (Cloud Run Job) ────────────────────
+# Sweeps (min_nq, lookback_quarters) over the playability backtest and
+# auto-applies the best combo to earnings_calibration, which the
+# premarket brief reads. Sibling to param-sweep. Also rewrites
+# earnings_options_strategy_winners, whose calculation_date is what
+# earnings-long-watchlist's freshness gate reads.
+#
+# Scheduled weekly (earnings-sweep-sunday, Sun 20:30 ET, with an
+# --options-insights args override — the bare sweep does NOT write the
+# winners table) since 2026-09-14: it ran on-demand only, while the
+# watchlist's gate accepts "at most one missed weekly refresh"
+# (MAX_SOURCE_AGE_DAYS=14) — so every second week without a manual sweep,
+# the Sunday watchlist failed closed on a stale snapshot (issue #1091 was
+# this). Manual runs still work the same way:
+# `gcloud run jobs execute earnings-sweep --region us-east1`
+# (add --args="--options-insights" to also refresh the winners snapshot).
+# The bare sweep is formula-eval over ~21k earnings_reactions rows — light.
+deploy_earnings_sweep() {
+    echo "Deploying earnings-sweep job..."
+    # Memory bumped from 1Gi → 4Gi on 2026-05-21 when the PR-B options-join
+    # was added: _load_options_snapshots() pulls ~1.8M rows × ~10 columns
+    # which materialises as a ~700 MB DataFrame, plus the per-combo Q5
+    # filtering and groupby work peaks 2-3× that during the sweep.
+    gcloud run jobs create earnings-sweep \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.calibrate_earnings" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update earnings-sweep \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 --task-timeout 1800 \
+        --command "python,-m,scripts.calibrate_earnings" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "${ENV_STRING}" \
+        --quiet
+}
+
+
+# ── earnings-options-backfill (Cloud Run Job, on-demand) ─────────────────────
+# One-shot historical-options backfill driven by earnings_reactions events.
+# For every (ticker, reported_date) pair, fetches the AV HISTORICAL_OPTIONS
+# chain at close of T-1 and writes the post-earnings-expiry slice
+# (≤14d after reported_date) into earnings_options_snapshots.
+#
+# Capacity (CLAUDE.md Rule 0):
+#   - 41,756 events × 1 AV call/event @ 150 RPM = ~4.5 h wall-clock.
+#   - task-timeout 32400s (9h) = 2× headroom over actual estimate.
+#   - max-retries 0: Cloud Run can't distinguish transient from permanent
+#     here; the script's own per-event retry covers the transient case.
+#     A re-dispatch resumes via per-event idempotency check.
+#   - Cost: ~$0.50 per full run; the AV calls themselves are free under
+#     the existing premium subscription.
+#
+# Not on a Cloud Scheduler — this is the catch-up run. Forward-looking
+# snapshots will be covered by a separate daily fetcher (PR-B follow-up)
+# that snapshots tomorrow's earnings tickers' chains each evening.
+# ── intraday-bulk-backfill (Cloud Run Job, on-demand, parallel) ──────────────
+# Historical 1-min underlying-bar backfill for the full earnings universe
+# (1,356 tickers as of 2026-05-21). Powers the PR-C intraday option
+# repricer and the platform's intraday-chart view for any earnings name.
+#
+# Capacity per Rule 0:
+#   - Volume: 1,356 tickers × 24 months ≈ 32,544 AV calls.
+#   - Per-call latency: ~5 s end-to-end (AV response ~2 s + DB upsert ~2 s
+#     + 0.4 s rate-limit floor). Single-task throughput observed
+#     2026-05-21: ~1 ticker/min on solo run, but ~7.5 min/ticker at
+#     8-way parallel — combined call rate exceeded 150 RPM and AV
+#     throttled, plus 8 simultaneous DB upsert streams thrashed the
+#     Cloud SQL connection pool.
+#   - Solution v2 (2026-05-22): --tasks=4 --parallelism=4. Combined
+#     call rate 4 × 0.33 = 1.3 calls/s = 80 RPM — well under the 150
+#     premium cap with no throttle storms. The fetcher also checks
+#     market_data_intraday at task startup and skips tickers with
+#     ≥100k existing rows (re-runs after timeout finish only the
+#     remaining tickers, not the ones the prior run completed).
+#   - Wall-clock at 4× parallel for the remaining ~1,000 tickers:
+#     ~250 tickers per task × ~2 min/ticker ≈ 8 h.
+#   - task-timeout 86400s (24h Cloud Run max) — 3× headroom over the
+#     estimate. Re-launch is safe via the ticker-skip check.
+#   - max-retries 0: per-symbol failures are non-fatal (logged + continued)
+#     so transient retries would double-charge quota without recovering.
+#   - Disk: Cloud SQL storageAutoResize=true, no ceiling.
+#
+# Sharding logic: fetch_alphavantage_intraday.main() reads
+# CLOUD_RUN_TASK_INDEX / CLOUD_RUN_TASK_COUNT (injected by Cloud Run)
+# and stripes the symbol list with `symbols[task_idx::task_cnt]`.
+# Striping rather than contiguous chunking distributes heavy
+# (high-volume) tickers across tasks instead of piling them on
+# task 0 alphabetically.
+deploy_intraday_bulk_backfill() {
+    echo "Deploying intraday-bulk-backfill job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+    # GH PAT for filing data-quality issues when dead tickers detected
+    # (see fetch_alphavantage_intraday.py:_file_data_quality_issue).
+    # Same secret used by db-query.yml and the web-sandbox tooling.
+    secrets_flag="${secrets_flag},GH_DATA_QUALITY_TOKEN=gh-stocks-repo-pat:latest"
+
+    local common_flags=(
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 86400
+        --tasks 4 --parallelism 4
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday"
+        --args="--symbols-file,/app/gcp/fetchers/symbol_lists/earnings_universe.txt,--start-date,2024-01-01"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create intraday-bulk-backfill "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update intraday-bulk-backfill "${common_flags[@]}"
+}
+
+
+deploy_earnings_options_backfill() {
+    echo "Deploying earnings-options-backfill job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    local common_flags=(
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 32400
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_av_earnings_options_backfill"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create earnings-options-backfill "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update earnings-options-backfill "${common_flags[@]}"
+}
+
+
+# ── Failure notifier (Cloud Run Service) ─────────────────────────────────────
+# Receives Cloud Logging entries about failed Cloud Run Jobs via Pub/Sub push
+# and fans out to (1) Discord webhook and (2) GitHub issue create/update.
+# See gcp/failure_notifier.py for details.
+
+NOTIFIER_SERVICE="failure-notifier"
+NOTIFIER_TOPIC="gcp-job-failures"
+NOTIFIER_SUB="gcp-job-failures-push"
+NOTIFIER_SINK="gcp-job-failures-sink"
+
+setup_notifier_secrets() {
+    echo "Setting up failure notifier secrets..."
+    echo ""
+    echo "This stores a GitHub PAT (with 'issues: write' on the target repo)"
+    echo "and the target repo slug in Secret Manager. Both are injected into"
+    echo "the failure-notifier Cloud Run service at deploy time."
+    echo ""
+
+    # ── GitHub PAT ────────────────────────────────────────────────────────
+    if ! gcloud secrets describe github-pat --quiet >/dev/null 2>&1; then
+        # Auto-detect: GCP secret → env var → interactive prompt
+        local pat=""
+        # 1) Pull from existing GCP Secret Manager secret (shared PAT)
+        if [ -z "$pat" ]; then
+            pat="$(gcloud secrets versions access latest \
+                --secret=gh-stocks-repo-pat \
+                --project=28960574877 --quiet 2>/dev/null || true)"
+            [ -n "$pat" ] && echo "  PAT sourced from GCP secret gh-stocks-repo-pat"
+        fi
+        # 2) STOCKS_REPO_PAT env var
+        if [ -z "$pat" ]; then
+            pat="${STOCKS_REPO_PAT:-}"
+            [ -n "$pat" ] && echo "  PAT sourced from STOCKS_REPO_PAT env var"
+        fi
+        # 3) Interactive fallback
+        if [ -z "$pat" ]; then
+            echo "Enter a GitHub PAT with 'issues: write' (input hidden):"
+            read -rs pat
+            echo ""
+        fi
+        if [ -z "$pat" ]; then
+            echo "  ERROR: no PAT found. Ensure gh-stocks-repo-pat exists in GCP project 28960574877,"
+            echo "         or set STOCKS_REPO_PAT env var."
+            return 1
+        fi
+        printf '%s' "$pat" | gcloud secrets create github-pat \
+            --replication-policy=automatic --data-file=- --quiet
+        echo "  github-pat created"
+    else
+        echo "  github-pat already exists. Use 'gcloud secrets versions add' to rotate."
+    fi
+
+    # ── GitHub repo slug ──────────────────────────────────────────────────
+    if ! gcloud secrets describe github-repo --quiet >/dev/null 2>&1; then
+        # Auto-detect from git remote origin
+        local repo="${GH_REPO:-}"
+        if [ -z "$repo" ]; then
+            local remote_url
+            remote_url="$(git remote get-url origin 2>/dev/null || true)"
+            # Extract owner/repo from HTTPS or SSH URLs
+            repo="$(echo "$remote_url" | sed -E 's#.*(github\.com[:/])##; s/\.git$//')"
+        fi
+        if [ -z "$repo" ]; then
+            echo "Enter the GitHub repo slug (e.g. 'TeneikaAskew/stocks'):"
+            read -r repo
+        fi
+        if [ -z "$repo" ]; then
+            echo "  ERROR: no repo slug provided."
+            return 1
+        fi
+        echo "  Using repo: ${repo}"
+        printf '%s' "$repo" | gcloud secrets create github-repo \
+            --replication-policy=automatic --data-file=- --quiet
+        echo "  github-repo created"
+    else
+        echo "  github-repo already exists."
+    fi
+}
+
+deploy_notifier() {
+    echo "Deploying failure-notifier Cloud Run service..."
+
+    # Verify secrets exist (but don't read them into shell variables)
+    if ! gcloud secrets describe github-pat --quiet >/dev/null 2>&1 \
+       || ! gcloud secrets describe github-repo --quiet >/dev/null 2>&1; then
+        echo "  github-pat / github-repo missing. Run: $0 setup-notifier-secrets"
+        return 1
+    fi
+
+    # Log-reading access belongs to the notifier, never the shared trading
+    # runner used by ingestion and research jobs.
+    local notifier_sa="${NOTIFIER_SERVICE}@${PROJECT_ID}.iam.gserviceaccount.com"
+    gcloud iam service-accounts describe "${notifier_sa}" \
+        --project="${PROJECT_ID}" --quiet >/dev/null 2>&1 \
+        || gcloud iam service-accounts create "${NOTIFIER_SERVICE}" \
+            --project="${PROJECT_ID}" --display-name="Cloud Run failure notifier" --quiet
+
+    # Grant only the three secrets this service consumes; errors stop deploy.
+    for secret in github-pat github-repo discord-webhook-gcp; do
+        gcloud secrets add-iam-policy-binding "${secret}" \
+            --member="serviceAccount:${notifier_sa}" \
+            --role="roles/secretmanager.secretAccessor" --quiet
+    done
+
+    # 7) Grant the notifier SA roles/run.viewer so reconcile_closures can
+    # list Cloud Run Job executions and detect "job has recovered → close
+    # the issue". Project-level binding is fine — read-only access to
+    # jobs/executions across the whole project.
+    #
+    # No `|| echo` swallow here: gcloud add-iam-policy-binding exits 0 on
+    # idempotent re-binding (existing binding is fine), so the only ways
+    # this command fails are REAL failures (deployer lacks setIamPolicy,
+    # API disabled, project missing). Those MUST abort deploy_notifier()
+    # so the operator notices and grants the role — otherwise the
+    # reconciler silently runs without view access, every Cloud Run
+    # execution lookup returns 403→unknown, and stale issues never close
+    # while the deploy looks "successful". Codex P2 caught the original
+    # `|| echo "already exists"` masking this critical failure mode.
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member="serviceAccount:${notifier_sa}" \
+        --role="roles/run.viewer" \
+        --condition=None --quiet >/dev/null
+
+    # Read the exact execution's audit report so data findings are labelled
+    # Freshness Audit Failed. IAM errors must stop deployment visibly.
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member="serviceAccount:${notifier_sa}" \
+        --role="roles/logging.viewer" \
+        --condition=None --quiet >/dev/null
+
+    local env_string
+    env_string="GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION}"
+
+    # The failure-notifier posts to a DEDICATED Discord channel for GCP job
+    # failures (secret `discord-webhook-gcp`), not `discord-webhook-insights`
+    # that the rest of the platform uses for briefs/alerts. We also fold in the
+    # GitHub PAT/repo secrets into one flag; no trading database credentials
+    # are needed by this service.
+    local notifier_secrets="DISCORD_WEBHOOK_URL=discord-webhook-gcp:latest,GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest"
+
+    # 1) Deploy the Cloud Run service (overrides Dockerfile CMD with stdlib server)
+    # Secrets are mounted from Secret Manager at runtime via --set-secrets so
+    # they never appear in revision metadata (visible to anyone with run.services.get).
+    # --args= (equals form) is required: the value starts with "-m", which the
+    # space form hands to argparse as a flag ("expected one argument").
+    gcloud run deploy "${NOTIFIER_SERVICE}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --min-instances 0 --max-instances 3 \
+        --service-account "${notifier_sa}" \
+        --command "python" --args="-m,gcp.failure_notifier" \
+        --set-env-vars "${env_string}" \
+        --set-secrets="${notifier_secrets}" \
+        --no-allow-unauthenticated \
+        --quiet
+
+    local service_url
+    service_url="$(gcloud run services describe "${NOTIFIER_SERVICE}" \
+        --region "${REGION}" --format='value(status.url)')"
+    echo "  Service URL: ${service_url}"
+
+    # 2) Create Pub/Sub topic (idempotent)
+    gcloud pubsub topics create "${NOTIFIER_TOPIC}" --quiet 2>/dev/null \
+        || echo "  topic ${NOTIFIER_TOPIC}: already exists"
+
+    # 3) Grant the Pub/Sub service account permission to invoke the Run service
+    local project_number pubsub_sa
+    project_number="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
+    pubsub_sa="service-${project_number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+
+    gcloud run services add-iam-policy-binding "${NOTIFIER_SERVICE}" \
+        --region "${REGION}" \
+        --member="serviceAccount:${pubsub_sa}" \
+        --role="roles/run.invoker" --quiet
+
+    # 4a) Create dead-letter topic so permanently failing messages don't retry forever
+    local dlq_topic="${NOTIFIER_TOPIC}-dlq"
+    gcloud pubsub topics create "${dlq_topic}" --quiet 2>/dev/null \
+        || echo "  topic ${dlq_topic}: already exists"
+
+    # 4b) Create Pub/Sub push subscription with OIDC auth (idempotent)
+    gcloud pubsub subscriptions create "${NOTIFIER_SUB}" \
+        --topic="${NOTIFIER_TOPIC}" \
+        --push-endpoint="${service_url}" \
+        --push-auth-service-account="${SA_EMAIL}" \
+        --ack-deadline=60 \
+        --dead-letter-topic="projects/${PROJECT_ID}/topics/${dlq_topic}" \
+        --max-delivery-attempts=5 \
+        --quiet 2>/dev/null \
+        || gcloud pubsub subscriptions update "${NOTIFIER_SUB}" \
+            --push-endpoint="${service_url}" \
+            --push-auth-service-account="${SA_EMAIL}" \
+            --dead-letter-topic="projects/${PROJECT_ID}/topics/${dlq_topic}" \
+            --max-delivery-attempts=5 \
+            --quiet
+
+    # Grant Pub/Sub SA permission to publish to dead-letter topic and ack from subscription
+    gcloud pubsub topics add-iam-policy-binding "${dlq_topic}" \
+        --member="serviceAccount:${pubsub_sa}" \
+        --role="roles/pubsub.publisher" --quiet
+    gcloud pubsub subscriptions add-iam-policy-binding "${NOTIFIER_SUB}" \
+        --member="serviceAccount:${pubsub_sa}" \
+        --role="roles/pubsub.subscriber" --quiet
+
+    # 5) Create Cloud Logging sink → Pub/Sub
+    # Filter catches Cloud Run Job execution failures but excludes:
+    #   1. the notifier itself (prevents infinite loops)
+    #   2. the two Cloud Audit Log methods that fire ERROR-severity noise
+    #      on ordinary deploys: `gcloud run jobs update` tries
+    #      Jobs.CreateJob first (ALREADY_EXISTS at ERROR severity) before
+    #      falling back to Jobs.UpdateJob.
+    #
+    # A blanket `logName:"run.googleapis.com"` clause (i.e. excluding ALL
+    # of cloudaudit.googleapis.com) was tried first but created a real
+    # blind spot: a job that calls sys.exit(1) after its own INFO/WARNING
+    # logging (no ERROR-severity Python traceback) has no run.googleapis.com
+    # log line at severity>=ERROR at all — "Container called exit(1)."
+    # lands on run.googleapis.com/varlog/system at WARNING, not ERROR. The
+    # ONLY severity>=ERROR record of that failure is the audit log's
+    # Jobs.RunJob entry ("Execution <name> has failed to complete, 0/1
+    # tasks were a success"), which the blanket exclusion silently dropped.
+    # signal-monitor-eod-resolver hit exactly this twice (2026-07-09,
+    # 2026-07-14 — issue gcp-job-failure tracking added retroactively)
+    # with zero Discord/GitHub notification either time. Excluding by
+    # methodName instead of by logName keeps the original deploy-noise
+    # fix while letting genuine Jobs.RunJob failures through. Uses `:`
+    # (substring) rather than `=` (exact) because the observed methodName
+    # value differs by audit sub-log: short form `/Jobs.CreateJob` on
+    # `cloudaudit.googleapis.com/system_event`, fully-qualified
+    # `google.cloud.run.v1.Jobs.CreateJob` on `.../activity` — an exact
+    # match against one form silently misses the other. Verified against
+    # 30 days of production logs before merging: this filter still
+    # excludes every historical CreateJob/UpdateJob deploy-noise entry and
+    # newly includes both eod-resolver failures.
+    local sink_filter
+    sink_filter='resource.type="cloud_run_job"
+AND severity>=ERROR
+AND resource.labels.job_name!="'"${NOTIFIER_SERVICE}"'"
+AND NOT (protoPayload.methodName:"CreateJob" OR protoPayload.methodName:"UpdateJob")'
+
+    gcloud logging sinks create "${NOTIFIER_SINK}" \
+        "pubsub.googleapis.com/projects/${PROJECT_ID}/topics/${NOTIFIER_TOPIC}" \
+        --log-filter="${sink_filter}" \
+        --quiet 2>/dev/null \
+        || gcloud logging sinks update "${NOTIFIER_SINK}" \
+            "pubsub.googleapis.com/projects/${PROJECT_ID}/topics/${NOTIFIER_TOPIC}" \
+            --log-filter="${sink_filter}" --quiet
+
+    # 6) Grant sink writer permission to publish to the topic
+    local sink_writer
+    sink_writer="$(gcloud logging sinks describe "${NOTIFIER_SINK}" \
+        --format='value(writerIdentity)')"
+    gcloud pubsub topics add-iam-policy-binding "${NOTIFIER_TOPIC}" \
+        --member="${sink_writer}" \
+        --role="roles/pubsub.publisher" --quiet
+
+    # 8) Grant the scheduler's OIDC identity (SA_EMAIL) roles/run.invoker
+    # on the failure-notifier service. The service is deployed with
+    # --no-allow-unauthenticated; without this binding the hourly
+    # reconcile-failure-notifier-hourly cron's POST /reconcile gets a
+    # 403 from Cloud Run and the reconciler never executes. The
+    # existing pubsub_sa binding (lines 1541-1544 above) only authorizes
+    # the Pub/Sub push delivery path — different identity.
+    # Codex P1 caught this missing grant.
+    gcloud run services add-iam-policy-binding "${NOTIFIER_SERVICE}" \
+        --region "${REGION}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role="roles/run.invoker" --quiet
+
+    # 9) Hourly reconciler — POST /reconcile so close_on_success drains
+    # any stale gcp-job-failure issues whose underlying job has since
+    # succeeded. Cron at the top of every hour. The endpoint is
+    # idempotent and cheap (~1 Cloud Run REST call per unique job_name
+    # in open-issues × 1 GitHub API call per closed issue).
+    gcloud scheduler jobs create http "reconcile-failure-notifier-hourly" \
+        --location "${REGION}" \
+        --schedule "0 * * * *" \
+        --time-zone "America/New_York" \
+        --uri "${service_url}/reconcile" \
+        --http-method POST \
+        --oidc-service-account-email "${SA_EMAIL}" \
+        --oidc-token-audience "${service_url}" \
+        --quiet 2>/dev/null \
+        || gcloud scheduler jobs update http "reconcile-failure-notifier-hourly" \
+            --location "${REGION}" \
+            --schedule "0 * * * *" \
+            --uri "${service_url}/reconcile" \
+            --quiet
+
+    echo "failure-notifier deployed and wired to Cloud Logging."
+    echo "  Hourly reconciler scheduled: reconcile-failure-notifier-hourly"
+}
+
+# ── Cloud Scheduler triggers ──────────────────────────────────────────────────
+_job_uri() {
+    echo "https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${1}:run"
+}
+
+_schedule() {
+    local NAME=$1 CRON=$2 JOB=$3
+    gcloud scheduler jobs create http "${NAME}" \
+        --location "${REGION}" \
+        --schedule "${CRON}" \
+        --time-zone "America/New_York" \
+        --uri "$(_job_uri "${JOB}")" \
+        --http-method POST \
+        --oauth-service-account-email "${SA_EMAIL}" \
+        --quiet 2>/dev/null || echo "  ${NAME}: already exists"
+}
+
+# Variant of _schedule that injects BRIEF_TRIGGERED_BY=cloud-scheduler:<name>
+# as a containerOverride env var on the Cloud Run Jobs ":run" body. Used by
+# the premarket-brief schedulers so _resolve_run_kind_and_update classifies
+# the run as 'scheduled' (not 'manual_replay') in premarket_analysis_history.
+# Plain Cloud Scheduler triggers don't propagate any context to the Job; the
+# job's persisted env is whatever was last set by a manual `gcloud run jobs
+# execute --update-env-vars=...`, which silently corrupts the run-kind label.
+# Variant of _schedule that lets a single Cloud Run Job be invoked by
+# multiple schedulers with DIFFERENT --args. Used for
+# refresh-earnings-views, which has a weekly mode (REFRESH MAT VIEW × 2)
+# and a daily mode (rebuild upcoming_with_history). The Cloud Scheduler
+# job posts containerOverrides.args[] to the Cloud Run Job :run endpoint,
+# replacing the spec's default --args for THAT execution.
+#
+# Args list is passed as a comma-separated string (e.g. "--mode=daily").
+_schedule_args() {
+    local NAME=$1 CRON=$2 JOB=$3 ARGS_CSV=$4
+    # Build args JSON array from CSV: "--mode=daily,--days=14" → ["--mode=daily","--days=14"]
+    local ARGS_JSON
+    ARGS_JSON=$(echo "${ARGS_CSV}" | python3 -c 'import sys,json; print(json.dumps([s for s in sys.stdin.read().strip().split(",") if s]))')
+    local BODY='{"overrides":{"containerOverrides":[{"args":'"${ARGS_JSON}"'}]}}'
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet 2>/dev/null >/dev/null; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --uri "$(_job_uri "${JOB}")" \
+            --message-body "${BODY}" \
+            --quiet
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "$(_job_uri "${JOB}")" \
+            --http-method POST \
+            --headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet
+    fi
+}
+
+
+# Delete a retired scheduler entry. Absent (NOT_FOUND) is the normal,
+# silent case; any other describe or delete failure is reported and returns
+# nonzero so deploy_schedulers can fail instead of leaving a legacy entry
+# firing alongside its replacement (Codex, PR #1004).
+_unschedule() {
+    local NAME=$1 err
+    if err=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+            --format="value(name)" 2>&1 >/dev/null); then
+        if gcloud scheduler jobs delete "${NAME}" --location "${REGION}" --quiet >/dev/null 2>&1; then
+            echo "  retired ${NAME}"
+        else
+            echo "  ERROR: could not delete scheduler ${NAME}" >&2
+            return 1
+        fi
+    elif [[ "${err}" == *NOT_FOUND* ]]; then
+        return 0
+    else
+        echo "  ERROR: cannot describe scheduler ${NAME}: ${err%%$'\n'*}" >&2
+        return 1
+    fi
+}
+
+# Create-or-update a plain ":run" scheduler and VERIFY it (schedule, target
+# and ENABLED state read back) before returning. Nonzero on any mismatch.
+# Used where a new entry replaces old ones: the old entries are only deleted
+# once the replacement is proven live, so a failed create cannot leave a job
+# with no trigger at all (Codex, PR #1004).
+_schedule_verified() {
+    local NAME=$1 CRON=$2 JOB=$3 uri live
+    uri=$(_job_uri "${JOB}")
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet >/dev/null 2>&1; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: update of ${NAME} failed" >&2; return 1; }
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: create of ${NAME} failed" >&2; return 1; }
+    fi
+    live=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+        --format="value(schedule,httpTarget.uri,state)" 2>/dev/null) \
+        || { echo "  ERROR: cannot read back ${NAME}" >&2; return 1; }
+    if [ "${live}" != "${CRON}"$'\t'"${uri}"$'\t'"ENABLED" ]; then
+        echo "  ERROR: ${NAME} read back as [${live//$'\t'/ | }], expected [${CRON} | ${uri} | ENABLED]" >&2
+        return 1
+    fi
+    echo "  ${NAME}: verified ${CRON}"
+}
+
+# Scheduler that sets a Cloud Run SERVICE's min-instances. The v2 PATCH with
+# updateMask=template.scaling.minInstanceCount creates a revision that differs
+# from its predecessor only in minScale (verified 2026-09-06: env, secrets,
+# CPU allocation, command and startup boost all unchanged). Cloud Scheduler
+# cannot send PATCH, so the entry POSTs with X-HTTP-Method-Override: PATCH,
+# which Google APIs honour (verified: the override reaches Cloud Run as
+# UpdateService with the intended updateMask).
+#
+# Runs as trading-runner@. Cloud Run requires the caller to hold
+# iam.serviceAccounts.actAs on the revision's runtime SA, which is
+# trading-runner itself; that self-binding is NOT something the sandbox
+# deploy identity (claude-web@, roles/editor) can grant — setIamPolicy on a
+# service account is owner-only. So the helper checks for the binding and,
+# if it cannot add it, refuses to create the scheduler and prints the one
+# command an owner has to run. A scheduler that 403s twice a day is a slow
+# leak (CLAUDE.md Rule 0.6), so it is never created ahead of the grant.
+_schedule_min_instances() {
+    local NAME=$1 CRON=$2 SVC=$3 COUNT=$4
+    local uri="https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/services/${SVC}?updateMask=template.scaling.minInstanceCount"
+    local body='{"template":{"scaling":{"minInstanceCount":'"${COUNT}"'}}}'
+    local policy
+    policy=$(gcloud iam service-accounts get-iam-policy "${SA_EMAIL}" \
+        --flatten="bindings[].members" \
+        --filter="bindings.role=roles/iam.serviceAccountUser AND bindings.members=serviceAccount:${SA_EMAIL}" \
+        --format="value(bindings.role)" 2>/dev/null) \
+        || { echo "  ERROR: cannot read IAM policy of ${SA_EMAIL}" >&2; return 1; }
+    if [ -z "${policy}" ]; then
+        if ! gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
+                --member "serviceAccount:${SA_EMAIL}" --role roles/iam.serviceAccountUser \
+                --quiet >/dev/null 2>&1; then
+            echo "  ERROR: ${NAME} not created: ${SA_EMAIL} lacks actAs on itself and this" >&2
+            echo "         identity cannot grant it. A project owner must run once:" >&2
+            echo "         gcloud iam service-accounts add-iam-policy-binding ${SA_EMAIL} \\" >&2
+            echo "           --member=serviceAccount:${SA_EMAIL} --role=roles/iam.serviceAccountUser" >&2
+            echo "         then re-run: ./gcp/deploy.sh schedulers" >&2
+            return 1
+        fi
+    fi
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet >/dev/null 2>&1; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --update-headers "Content-Type=application/json,X-HTTP-Method-Override=PATCH" \
+            --message-body "${body}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: update of ${NAME} failed" >&2; return 1; }
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --headers "Content-Type=application/json,X-HTTP-Method-Override=PATCH" \
+            --message-body "${body}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: create of ${NAME} failed" >&2; return 1; }
+    fi
+    local live
+    live=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+        --format="value(schedule,httpTarget.headers.X-HTTP-Method-Override,state)" 2>/dev/null) \
+        || { echo "  ERROR: cannot read back ${NAME}" >&2; return 1; }
+    if [ "${live}" != "${CRON}"$'\t'"PATCH"$'\t'"ENABLED" ]; then
+        echo "  ERROR: ${NAME} read back as [${live//$'\t'/ | }]" >&2
+        return 1
+    fi
+    echo "  ${NAME}: verified ${CRON} -> ${SVC} min-instances=${COUNT}"
+}
+
+_schedule_brief() {
+    local NAME=$1 CRON=$2 JOB=$3
+    local BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"BRIEF_TRIGGERED_BY","value":"cloud-scheduler:'"${NAME}"'"}]}]}}'
+    gcloud scheduler jobs create http "${NAME}" \
+        --location "${REGION}" \
+        --schedule "${CRON}" \
+        --time-zone "America/New_York" \
+        --uri "$(_job_uri "${JOB}")" \
+        --http-method POST \
+        --headers "Content-Type=application/json" \
+        --message-body "${BODY}" \
+        --oauth-service-account-email "${SA_EMAIL}" \
+        --quiet 2>/dev/null || echo "  ${NAME}: already exists"
+}
+
+# Variant of _schedule that injects INSIGHT_TRIGGERED_BY=cloud-scheduler:<name>
+# as a containerOverride env var on the insight-pipeline ":run" body. Mirrors
+# _schedule_brief — without it, _resolve_update_mode_and_kind in
+# gcp/insight_pipeline_job.py classifies every cron run as 'manual_replay' in
+# insight_reports_history (issue #313 — audit 2026-05-09 found run_kind never
+# saw 'scheduled' for 23 days).
+_schedule_insight() {
+    local NAME=$1 CRON=$2 JOB=$3
+    local BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"INSIGHT_TRIGGERED_BY","value":"cloud-scheduler:'"${NAME}"'"}]}]}}'
+    # Idempotent: update if exists, create otherwise. Codex review on PR
+    # #352 caught that create-only swallows ALREADY_EXISTS, so a re-deploy
+    # against an existing scheduler keeps the OLD body and the new
+    # INSIGHT_TRIGGERED_BY override never reaches production.
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet 2>/dev/null >/dev/null; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "$(_job_uri "${JOB}")" \
+            --http-method POST \
+            --update-headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet \
+        && echo "  ${NAME}: updated"
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "$(_job_uri "${JOB}")" \
+            --http-method POST \
+            --headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet \
+        && echo "  ${NAME}: created"
+    fi
+}
+
+# Variant of _schedule that overrides the container command-line args via the
+# Cloud Run Jobs ":run" body. Used to point a single signal-monitor job image
+# at orb-snapshot or other one-shot modes.
+_schedule_with_args() {
+    local NAME=$1 CRON=$2 JOB=$3
+    shift 3
+    # Build JSON args array: ["--mode=orb-snapshot","--window=15m"]
+    local ARGS_JSON='['
+    local first=1
+    for a in "$@"; do
+        [ ${first} -eq 1 ] || ARGS_JSON+=','
+        ARGS_JSON+='"'"${a}"'"'
+        first=0
+    done
+    ARGS_JSON+=']'
+
+    local BODY='{"overrides":{"containerOverrides":[{"args":'"${ARGS_JSON}"'}]}}'
+
+    gcloud scheduler jobs create http "${NAME}" \
+        --location "${REGION}" \
+        --schedule "${CRON}" \
+        --time-zone "America/New_York" \
+        --uri "$(_job_uri "${JOB}")" \
+        --http-method POST \
+        --headers "Content-Type=application/json" \
+        --message-body "${BODY}" \
+        --oauth-service-account-email "${SA_EMAIL}" \
+        --quiet 2>/dev/null || echo "  ${NAME}: already exists"
+}
+
+# Verified variant of _schedule_with_args, for triggers whose container args
+# ARE the contract (earnings-sweep-sunday: a bare sweep never writes the
+# winners table the watchlist's freshness gate reads). _schedule_with_args'
+# `|| echo "already exists"` swallows real creation failures and never
+# updates an existing entry, so a trigger created before an args change
+# would keep firing the OLD args forever. This helper updates-or-creates
+# (same shape as _schedule_verified) and then reads back schedule, uri,
+# state AND the decoded request body, returning nonzero on any mismatch so
+# deploy_schedulers counts it into SCHEDULER_FAILURES.
+_schedule_with_args_verified() {
+    local NAME=$1 CRON=$2 JOB=$3 uri live live_body
+    shift 3
+    local ARGS_JSON='['
+    local first=1
+    for a in "$@"; do
+        [ ${first} -eq 1 ] || ARGS_JSON+=','
+        ARGS_JSON+='"'"${a}"'"'
+        first=0
+    done
+    ARGS_JSON+=']'
+    local BODY='{"overrides":{"containerOverrides":[{"args":'"${ARGS_JSON}"'}]}}'
+    uri=$(_job_uri "${JOB}")
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet >/dev/null 2>&1; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --update-headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: update of ${NAME} failed" >&2; return 1; }
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: create of ${NAME} failed" >&2; return 1; }
+    fi
+    live=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+        --format="value(schedule,httpTarget.uri,state)" 2>/dev/null) \
+        || { echo "  ERROR: cannot read back ${NAME}" >&2; return 1; }
+    if [ "${live}" != "${CRON}"$'\t'"${uri}"$'\t'"ENABLED" ]; then
+        echo "  ERROR: ${NAME} read back as [${live//$'\t'/ | }], expected [${CRON} | ${uri} | ENABLED]" >&2
+        return 1
+    fi
+    # The body carries the args override — verify it round-tripped. describe
+    # returns it base64-encoded; decode via python3 (BSD and GNU base64 take
+    # different flags, python3 is already a dependency of this script).
+    live_body=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+        --format="value(httpTarget.body)" 2>/dev/null \
+        | python3 -c 'import base64,sys; sys.stdout.write(base64.b64decode(sys.stdin.read()).decode())') \
+        || { echo "  ERROR: cannot read back ${NAME} body" >&2; return 1; }
+    if [ "${live_body}" != "${BODY}" ]; then
+        echo "  ERROR: ${NAME} body read back as [${live_body}], expected [${BODY}]" >&2
+        return 1
+    fi
+    echo "  ${NAME}: verified ${CRON} args=${ARGS_JSON}"
+}
+
+deploy_schedulers() {
+    echo "Creating Cloud Scheduler triggers..."
+    # Set by any verified entry that failed to converge; the function then
+    # exits nonzero at the end instead of reporting "All schedulers
+    # configured." over a broken one.
+    local SCHEDULER_FAILURES=0
+
+    # Pre-market brief — 8:30 AM ET weekdays (today's earnings).
+    # _schedule_brief (not _schedule) so BRIEF_TRIGGERED_BY=cloud-scheduler:<name>
+    # is passed as a containerOverride env var on every trigger; without it the
+    # brief misclassifies scheduled runs as manual_replay in history.
+    _schedule_brief "premarket-brief-daily"    "30 8 * * 1-5"   "premarket-brief"
+    # Pre-market brief — 9:00 AM ET Sundays (week-ahead earnings digest)
+    # Sunday brief moved to 9 PM ET (after weekly-earnings-refresh-* at
+    # 7-7:30 PM has populated fresh AV options + history + reactions
+    # for the upcoming Mon-Fri).
+    _schedule_brief "premarket-brief-sunday"   "0 21 * * 0"      "premarket-brief"
+    # Earnings-reactions brief — 8:35 AM ET weekdays (5 min after the
+    # pre-market brief). Ranks the next session's reporters by their
+    # historical post-earnings reaction pattern. Plain _schedule (no
+    # containerOverride) — the job carries no run-kind label of its own.
+    _schedule "earnings-reactions-brief-daily" "35 8 * * 1-5"  "earnings-reactions-brief"
+    # Freshness watchdog — CR-native, replaces .github/workflows/freshness-watchdog.yml
+    # Hourly during trading hours (9:00-19:00 ET Mon-Fri) + nightly at 19:30 ET.
+    _schedule "freshness-watchdog-hourly"  "0 9-19 * * 1-5" "freshness-watchdog"
+    _schedule "freshness-watchdog-nightly" "30 19 * * *"    "freshness-watchdog"
+
+    # Infra-drift detector — daily at 12:30 UTC (08:30 ET), 30 min after
+    # the daily nightly fetcher chain has settled. Posts findings to
+    # Discord via DISCORD_WEBHOOK_URL. See gcp/audit_infra_drift.py.
+    _schedule "audit-infra-drift-daily" "30 12 * * *" "audit-infra-drift"
+
+    # Magnitude-engine prediction-distribution drift detector — daily
+    # at 09:55 ET (30min after magnitude-inference-daily fires at 09:25
+    # ET, giving the inference window time to write + commit). Catches
+    # the failure mode the 2026-06 cascade exposed: rows ARE being
+    # written on schedule (so freshness-watchdog is happy) but they're
+    # degenerate (98% TIGHT vs ~36% true base rate). See
+    # gcp/audit_magnitude_drift.py.
+    _schedule "audit-magnitude-drift-daily" "55 9 * * 1-5" "audit-magnitude-drift"
+
+    # Strat-engine daily incremental — Mon-Fri at 23:35 ET (5 min after
+    # fetch-market-data-daily's 23:30 ET settle deadline for today's
+    # daily bars + intraday catch-up). Bare strat_data_builder dispatch
+    # picks up TICKERS_DEFAULT × every TF and INCREMENTALLY adds new
+    # bars since each (ticker, tf) cell's cached max bar_date.
+    #
+    # This scheduler entry closes the 2026-06-09 → 06-19 gap surfaced
+    # when magnitude-inference-daily ran ZERO-OUTPUT: strat_features_5m
+    # had no scheduled writer for 10 days, downstream consumers stalled
+    # silently. See PR description for the freshness-watchdog extension
+    # that catches this class of bug regardless of scheduler presence.
+    # Gamma levels — 22:30 ET Mon-Fri. MUST run AFTER av-options-daily (21:00
+    # ET, which fetches the EOD option chains gamma is built from) and BEFORE
+    # strat-engine-daily (23:35 ET, which reads gamma_levels_eod for the
+    # gamma/vex/vix features — and gamma also drives the VEX spot_lookup). With
+    # no scheduler here, gamma_levels_eod froze on 2026-05-22 and silently
+    # NULLed ~4 weeks of gamma/vex/vix on every strat_features bar. The job's
+    # default args now build only the current year (~1 min/ticker), so this is a
+    # cheap nightly refresh; a full historical rebuild is the manual
+    # `--start-year=2015`.
+    _schedule "gamma-levels-daily" "30 22 * * 1-5" "p2-build-gamma-levels"
+
+    _schedule "strat-engine-daily" "35 23 * * 1-5" "strat-engine"
+
+    # Phase 6 playbook cards — 04:30 ET Mon-Fri. Rebuilds the 12 structured
+    # setup cards per ticker into playbook_cards (the typed source
+    # /api/playbook reads) keyed to today's analysis_date, from the full
+    # 1-min history through the previous session (av-intraday-nightly lands
+    # D-1's bars at 21:00 ET, so 04:30 sees everything through yesterday).
+    # Runs before premarket-brief-daily (08:30 ET), which is when the
+    # dashboard's "top setup" is first read for the day.
+    #
+    # Issue #861: the job existed (deploy_phase6_playbook) but had NO
+    # scheduler entry, so playbook_cards froze at analysis_date 2026-06-13
+    # after the last manual backfill on 2026-06-14 and the dashboard served
+    # an 85-day-old card set as today's setups until the 2026-08-27 audit
+    # caught it. Three things now catch a repeat: this cron, the
+    # playbook_cards entry in scripts/audit_data_freshness.py CHECKS, and
+    # the MAX_PLAYBOOK_AGE_DAYS 503 guard in platform/api/routers/playbook.py.
+    # tests/gcp/test_phase6_playbook_scheduler.py pins the first two.
+    _schedule "phase6-playbook-daily" "30 4 * * 1-5" "phase6-playbook"
+
+    # Daily levels enrichment — 02:00 ET Tue-Sat, comfortably AFTER the
+    # strat-engine-daily base writer (23:35 ET Mon-Fri). strat_data_builder
+    # documents ~15 min/ticker × 3 = ~30-45 min sequential, so a tight gap
+    # would let this read a ticker/TF before that day's base rows land,
+    # leaving NULL levels that the 09:25 ET inference then NaN-drops — the very
+    # bug this scheduler prevents. 02:00 ET clears the base's worst-case
+    # completion (~00:20) by >1h and still lands hours before inference. (Tue-Sat
+    # because each weekday's 23:35 base run is enriched the following morning;
+    # Fri's bars wait over the closed weekend, scored Mon 09:25.)
+    # strat_data_builder does NOT populate strat_features_levels_<tf>
+    # (ORB / historical levels / order blocks) — that is strat_enrich_levels.
+    # Full backfill-all (idempotent ON CONFLICT) rather than a windowed enrich
+    # because the historical-level columns need >1y lookback (prev-year HLOC);
+    # a short window would NULL them. create-OR-update so a re-deploy reconciles
+    # the override body / schedule / URI — drift on the args body would silently
+    # invoke the wrong module while the deploy still looks successful.
+    local _ENRICH_BODY='{"overrides":{"containerOverrides":[{"args":["-m","gcp.research.strat_engine.strat_enrich_levels","--mode=backfill-all"]}]}}'
+    # Common flags shared by both branches so create and update can't drift
+    # apart. The header flag is the one asymmetry: create takes --headers,
+    # update takes --update-headers.
+    local _enrich_common=(
+        --location "${REGION}"
+        --schedule "0 2 * * 2-6"
+        --time-zone "America/New_York"
+        --uri "$(_job_uri "strat-engine")"
+        --http-method POST
+        --message-body "${_ENRICH_BODY}"
+        --oauth-service-account-email "${SA_EMAIL}"
+        --quiet
+    )
+    gcloud scheduler jobs create http "strat-enrich-daily" \
+        "${_enrich_common[@]}" --headers "Content-Type=application/json" 2>/dev/null || \
+    gcloud scheduler jobs update http "strat-enrich-daily" \
+        "${_enrich_common[@]}" --update-headers "Content-Type=application/json"
+
+    # Magnitude-inference — daily Mon-Fri at 09:25 ET, 5 min before
+    # market open. _schedule passes --time-zone America/New_York, so
+    # the cron expression is in ET, not UTC. (Codex P2 on PR #597:
+    # the original "25 13 * * 1-5" would have fired at 13:25 ET = 1:25
+    # PM, well after open, defeating the whole point.) Scores
+    # most-recent settled bars from strat_features_5m and writes to
+    # magnitude_per_bar_predictions. See
+    # gcp/research/magnitude_engine/mag_inference.py.
+    _schedule "magnitude-inference-daily" "25 9 * * 1-5" "magnitude-inference"
+    # Audit walk-forward — Saturday 09:00 ET (matches old GHA cron 13:00 UTC)
+    _schedule "audit-walkforward-weekly" "0 9 * * 6"  "audit-walkforward"
+    # Brief-bias verification — Sunday 10:00 ET (matches old GHA cron 14:00 UTC)
+    _schedule "audit-brief-bias-weekly"  "0 10 * * 0" "audit-brief-bias"
+    # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
+    _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
+    # P7b next-candle classifier — DISABLED 2026-05-25 until a net-positive
+    # P&L cell is identified. The classifier hits 58-60% OOS accuracy but the
+    # P7d backtest showed every exit model loses money after 10 bps round-trip
+    # costs. Uncomment when (a) a profitable cell is found via the avenues in
+    # docs/research/2026-05-25/P7_4track_verdict.md §"What I'd push next" and
+    # (b) the deploy function is updated to --mode=predict instead of evaluate.
+    # _schedule_with_args "p7b-classifier-daily" "30 16 * * 1-5" "p7b-next-candle-classifier" \
+    #     "-m" "gcp.research.p7b_next_candle_classifier" "--mode=all" "--ticker=IWM" "--tf=5m"
+    # Signal monitor EOD resolver — 4:30 PM ET weekdays (30 min after close
+    # so any late-arriving intraday bars are queryable). Sweeps any alerts
+    # still is_open=TRUE or with exit_ts NULL and resolves them via the
+    # gcp.signal_monitor_eod_resolver replay path. Per Track D G.P0.10.
+    _schedule "signal-monitor-eod-resolver-daily" "30 16 * * 1-5"  "signal-monitor-eod-resolver"
+    # Premarket brief-playbook outcome resolver — 9:15 PM ET weekdays.
+    # Walks each (analysis_date, ticker) row's RTH 1-min bars and records
+    # trigger_hit_ts / target_hit_ts / stop_hit_ts / reversal / MAE / MFE /
+    # EOD pnl. Runs after av-intraday-nightly lands the session's
+    # market_data_intraday partition: Tue-Fri sessions land ~21:00 ET the
+    # same evening (so they resolve same-night at 21:15); Monday sessions
+    # land ~23:00 ET (av-intraday-nightly's cron is Tue-Sat), so Monday
+    # resolves on Tuesday's sweep — the resolver treats a same-day
+    # pre-ingestion miss as benign and only a past date with no bars as a
+    # failure. The previous 16:30 ET slot raced ingestion every day,
+    # found no same-day bars, and silently resolved 0 rows from
+    # 2026-06-19 to 2026-08-25 (see
+    # docs/audits/PROFITABILITY_REVIEW_2026-08-25.md). The job sweeps all
+    # unresolved weekday dates in a 14-day lookback, so a missed night
+    # self-heals on the next run.
+    _schedule "premarket-playbook-resolver-daily" "15 21 * * 1-5"  "premarket-playbook-resolver"
+    # ORB scheduled snapshots — 9:45 ET (15-min ORB) and 10:00 ET (30-min ORB).
+    # Uses the same signal-monitor job image with --mode=orb-snapshot.
+    _schedule_with_args "orb-15m-alert"  "45 9 * * 1-5"  "signal-monitor" \
+        "--mode=orb-snapshot" "--window=15m"
+    _schedule_with_args "orb-30m-alert"  "0 10 * * 1-5"  "signal-monitor" \
+        "--mode=orb-snapshot" "--window=30m"
+    # Weekend review — Saturday 9 AM ET
+    _schedule "weekend-review-weekly"    "0 9 * * 6"      "weekend-review"
+    # Cloud SQL → GCS backup — Sunday 04:00 UTC (≈ 23:00 ET Saturday).
+    # Off-hours so the optional offload export doesn't compete with any
+    # weekend backfill jobs. Output: gs://${PROJECT_ID}-trading-data/
+    # sql-dumps/trading-YYYYMMDD-HHMMSS.sql.gz. Lifecycle rule (set in
+    # setup_pg_dump_iam) deletes dumps older than 30 days, leaving the
+    # last ~4 weekly snapshots.
+    _schedule "cloud-sql-weekly-export-sunday" "0 4 * * 0" "cloud-sql-weekly-export"
+    # Market data — 11 PM ET weekdays. Was 5 PM ET originally but moved
+    # 6 hours later because AV's TIME_SERIES_INTRADAY publishes the
+    # closing-day's 1-min bars with a several-hour lag. The 5 PM cron
+    # consistently saw "no bars for <ticker> on <today>" and required
+    # a manual --date=YYYY-MM-DD backfill the following morning. 11 PM
+    # ET (= 03:00 UTC next day) puts the fetch ~7 hours after the
+    # 16:00 ET close, well beyond AV's typical ingestion window.
+    _schedule "fetch-market-data-daily"  "0 23 * * 1-5"   "fetch-market-data"
+
+    # AV HISTORICAL_OPTIONS — 1st of each month at 5:00 UTC (1 AM ET).
+    # The job spec uses --from-latest, so each invocation queries
+    # MAX(snapshot_date) from etf_options_snapshots and backfills from
+    # there to today.
+    #
+    # Daily cron — 21:00 ET Mon-Fri (= 01:00-02:00 UTC depending on DST),
+    # ~5 hours after the 16:00 ET market close so AV's EOD chain
+    # publish (typically within 1-2h of close) is comfortably ready.
+    # Healthy steady-state: 4 tickers (SPY/IWM/QQQ/SPX) × 1 trading
+    # day ≈ ~10 AV calls (~5s at 150 RPM). Self-healing: if the cron
+    # is paused or the job fails for N days, the next successful run
+    # picks up everything since MAX(snapshot_date) automatically.
+    #
+    # The legacy .github/workflows/fetch-alphavantage-options-daily.yml
+    # used `0 1 * * 1-5` interpreted as UTC, which translated to 20-21
+    # ET on the *previous* weekday. That schedule had two bugs:
+    # (1) Friday's EOD chain wasn't picked up until Sunday (UTC Fri 01:00
+    # = ET Thu 20:00, leaving Friday-after-close uncovered until UTC Mon
+    # 01:00 = ET Sun 20:00); (2) `_schedule` here hardcodes
+    # America/New_York, so naively reusing `0 1 * * 1-5` fires at 01:00
+    # ET (1 AM Monday morning) — before any market activity that day,
+    # writing nothing useful. Codex P2 review on PR #489 caught this.
+    #
+    # 21:00 ET Mon-Fri fixes both: it covers Friday's EOD chain and
+    # always runs after AV publishes that day's data. Beats the GH
+    # workflow's coverage by 2 days/week (Fri+Sun overlap into the
+    # weekly window).
+    #
+    # Replaces the legacy GH workflow. That workflow had two persistent
+    # issues: (1) requires GCS_BUCKET repo secret that was never set
+    # after the 2026-05-10 SA-key consolidation, so every scheduled run
+    # exited 1 at the secret-validation step; (2) GitHub auto-disables
+    # scheduled workflows after 60 days of inactivity, requiring manual
+    # re-enable in repo settings. The Cloud Run Job has GCS_BUCKET
+    # baked in via deploy_av_options_backfill() and never auto-disables.
+    #
+    # Monthly cron stays as a safety-net roll-up that catches up
+    # everything since the last write — useful if the daily cron is
+    # paused for maintenance or hits a multi-day outage. Healthy
+    # cadence makes the monthly run a near-no-op (~22 trading days
+    # × 4 tickers ≈ 88 AV calls). Both crons hit the same
+    # --from-latest job; ON CONFLICT DO UPDATE in the upsert path
+    # makes overlap idempotent.
+    _schedule "av-options-daily"    "0 21 * * 1-5"  "fetch-av-options-backfill"
+    _schedule "av-options-monthly"  "0 5 1 * *"  "fetch-av-options-backfill"
+
+    # Realtime options — every 5 min, 09:00-15:55 ET, Mon-Fri. Fires
+    # 84 times per session (covers premarket 09:00-09:25 + RTH 09:30-
+    # 15:55). The 16:00 close snapshot is captured by av-options-daily
+    # at 21:00 ET; missing 16:00 from the realtime cadence is fine —
+    # signal monitor's last useful intraday read is 15:55 anyway.
+    #
+    # Capacity: 84 fires × 3 tickers = 252 AV calls/day, well under
+    # the 600/min realtime-tier budget (600 × 60 × 6.5h = 234,000/day
+    # ceiling). Cloud Run cost ~$3-5/mo.
+    #
+    # Added 2026-05-22 — unblocks Tracks 1-5 in
+    # docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md.
+    _schedule "av-options-realtime" "*/5 9-15 * * 1-5"  "fetch-av-options-realtime"
+
+    # Daily 02:00 ET REALTIME-options retention prune (deletes REALTIME rows
+    # >30 days old; EOD kept forever). Runs every day — REALTIME only
+    # accumulates on weekdays but the prune is idempotent and a no-op when
+    # nothing is eligible. 02:00 ET is well clear of the */5 RTH writer and the
+    # 21:00 backfill. Added 2026-06-11 to cap ~2.6M REALTIME rows/day growth.
+    _schedule "options-retention-daily" "0 2 * * *"  "etf-options-retention"
+
+    # Materialize REAL intraday GEX/DEX after close (5 PM ET weekdays — after the
+    # realtime feed stops ~15:55 ET and the day's 1-min bars land). Feeds the
+    # real-intraday-DEX lead's eventual walk-forward (build-realtime-gex).
+    _schedule "realtime-gex-daily" "0 17 * * 1-5"  "build-realtime-gex"
+
+    # Materialize daily options-flow features (PCR / IV-skew / ATM-IV) into
+    # options_daily_features at 10 PM ET weekdays — one hour after the EOD
+    # options fetch (av-options-daily, 21:00) lands. Keeps the research
+    # harness's fast join + the frontend options-flow series current.
+    _schedule "options-daily-features" "0 22 * * 1-5"  "build-options-daily-features"
+
+    # Materialize daily directional greeks (DEX / short-DTE DEX / vanna /
+    # charm) into etf_options_daily_greeks at 11:15 PM ET weekdays —
+    # after av-options-daily (21:00) lands, and staggered behind BOTH
+    # other etf_options_snapshots scanners: options-daily-features
+    # (22:00) and gamma-levels-daily (22:30, quarter-scans snapshots via
+    # p2_build_gamma_levels). Rule 0: no concurrent full scans of the
+    # shared DB — 23:15 gives gamma-levels 45 min of clear runway and
+    # sits clear of the 23:00 (fetch-market-data / evaluate-ew-strikes,
+    # neither of which reads snapshots) and 23:35 (strat-enrich) slots.
+    # The job's default args run --incremental --days=7; the 7-day
+    # lookback re-covers weekends, holidays and heals a missed night.
+    # The table had been frozen at 2026-05-22 because this scheduler was
+    # never created when the job shipped (job's own runbook said "run on
+    # a scheduler" — Rule 0.1).
+    _schedule "options-daily-greeks" "15 23 * * 1-5"  "build-options-greeks"
+
+    # Live options queries beyond the last refresh continue to flow
+    # through the OptionsFlowPage AV-fallback path; the SQL table is
+    # the source of truth for historical analysis.
+
+    # AlphaVantage monthly intraday — 1st of each month 9 PM ET
+    _schedule "av-intraday-monthly"  "0 21 1 * *"  "fetch-alphavantage-intraday"
+
+    # AlphaVantage nightly intraday — 9 PM ET Mon–Sat, after the extended
+    # session ends at 8 PM ET. The default date range runs through
+    # "today", so each evening's run captures that same day's complete
+    # session (measured from market_data_intraday.inserted_at: Tue–Fri
+    # sessions land ~21:01 ET same evening). Monday was added 2026-08-26:
+    # the old Tue–Sat cron assumed each run only picked up the PRIOR
+    # session, which left Monday's bars to arrive late (~23 PM via other
+    # paths) and pushed Monday's playbook-outcome grading to Tuesday
+    # night; with Mon–Sat every weekday grades same-night at 21:15.
+    # Passes --force so the GCS parquet-exists short-circuit doesn't skip
+    # the still-incomplete current month; the DB upsert is idempotent on
+    # (ticker,interval,ts) so re-fetching is safe. The default date range
+    # ("first of previous month → today") means each night re-fetches last
+    # month too — that's ~26s of redundant AV calls per night, well below
+    # the 150 RPM premium budget. Closes the month-end-to-1st-of-next-month
+    # gap that left the table stale for fresh signal-quality analysis.
+    _schedule_with_args "av-intraday-nightly"  "0 21 * * 1-6"  "fetch-alphavantage-intraday" \
+        "--symbol=ALL" "--force"
+
+    # FRED rates — 6:30 AM ET daily (after FRED's nightly publication ~04:30 UTC)
+    _schedule "fred-rates-daily"  "30 6 * * *"  "fetch-fred-rates"
+
+    # Economic events — 7 AM ET weekdays (before pre-market brief)
+    _schedule "economic-events-daily"  "0 7 * * 1-5"  "fetch-economic-events"
+
+    # ─────────────────────────────────────────────────────────────────
+    # Earnings pipeline (evening) — single chain Mon-Fri @ 7 PM ET +
+    # weekly setup Sun @ 7 PM ET. See docs/RUNBOOK_BACKFILL.md for the
+    # full architecture rationale.
+    #
+    # Daily (Mon-Fri 7 PM) — `daily-earnings-refresh`:
+    #   - fetch-earnings-calendar (scope=daily): AV HISTORICAL_OPTIONS
+    #     for TOMORROW's AV ∩ UW reporters (snapshot = today's close)
+    #   - fetch-earnings-history (scope=daily): force-refetch today's
+    #     reporters to capture post-close eps_actual
+    #   - compute-earnings-reactions (scope=daily): re-compute today's
+    #     just-reported tickers
+    #
+    # Weekly (Sun 7 PM) — `weekly-earnings-refresh`:
+    #   - fetch-earnings-calendar (scope=weekly): AV options for ALL
+    #     upcoming Mon-Fri AV ∩ UW (snapshot = Friday close)
+    #   - fetch-earnings-history (scope=weekly): pre-fetch history for
+    #     next-week's universe, skip-already-processed handles rest
+    #   - compute-earnings-reactions (scope=weekly): same window
+    #
+    # Daily morning runs are deleted — data lands the prior evening
+    # so the 8:30 AM Discord brief reads pre-fetched, settled data.
+    # ─────────────────────────────────────────────────────────────────
+    _schedule "daily-earnings-refresh-calendar"   "0 19 * * 1-5"  "fetch-earnings-calendar"
+    _schedule "daily-earnings-refresh-history"   "15 19 * * 1-5"  "fetch-earnings-history"
+    _schedule "daily-earnings-refresh-reactions" "30 19 * * 1-5"  "compute-earnings-reactions"
+
+    _schedule "weekly-earnings-refresh-calendar"   "0 19 * * 0"  "fetch-earnings-calendar"
+    _schedule "weekly-earnings-refresh-history"   "15 19 * * 0"  "fetch-earnings-history"
+    _schedule "weekly-earnings-refresh-reactions" "30 19 * * 0"  "compute-earnings-reactions"
+    # Sunday 7pm ET — long-side "Next NVAX" watchlist (PR-B follow-up).
+    # Fires after the refresh chain so the data is current.
+    _schedule "earnings-long-watchlist-sunday"    "45 19 * * 0"  "earnings-long-watchlist"
+    # Sunday 8:30pm ET — playability calibration sweep, AFTER the whole
+    # refresh chain (19:15/19:30/19:45) so it calibrates on that evening's
+    # reactions. --options-insights is REQUIRED here, not decoration: the
+    # bare sweep never touches earnings_options_strategy_winners (only the
+    # insights mode persists it — scripts/calibrate_earnings.py:306-308),
+    # and that table's calculation_date is what earnings-long-watchlist's
+    # freshness gate reads. With a weekly insights run the snapshot is at
+    # most ~7 days old at every 19:45 watchlist fire, half the gate's
+    # 14-day cap; unscheduled, the gate failed closed every second week
+    # (issue #1091). Manual plain-sweep runs keep their behavior — the
+    # override rides only this trigger. ~5-15 min at 2cpu/4Gi (the
+    # options-join is what the 4Gi bump was sized for) ≈ $0.05/run,
+    # ~$0.25/mo.
+    _schedule_with_args_verified "earnings-sweep-sunday"   "30 20 * * 0"  "earnings-sweep" \
+        "--options-insights" \
+        || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+    # Earnings frontend data prep (mat view refreshes + upcoming rebuild).
+    # Weekly: Sun 8:00 PM ET — REFRESH MATERIALIZED VIEW × 2 after the
+    #   refresh chain (7:00/7:15/7:30/7:45 PM) finishes its source-data
+    #   refresh.
+    # Daily: 7:30 AM ET weekdays — rebuilds earnings_upcoming_with_history
+    #   before the 8:30 AM morning brief.
+    _schedule "refresh-earnings-views-weekly"     "0 20 * * 0"   "refresh-earnings-views"
+    _schedule_args "refresh-earnings-views-daily" "30 7 * * 1-5" "refresh-earnings-views" "--mode=daily"
+
+    # Platform keep-warm — DROPPED (was: a plain unauthenticated GET to
+    # ${PLATFORM_URL}/api/earnings/health/ping every 5 min on business hours).
+    #
+    # The solyra-api-prod service (retired 2026-10-10) was deployed by platform/deploy.sh behind
+    # Identity-Aware Proxy (IAP) — NOT by this file, and NOT with plain Cloud
+    # Run IAM. A bare unauthenticated GET gets 401/403 at IAP and never reaches
+    # the FastAPI worker, so it warmed nothing while still firing on a cron.
+    #
+    # It cannot be fixed by copying an existing scheduler's auth, because there
+    # is none to copy: the only OIDC-authenticated HTTP-service scheduler here
+    # (reconcile-failure-notifier-hourly) targets the failure-notifier service,
+    # which is --no-allow-unauthenticated (plain Cloud Run IAM, satisfied by an
+    # OIDC run.invoker token). IAP is a different auth layer — it validates a
+    # Google-signed JWT whose audience is the IAP OAuth client id and checks an
+    # IAP access policy; a Cloud Run run.invoker OIDC token does NOT satisfy it.
+    # The IAP OAuth client id isn't even referenced in this file (it lives only
+    # in platform/deploy.sh), so there's no safe, established pattern to mirror.
+    #
+    # Rather than ship a scheduler that 401s on every tick (a slow leak that
+    # warms nothing — CLAUDE.md Rule 0/6), keep-warm is removed. The harmless
+    # /api/earnings/health/ping endpoint is left in place. If warm instances
+    # are wanted later, the correct fix is min-instances>=1 on the platform
+    # service in platform/deploy.sh, or an IAP-aware scheduler that mints a JWT
+    # for the IAP OAuth client-id audience — both belong with the platform
+    # deploy, not here.
+
+    # Pre-market refresh — 8:20 AM ET, 10 min before the morning brief.
+    # premarket-brief-daily (the Discord push) fires at 8:30 AM ET, so
+    # this MUST run earlier or the brief reads NULL gap_pct for every
+    # ticker. ~30s typical runtime for 50 tickers at 4 parallel workers.
+    # Populates today's gap_pct / pre_high / pre_low / pre_vwap into
+    # market_data_daily; the 11pm fetcher fills in regular-session OHLC.
+    _schedule "premarket-refresh-daily"  "20 8 * * 1-5"  "fetch-premarket-refresh"
+
+    # EW strike verdict evaluator — 11:00 PM ET. Earlier 5pm slot was
+    # tried and produced unreliable bars (AV intraday hadn't fully
+    # settled — borderline KEPT/ASSIGNED verdicts flipped on re-runs).
+    # 11pm gives the full session 7 hours to settle and aligns with
+    # fetch-market-data-daily so AV is already warmed up.
+    _schedule "evaluate-ew-strikes-daily" "0 23 * * 1-5"  "evaluate-ew-strikes"
+
+    # Phase 0.6 — per-ticker threshold calibration. Quarterly cadence
+    # (1st of Jan / Apr / Jul / Oct at 02:00 ET). ATR / RVOL / RSI
+    # distributions are slow-moving aggregates over a 60-day window;
+    # weekly recalibration would be mostly noise. Manual override
+    # always available: `gcloud run jobs execute calibrate-thresholds`.
+    _schedule "calibrate-thresholds-quarterly" "0 2 1 1,4,7,10 *" "calibrate-thresholds"
+
+    # Regime combination miner (Effort A) — weekly, Sunday 05:00 ET, after the
+    # weekly data settles. Refreshes regime_combo_results so combo edge + its
+    # drift over time are queryable. Trailing-365d window by default.
+    _schedule "regime-combo-weekly" "0 5 * * 0" "regime-combo"
+
+    # Phase 0.5 — signal-quality report.
+    #
+    # RETIRED 2026-09-07 (#833, audit D1): `signal-quality-report-hourly`
+    # (`0 10-16 * * 1-5`, --mode=rolling) was found PAUSED live with no
+    # record of why; the pause dates to 2026-05-05, three days after #192
+    # created it. What it did: re-score the last few hours of fires into
+    # `signal_metrics` as status='pending' rows until all seven MFE
+    # windows closed. It did not evaluate or generate signals — the
+    # signal monitor does that per bar. Nothing reads 'pending' rows
+    # (gcp/signal_quality_alarm.py:168 considers status='final' only; the
+    # other readers are offline analysis over final rows), and the
+    # nightly run below has written the same rows as 'final' every night
+    # since. Seven executions a day for no consumer: removed rather than
+    # resumed. `--mode=rolling` stays in scripts/signal_quality_report.py
+    # for manual use. Delete the live scheduler with
+    #   gcloud scheduler jobs delete signal-quality-report-hourly --location us-east1
+    # gcp/audit_infra_drift.py::check_scheduler_state now flags any
+    # scheduler left PAUSED so a repeat is visible within a day.
+
+    # Nightly: --mode=historical scores the sessions its writer,
+    # historical-signals-watchlist-daily, added. That writer fires at
+    # 01:00 ET Tue-Sat and took 1.5-2 min on each run 2026-09-19..26.
+    # This used to fire at 01:00 too, on the claim that the writer
+    # "finishes by 22:00 ET", so it read historical_signals before the
+    # session was written (#1166). The 2-day window picked a Mon-Thu
+    # session up the next night; Friday's fell out of Tuesday's window
+    # and was never scored (0 of 20,323 Friday rows over 120 days).
+    # 01:30 puts it after the writer, and --heal-days=35 does not depend
+    # on the clock: it also scores any unscored row whose entry_time is in
+    # the last 35 days (a late writer, a failed night, and the writer's
+    # 30-day bootstrap of a newly added ticker, BOOTSTRAP_DAYS in
+    # scripts/run_historical_signals.py), then exits 1 if a row it selected
+    # is still missing. Measured 2026-09-26: 5.8 s cold for the source query,
+    # 0.7 s for the coverage check. A heal keyed on inserted_at would also
+    # reach an older manual --backfill-from, but historical_signals has no
+    # index on it and each query seq-scanned all 3.4 GB (14.3 s, twice a
+    # night); a backfill older than 35 days is scored by running the report
+    # over that window, as the #1154 re-run did. --lookback-days=2 keeps
+    # each session's second pass. The alarm below reads signal_metrics at
+    # 02:00, after this run. Verified update-or-create, so `schedulers` and
+    # `all` converge a live entry rather than skip it as "already exists".
+    _schedule_with_args_verified "signal-quality-report-nightly" \
+        "30 1 * * 2-6" "signal-quality-report" \
+        "--mode=historical" "--lookback-days=2" "--heal-days=35" \
+        || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+
+    # Phase 0.5 spec item #6 — clean-rate regression alarm.
+    # Daily 02:00 ET, after the nightly historical run promotes rolling
+    # rows to 'final'. Compares trailing-7d to prior-7d clean-rate;
+    # alarms when delta < -3pp. Posts to SIGNAL_QA_WEBHOOK_URL and
+    # exits non-zero on regression so the existing failure-notifier
+    # creates a GitHub issue.
+    _schedule "signal-quality-alarm-daily" \
+        "0 2 * * 2-6" "signal-quality-alarm"
+
+    # SEC EDGAR filings — 4 strategic slots that cover every consumer.
+    # The brief (8:30) and insight pipeline (8:45) read from sec_filings
+    # once each morning, so 0700 is the only feed that matters for the
+    # morning workflow. The other three give the Catalysts page intra-day
+    # freshness for users browsing during market hours plus a post-close
+    # sweep for after-hours 8-Ks.
+    #
+    # History: this used to be 17 schedules every 30 min — see PR
+    # cleanup that retired the redundant slots. The deletion loop below
+    # is idempotent; once the obsolete jobs are gone, it's a no-op.
+    #
+    # 2026-09-06: the four slots collapsed into ONE scheduler entry. Cloud
+    # Scheduler bills $0.10/job/month past the first three, and all four
+    # entries were byte-identical apart from the hour (same :run URI, no
+    # body), so a cron hour list expresses them exactly. Same change for
+    # the hourly news-sentiment / news-topics entries below (20 -> 2).
+    # One-shot cleanup of retired sec-filings schedules (13 from the old
+    # every-30-min cadence, 4 from the per-hour entries consolidated
+    # above) runs ONLY after the replacement is read back live and
+    # ENABLED with the intended cron. Idempotent: `gcloud scheduler jobs
+    # delete` (via _unschedule) treats NOT_FOUND as done and reports any
+    # other failure. Safe to leave in forever.
+    if _schedule_verified "sec-filings-intraday"  "0 7,10,13,17 * * 1-5"  "fetch-sec-filings"; then
+        for OBSOLETE in \
+            sec-filings-0700 sec-filings-1000 sec-filings-1300 sec-filings-1700 \
+            sec-filings-0930 sec-filings-1030 sec-filings-1100 \
+            sec-filings-1130 sec-filings-1200 sec-filings-1230 \
+            sec-filings-1330 sec-filings-1400 sec-filings-1430 \
+            sec-filings-1500 sec-filings-1530 sec-filings-1600 \
+            sec-filings-2000 ; do
+            _unschedule "${OBSOLETE}" || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+        done
+    else
+        echo "  sec-filings-intraday NOT verified; legacy sec-filings entries left in place." >&2
+        SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+    fi
+
+    # Insider transactions — daily at 7 AM ET. AV refreshes Form 4 data
+    # overnight from EDGAR; daily cadence catches everything new.
+    _schedule "insider-transactions-daily"  "0 7 * * 1-5"  "fetch-insider-transactions"
+
+    # Top movers — daily at 4:15 PM ET, after the close so AV's snapshot
+    # reflects the full session.
+    _schedule "top-movers-daily"  "15 16 * * 1-5"  "fetch-top-movers"
+
+    # Most-active ticker bar (marquee) — intraday hourly snapshots feeding
+    # top_movers_intraday, via _schedule_with_args() overriding the SAME
+    # fetch-top-movers job with --intraday-snapshot (see deploy_fetch_top_movers
+    # for why this reuses the job instead of standing up a second one).
+    # Cron "30 9-15 * * 1-5" fires at :30 past 9 AM-3 PM ET weekdays
+    # (9:30, 10:30, ..., 15:30) — the market's 9:30 open through the last
+    # full hour before close, so the marquee has a fresh snapshot at least
+    # once an hour throughout the session. A separate 4:05 PM ET run
+    # captures the closing snapshot after AV's TOP_GAINERS_LOSERS reflects
+    # the full session (mirrors top-movers-daily's 4:15 PM timing, 10 min
+    # earlier so the intraday bar shows the close before the daily table
+    # lands). Both use --time-zone America/New_York (matches every other
+    # scheduler in this file) so the cadence doesn't drift across the
+    # DST transition — a bare UTC cron would silently shift an hour twice
+    # a year.
+    _schedule_with_args "top-movers-intraday-hourly"  "30 9-15 * * 1-5"  "fetch-top-movers" \
+        "--intraday-snapshot"
+    _schedule_with_args "top-movers-intraday-close"  "5 16 * * 1-5"  "fetch-top-movers" \
+        "--intraday-snapshot"
+
+    # News sentiment — HOURLY during the trading day so catalysts can't
+    # age out of AV's 50-article window before we capture them. The
+    # Apr-7-2026 Broadcom-Google deal hit at 13:46 ET; with the prior
+    # 3x schedule (08:00/12:00/16:00) it would have been captured at
+    # the 16:00 run only — risking the article aging out under heavy
+    # syndication. Hourly cadence keeps AV calls well under the 150
+    # RPM plan: 10 runs/day × 5 watchlist tickers = 50 calls/day.
+    # Ticker mode reads alert_config.json["watchlist"] when no
+    # --tickers arg is passed (see fetch_news_sentiment.main()).
+    #
+    # 2026-09-06: one scheduler entry with an hour range replaces the ten
+    # per-hour entries (news-sentiment-0800 .. -1700); the cadence is
+    # unchanged. The per-hour entries carried no body, so nothing
+    # downstream could tell them apart.
+    # Topic mode: catalyst stream across all tickers AV tracks. Same
+    # hourly cadence, offset 5 min so AV calls stagger.
+    #
+    # Each replacement is read back live before its per-hour predecessors
+    # are retired (same gate as sec-filings-intraday above).
+    if _schedule_verified "news-sentiment-hourly"  "0 8-17 * * 1-5"  "fetch-news-sentiment"; then
+        for h in 08 09 10 11 12 13 14 15 16 17; do
+            _unschedule "news-sentiment-${h}00" || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+        done
+    else
+        echo "  news-sentiment-hourly NOT verified; per-hour entries left in place." >&2
+        SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+    fi
+    if _schedule_verified "news-topics-hourly"  "5 8-17 * * 1-5"  "fetch-news-sentiment-topics"; then
+        for h in 08 09 10 11 12 13 14 15 16 17; do
+            _unschedule "news-topics-${h}05" || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+        done
+    else
+        echo "  news-topics-hourly NOT verified; per-hour entries left in place." >&2
+        SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+    fi
+
+    # discord-interactions warm window. One always-on instance is ~$51/month;
+    # warm only Mon-Fri 09:00-16:30 ET is ~$11. Outside the window the first
+    # slash command after ~15 idle minutes cold-starts (4-10 s) and Discord
+    # reports "did not respond"; a retry then succeeds. Webhook posts from
+    # jobs (briefs, insights, signal alerts) do not go through this service
+    # and are unaffected. See docs/audits/COST_AUDIT_2026-09-06.md §6.
+    _schedule_min_instances "discord-warm-open"  "0 9 * * 1-5"   "discord-interactions" 1 \
+        || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+    _schedule_min_instances "discord-warm-close" "30 16 * * 1-5" "discord-interactions" 0 \
+        || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
+
+    # Upcoming-reporter mode: 06:00 ET weekdays, before premarket-brief
+    # (08:45). EARNINGS_WINDOW_DAYS=7 on the job resolves the universe
+    # to (earnings_calendar ±7d) ∪ watchlist; NEWS_SINCE_LAST=1 means
+    # cold-start reporters pull 48h once and incremental from then on.
+    # Decouples the earnings-reactions brief from the watchlist-only
+    # ticker mode that misses tomorrow's reporters.
+    _schedule "news-sentiment-earnings-0600"  "0 6 * * 1-5"  "fetch-news-sentiment-earnings"
+
+    # Self-healing backfill of derived indicator columns in
+    # market_data_daily (atr_14, rsi_14, macd, ema_*, bb_*, etc.).
+    # daily mode (default env on the job) at 02:30 ET Mon-Sat —
+    # auto-discovers tickers with NULL atr_14 in last 7d, re-computes.
+    _schedule "backfill-indicators-daily"  "30 2 * * 1-6"  "backfill-daily-indicators"
+
+    # full mode at 03:00 ET Sunday via containerOverride — sweeps every
+    # ticker. Persisted job env stays "daily" for the weekday entries.
+    local _BFILL_FULL_BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"BACKFILL_MODE","value":"full"}]}]}}'
+    gcloud scheduler jobs create http "backfill-indicators-weekly" \
+        --location "${REGION}" \
+        --schedule "0 3 * * 0" \
+        --time-zone "America/New_York" \
+        --uri "$(_job_uri "backfill-daily-indicators")" \
+        --http-method POST \
+        --headers "Content-Type=application/json" \
+        --message-body "${_BFILL_FULL_BODY}" \
+        --oauth-service-account-email "${SA_EMAIL}" \
+        --quiet 2>/dev/null || echo "  backfill-indicators-weekly: already exists"
+
+    # AI Insights daily report — 8:45 AM ET weekdays, after premarket-brief
+    # (which seeds the strat + daily indicators the pipeline consumes).
+    # Use _schedule_insight (not _schedule) so INSIGHT_TRIGGERED_BY=
+    # cloud-scheduler:insight-pipeline-daily is injected on every run.
+    # Without that env var the job's _resolve_update_mode_and_kind
+    # classifies the run as 'manual_replay' rather than 'scheduled' —
+    # validated against insight_reports_history 2026-04-15..05-08 where
+    # 0/470 rows had run_kind='scheduled' (issue #313).
+    _schedule_insight "insight-pipeline-daily"   "45 8 * * 1-5"  "insight-pipeline"
+
+    # AI Insights Discord push — 9:15 AM ET weekdays. Reads today's rows
+    # from insight_reports and POSTs a multi-embed digest to Discord.
+    # Decoupled from the pipeline so delivery can be retried independently
+    # if Discord drops.
+    _schedule "insight-discord-push-daily"  "15 9 * * 1-5"  "insight-discord-push"
+
+    # Historical signals — watchlist iterator — 1 AM ET weekdays. Runs
+    # well after the 5 PM market-data fetcher has settled new intraday
+    # bars, picking up any tickers added to the watchlist that day.
+    _schedule "historical-signals-watchlist-daily"  "0 1 * * 2-6"  "historical-signals-watchlist"
+
+    # Auto-refresh top-N — 8:10 AM ET weekdays.
+    # Runs after news fetchers (8:00, 8:05) so catalyst data is fresh,
+    # and before premarket-brief at 8:30 so the warmed reports are
+    # ready by the time the user opens the platform.
+    _schedule "auto-refresh-top-n"       "10 8 * * 1-5"  "auto-refresh-top-n"
+
+    if [ "${SCHEDULER_FAILURES}" -ne 0 ]; then
+        echo "ERROR: ${SCHEDULER_FAILURES} verified scheduler(s) did not converge (see above)." >&2
+        return 1
+    fi
+    echo "All schedulers configured."
+}
+
+# ── Watchlist backfill ────────────────────────────────────────────────────────
+# Idempotent: only fetches what's missing per ticker. Safe to run after
+# any edit to alert_config.json["watchlist"]; safe to run nightly. Runs
+# locally (not in Cloud Run) because the script is small enough that a
+# Cloud Run job is overhead.
+backfill_watchlist() {
+    echo "Backfilling watchlist data (idempotent)..."
+    local args=("$@")
+    if [ ! -f .env ]; then
+        echo "WARN: no .env at repo root — fetchers may fail without AV_API_KEY" >&2
+    else
+        # shellcheck disable=SC1091
+        set -a; . ./.env; set +a
+        export ALPHA_VANTAGE_API_KEY="${AV_API_KEY:-${ALPHA_VANTAGE_API_KEY:-}}"
+    fi
+    if [ -f .gcp-key.json ]; then
+        export GOOGLE_APPLICATION_CREDENTIALS="$PWD/.gcp-key.json"
+    fi
+    python3 -m scripts.backfill_watchlist_data "${args[@]}"
+}
+
+# ── Cloud Build triggers ─────────────────────────────────────────────────────
+# The API deploy triggers carry their build config INLINE in Cloud Build; the
+# YAML under gcp/cloudbuild/ is a copy, and until this target nothing synced
+# the two. Read live on 2026-09-07 (#1033): both triggers still ran the
+# three-step configs they were created with on 2026-05-31, so every change
+# merged to those files since (#990 interlocks, #1004 pin-images, #1030
+# --update-env-vars) had never executed.
+#
+#   ./gcp/deploy.sh cloudbuild-triggers          # import each file into its trigger
+#   ./gcp/deploy.sh cloudbuild-triggers --check  # print drift, change nothing; exit 2 on drift
+#
+# Export the live trigger, replace ONLY its `build` block with the committed
+# file, import it back. The trigger's event filter, includedFiles, repo and
+# service account are untouched. Import is idempotent.
+_CLOUDBUILD_TRIGGERS=(
+    "deploy-solyra-api-staging:gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml"
+    "apply-schema-on-change:gcp/cloudbuild/apply-schema-cloudbuild.yaml"
+)
+sync_cloudbuild_triggers() {
+    # The default action writes to three live triggers, so anything that is
+    # not exactly the one documented option is a usage error, not a fall-
+    # through to import (Codex, #1037: `--checks` used to import).
+    local mode
+    case "$#:${1:-}" in
+        0:)         mode="import" ;;
+        1:--check)  mode="check" ;;
+        *) echo "ERROR: cloudbuild-triggers takes no argument or exactly --check; got: $*" >&2
+           return 64 ;;
+    esac
+    python3 -c 'import yaml' 2>/dev/null \
+        || { echo "ERROR: python3 needs PyYAML (pip3 install --user pyyaml)" >&2; return 1; }
+    local pair name file tmp rc=0
+    for pair in "${_CLOUDBUILD_TRIGGERS[@]}"; do
+        name="${pair%%:*}"; file="${pair#*:}"
+        tmp="$(mktemp)"
+        gcloud beta builds triggers export "$name" --region=global --project "$PROJECT_ID" \
+            --destination="$tmp"
+        if python3 - "$mode" "$tmp" "$file" "$name" <<'PY'
+import difflib, sys, yaml
+mode, trig_path, build_path, name = sys.argv[1:5]
+with open(trig_path) as fh:
+    trig = yaml.safe_load(fh)
+with open(build_path) as fh:
+    build = yaml.safe_load(fh)
+live = trig.get("build")
+a = yaml.safe_dump(live, sort_keys=True).splitlines()
+b = yaml.safe_dump(build, sort_keys=True).splitlines()
+if a == b:
+    print(f"{name}: live build config matches {build_path}")
+    sys.exit(0)
+print(f"{name}: live build config differs from {build_path}")
+print("\n".join(difflib.unified_diff(a, b, "live", build_path, lineterm="")))
+if mode == "check":
+    sys.exit(2)
+trig.pop("filename", None)
+trig.pop("gitFileSource", None)
+trig["build"] = build
+with open(trig_path, "w") as fh:
+    yaml.safe_dump(trig, fh, sort_keys=False)
+PY
+        then
+            if [ "$mode" = "import" ]; then
+                gcloud beta builds triggers import --region=global --project "$PROJECT_ID" \
+                    --source="$tmp"
+                echo "imported $file into trigger $name"
+            fi
+        else
+            rc=2
+        fi
+        rm -f "$tmp"
+    done
+    return "$rc"
+}
+
+# ── Build digests (#1171) ─────────────────────────────────────────────────────
+# Cloud Run re-resolves a job's image TAG at each execution: measured
+# 2026-09-25, fetch-av-options-realtime (generation 2) and premarket-brief
+# (generation 83), neither touched, ran a new digest the morning after an
+# unrelated target's build. 50 of 76 specs named the tag-less image, so every
+# build rolled out to all 50. Every deploy now names a digest instead:
+# IMAGE_REF / RESEARCH_IMAGE_REF, read from the build's own record.
+_submit_build() {
+    # _submit_build <image[:tag]> <dir> -> prints <image>@sha256:<digest> of
+    # the image THIS build pushed; nonzero on any failure.
+    #
+    # The digest comes from the build record, not from the tag afterwards:
+    # another build can move the tag between this one finishing and a read
+    # of it, and the deploy would then ship that build's image. Submitted
+    # --async so the build id is known; the log is streamed to stderr and the
+    # status polled to the end, because stdout is the return value.
+    local tag=$1 dir=$2 id row status digests digest base name moved listing floating
+    local poll=${BUILD_POLL_SECONDS:-10} tries=0 max
+    max=$(( ${BUILD_WAIT_SECONDS:-7200} / (poll > 0 ? poll : 1) ))
+    # A job whose spec names the tag this build moves runs the build at its
+    # next execution, whatever the target deployed. Refuse while any does:
+    # `pin-floating` converts them once, to the digest the tag holds now.
+    # Codex on #1189: the first narrow deploy after #1171 would otherwise
+    # still have rolled out to every job deployed before it.
+    name=${tag##*/}
+    if [[ "${name}" == *:* ]]; then base=${tag%:*}; moved=${name#*:}; else base=${tag}; moved=latest; fi
+    listing=$(gcloud run jobs list --region "${REGION}" \
+        --format="value(metadata.name,spec.template.spec.template.spec.containers[0].image)") \
+        || { echo "  ERROR: cannot list Cloud Run jobs, so none can be ruled out as floating on ${base}:${moved}; not building." >&2; return 1; }
+    floating=$(awk -F'\t' -v t="${base}:${moved}" -v b="${base}" -v l="${moved}" \
+        '$2 == t || ($2 == b && l == "latest") { printf " %s", $1 }' <<< "${listing}")
+    [ -z "${floating}" ] \
+        || { echo "  ERROR: jobs name ${base}:${moved}, which this build moves, so each would run it at its next execution:${floating}. Run ./gcp/deploy.sh pin-floating first; nothing built." >&2; return 1; }
+    id=$(gcloud builds submit --tag "${tag}" "${dir}" --async --format="value(id)") \
+        || { echo "  ERROR: could not submit the build for ${tag}" >&2; return 1; }
+    [ -n "${id}" ] || { echo "  ERROR: the build submit for ${tag} returned no id" >&2; return 1; }
+    echo "  build ${id} for ${tag}" >&2
+    gcloud builds log --stream "${id}" >&2 \
+        || echo "  (the log stream ended early; waiting on the build status)" >&2
+    while :; do
+        row=$(gcloud builds describe "${id}" --format="value(status,results.images[].digest)") \
+            || { echo "  ERROR: cannot read build ${id}" >&2; return 1; }
+        _split_tsv "${row}" status digests
+        case "${status}" in
+            QUEUED|PENDING|WORKING) ;;
+            *) break ;;
+        esac
+        tries=$((tries + 1))
+        [ "${tries}" -le "${max}" ] \
+            || { echo "  ERROR: build ${id} still ${status} after ${BUILD_WAIT_SECONDS:-7200}s" >&2; return 1; }
+        sleep "${poll}"
+    done
+    [ "${status}" = SUCCESS ] \
+        || { echo "  ERROR: build ${id} ended ${status:-<no status>}; nothing to deploy" >&2; return 1; }
+    # One build pushes one image; its record lists it once per name (untagged
+    # and :latest), with the same digest. Two different digests is not one
+    # image, and guessing which would deploy an unknown one.
+    digest=$(printf '%s\n' "${digests//;/$'\n'}" | sed '/^$/d' | sort -u)
+    [[ "${digest}" == sha256:* && "${digest}" != *$'\n'* ]] \
+        || { echo "  ERROR: build ${id} did not record exactly one digest: ${digests:-<none>}" >&2; return 1; }
+    name=${tag##*/}
+    if [[ "${name}" == *:* ]]; then base=${tag%:*}; else base=${tag}; fi
+    echo "${base}@${digest}"
+}
+
+_research_image_ref() {
+    # _research_image_ref -> the research image as a digest: this invocation's
+    # build_research_image result, else :research resolved to its digest once,
+    # now. Research targets do not build (build-research is its own target), so
+    # the second case is their normal path.
+    if [ -n "${RESEARCH_IMAGE_REF:-}" ]; then
+        echo "${RESEARCH_IMAGE_REF}"; return 0
+    fi
+    local ref
+    ref=$(_resolve_image_ref "${IMAGE}:research") || return 1
+    echo "  no research build in this run: deploying ${IMAGE}:research as ${ref#*@}" >&2
+    echo "${ref}"
+}
+
+pin_floating_jobs() {
+    # pin_floating_jobs -> every job whose spec names an image TAG is updated
+    # to name the digest that tag holds now. A tag is re-resolved at each
+    # execution, so that digest is what the job would run next anyway: no
+    # job's code changes, and later builds stop reaching jobs their target did
+    # not deploy. Jobs deployed before #1171 floated until redeployed (70 of
+    # 76 on 2026-09-26, on :latest, :research and four hand-made tags); this
+    # converts them in one pass.
+    #
+    # Each tag is resolved ONCE, before any update, and every job on it is
+    # pinned to that digest; a tag-less spec IS :latest, so it is keyed as
+    # :latest. Resolving per job, or per spelling, let a build landing mid-pass
+    # split one tag's jobs across two digests (Codex, twice, on #1189). The
+    # pass reads every spec back against that snapshot and re-resolves each
+    # tag: one that moved during it is named and fails the pass.
+    local ongoing listing job ref pinned now converted=0 failures=0 left=0 moved=0
+    local -A pin_of=() converted_from=()
+    ongoing=$(gcloud builds list --ongoing --format="value(id)") \
+        || { echo "ERROR: cannot list ongoing builds; nothing pinned." >&2; return 1; }
+    [ -z "${ongoing}" ] \
+        || { echo "ERROR: build in flight (${ongoing//$'\n'/ }); it could move a tag mid-pass. Nothing pinned." >&2; return 1; }
+    listing=$(gcloud run jobs list --region "${REGION}" \
+        --format="value(metadata.name,spec.template.spec.template.spec.containers[0].image)") \
+        || { echo "ERROR: cannot list Cloud Run jobs; nothing pinned." >&2; return 1; }
+    while IFS=$'\t' read -r job ref; do
+        [ -n "${job}" ] || continue
+        [[ "${ref}" == *@sha256:* ]] && continue; [[ "${ref##*/}" == *:* ]] || ref+=":latest"
+        [ -z "${pin_of[${ref}]+x}" ] || continue
+        if pinned=$(_resolve_image_ref "${ref}"); then
+            pin_of[${ref}]=${pinned}
+        else
+            failures=$((failures + 1))
+        fi
+    done <<< "${listing}"
+    while IFS=$'\t' read -r job ref; do
+        [ -n "${job}" ] || continue
+        [[ "${ref}" == *@sha256:* ]] && continue; [[ "${ref##*/}" == *:* ]] || ref+=":latest"
+        [ -n "${pin_of[${ref}]+x}" ] || continue   # its tag did not resolve; counted above
+        if gcloud run jobs update "${job}" --region "${REGION}" --image "${pin_of[${ref}]}" --quiet >/dev/null; then
+            converted=$((converted + 1))
+            converted_from[${job}]=${ref}
+            echo "  ${job}: ${ref} -> ${pin_of[${ref}]#*@}"
+        else
+            echo "  ERROR: could not update ${job}" >&2
+            failures=$((failures + 1))
+        fi
+    done <<< "${listing}"
+    # Done only when every spec names a digest, each converted job the one
+    # its tag held in the snapshot, read back rather than assumed.
+    listing=$(gcloud run jobs list --region "${REGION}" \
+        --format="value(metadata.name,spec.template.spec.template.spec.containers[0].image)") \
+        || { echo "ERROR: cannot list Cloud Run jobs to read the pins back." >&2; return 1; }
+    while IFS=$'\t' read -r job ref; do
+        [ -n "${job}" ] || continue
+        if [[ "${ref}" != *@sha256:* ]]; then
+            echo "  ERROR: ${job} still names ${ref}" >&2
+            left=$((left + 1))
+        elif [ -n "${converted_from[${job}]+x}" ] && [ "${ref}" != "${pin_of[${converted_from[${job}]}]}" ]; then
+            echo "  ERROR: ${job} names ${ref}, not ${pin_of[${converted_from[${job}]}]}: changed during the pass" >&2
+            left=$((left + 1))
+        fi
+    done <<< "${listing}"
+    for ref in "${!pin_of[@]}"; do
+        if ! now=$(_resolve_image_ref "${ref}"); then
+            failures=$((failures + 1))
+        elif [ "${now}" != "${pin_of[${ref}]}" ]; then
+            echo "  ERROR: ${ref} moved during the pass (${pin_of[${ref}]#*@} -> ${now#*@}): a build ran. Its jobs are pinned to the first." >&2
+            moved=$((moved + 1))
+        fi
+    done
+    echo "Pinned ${converted} job(s) to a digest; ${left} not as expected; ${moved} tag(s) moved; ${failures} failure(s)."
+    [ "${failures}" -eq 0 ] && [ "${left}" -eq 0 ] && [ "${moved}" -eq 0 ]
+}
+
+# The digests this invocation built; set by build_image / build_research_image
+# and never inherited from the caller's environment, where a stale value would
+# deploy an image nobody built for this change.
+IMAGE_REF=""
+RESEARCH_IMAGE_REF=""
+
+# ── Dispatch ──────────────────────────────────────────────────────────────────
+# Every command that deploys a job or service is followed by pin_image_tags
+# (see the tail of this file), so the digest a job was just pinned to gets
+# its inuse-* tag before the next build can move :latest off it.
+#
+# Steps run through _run, one simple command at a time, never as an AND
+# list: inside a function on the left of `&&` Bash suspends errexit, so a
+# failed `gcloud builds submit` followed by a successful `rm -rf` returned 0
+# and the deploy proceeded with the previous image (Codex, PR #1004). With
+# _run, the first failing command inside any step aborts the script.
+_run() {
+    local step
+    for step in "$@"; do
+        "${step}"
+    done
+}
+_PIN_AFTER=1
+case "${1:-help}" in
+    setup)       _PIN_AFTER=0; setup ;;
+    migrate)     _PIN_AFTER=0; shift; migrate "$@" ;;
+    build)       _PIN_AFTER=0; build_image ;;
+    pin-images)  _PIN_AFTER=0; pin_image_tags "${2:-}" ;;
+    pin-floating) pin_floating_jobs ;;
+    cloudbuild-triggers) _PIN_AFTER=0; shift; sync_cloudbuild_triggers "$@" ;;
+    registry-cleanup) _PIN_AFTER=0; _run pin_image_tags setup_registry_cleanup ;;
+    retire-legacy-images) _PIN_AFTER=0; retire_legacy_images ;;
+    build-research) _PIN_AFTER=0; build_research_image ;;
+    premarket) _run build_image deploy_premarket ;;
+    earnings-reactions-brief) _run build_image deploy_earnings_reactions_brief ;;
+    earnings-long-watchlist) _run build_image deploy_earnings_long_watchlist ;;
+    refresh-earnings-views) _run build_image deploy_refresh_earnings_views ;;
+    monitor) _run build_image deploy_monitor ;;
+    eod-resolver) _run build_image deploy_signal_monitor_eod_resolver ;;
+    playbook-resolver) _run build_image deploy_premarket_playbook_resolver ;;
+    phase6-playbook) _run build_image deploy_phase6_playbook ;;
+    strat-engine) deploy_strat_engine ;;
+    gamma-levels) deploy_p2_build_gamma_levels ;;   # research image; build separately (build-research)
+    direction-probe) deploy_direction_probe ;;   # research image; build separately (build-research)
+    build-options-greeks) deploy_build_options_greeks ;;  # research image
+    build-realtime-gex) deploy_build_realtime_gex ;;      # research image
+    build-options-daily-features) deploy_build_options_daily_features ;;  # research image
+    magnitude-engine) deploy_magnitude_engine ;;
+    direction-baseline) deploy_direction_baseline ;;   # research image; build separately (build-research)
+    direction-importance) deploy_direction_importance ;;   # research image; build separately (build-research)
+    direction-phase2) deploy_direction_phase2 ;;   # research image; build separately (build-research)
+    magnitude-recal) deploy_magnitude_recal ;;   # research image (already built)   # research image; build separately (build-research)
+    magnitude-inference) _run build_research_image deploy_magnitude_inference ;;
+    magnitude-inference-only) deploy_magnitude_inference ;;   # research image; build separately (build-research)
+    p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
+    weekend) _run build_image deploy_weekend ;;
+    fetchers) _run build_image deploy_fetchers backfill_watchlist ;;
+    insights) _run build_image setup_insight_tasks_queue deploy_insight_pipeline deploy_insight_discord_push deploy_historical_signals_watchlist deploy_auto_refresh_top_n ;;
+    historical-signals) _run build_image deploy_historical_signals_watchlist ;;
+    market-data) _run build_image deploy_fetch_market_data deploy_fetch_premarket_refresh ;;
+    schedulers)  _PIN_AFTER=0; deploy_schedulers ;;
+    backfill)    _PIN_AFTER=0; shift; backfill_watchlist "$@" ;;
+    apply-schema) _run build_image deploy_apply_schema_migrations apply_schema_via_build ;;
+    pg-dump) _run build_image deploy_weekly_pg_dump ;;
+    setup-pg-dump-iam) _PIN_AFTER=0; setup_pg_dump_iam ;;
+    fred-rates) _run build_image deploy_fetch_fred_rates ;;
+    evaluate-ew-strikes) _run build_image deploy_evaluate_ew_strikes ;;
+    db-query) _run build_image deploy_db_query ;;
+    freshness-watchdog) _run build_image deploy_freshness_watchdog ;;
+    audit-infra-drift) _run build_image deploy_audit_infra_drift ;;
+    audit-magnitude-drift) _run build_image deploy_audit_magnitude_drift ;;
+    audit-walkforward) _run build_image deploy_audit_walkforward ;;
+    audit-brief-bias) _run build_image deploy_audit_brief_bias ;;
+    spx-greeks) _run build_image deploy_compute_spx_greeks_backfill ;;
+    calibrate) _run build_image deploy_calibrate_thresholds ;;
+    param-sweep) _run build_image deploy_param_sweep ;;
+    earnings-sweep) _run build_image deploy_earnings_sweep ;;
+    earnings-options-backfill) _run build_image deploy_earnings_options_backfill ;;
+    intraday-bulk-backfill) _run build_image deploy_intraday_bulk_backfill ;;
+    options-retention) _run build_image deploy_options_retention ;;
+    signal-quality) _run build_image deploy_signal_quality_report deploy_signal_quality_alarm ;;
+    signal-replay) _run build_image deploy_signal_replay ;;
+    indicator-correlation) _run build_image deploy_indicator_correlation ;;
+    regime-combo) deploy_regime_combo ;;   # research image; build separately (see strat-engine)
+    setup-notifier-secrets) _PIN_AFTER=0; setup_notifier_secrets ;;
+    notifier) _run build_image deploy_notifier ;;
+    # The service dispatches three Cloud Run Jobs for its slash commands
+    # (gcp/discord_interactions/main.py: /replay -> backfill-ticker,
+    # /validate -> validate-brief, /backtest -> backtest); deploy them with
+    # it so the commands work on a fresh environment (#831 K3).
+    discord) _run build_image deploy_discord_interactions deploy_backfill_ticker deploy_validate_brief deploy_backtest ;;
+    all)
+        build_image
+        # Both images first: deploy_indicator_correlation below and the
+        # scheduled research jobs at the end deploy from ${IMAGE}:research,
+        # so the research build must precede the first of them (Codex on
+        # #1022: building it mid-list left indicator-correlation on the
+        # previous research digest, and on a fresh project the tag did
+        # not exist yet). Each research job then pins :research by digest
+        # (pin_image_tags at the tail).
+        build_research_image
+        # The job both Cloud Build triggers `jobs update` and execute
+        # before anything else moves (apply-schema-on-change, and the
+        # staging deploy's migrate step). It has to exist before either
+        # can run, and only the separate apply-schema) target created it
+        # (Codex on #1022).
+        deploy_apply_schema_migrations
+        deploy_premarket
+        deploy_earnings_reactions_brief
+        deploy_monitor
+        deploy_signal_monitor_eod_resolver
+        deploy_premarket_playbook_resolver
+        deploy_phase6_playbook
+        deploy_weekend
+        deploy_fetchers
+        setup_insight_tasks_queue
+        deploy_insight_pipeline
+        deploy_insight_discord_push
+        deploy_historical_signals_watchlist
+        deploy_auto_refresh_top_n
+        deploy_signal_quality_report
+        deploy_signal_quality_alarm
+        deploy_signal_replay
+        deploy_indicator_correlation
+        # Scheduled since 2026-09-14 (earnings-sweep-sunday) — a fresh
+        # project must create the job before that trigger can fire it.
+        deploy_earnings_sweep
+        deploy_weekly_pg_dump
+        deploy_notifier
+        # Slash-command service + the jobs it dispatches (#831). Needs the
+        # discord-* secrets; deploy_discord_interactions fails loud without
+        # them, and a re-run of `all` after creating them is idempotent.
+        deploy_discord_interactions
+        deploy_backfill_ticker
+        deploy_validate_brief
+        deploy_backtest
+        # Main-image jobs that deploy_schedulers targets but nothing above
+        # created (#829/#831 audit: `all` came up partial on a rebuild).
+        deploy_earnings_long_watchlist
+        deploy_refresh_earnings_views
+        deploy_calibrate_thresholds
+        # Research-image jobs with a scheduler entry (image built above).
+        deploy_strat_engine
+        deploy_p2_build_gamma_levels
+        deploy_magnitude_inference
+        deploy_build_realtime_gex
+        deploy_build_options_daily_features
+        deploy_build_options_greeks
+        deploy_regime_combo
+        deploy_schedulers
+        backfill_watchlist
+        echo "All components deployed."
+        ;;
+    *)
+        _PIN_AFTER=0
+        # A misspelt target printed this and exited 0, so a caller trusting
+        # the status read a typo as a deploy (#1171). Only `help` and no
+        # argument are asking for it.
+        case "${1:-help}" in help) _usage_fd=1 ;; *) _usage_fd=2 ;; esac
+        [ "${_usage_fd}" = 1 ] || echo "ERROR: unknown target '${1}'" >&2
+        {
+        echo "Usage: $0 <command>"
+        echo ""
+        echo "  setup      Provision Cloud SQL, GCS bucket, service account"
+        echo "  migrate    Migrate local Parquet data → GCS + Cloud SQL"
+        echo "  build      Build and push Docker image"
+        echo "  cloudbuild-triggers [--check]"
+        echo "             Import gcp/cloudbuild/*.yaml into the Cloud Build triggers"
+        echo "             that carry them inline (the file is not read by the trigger"
+        echo "             otherwise; see #1033). --check prints drift, exit 2, no write."
+        echo "  premarket  Deploy pre-market brief job"
+        echo "  earnings-reactions-brief"
+        echo "             Deploy earnings-reactions-brief job (Discord post"
+        echo "             ranking upcoming reporters by historical reaction"
+        echo "             pattern). Scheduled weekdays 8:35 AM ET."
+        echo "  monitor    Deploy real-time signal monitor service"
+        echo "  weekend    Deploy weekend review job"
+        echo "  fetchers   Deploy all data-fetching Cloud Run jobs"
+        echo "  insights   Deploy AI insight pipeline job + Cloud Tasks queue"
+        echo "  historical-signals  Deploy only the nightly historical-signals-watchlist job"
+        echo "  market-data         Deploy only fetch-market-data and fetch-premarket-refresh"
+        echo "  schedulers Create/update all Cloud Scheduler triggers"
+        echo "  backfill   Idempotently backfill data for every watchlist ticker."
+        echo "             Pass --tickers AVGO,NVDA to override. Runs automatically"
+        echo "             after \`fetchers\` and \`all\`."
+        echo "  apply-schema Build, then move + run apply-schema-migrations through a tagged, serialized Cloud Build"
+        echo "             (idempotent — every statement is IF NOT EXISTS / OR REPLACE)"
+        echo "  pg-dump    Deploy cloud-sql-weekly-export Cloud Run Job (full Postgres"
+        echo "             dump → gs://\${PROJECT_ID}-trading-data/sql-dumps/). Wired"
+        echo "             to Sunday 04:00 UTC scheduler in deploy_schedulers."
+        echo "  setup-pg-dump-iam  One-time IAM grants for pg-dump: trading-runner gets"
+        echo "             cloudsql.editor, Cloud SQL service identity gets storage"
+        echo "             objectAdmin on the dump bucket, lifecycle rule sets 30d"
+        echo "             retention on the sql-dumps/ prefix."
+        echo "  fred-rates Deploy fetch-fred-rates job (DGS3MO daily into daily_rates)"
+        echo "  evaluate-ew-strikes"
+        echo "             Deploy evaluate-ew-strikes job alone (EW strike verdicts, 23:00 ET)."
+        echo "  gamma-levels"
+        echo "             Deploy p2-build-gamma-levels job (research image; run"
+        echo "             build-research first). Nightly writer of gamma_levels_eod."
+        echo "  spx-greeks Deploy one-shot SPX Greeks backfill job (12h timeout)"
+        echo "             python -m scripts.maintenance.compute_spx_greeks --ticker SPX"
+        echo ""
+        echo "  Note: replay mode for the signal-monitor is built into the"
+        echo "  existing signal-monitor job (gcp/signal_monitor.py main"
+        echo "  --mode=replay). Override at execute time:"
+        echo "    gcloud run jobs execute signal-monitor --wait \\"
+        echo "      --update-env-vars=REPLAY_DATE=YYYY-MM-DD,REPLAY_TICKER=SPY"
+        echo "  setup-notifier-secrets  One-time: store GitHub PAT + repo in Secret Manager"
+        echo "  notifier   Deploy failure-notifier Cloud Run service + log sink"
+        echo "  discord    Deploy discord-interactions Cloud Run service (slash commands)"
+        echo "             + the backfill-ticker, validate-brief and backtest jobs it runs."
+        echo "             Prereqs: discord-app-id, discord-public-key, discord-bot-token"
+        echo "             secrets in Secret Manager. After deploy, set the service URL"
+        echo "             as Discord's Interactions Endpoint URL and run"
+        echo "             scripts/discord/register_commands.py."
+        echo "  signal-quality"
+        echo "             Deploy signal-quality-report (Phase 0.5 measurement)"
+        echo "             + signal-quality-alarm (regression detector) jobs."
+        echo "  signal-replay"
+        echo "             Deploy signal-replay job (re-posts stored signal_alerts"
+        echo "             to the signals channel for a date + ET time block;"
+        echo "             backs the /replay-signals slash command)."
+        echo "  param-sweep"
+        echo "             Deploy param-sweep job — walk-forward calibration of the"
+        echo "             four exit params, auto-applied to exit_config_overrides."
+        echo "             On-demand: gcloud run jobs execute param-sweep."
+        echo "  earnings-sweep"
+        echo "             Deploy earnings-sweep job — calibration of the"
+        echo "             playability lookback knobs, auto-applied to"
+        echo "             earnings_calibration. On-demand."
+        echo "  pin-images [--no-sweep]"
+        echo "             Tag every image digest a Cloud Run job/service is pinned"
+        echo "             to as inuse-job-<job> / inuse-svc-<revision> (runs before"
+        echo "             every build and after every deploy; keeps in-use digests"
+        echo "             out of cleanup). --no-sweep skips releasing stale pins"
+        echo "             (needs artifactregistry.tags.delete; used by the Cloud"
+        echo "             Build trigger identity, which lacks it)."
+        echo "  pin-floating"
+        echo "             Pin every job whose spec names an image tag to the digest"
+        echo "             that tag holds now: the image it would run next, so no"
+        echo "             code changes. Refuses while a build is in flight (#1171)."
+        echo "  registry-cleanup"
+        echo "             pin-images, then apply the Artifact Registry cleanup"
+        echo "             policy (keep tagged + 10 newest, delete untagged >14d)"
+        echo "             to the trading and gcr.io repos."
+        echo "  retire-legacy-images"
+        echo "             Delete the pre-#990 gcr.io/trading-platform(-staging)"
+        echo "             image packages. Refuses while a live service runs one."
+        echo "  all        Build both images + deploy every scheduled job and service"
+        echo "             + schedulers + backfill"
+        } >&"${_usage_fd}"
+        [ "${_usage_fd}" = 1 ] || exit 2
+        ;;
+esac
+# A failed AND-list inside a case arm (e.g. build_image failing before
+# deploy_x) does not trip errexit, so capture the arm's status here and
+# return it: post-pinning must never turn a failed deploy into exit 0
+# (Codex, PR #1004), and there is nothing new to pin after a failure.
+_DISPATCH_RC=$?
+if [ "${_DISPATCH_RC}" -eq 0 ] && [ "${_PIN_AFTER}" -eq 1 ]; then
+    pin_image_tags
+fi
+exit "${_DISPATCH_RC}"

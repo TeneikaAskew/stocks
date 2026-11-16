@@ -1,0 +1,7 @@
+{
+  "command": "python -m pytest -q tests/lib/test_strat.py --maxfail=1 -p no:cacheprovider",
+  "exit_code": 0,
+  "seconds": 3.8163465120014735,
+  "external_io_attempts": [],
+  "not_end_to_end_or_deployment": true
+}

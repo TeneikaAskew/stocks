@@ -152,9 +152,35 @@ def _fmt_levels_field(key_levels: dict) -> str:
     return _truncate("\n".join(lines), MAX_FIELD_VALUE) if lines else "—"
 
 
+def _orb_only_side(report: dict) -> dict:
+    """The report direction's side from its level_basis, or {} for a report
+    stored before FEAT-STRAT-001."""
+    basis = report.get("level_basis") if isinstance(report, dict) else None
+    if not isinstance(basis, dict):
+        return {}
+    side = "short" if report.get("direction") == "short" else "long"
+    return basis.get(side) or {}
+
+
+def _orb_only_reason(report: dict) -> Optional[str]:
+    """The orb_only reason for the report's direction from its level_basis,
+    or None for a report stored before FEAT-STRAT-001."""
+    return _orb_only_side(report).get("reason")
+
+
+def _orb_only_window(report: dict) -> Optional[dict]:
+    """The side's recorded trigger-window parameter (per-ticker parameters,
+    2026-11-08), or None for a basis that recorded none."""
+    window = _orb_only_side(report).get("window")
+    return window if isinstance(window, dict) else None
+
+
 def _fmt_targets_field(
     entry_zone: Optional[dict], stop, targets,
     regime: str = "normal",
+    reason: Optional[str] = None,
+    direction: str = "long",
+    window: Optional[dict] = None,
 ) -> str:
     """Compact one-field summary of entry / stop / targets.
 
@@ -163,18 +189,14 @@ def _fmt_targets_field(
       * `extended`   — same fields plus a leading "⚠️ Extended gap"
                        banner reminding the trader to wait for ORB
                        confirmation before entering.
-      * `orb_only`   — pre-market cleared every structural level in
-                       the trade direction. Suppress the placeholder
-                       entry/stop numbers entirely (they're not real
-                       triggers — see lib/agents/trade_planner.py
-                       _orb_only_plan) and emit an ORB-wait callout.
+      * `orb_only`   : no trigger on this side. The plan carries no entry
+                       or stop (FEAT-STRAT-001); the field shows the one
+                       orb_only line for the side's reason
+                       (lib.strat_levels.ORB_ONLY_COPY).
     """
     if regime == "orb_only":
-        return (
-            "⚠️ **ORB-only** — pre-market cleared every structural "
-            "level. No entry trigger; wait for the 15-min opening "
-            "range to establish before sizing in."
-        )
+        from lib.strat_levels import orb_only_text  # noqa: PLC0415
+        return "⚠️ **ORB-only**: " + orb_only_text(reason, direction, window)
 
     parts = []
     if regime == "extended":
@@ -462,12 +484,16 @@ def format_report_embed(row: dict) -> dict:
 
     strat = r.get("strat_status") or {}
     strat_lines = []
-    if strat.get("last_candle"):
+    if strat.get("available") is False or strat.get("last_candle") == "X":
+        strat_lines.append("Strat **unavailable**")
+    elif strat.get("last_candle"):
         strat_lines.append(f"Candle **{strat['last_candle']}**")
     if strat.get("ftfc_direction"):
         score = strat.get("ftfc_score")
         score_str = f"{float(score):+.2f}" if isinstance(score, (int, float)) else str(score)
-        strat_lines.append(f"FTFC {score_str} **{strat['ftfc_direction']}**")
+        # The weighted candle vote (key ftfc_*) is displayed as "TF bias";
+        # "FTFC" is reserved for price versus each current period open.
+        strat_lines.append(f"TF bias {score_str} **{strat['ftfc_direction']}**")
     if strat.get("in_force_combo"):
         combo_pretty = _fmt_combo(strat["in_force_combo"]) or strat["in_force_combo"]
         strat_lines.append(f"Combo **{combo_pretty}**")
@@ -487,11 +513,14 @@ def format_report_embed(row: dict) -> dict:
             "value": _fmt_targets_field(
                 r.get("entry_zone"), r.get("stop"), r.get("targets"),
                 regime=regime,
+                reason=_orb_only_reason(r),
+                direction=r.get("direction") or "long",
+                window=_orb_only_window(r),
             ),
             "inline": True,
         },
         {
-            "name": "🎲 Strat / FTFC",
+            "name": "🎲 Strat / TF bias",
             "value": _truncate(" · ".join(strat_lines) or "—", MAX_FIELD_VALUE),
             "inline": True,
         },

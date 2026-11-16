@@ -277,7 +277,7 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
         df_tf["Time"] = df_tf.index  # re-add Time after aggregation
 
     # Strat classification + combo detection
-    classifier = StratClassifier()
+    classifier = StratClassifier(rule_version="legacy-pattern-v1")
     strat_df = classifier.detect_combos(df_tf)
     # strat_candle / strat_combo / strat_setup / trigger_high / trigger_low
 
@@ -363,6 +363,8 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
         fwd = closes.shift(-nb)
         out[f"fwd_close_{nb}bars"] = fwd
         out[f"fwd_ret_{nb}bars_bps"] = (fwd - closes) / closes * 10000
+
+    out.attrs["strat_rule_version"] = classifier.rule_version
 
     return out
 

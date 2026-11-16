@@ -44,7 +44,7 @@ Stand up the realtime data pipeline so Tracks 1-5 have something to read.
 ### Capacity (CLAUDE.md Rule 0 back-of-envelope)
 - 3 tickers (SPY/IWM/QQQ) × ~14k contracts/snapshot = 42k rows/snapshot
 - 84 snapshots/day × 42k = 3.5M rows/day → ~50 GB/year (Cloud SQL has headroom)
-- 3 AV API calls per snapshot × 84 = 252 calls/day, well under 600/min × 60 × 6.5 = 234,000/day limit
+- 3 AV API calls per snapshot × 84 = 252 planned calls/day. The purchased plan is 600 requests/minute with no daily request limit ([official pricing](https://www.alphavantage.co/premium/)); 600 × 60 × 6.5 = 234,000 is hypothetical 6.5-hour throughput, not a provider daily cap or measured unused shared allowance.
 - Wall-clock per snapshot: 3 HTTP calls + DB upsert ≈ 3-5 sec, vs 600 sec task-timeout (100× headroom)
 - Cost: ~$3-5/mo Cloud Run + negligible Cloud SQL writes
 

@@ -1,0 +1,93 @@
+# Task 5B first complete independent review
+
+**Spec compliance: NEEDS_CHANGES.** The additive persistence, compatibility, identity and API contracts have substantial real PostgreSQL evidence. Two Task 5B issues remain: the new protected-NULL policy makes the scheduled gap selector nonconvergent, and acceptance of the changed scheduled writer's admitted workload has been deferred without resolving its fixed-budget capacity concern.
+
+**Code quality: NEEDS_CHANGES.** Two Important / P2 findings below, one per defect class. No P0/P1 finding established. This is the SDD task acceptance verdict, not a PR merge, deployment, production-source qualification, or whole-feature verdict; the repository's separate P1 merge threshold is unchanged. This is the complete first batch, with no findings withheld.
+
+## Reviewed identity and scope
+
+- Candidate: `/workspace/stocks-strat-rebuild`, detached base `a5749d4c0b9395582181e8884d2b33af889f5f91` plus the frozen local reconstruction.
+- Frozen manifest SHA256: `0c34aab8cdb0d7ca1dcbd2e09e136d61ceadf7716c6717376f4745927609c3a3`; 42 entries, 41 present, 17 Task 5B changed paths. The absent entry remains absent.
+- Accepted Task 5A fix1 manifest SHA256: `2d333ebe539082066d6767da17cca872e74bb9e701624e7e19429a60cae62be5`. All 26 accepted frozen files and exact pre-5B baselines match. The 23 untouched accepted live paths remain exact; the three authorized changes are the appended shared batch API, brief persistence boundary, and parity tests.
+- Exact baseline-to-candidate diff SHA256: `dc241dc020671022062aa1db1199759ab4adb7c085760b845072a73839e4a31d`. Independently reconstructed from the immutable baseline and candidate bytes and compared exactly, including the additional API-test baseline.
+- All 31 retained evidence-manifest entries match their recorded hashes. Independent identity verification was repeated at review completion without running application tests. See `independent-identity-check.py/json`.
+
+The first reads were `reviewer-brief.md` and the binding `brief.md`. Review used the approved STRAT spec, all fifteen reconciliation dispositions, the 5B plan extract, repository AGENTS/CLAUDE and product-delivery/SDD/TDD instructions, accepted Task 5A fix1 records, and the original recovery inventory/identities/234-line helper. That historical helper was inspected as evidence; this candidate is a fresh reconstruction and inherits no old Task 5B acceptance.
+
+The full 17-path diff and changed executable source were reviewed in bounded passes, including the large brief, API schema and compatibility-test files using complete normalized AST source views alongside original changed sections. The complete schema text was read by the actual applier parser and compared against its exact original prefix; the existing tables, alterations and triggers directly touching these writers were also inspected. All 262,657 baseline schema bytes and 265 execution units are unchanged; the addition is one five-statement atomic unit, resulting in 266 units. The complete generated OpenAPI object was checked by the actual generator, with the changed response and query definitions inspected. Direct-interface checks covered shared classification/observed aggregation/finite serialization, actual database writes and transactions, actual three producer callers and the scheduled selector/main/deploy budget, brief/current/history filtering, and dashboard route/response models. These checks were for preservation, migration, identity, missing-data, convergence and capacity risks, not an expansion into Tasks 5C–6.
+
+## Supported strengths
+
+- `gcp/schema.sql:5107` adds nullable fields and immutable sidecar storage in one atomic unit. The actual parser and `run_unit` transaction behavior agree with the tests. Retained PostgreSQL cases at `tests/integration/test_strat_schema_compatibility.py:117` and `:335` cover repeated application, old/new coexistence, rollback, and old-schema reader behavior; the empty-database bootstrap is not being counted as this evidence.
+- `gcp/database.py:417`, `:452`, `:472` and `:940` implement connection-owned grouped metadata, required-column refusal and caller-owned transactions while preserving permissive legacy callers. Retained real tests at `:92`, `:101`, `:322`, `:460` and `:484` of the integration module cover missing columns before writes, stale reflection/reconnect, mirrored preflight, and failure after actual writes rolling back the publication group.
+- `gcp/strat_persistence.py:100`, `:114`, `:143`, `:191` and `:244` distinguish all eight identity dimensions, validate rule/alignment correspondence, retain unknown source dimensions, and separate exact readback from ambiguous default selection. The real parameterized daily and brief/history/API tests at integration `:154` and `:283` vary each dimension independently at the same observation and preserve both versions. The API finite/null and ambiguous-state tests are at `:193` and `:363`.
+- Actual producer callers are covered: `gcp/fetchers/fetch_market_data.py:487`, `gcp/fetchers/backfill_daily_indicators.py:413`, and `gcp/backfill_ticker.py:407`/`:522`. Retained full-writer tests preserve old values including NULL. Independent fixed expected `-0.4` policy cases at integration `:414` exercise both actual 0.7/0.3 callers; the scheduled historical FTFC policy remains NULL. The full on-demand indicator stage correctly preserves pending admission for its later legacy STRAT pass.
+- `lib/strat.py:1227` adds a batch adapter over the existing observed loader, classifier and combo implementation. It does not introduce another classifier. Existing accepted snapshot behavior is unchanged. The added parity cases retain invalid/gap barriers, reject future completed-through data, and keep observation time and current-action capability unavailable. `gcp/premarket_brief.py:3401` and `gcp/strat_persistence.py:202` preserve unavailable/stale/failed-playbook and canonical-live-row policy while mirroring state with history atomically.
+- The actual nonmutating OpenAPI generator check passed: `platform/api/openapi.json is up to date`. Network and database-engine access were refused during this check. This is backend API evidence only, not a frontend or deployed-service claim.
+
+## Findings — complete batch
+
+### F1 — P2 / Important: protected legacy NULLs remain permanent nightly repair candidates
+
+**Introduced locations:** `gcp/strat_persistence.py:78–88`, called by `gcp/fetchers/backfill_daily_indicators.py:413–418`. **Direct affected interfaces:** that scheduled file's `_DERIVED_COLS_FOR_GAP_CHECK` at `:139–142`, `_WARMUP_SHORT_COLS` at `:172–178`, `_tickers_with_gaps` at `:181–243`, and daily dispatch at `:490–495`; `tests/gcp/test_backfill_daily_indicators.py:72` only inspects selector SQL shape.
+
+The new preservation rule correctly refuses to replace an existing unversioned `strat_candle=NULL`. However, the unchanged scheduler still treats that exact NULL as a healable short-warmup gap. A valid old or rolling-old-writer row with at least 50 usable bars is therefore selected, successfully recomputed and reported as upserted, but remains eligible for the next nightly run. Before this change, that writer filled the candle and the selector converged. This is an introduced interaction, not a request to repair an unrelated pre-existing scheduler issue.
+
+**Reproduced on actual owned local PostgreSQL:** `independent-convergence-probe.py` seeded 80 synthetic valid business-day rows, with every mapped indicator initially non-NULL and the legacy STRAT fields/profile unversioned NULL. It invoked the actual `_tickers_with_gaps(7)` and actual `backfill_ticker(..., recent_days=12)` twice. The ticker was selected initially and after each successful run; both runs reported nine rows written, while the latest candle and profile stayed NULL. The exact output is `independent-convergence-probe.txt` (SHA256 `d37466e5011f8c09982fa3234abc5b1f3f812fdfb15bba4cfdca2401ec49a11b`). Its owned `T5BRVW` rows were cleaned in `finally`; no schema or service change occurred.
+
+**Consequence:** protected historical NULLs in the recent window repeatedly trigger full-history compute and publication, consuming the nightly job budget without healing anything. Each row ages out of the seven-day selector window; rolling legacy writers or continuing unversioned gaps can keep replenishing the work. This is not a claim that one fixed old row is selected forever after it leaves that window.
+
+**Required correction:** make the gap selector agree with the new admission/preservation contract, keeping protected NULLs intact. Continue selecting genuinely healable non-STRAT indicators and valid pending new rows. Add a real selector→writer→selector convergence regression with protected NULL and healable positive controls. Do not “fix” this by restamping old rows as pending or replacing protected legacy values. All three new producer uses of the common preservation adapter were checked; this requeue defect is in the scheduled selector/consumer pairing.
+
+### F2 — P2 / Important: the changed scheduled writer lacks acceptance at its still-admitted fixed budget
+
+**Introduced locations:** `gcp/fetchers/backfill_daily_indicators.py:413–418` and `gcp/strat_persistence.py:157–187` add canonical computation, grouped metadata and repeated sidecar writes to each full-history ticker. **Admission/budget interfaces:** scheduled producer `:62–76`, `:458–468`, `:486–501`; unchanged `gcp/deploy.sh:2175–2207` and weekly scheduler at `:5068`. **Evidence/disposition:** `performance.md:32` and `report.md:39`.
+
+The approved spec at `strat-approved-spec.md:188–198` explicitly applies REQ-CAP-001/002 to changed existing scheduled paths and requires architecture or admitted-workload revision when the completion estimate exceeds one quarter of the unchanged timeout. The existing full sweep still admits approximately 2,580 tickers × 2,500 bars with four workers and no default ticker cap, under 36,000 seconds (quarter budget 9,000 seconds). The new path publishes up to five 500-state batches per 2,500-bar ticker, in addition to source/metadata/legacy work. It has not been qualified at that admitted shape or restricted to a shape whose budget is supported.
+
+The retained measurements are useful but stop at 400/800 rows in sequential cases. Warm 800-row scheduled work takes 2.1417 seconds locally, with one source SELECT, one metadata SELECT, six SQL statements, three INSERTs, two checkouts and 28 pg8000 ReadyForQuery cycles. The report's own sensitivity assumption of 0.5 seconds per cycle gives `(2.1417 + 28 × 0.5) × 2580 / 4 ≈ 10,411` seconds, already above 9,000, at fewer rows per ticker than the admitted full sweep. The report then assigns capacity resolution to Task 6 while calling this writer partition complete.
+
+**Evidence limit:** that calculation is a modeled sensitivity case, not a measured physical-RTT mapping or observed Cloud SQL failure. The local data do not prove an actual deployed timeout, and I am not reporting one. They also do not establish a passing production-driver estimate for the changed scheduled writer. The existing deployment comments' pre-change 1.5–2.5-hour estimate cannot validate newly added state computation/serialization/writes. The missing acceptance is specific to the newly changed producer, not a requirement to complete Task 6's entire replay before any isolated 5B work.
+
+**Consequence:** admitting the existing full sweep with unclosed per-ticker cost and concurrency/working-set assumptions risks consuming the job's safety margin and delaying daily repairs or the weekly sweep. F1 adds avoidable scheduled work independently; fixing F1 alone does not close this full-sweep budget gap.
+
+**Required correction:** establish a defensible complete-producer budget at its actual admitted row/ticker/concurrency shape, including actual driver/control/metadata/write phases, CPU, payload and working set. If that does not fit the fixed quarter budget, optimize the publication shape or explicitly reduce/refuse unsupported admitted work; do not increase the timeout. Preserve immutable identity coexistence and transaction rollback. A justified mapping of observed driver work to a passing budget can resolve the uncertainty; the assumed-cycle scenario must not be relabeled as a cloud measurement. Keep the separate Task 6 six-read/256 MiB complete replay gate open.
+
+## Evidence assessment and independent checks
+
+Retained final results inspected: `final-mock.txt` 341 passed; `final-api-historical.txt` one additional mocked API test passed; `final-postgres.txt` 40 actual PostgreSQL cases passed; `final-publication-rollback.txt` two additional actual PostgreSQL cases passed, with 40 deselected. These establish 342 distinct final mocked cases and 42 actual local-PG behavioral cases. `writer-measurements.txt/json` and its exact `measure-writers.py` account separately for seven measured PostgreSQL cases. Earlier stages are not added to those totals. No application suite was rerun during this review.
+
+The original RED and intermediate logs were inspected against their purposes. `red-initial.txt` contains both direct protected-value/output counterexamples and missing-interface failures; the latter are not claims of wrong historical financial output. `red-batch.txt` is missing-interface evidence. `red-strengthening.txt`, `red-identity-config.txt` and `red-api-precision.txt` demonstrate candidate defects subsequently covered by final evidence. The compatibility failures were old boundary stubs and stale generated schema; the remaining row-exists assertion was changed to assert the same canonical ticker at its replacement publication boundary. `green-policy-restart.txt` remains an intermediate two-failure result: fixed numerical policy assertions succeeded, and the mistaken expected ambiguity/deduplication cases were corrected consistently with independent caller configuration identities. None is hidden or counted as final passing evidence. The missing exact original 12-prefix and early selected-RED argv are acknowledged in the implementer's record, not reconstructed or rerun for appearance.
+
+The following are the exact independent executable argv, each under the required `. /workspace/stocks-setup/shell-env.sh` shell prefix:
+
+```text
+/workspace/stocks-venv/bin/python /workspace/strat-rebuild-control/task5b-rebuild/independent-identity-check.py
+/workspace/stocks-venv/bin/python /workspace/strat-rebuild-control/task5b-rebuild/independent-openapi-check.py
+/workspace/stocks-venv/bin/python /workspace/strat-rebuild-control/task5b-rebuild/independent-convergence-probe.py
+/workspace/stocks-venv/bin/python /workspace/strat-rebuild-control/task5b-rebuild/independent-schema-check.py
+```
+
+The convergence probe was the one root-coordinated optional database probe. It validates the private mapping and exact localhost/database/user identity, refuses other sockets, blanks Cloud SQL selection, checks `current_database()` before each mutation phase, and cleans only owned rows. The script contains the private mapping's path, not credential bytes; neither mapping contents nor DSN were printed or archived. It was not repeated to reconfirm. The other three checks are static/nonmutating; the OpenAPI check invokes the actual exporter `main(['--check'])` without application startup/lifespan. An initial stdin version of the static schema check incorrectly expected nine statements and stopped with `AssertionError: 5`; inspection confirmed five is the actual single additive unit, and the retained static script checks five. This reviewer assertion was corrected without touching candidate source or executing SQL.
+
+Independent output hashes (full script/output hashes and sizes are in `independent-review-evidence.json`):
+
+| Output | SHA256 |
+|---|---|
+| `independent-identity-check.json` | `48f6a2c74b66e9241415c950a2fd9ae4340c2645bdb5f1569a6defac53192c77` |
+| `independent-convergence-probe.txt` | `d37466e5011f8c09982fa3234abc5b1f3f812fdfb15bba4cfdca2401ec49a11b` |
+| `independent-openapi-check.txt` | `cb4dbbaaba9455213465ea0e6362c530667fad5d2df917574a59a4c3edbfe4e3` |
+| `independent-schema-check.json` | `dbece21ddaf1a9cd2b2e5496998fc971e375501e60712a4163cc42c58975814f` |
+| `independent-schema-check.txt` | `192001ebc331cab5447cd666f03f72438befaaa62f83373df607fd5fed80c9a6` |
+
+## Boundaries that remain separate
+
+Actual merged calendar and DATA basis integration, qualified source/acquisition/artifact evidence, historical knowledge, complete Task 6 captured-input no-write orchestration, the 12-symbol/two-session 256 MiB and six-source-read replay proof, and Tasks 5C–5E remain unproven separate gates. Their absence is not counted again as an introduced 5B defect. The candidate truthfully leaves `current_action` unavailable and persisted states unverified. The 189.06 MiB sequential process high-water result does not prove either complete replay memory or four-worker scheduled capacity. No baseline predictive, corporate-action, trading-return or production-readiness claim follows from this review.
+
+No source, tests, Git state, settings, schema, services or private configuration were changed by this reviewer. No cloud/vendor/capture/holdout/main/replay operation or nested agent was used. Root retains runtime and publication control. Review stops after this complete batch.
+
+## Root exact evidence backup and bounded fix status
+
+[Verified12-member review/scripts/output archive](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6372603177):12,744bytes,SHA256 `9e45600b7d83f28d9026260761d7868cb5e4d0b558db48c08a79593b20a9369a`; original report SHA256 `56a6a841a28ba183529c0fd2bc8b679f1f11c2bb4e6237db323287129026bca7`. Remote bytes and every member were read back and verified; no raw/provider/native/holdout/private credential material is included. Original source/review/evidence remain immutable.
+
+Existing source implementer is active on **fixround1/5**, covering the complete F1/F2 batch. F1 must prove actual selector→writer→selector convergence with protected NULLs plus healable/pending/invalid controls. F2 begins with bounded4×2500-row/four-worker synthetic measurements of actual driver/CPU/payload/working set, then a concrete supported admission/publication plan. Unsupported work must be optimized or explicitly refused/reduced before partial writes; no timeout/cap/quota increase, silent truncation or claimed cloud latency. No deferred acceptance merely by assigning this producer gap toTask6. Actual complete replay/source qualification remains separately open. Original reviewer scoped verification follows freeze, without a new broad review loop.

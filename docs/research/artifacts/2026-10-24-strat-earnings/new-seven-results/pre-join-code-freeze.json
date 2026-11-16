@@ -1,0 +1,17 @@
+{
+  "frozen_at": "2026-10-24T23:58:55.134169+00:00",
+  "existing_daily_root": "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1",
+  "sources": {
+    "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/new-seven-news-comparison-v1/join_and_describe_once.py": "ee5991c2640f25e20cd95313c64379d900fc9ecd892dd394828640823d420557",
+    "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/new-seven-news-comparison-v1/frozen_rank_rules.py": "1766a88fa76358a2f98edc5b8c9c44b002ef2d016e10b7898d6573cdf444c68b",
+    "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/new-seven-news-comparison-v1/frozen-analysis-protocol.json": "424ee0920e1dad0a1b808923631c994225228b09292c94ae18803204e2c287d3",
+    "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/new-seven-news-comparison-v1/pre-outcome-input-freeze.json": "b00432507077d75596386bff60d9e825c89004b04b577e654de9431ba0e612b3",
+    "/workspace/strat-rebuild-control/historical-baseline-2026-10-24/delivery/already-acquired-new-ticker-analysis-finish-v1/comparison-results.json": "0d76a4284ac4a6499498fd7d2539123aa128b651b01e93adc53fd9c2c7274c28"
+  },
+  "prior_selected_input_count": 28,
+  "target_selected_input_count": 7,
+  "target_selected_container_shape": "actual saved containers16rows; decode only saved bounded selected files, derive from baseline throughD+5 subset; no original rawfiles read",
+  "correlations": 2,
+  "timing_resolution": "dateonly for interim daily closes; do not invent16:00 or continuous durations",
+  "news_computation_freeze_sha256": "37c5a25a84236e7ee97c0ed8054bce9c1022cf86fe3d8af4ba05654f5a2a21f6"
+}

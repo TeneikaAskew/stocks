@@ -6,21 +6,28 @@ import pytest
 
 from lib.strat_levels import (
     classify_level_strat,
-    compute_previous_levels,
-    compute_current_levels,
+    _compute_previous_levels as compute_previous_levels,
+    _compute_current_levels as compute_current_levels,
     compute_gap_levels,
     detect_level_clusters,
     detect_pmg_temporal,
-    compute_room_to_run,
     compute_risk_reward,
-    identify_triggers,
-    build_level_map,
+    build_session_levels,
     format_levels_for_brief,
-    select_nearest_levels,
     StratLevel,
     LevelMap,
-    MIN_ROOM_PCT,
 )
+from lib.strat_levels import build_level_map as _build_level_map
+from tests.lib.level_params_fixtures import fixture_params
+from tests.lib.session_levels_helpers import D8_LEVELS, d8_session
+
+
+def build_level_map(ticker, df, price, *args, atr=None, **kw):
+    """The deprecated shim with the ticker's LevelParams (every key at the
+    #1753 values) and the ATR named as ATR(14), the policy's day-one basis."""
+    return _build_level_map(ticker, df, price, *args,
+                            atr={'atr_14': atr} if atr is not None else {},
+                            params=fixture_params(ticker), **kw)
 
 
 def _daily_df(n=60):
@@ -74,10 +81,16 @@ class TestClassifyLevelStrat:
 # ─── compute_previous_levels ──────────────────────────────────────────────
 
 
+def _prev(df):
+    """Previous-period levels with the last row's date as the session, the
+    only path the builder uses (no iloc[-2] fallback, FEAT-STRAT-001)."""
+    return compute_previous_levels(df, analysis_date=pd.Timestamp(df['Date'].iloc[-1]).date())
+
+
 class TestComputePreviousLevels:
     def test_returns_daily_levels(self):
         df = _daily_df(30)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         assert 'PDH' in levels
         assert 'PDL' in levels
         assert levels['PDH'].timeframe == 'day'
@@ -85,56 +98,55 @@ class TestComputePreviousLevels:
 
     def test_returns_weekly_levels(self):
         df = _daily_df(30)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         assert 'PWH' in levels
         assert 'PWL' in levels
         assert levels['PWH'].timeframe == 'week'
 
     def test_returns_monthly_levels(self):
         df = _daily_df(60)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         assert 'PMH' in levels
         assert 'PML' in levels
 
     def test_returns_quarter_levels(self):
         df = _daily_df(200)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         assert 'PQH' in levels
         assert 'PQL' in levels
         assert levels['PQH'].timeframe == 'quarter'
 
     def test_pdh_price_matches_prev_day_high(self):
         df = _daily_df(30)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         expected = float(df['High'].iloc[-2])
         assert levels['PDH'].price == expected
 
     def test_levels_classified(self):
         df = _daily_df(30)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         assert levels['PDH'].strat_class in ('1', '2U', '2D', '3', 'Failed_2U', 'Failed_2D')
 
     def test_empty_df(self):
-        assert compute_previous_levels(pd.DataFrame()) == {}
+        assert compute_previous_levels(pd.DataFrame(), analysis_date=pd.Timestamp('2025-03-03').date()) == {}
 
     def test_returns_close_levels(self):
         """Close levels (PDC/PWC/PMC/PQC/PYC) ship alongside H/L so
         traders charting against PDC have a source of truth.
 
-        Uses 520 biz days (~2 years) so the legacy path's "need ≥2
-        groupings to compute previous period" requirement is satisfied
-        even for the year timeframe (PYC).
+        Uses 520 biz days (about 2 years) so a previous year exists for
+        the year timeframe (PYC).
         """
         df = _daily_df(520)
-        levels = compute_previous_levels(df)
+        levels = _prev(df)
         for k in ('PDC', 'PWC', 'PMC', 'PQC', 'PYC'):
             assert k in levels, f"missing {k}"
             assert levels[k].level_type == 'close'
 
     def test_pdc_price_matches_prev_day_close(self):
         df = _daily_df(30)
-        levels = compute_previous_levels(df)
-        # Legacy path: prev day = iloc[-2]
+        levels = _prev(df)
+        # analysis_date is the last row's date, so the prior day is iloc[-2]
         expected = float(df['Close'].iloc[-2])
         assert levels['PDC'].price == expected
 
@@ -499,7 +511,7 @@ class TestDetectLevelClusters:
             StratLevel('PWL', 262.30, 'week', 'low', '2D', False, ''),
             StratLevel('PMH', 270.00, 'month', 'high', '2U', False, ''),
         ]
-        zones = detect_level_clusters(levels, tolerance_pct=0.15)
+        zones = detect_level_clusters(levels, tolerance_atr=0.15, atr=2.62)
         assert len(zones) == 1
         assert 'PDL' in zones[0]['level_names']
         assert 'PWL' in zones[0]['level_names']
@@ -509,7 +521,7 @@ class TestDetectLevelClusters:
             StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
             StratLevel('PWH', 270.00, 'week', 'high', '2U', False, ''),
         ]
-        zones = detect_level_clusters(levels, tolerance_pct=0.15)
+        zones = detect_level_clusters(levels, tolerance_atr=0.15, atr=2.62)
         assert len(zones) == 0
 
     def test_strength_scoring(self):
@@ -518,13 +530,13 @@ class TestDetectLevelClusters:
             StratLevel('PWL', 262.30, 'week', 'low', '2D', False, ''),
             StratLevel('GAP_L', 262.10, 'day', 'gap_low', 'gap_up', False, ''),
         ]
-        zones = detect_level_clusters(levels, tolerance_pct=0.15)
+        zones = detect_level_clusters(levels, tolerance_atr=0.15, atr=2.62)
         assert len(zones) == 1
         # count=3, unique TFs=2 (day, week) → 3 + 0.5 = 3.5
         assert zones[0]['strength'] == 3.5
 
     def test_empty(self):
-        assert detect_level_clusters([], tolerance_pct=0.15) == []
+        assert detect_level_clusters([], tolerance_atr=0.15, atr=2.62) == []
 
 
 # ─── detect_pmg_temporal ──────────────────────────────────────────────────
@@ -559,45 +571,6 @@ class TestDetectPMGTemporal:
         assert len(results) == 0
 
 
-# ─── compute_room_to_run ─────────────────────────────────────────────────
-
-
-class TestRoomToRun:
-    def test_call_direction(self):
-        levels = [
-            StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
-            StratLevel('PWH', 268.00, 'week', 'high', '2U', False, ''),
-        ]
-        result = compute_room_to_run(263.00, levels, 'CALL')
-        assert result['next_level'].name == 'PDH'
-        assert result['distance_pct'] > 0
-        assert result['has_room'] is True
-
-    def test_put_direction(self):
-        levels = [
-            StratLevel('PDL', 260.00, 'day', 'low', '2D', False, ''),
-            StratLevel('PWL', 257.00, 'week', 'low', '2D', False, ''),
-        ]
-        result = compute_room_to_run(263.00, levels, 'PUT')
-        assert result['next_level'].name == 'PDL'
-        assert result['has_room'] is True
-
-    def test_insufficient_room(self):
-        levels = [
-            StratLevel('PDH', 263.05, 'day', 'high', '2U', False, ''),
-        ]
-        result = compute_room_to_run(263.00, levels, 'CALL')
-        # 0.05/263 = 0.019% < MIN_ROOM_PCT
-        assert result['has_room'] is False
-
-    def test_no_levels_in_direction(self):
-        levels = [
-            StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
-        ]
-        result = compute_room_to_run(266.00, levels, 'CALL')
-        assert result['next_level'] is None
-
-
 # ─── compute_risk_reward ─────────────────────────────────────────────────
 
 
@@ -615,110 +588,83 @@ class TestRiskReward:
 # ─── identify_triggers ───────────────────────────────────────────────────
 
 
-class TestIdentifyTriggers:
+class TestSessionPicks:
+    """The side picks build_session_levels makes (they replaced
+    identify_triggers): one candidate set, one side rule, one window."""
+
+    def _session(self, levels, ref, atr=5.0):
+        from tests.lib.session_levels_helpers import session
+        return session(levels, prior_close=ref, atr=atr)
+
     def _levels(self):
-        return {
-            'PDH': StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
-            'PDL': StratLevel('PDL', 260.00, 'day', 'low', '2D', False, ''),
-            'PWH': StratLevel('PWH', 268.00, 'week', 'high', '2U', False, ''),
-            'PWL': StratLevel('PWL', 257.00, 'week', 'low', '2D', False, ''),
-        }
+        return {'PDH': 265.00, 'PDL': 260.00, 'PWH': 268.00, 'PWL': 257.00}
 
     def test_calls_trigger(self):
-        triggers = identify_triggers(263.00, self._levels())
-        assert triggers['calls'] is not None
-        assert triggers['calls']['trigger_name'] == 'PDH'
-        assert triggers['calls']['trigger_level'] == 265.00
+        sl = self._session(self._levels(), 263.00)
+        assert sl.long.trigger['name'] == 'PDH'
+        assert sl.long.trigger['price'] == 265.00
+        assert sl.to_level_map().calls_trigger['trigger_level'] == 265.00
 
     def test_puts_trigger(self):
-        triggers = identify_triggers(263.00, self._levels())
-        assert triggers['puts'] is not None
-        assert triggers['puts']['trigger_name'] == 'PDL'
-
-    def test_reasoning_includes_combo(self):
-        triggers = identify_triggers(
-            263.00, self._levels(),
-            daily_strat_class='2U', combo='212_bull_reversal',
-        )
-        assert '212_bull_reversal' in triggers['calls']['reasoning']
-        assert 'Daily 2U' in triggers['calls']['reasoning']
-
-    def test_reasoning_empty_when_no_context(self):
-        triggers = identify_triggers(263.00, self._levels())
-        assert triggers['calls']['reasoning'] == ''
+        sl = self._session(self._levels(), 263.00)
+        assert sl.short.trigger['name'] == 'PDL'
+        assert sl.to_level_map().puts_trigger['trigger_name'] == 'PDL'
 
     def test_targets_are_distinct_prices_beyond_the_trigger(self):
-        """Two lines on one number consume one slot, and a line at the
-        trigger's own price is never a target (it was T1 == trigger on
-        13-17% of persisted IWM/SPY/QQQ rows, and the outcome resolver then
-        marked T1 hit on the trigger bar itself)."""
-        levels = {
-            'PDH': StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
-            'PWH': StratLevel('PWH', 265.00, 'week', 'high', '2U', False, ''),   # == trigger
-            'PDO': StratLevel('PDO', 266.50, 'day', 'open', '', False, ''),
-            'PWC': StratLevel('PWC', 266.504, 'week', 'close', '', False, ''),  # == PDO
-            'PMH': StratLevel('PMH', 268.00, 'month', 'high', '2U', False, ''),
-            'PQH': StratLevel('PQH', 270.00, 'quarter', 'high', '2U', False, ''),
-            'PDL': StratLevel('PDL', 260.00, 'day', 'low', '2D', False, ''),
-        }
-        triggers = identify_triggers(263.00, levels)
-        calls = triggers['calls']
-        assert calls['trigger_level'] == 265.00
-        assert [t['price'] for t in calls['targets']] == [266.50, 268.00, 270.00]
+        """Two lines on one cent are one rung (the structural name in
+        priority order wins), a line at the trigger's own cent is never a
+        target, and opens are never candidates."""
+        sl = self._session({
+            'PDH': 265.00, 'PWH': 265.00,        # == trigger: one rung, alias PWH
+            'PWC': 266.504, 'PMH': 268.00, 'PQH': 270.00, 'PDL': 260.00,
+        }, 263.00)
+        assert sl.long.trigger['name'] == 'PDH'
+        assert sl.long.trigger['aliases'] == ['PWH']
+        assert [round(t['price'], 2) for t in sl.long.targets] == [266.50, 268.00, 270.00]
 
     def test_room_is_measured_to_the_first_distinct_target(self):
-        """A line on the trigger's own cent is skipped as a target, so the
-        advertised room must be to the target actually persisted, not ~0%
-        to the skipped duplicate (Codex P2 on #1030, round 5)."""
-        levels = {
-            'PDH': StratLevel('PDH', 100.004, 'day', 'high', '2U', False, ''),
-            'PWC': StratLevel('PWC', 100.0049, 'week', 'close', '', False, ''),  # same cent
-            'PMH': StratLevel('PMH', 101.00, 'month', 'high', '2U', False, ''),
-            'PDL': StratLevel('PDL', 98.00, 'day', 'low', '2D', False, ''),
-        }
-        calls = identify_triggers(99.5, levels)['calls']
+        sl = self._session({'PDH': 100.004, 'PWC': 100.0049, 'PMH': 101.00, 'PDL': 98.00},
+                           99.5, atr=1.0)
+        calls = sl.to_level_map().calls_trigger
         assert [t['price'] for t in calls['targets']] == [101.00]
-        assert calls['room_to_first_target'] == pytest.approx((101.0 - 100.004) / 100.004 * 100, abs=1e-3)
+        assert calls['room_to_first_target'] == pytest.approx(
+            (101.0 - 100.004) / 100.004 * 100, abs=1e-3)
 
-    def test_a_line_on_the_anchors_cent_is_not_a_trigger(self):
-        """100.0041 against a 100.004 anchor is the same cent; the trigger is
-        the first line a full cent beyond, the same rule select_nearest_levels
-        applies to the ladder (Codex P2 on #1030, round 7)."""
-        levels = {
-            'PDO': StratLevel('PDO', 100.0041, 'day', 'open', '', False, ''),
-            'PDH': StratLevel('PDH', 101.00, 'day', 'high', '2U', False, ''),
-            'PWH': StratLevel('PWH', 102.00, 'week', 'high', '2U', False, ''),
-            'PDL': StratLevel('PDL', 99.9961, 'day', 'low', '2D', False, ''),  # same cent, below
-            'PWL': StratLevel('PWL', 98.00, 'week', 'low', '2D', False, ''),
-        }
-        triggers = identify_triggers(100.004, levels)
-        assert triggers['calls']['trigger_name'] == 'PDH'
-        assert triggers['calls']['trigger_level'] == 101.00
-        assert triggers['puts']['trigger_name'] == 'PWL'
-        assert triggers['calls']['stop_name'] == 'PWL'
+    def test_no_premarket_a_level_on_the_references_cent_is_on_neither_list(self):
+        """Spec revision 2: with no premarket snapshot, a level on the
+        reference's own cent is on neither list; the trigger is the next
+        real level out."""
+        sl = self._session({'PDH': 101.00, 'PDC': 100.0041, 'PWL': 98.00}, 100.004, atr=1.0)
+        assert sl.long.trigger['name'] == 'PDH'
+        assert sl.short.trigger['name'] == 'PWL'
+
+    def test_with_premarket_a_level_on_the_references_cent_is_on_both_lists(self):
+        """With a snapshot and no premarket beyond it, a level on the
+        reference's own cent is both the long and the short trigger."""
+        from tests.lib.session_levels_helpers import session
+        sl = session({'PDH': 101.00, 'PDC': 100.0041, 'PWL': 98.00}, prior_close=100.004,
+                     atr=1.0, premarket={'pre_high': 100.0, 'pre_low': 100.0,
+                                         'pre_vwap': 100.004})
+        assert sl.long.trigger['name'] == 'PDC'
+        assert sl.short.trigger['name'] == 'PDC'
+        assert sl.long.targets[0]['name'] == 'PDH'
+        assert sl.short.targets[0]['name'] == 'PWL'
 
     def test_targets_one_cent_apart_are_distinct_despite_float_error(self):
         """240.01 - 240.00 < 0.01 in binary; integer cents keep them apart."""
-        levels = {
-            'PDH': StratLevel('PDH', 240.00, 'day', 'high', '2U', False, ''),
-            'PWH': StratLevel('PWH', 240.01, 'week', 'high', '2U', False, ''),
-            'PMH': StratLevel('PMH', 241.00, 'month', 'high', '2U', False, ''),
-            'PDL': StratLevel('PDL', 235.00, 'day', 'low', '2D', False, ''),
-        }
-        calls = identify_triggers(238.00, levels)['calls']
-        assert calls['trigger_level'] == 240.00
-        assert [t['price'] for t in calls['targets']] == [240.01, 241.00]
-        assert all(t['price'] > calls['trigger_level'] for t in calls['targets'])
+        sl = self._session({'PDH': 240.00, 'PWH': 240.01, 'PMH': 241.00, 'PDL': 235.00}, 238.00)
+        assert sl.long.trigger['price'] == 240.00
+        assert [t['price'] for t in sl.long.targets] == [240.01, 241.00]
 
 
-# ─── build_level_map ──────────────────────────────────────────────────────
+# ─── build_level_map (deprecated shim over build_session_levels) ─────────
 
 
 class TestBuildLevelMap:
     def test_returns_level_map(self):
         df = _daily_df(60)
         price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price, '2U', '212_bull_reversal')
+        lm = build_level_map('IWM', df, price, '2U', '212_bull_reversal', atr=3.0)
         assert isinstance(lm, LevelMap)
         assert lm.ticker == 'IWM'
         assert len(lm.levels) > 0
@@ -727,9 +673,14 @@ class TestBuildLevelMap:
     def test_has_triggers(self):
         df = _daily_df(60)
         price = float(df['Close'].iloc[-1])
-        lm = build_level_map('SPY', df, price)
-        # Should have at least calls or puts
+        lm = build_level_map('SPY', df, price, atr=3.0)
         assert lm.calls_trigger is not None or lm.puts_trigger is not None
+
+    def test_no_atr_gives_no_trigger(self):
+        df = _daily_df(60)
+        lm = build_level_map('SPY', df, float(df['Close'].iloc[-1]))
+        assert lm.calls_trigger is None and lm.puts_trigger is None
+        assert lm.reason_long == lm.reason_short == 'atr_unavailable'
 
 
 # ─── format_levels_for_brief ──────────────────────────────────────────────
@@ -775,136 +726,73 @@ class TestDisplayLevelName:
 
 
 class TestFormatLevelsForBrief:
-    def test_contains_calls_puts(self):
+    def _lm(self, atr=3.0):
         df = _daily_df(60)
         price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price, '2U', '212_bull_reversal')
-        text = format_levels_for_brief(lm, 'bullish', '212_bull_reversal', '2U')
+        return build_level_map('IWM', df, price, '2U', '212_bull_reversal', atr=atr)
+
+    def test_contains_calls_puts(self):
+        text = format_levels_for_brief(self._lm(), 'bullish', '212_bull_reversal', '2U')
         assert 'CALLS above' in text or 'PUTS below' in text
 
     def test_bias_denied_for_puts_when_bullish(self):
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
-        text = format_levels_for_brief(lm, 'bullish')
+        text = format_levels_for_brief(self._lm(), 'bullish')
         if 'PUTS below' in text:
             assert 'only if bias denied' in text
 
     def test_bearish_bias_denied_for_calls(self):
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
-        text = format_levels_for_brief(lm, 'bearish')
+        text = format_levels_for_brief(self._lm(), 'bearish')
         if 'CALLS above' in text:
             assert 'only if bias denied' in text
 
-    # ── Regime-aware playbook output (PR α) ───────────────────────────
+    def test_room_to_trigger_is_the_triggers_own_distance(self):
+        from tests.lib.session_levels_helpers import session
+        lm = session({'PDH': 102.0, 'PWH': 104.0, 'PDL': 99.0}, prior_close=100.0,
+                     atr=2.0).to_level_map()
+        text = format_levels_for_brief(lm, 'bullish')
+        assert 'CALLS above 102.00 (PDH)' in text
+        assert 'T1: 104.00 (PWH)' in text
+        assert 'Room to trigger: 2.00%' in text
 
-    def test_orb_only_regime_suppresses_calls_and_puts(self):
-        """orb_only: pre-market cleared every level; the playbook
-        replaces CALLS/PUTS with an ORB-wait banner."""
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
+    # ── orb_only: one copy per reason (FEAT-STRAT-001 Design 6) ────────
+
+    def test_orb_only_sides_render_the_reason_copy(self):
+        """A side with no trigger prints its ORB_ONLY_COPY line and no
+        CALLS above / PUTS below line."""
+        from lib.strat_levels import orb_only_text
+        lm = self._lm(atr=None)
         text = format_levels_for_brief(lm, 'bullish', regime='orb_only')
-        assert 'ORB-only' in text
-        assert 'wait' in text.lower() or '15-min' in text
-        # Suppressed: no CALLS/PUTS lines
+        assert '  CALLS: ' + orb_only_text('atr_unavailable', 'long', lm.window_long) in text
+        assert '  PUTS: ' + orb_only_text('atr_unavailable', 'short', lm.window_short) in text
         assert 'CALLS above' not in text
         assert 'PUTS below' not in text
 
-    def test_orb_only_banner_names_cleared_levels(self):
-        """orb_only: banner must name the LAST cleared structural level
-        with its price so the trader sees what's now behind them.
-        Regression for the original 'every structural level' wording
-        which was technically true but useless."""
-        levels = [
-            StratLevel(name='PDH', price=220.0, timeframe='day',
-                       level_type='high', strat_class='2U'),
-            StratLevel(name='PWH', price=225.0, timeframe='week',
-                       level_type='high', strat_class='2U'),
-            StratLevel(name='PMH', price=228.0, timeframe='month',
-                       level_type='high', strat_class='2U'),
-            StratLevel(name='PDL', price=215.0, timeframe='day',
-                       level_type='low', strat_class='2U'),
-        ]
-        lm = LevelMap(
-            ticker='IWM', as_of='2026-04-28',
-            current_price=230.0, levels=levels,
-        )
-        text = format_levels_for_brief(lm, 'bullish', regime='orb_only')
-        # Last cleared bullish level (closest to spot) named with price
-        assert 'Last bullish level passed' in text
-        assert 'PMH' in text and '228.00' in text
-        assert 'PWH' in text and '225.00' in text
-        assert 'PDH' in text and '220.00' in text
-        # Spot price referenced for context
-        assert '230.00' in text
-
-    def test_orb_only_banner_short_bias_names_cleared_lows(self):
-        """Mirror: bear bias names the LAST cleared LOW with its price."""
-        levels = [
-            StratLevel(name='PDL', price=200.0, timeframe='day',
-                       level_type='low', strat_class='2D'),
-            StratLevel(name='PWL', price=195.0, timeframe='week',
-                       level_type='low', strat_class='2D'),
-            StratLevel(name='PQL', price=190.0, timeframe='quarter',
-                       level_type='low', strat_class='2D'),
-        ]
-        lm = LevelMap(
-            ticker='IWM', as_of='2026-04-28',
-            current_price=185.0, levels=levels,
-        )
-        text = format_levels_for_brief(lm, 'bearish', regime='orb_only')
-        assert 'Last bearish level passed' in text
-        # Closest-to-spot low (PQL $190) is the LAST level price passed
-        assert 'PQL' in text and '190.00' in text
-        assert 'PWL' in text and '195.00' in text
+    def test_all_broken_by_premarket_copy(self):
+        from lib.strat_levels import orb_only_text
+        from tests.lib.session_levels_helpers import session
+        sl = session({'PDH': 220.0, 'PWH': 225.0, 'PMH': 228.0, 'PDL': 215.0},
+                     prior_close=218.0, atr=2.0,
+                     premarket={'pre_high': 240.0, 'pre_low': 216.0, 'pre_vwap': 219.0})
+        assert sl.long.reason == 'all_broken_by_premarket'
+        text = format_levels_for_brief(sl.to_level_map(), 'bullish')
+        assert '  CALLS: ' + orb_only_text('all_broken_by_premarket', 'long') in text
+        assert 'cleared every structural' not in text
 
     def test_orb_only_banner_no_warning_emoji(self):
-        """No ⚠ in the banner — user wants plain text. Brain emoji is
-        added by the embed builder, not by the level formatter."""
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
-        text = format_levels_for_brief(lm, 'bullish', regime='orb_only')
-        assert '⚠' not in text
+        """No warning sign in the banner; the embed builder adds its own."""
+        text = format_levels_for_brief(self._lm(atr=None), 'bullish', regime='orb_only')
+        assert '\u26a0' not in text
 
-    def test_extended_regime_prepends_warning_keeps_triggers(self):
-        """extended: per-side warning header + standard CALLS/PUTS still
-        rendered. The legacy global 'Extended gap' header was replaced
-        with per-side banners ('CALLS: extended gap...' /
-        'PUTS: extended gap...') so a bullish ticker whose CALL side is
-        normal but PUT side is gap-extended only sees a warning on the
-        relevant side."""
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
-        text = format_levels_for_brief(lm, 'bullish', regime='extended')
-        # Per-side banner uses lowercase 'extended gap'.
-        assert 'extended gap' in text
-        assert 'ORB' in text
-        # Still has trigger lines (extended ≠ skip the trade)
-        assert 'CALLS above' in text or 'PUTS below' in text
-
-    def test_normal_regime_matches_legacy_output(self):
-        """normal regime: identical to the legacy no-regime call."""
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
-        text_normal = format_levels_for_brief(lm, 'bullish', regime='normal')
-        text_legacy = format_levels_for_brief(lm, 'bullish')
-        assert text_normal == text_legacy
+    def test_regime_argument_does_not_change_the_side_blocks(self):
+        """The sides come from the SessionLevels projection, so a caller's
+        regime argument cannot relabel a side that has a trigger."""
+        lm = self._lm()
+        assert (format_levels_for_brief(lm, 'bullish', regime='normal')
+                == format_levels_for_brief(lm, 'bullish'))
 
     def test_default_regime_is_normal(self):
-        """No regime kwarg → backwards-compat with pre-α callers."""
-        df = _daily_df(60)
-        price = float(df['Close'].iloc[-1])
-        lm = build_level_map('IWM', df, price)
-        text = format_levels_for_brief(lm, 'bullish')
-        # No regime banner of any kind when default is 'normal'.
+        text = format_levels_for_brief(self._lm(), 'bullish')
         assert 'extended gap' not in text.lower()
-        assert 'ORB-only' not in text
 
 
 # ─── levels_to_named_dict (PR α adapter) ──────────────────────────────────
@@ -935,31 +823,32 @@ class TestLevelsToNamedDict:
 # ─── select_nearest_levels (next-N each way) ─────────────────────────────
 
 
-class TestSelectNearestLevels:
-    """The brief's 'next two call levels / next two put levels' display.
+class TestNextLevelsLadder:
+    """The brief's NEXT LEVELS ladder: the first two rungs of each side
+    list from build_session_levels (it replaced select_nearest_levels).
 
-    Mirrors the user's worked example: price 250, with PWH 251.50 and PDH
-    252 above (call levels) and PQL 248 and PMH 245 below (put levels).
+    The user's worked example: price 250, with PWH 251.50 and PDH 252 above
+    (call levels) and PQL 248 and PMH 245 below (put levels).
     """
 
+    @staticmethod
+    def _ladder(levels, ref=250.0, atr=5.0):
+        from tests.lib.session_levels_helpers import session
+        lm = session(levels, prior_close=ref, atr=atr).to_level_map()
+        return {'calls': lm.call_levels, 'puts': lm.put_levels}
+
     def _levels(self):
-        return {
-            'PWH': StratLevel('PWH', 251.50, timeframe='week', level_type='high'),
-            'PDH': StratLevel('PDH', 252.00, timeframe='day', level_type='high'),
-            'PQL': StratLevel('PQL', 248.00, timeframe='quarter', level_type='low'),
-            'PMH': StratLevel('PMH', 245.00, timeframe='month', level_type='high'),
-        }
+        return {'PWH': 251.50, 'PDH': 252.00, 'PQL': 248.00, 'PMH': 245.00}
 
     def test_next_two_call_levels_nearest_first(self):
-        out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
+        out = self._ladder(self._levels())
         assert [lv['name'] for lv in out['calls']] == ['PWH', 'PDH']
         assert out['calls'][0]['price'] == 251.50
         assert out['calls'][0]['period'] == 'week'
         assert out['calls'][1]['price'] == 252.00
 
     def test_next_two_put_levels_nearest_first(self):
-        out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
-        # nearest below first: PQL (248) then PMH (245)
+        out = self._ladder(self._levels())
         assert [lv['name'] for lv in out['puts']] == ['PQL', 'PMH']
         assert out['puts'][0]['price'] == 248.00
         assert out['puts'][1]['price'] == 245.00
@@ -968,53 +857,45 @@ class TestSelectNearestLevels:
         """292.705 renders as 292.71 (half-up, matching Postgres numeric), not
         the 292.70 Python's round() gives; and two lines on the same cent
         collapse to one rung."""
-        levels = {
-            'PWH': StratLevel('PWH', 292.705, timeframe='week', level_type='high'),
-            'PDH': StratLevel('PDH', 292.714, timeframe='day', level_type='high'),  # same cent
-            'PMH': StratLevel('PMH', 294.0, timeframe='month', level_type='high'),
-        }
-        out = select_nearest_levels(290.0, levels, atr=5.0, n=2)
+        out = self._ladder({'PWH': 292.705, 'PDH': 292.714, 'PMH': 294.0}, ref=290.0)
         assert [lv['price'] for lv in out['calls']] == [292.71, 294.0]
 
-    def test_levels_on_the_anchors_cent_are_neither_call_nor_put(self):
-        """current_price 100.004 with lines at 100.0041 and 100.0039 must not
-        become a call rung AND a put rung both displayed as 100.00: sides are
-        partitioned on the shared cents rule (Codex P2 on #1030, round 5)."""
-        levels = {
-            'PDH': StratLevel('PDH', 100.0041, timeframe='day', level_type='high'),
-            'PDL': StratLevel('PDL', 100.0039, timeframe='day', level_type='low'),
-            'PWH': StratLevel('PWH', 101.0, timeframe='week', level_type='high'),
-            'PWL': StratLevel('PWL', 99.0, timeframe='week', level_type='low'),
-        }
-        out = select_nearest_levels(100.004, levels, atr=5.0, n=2)
+    def test_with_premarket_a_level_on_the_references_cent_is_on_both_sides(self):
+        """FEAT-STRAT-001: with a snapshot and no premarket beyond it, a level
+        on the reference's own cent is on both lists, once, as one rung."""
+        from tests.lib.session_levels_helpers import session
+        lm = session({'PDH': 100.0041, 'PDL': 100.0039, 'PWH': 101.0, 'PWL': 99.0},
+                     prior_close=100.004, atr=5.0,
+                     premarket={'pre_high': 100.0, 'pre_low': 100.0,
+                                'pre_vwap': 100.004}).to_level_map()
+        out = {'calls': lm.call_levels, 'puts': lm.put_levels}
+        assert [lv['price'] for lv in out['calls']] == [100.0, 101.0]
+        assert [lv['price'] for lv in out['puts']] == [100.0, 99.0]
+        assert out['calls'][0]['name'] == out['puts'][0]['name'] == 'PDH'
+
+    def test_no_premarket_a_level_on_the_references_cent_is_on_neither_side(self):
+        """Spec revision 2: with no snapshot the reference's own cent is on
+        neither ladder."""
+        out = self._ladder({'PDH': 100.0041, 'PDL': 100.0039, 'PWH': 101.0, 'PWL': 99.0},
+                           ref=100.004)
         assert [lv['price'] for lv in out['calls']] == [101.0]
         assert [lv['price'] for lv in out['puts']] == [99.0]
 
     def test_direction_is_positional_not_by_high_low(self):
-        # a prior-month HIGH below price is a PUT (bearish) level
-        out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
-        put_names = [lv['name'] for lv in out['puts']]
-        assert 'PMH' in put_names  # month HIGH, but it sits below price
+        out = self._ladder(self._levels())
+        assert 'PMH' in [lv['name'] for lv in out['puts']]  # a month HIGH below price
 
     def test_distance_pct_sign(self):
-        out = select_nearest_levels(250.0, self._levels(), atr=5.0, n=2)
-        assert out['calls'][0]['distance_pct'] > 0   # above
-        assert out['puts'][0]['distance_pct'] < 0    # below
+        out = self._ladder(self._levels())
+        assert out['calls'][0]['distance_pct'] > 0
+        assert out['puts'][0]['distance_pct'] < 0
 
     def test_dedup_coincident_prices(self):
-        lvls = {
-            'PDH': StratLevel('PDH', 252.00, timeframe='day', level_type='high'),
-            'PWH': StratLevel('PWH', 252.00, timeframe='week', level_type='high'),
-            'PMH': StratLevel('PMH', 255.00, timeframe='month', level_type='high'),
-        }
-        out = select_nearest_levels(250.0, lvls, atr=5.0, n=2)
-        prices = [lv['price'] for lv in out['calls']]
-        assert prices == [252.00, 255.00]  # 252 not counted twice
+        out = self._ladder({'PDH': 252.00, 'PWH': 252.00, 'PMH': 255.00})
+        assert [lv['price'] for lv in out['calls']] == [252.00, 255.00]
 
     def test_short_side_not_padded(self):
-        # only one level above -> calls has length 1, never fabricated
-        lvls = {'PDH': StratLevel('PDH', 252.00, timeframe='day', level_type='high')}
-        out = select_nearest_levels(250.0, lvls, atr=5.0, n=2)
+        out = self._ladder({'PDH': 252.00})
         assert len(out['calls']) == 1
         assert out['puts'] == []
 
@@ -1024,10 +905,11 @@ class TestSelectNearestLevels:
         lm = build_level_map('TEST', df, price, atr=float(df['Close'].iloc[-1] * 0.01))
         assert isinstance(lm.call_levels, list)
         assert isinstance(lm.put_levels, list)
+        from lib.strat_levels import price_cents
         for lv in lm.call_levels:
-            assert lv['price'] > price
+            assert price_cents(lv['price']) >= price_cents(price)
         for lv in lm.put_levels:
-            assert lv['price'] < price
+            assert price_cents(lv['price']) <= price_cents(price)
 
 
 # ─── daily_data_freshness (shared with the premarket brief) ──────────────
@@ -1074,3 +956,837 @@ class TestDailyDataFreshness:
         from lib.strat_levels import daily_data_freshness
         for last, ad in ((date(2026, 9, 10), date(2026, 9, 14)), (date(2026, 9, 11), date(2026, 9, 14)), (None, date(2026, 9, 14))):
             assert _resolve_data_freshness(last, ad) == daily_data_freshness(last, ad)
+
+    # FEAT-DATA-001 (2026-11-11 spec): the rule counts NYSE sessions, so a
+    # session that follows only weekend days and holidays reads its previous
+    # session as fresh. On origin/main every one of these was STALE_DAILY_DATA
+    # and the brief skipped the ticker.
+    @pytest.mark.parametrize('last, session, gap', [
+        ((2026, 5, 22), (2026, 5, 26), 4),   # Memorial Day Monday
+        ((2026, 6, 18), (2026, 6, 22), 4),   # Juneteenth Friday
+        ((2026, 7, 2), (2026, 7, 6), 4),     # Independence Day observed Friday
+        ((2026, 9, 4), (2026, 9, 8), 4),     # Labor Day Monday
+        ((2026, 11, 25), (2026, 11, 27), 2), # Thanksgiving Thursday
+        ((2026, 4, 2), (2026, 4, 5), 3),     # Sunday weekly brief across Good Friday
+    ])
+    def test_previous_session_across_holidays_is_fresh(self, last, session, gap):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(*last), date(*session)) == (False, gap, 'fresh')
+
+    @pytest.mark.parametrize('last, session, gap', [
+        ((2026, 5, 21), (2026, 5, 26), 5),   # Friday 05-22 missing
+        ((2026, 11, 24), (2026, 11, 27), 3), # Wednesday 11-25 missing
+        ((2026, 9, 10), (2026, 9, 14), 4),   # Friday 09-11 missing
+        ((2026, 9, 11), (2026, 9, 15), 4),   # Monday 09-14 missing
+    ])
+    def test_a_missing_session_is_still_stale(self, last, session, gap):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(*last), date(*session)) == (True, gap, 'STALE_DAILY_DATA')
+
+    def test_short_gap_never_reads_the_calendar(self, monkeypatch):
+        from datetime import date
+        from lib import eastern_time
+        from lib.strat_levels import daily_data_freshness
+
+        def boom(*_a, **_k):
+            raise AssertionError('calendar consulted for a gap of 0 or 1 day')
+        monkeypatch.setattr(eastern_time, 'previous_session', boom)
+        assert daily_data_freshness(date(2026, 11, 25), date(2026, 11, 25)) == (False, 0, 'fresh')
+        assert daily_data_freshness(date(2026, 11, 25), date(2026, 11, 26)) == (False, 1, 'fresh')
+
+    def test_calendar_failure_raises(self, monkeypatch):
+        from datetime import date
+        import pandas_market_calendars as mcal
+        from lib import eastern_time
+        from lib.strat_levels import daily_data_freshness
+
+        def no_calendar(name, *a, **k):
+            raise RuntimeError('calendar down')
+        eastern_time._reset_session_cache()
+        monkeypatch.setattr(mcal, 'get_calendar', no_calendar)
+        try:
+            with pytest.raises(RuntimeError, match='calendar down'):
+                daily_data_freshness(date(2026, 11, 25), date(2026, 11, 27))
+        finally:
+            monkeypatch.undo()
+            eastern_time._reset_session_cache()
+
+
+# ─── Exits in thirds (docs/superpowers/specs/2026-11-11-feat-strat-001-brief-exits-in-thirds.md)
+
+
+def _prices(rungs):
+    return [round(r['price'], 2) for r in rungs]
+
+
+class TestTargetSpacing:
+    """Design 1: a target is at least target_min_spacing_atr x ATR past the
+    trigger or the target before it; the gating targets keep origin/main's
+    meaning."""
+
+    def test_design_8_fixture(self):
+        sl = d8_session()
+        assert (sl.long.trigger['name'], sl.long.trigger['price']) == ('PMK_H', 252.10)
+        assert _prices(sl.long.targets) == [275.00, 280.00, 285.00]
+        assert _prices(sl.long.skipped) == [253.00]
+        assert (sl.short.trigger['name'], sl.short.trigger['price']) == ('PMK_L', 248.20)
+        assert _prices(sl.short.targets) == [225.00, 220.00, 215.00]
+        assert _prices(sl.short.skipped) == [247.50, 247.00]
+        assert sl.long.stop['price'] == 248.20 and sl.short.stop['price'] == 252.10
+        assert _prices(sl.long.gate_targets) == [253.00, 275.00, 280.00]
+        assert sl.long.target_status == sl.short.target_status == 'ok'
+
+    def test_a_wider_atr_spaces_the_targets_further(self):
+        sl = d8_session(atr=24.0, window=1.6)
+        assert _prices(sl.long.targets) == [275.00, 285.00]
+        assert _prices(sl.long.skipped) == [253.00, 280.00]
+        assert _prices(sl.long.gate_targets) == [253.00, 275.00, 280.00]
+
+    def test_the_ticker_row_sets_the_spacing(self):
+        """A ticker_level_params row of 0.05 publishes 253.00 with no code change."""
+        sl = d8_session(spacing=0.05)
+        assert _prices(sl.long.targets) == [253.00, 275.00, 280.00]
+        assert sl.long.skipped == []
+        assert _prices(sl.long.gate_targets) == [253.00, 275.00, 280.00]
+
+    @pytest.mark.parametrize('first, kept', [(255.61, True), (255.60, False)])
+    def test_a_distance_equal_to_the_spacing_in_cents_is_kept(self, first, kept):
+        """0.25 x 14.02 = 3.505, which price_cents rounds half-up to 351
+        cents: 255.61 (351 cents past 252.10) is kept, 255.60 is skipped."""
+        from lib.strat_levels import price_cents
+        assert price_cents(0.25 * 14.02) == 351
+        levels = {**D8_LEVELS, 'PDH': first}
+        sl = d8_session(levels, atr=14.02)
+        assert (first in _prices(sl.long.targets)) is kept
+        assert (first in _prices(sl.long.skipped)) is not kept
+
+    def test_a_spacing_not_ok_publishes_no_target(self):
+        sl = d8_session(statuses={'target_min_spacing_atr': 'insufficient_history'})
+        for side in (sl.long, sl.short):
+            assert side.trigger is not None and side.stop is not None
+            assert side.targets == [] and side.skipped == []
+            assert side.target_status == 'insufficient_history'
+        assert _prices(sl.long.gate_targets) == [253.00, 275.00, 280.00]
+
+    def test_exit_legs_not_ok_publishes_no_target(self):
+        sl = d8_session(statuses={'exit_legs': 'input_unavailable'})
+        assert sl.long.targets == [] and sl.long.target_status == 'input_unavailable'
+
+    @pytest.mark.parametrize('status', ['input_unavailable', 'params_unavailable'])
+    def test_an_entry_cutoff_not_ok_publishes_no_target(self, status):
+        """No plan without the entry rule it is scored on (Codex P1 on
+        #1832): the side keeps its trigger, stop and gate targets and
+        records the cutoff's status, as for spacing and legs."""
+        sl = d8_session(statuses={'entry_cutoff_et': status})
+        for side in (sl.long, sl.short):
+            assert side.trigger is not None and side.stop is not None
+            assert side.targets == [] and side.skipped == []
+            assert side.target_status == status
+            assert side.plan['entry_cutoff_et'] is None
+            assert side.plan['entry_cutoff_status'] == status
+        assert _prices(sl.long.gate_targets) == [253.00, 275.00, 280.00]
+        from lib.strat_levels import SessionLevels
+        again = SessionLevels.from_basis(sl.to_basis())
+        assert again.long.targets == [] and again.long.target_status == status
+
+    def test_the_legs_bound_the_targets(self):
+        sl = d8_session(spacing=0.05, exit_legs=2)
+        assert _prices(sl.long.targets) == [253.00, 275.00]
+
+    def test_the_brief_columns_hold_gate_and_plan_targets(self):
+        from gcp.premarket_brief import structured_playbook_columns
+        for kw in ({}, {'atr': 24.0, 'window': 1.6}, {'spacing': 0.05}):
+            sl = d8_session(**kw)
+            cols = structured_playbook_columns(sl.to_level_map())
+            assert [cols[f'calls_t{k}_price'] for k in (1, 2, 3)] == [253.00, 275.00, 280.00]
+            plan = _prices(sl.long.targets) + [None] * (3 - len(sl.long.targets))
+            assert [cols[f'calls_plan_t{k}_price'] for k in (1, 2, 3)] == plan
+            assert cols['calls_trigger_price'] == 252.10 and cols['calls_stop_price'] == 248.20
+
+
+D8_CALLS = """  CALLS above 252.10 (PMK_H), new entries 09:30 to 16:00 ET
+    No entry if the open is at or above 252.10.
+    Stop: 248.20 (PMK_L)
+    T1: 275.00 (PMH), sell 1/3
+    T2: 280.00 (PQH), sell 1/3
+    T3: 285.00 (PYH), sell the last 1/3, or hold to the close or the stop
+    Skipped, closer than 0.25 x ATR(14) = 3.50: 253.00 (PDH)
+    Room to trigger: 0.84%"""
+
+D8_PUTS = """  PUTS below 248.20 (PMK_L), new entries 09:30 to 16:00 ET
+    No entry if the open is at or below 248.20.
+    Stop: 252.10 (PMK_H)
+    T1: 225.00 (PML), sell 1/3
+    T2: 220.00 (PQL), sell 1/3
+    T3: 215.00 (PYL), sell the last 1/3, or hold to the close or the stop
+    Skipped, closer than 0.25 x ATR(14) = 3.50: 247.50 (PDL), 247.00 (PDC)
+    Room to trigger: 0.72%"""
+
+
+class TestExitPlanCopy:
+    """Designs 2 to 5 and 8: the brief's exit plan copy."""
+
+    def _text(self, **kw):
+        return format_levels_for_brief(d8_session(**kw).to_level_map(), 'neutral')
+
+    def test_design_8_text(self):
+        text = self._text()
+        assert D8_CALLS in text
+        assert D8_PUTS in text
+
+    def test_fewer_targets_than_legs_hold_the_rest(self):
+        text = self._text(atr=24.0, window=1.6)
+        assert "    T1: 275.00 (PMH), sell 1/3\n" in text
+        assert ("    T2: 285.00 (PYH), sell 1/3, hold the last 1/3 to the close or the stop\n"
+                in text)
+
+    def test_no_target_past_the_spacing(self):
+        text = self._text(spacing=5.0)
+        assert ("    No target at least 5 x ATR(14) = 70.00 past the trigger: "
+                "hold to the close or the stop.") in text
+        assert "    T1:" not in text
+
+    def test_targets_unavailable(self):
+        text = self._text(statuses={'target_min_spacing_atr': 'insufficient_history'})
+        assert "    Targets unavailable (insufficient_history): no exit plan for this side." in text
+        assert "No target at least" not in text and "    T1:" not in text
+        assert "Skipped" not in text
+
+    def test_entry_cutoff_unavailable(self):
+        """An entry cutoff that is not ok prints no entry window and no
+        exit plan, and says so (Codex P1 on #1832)."""
+        text = self._text(statuses={'entry_cutoff_et': 'input_unavailable'})
+        assert ("  CALLS above 252.10 (PMK_H), entry window unavailable (input_unavailable)\n"
+                in text)
+        assert ("  PUTS below 248.20 (PMK_L), entry window unavailable (input_unavailable)\n"
+                in text)
+        assert "new entries" not in text
+        assert text.count(
+            "    Targets unavailable (input_unavailable): no exit plan for this side.") == 2
+        assert "No target at least" not in text and "    T1:" not in text
+        assert "Skipped" not in text and "sell 1/" not in text
+
+    @pytest.mark.parametrize('flag, label', [
+        (0.2, "    T2: 247.00 (PDC, gap fill: gap 0.21 x ATR), sell 1/3\n"),
+        (0.5, "    T2: 247.00 (PDC), sell 1/3\n"),
+    ])
+    def test_prior_close_gap_fill_label(self, flag, label):
+        """The gap is |250.00 - 247.00| / 14.00 = 0.21 ATR: labelled a gap
+        fill when the ticker's flag is 0.2, plain when it is 0.5."""
+        text = self._text(spacing=0.0, gap_fill_flag_atr=flag)
+        assert label in text
+
+    @pytest.mark.parametrize('status', ['input_unavailable', 'params_unavailable'])
+    def test_an_unavailable_gap_fill_flag_is_said_not_dropped(self, status):
+        """Codex P1 on #1832: a gap-fill flag that is not ok labels the
+        prior-close target as unclassified instead of printing a plain
+        (PDC), so it reads differently from a gap below the threshold; the
+        rest of the plan is unchanged and the label survives from_basis."""
+        sl = d8_session(spacing=0.0, statuses={'gap_fill_flag_atr': status})
+        text = format_levels_for_brief(sl.to_level_map(), 'neutral')
+        assert (f"    T2: 247.00 (PDC, gap fill flag unavailable ({status})), sell 1/3\n"
+                in text)
+        assert "    T2: 247.00 (PDC), sell 1/3\n" not in text
+        assert sl.short.target_status == 'ok'
+        assert all('gap_fill_status' not in t for t in sl.long.targets)
+        from lib.strat_levels import SessionLevels
+        again = SessionLevels.from_basis(sl.to_basis())
+        assert format_levels_for_brief(again.to_level_map(), 'neutral') == text
+
+    def test_the_cutoff_and_legs_come_from_the_policy(self):
+        text = self._text(exit_legs=2, spacing=0.05)
+        assert "    T1: 253.00 (PDH), sell 1/2\n" in text
+        assert "    T2: 275.00 (PMH), sell the last 1/2, or hold to the close or the stop\n" in text
+
+    def test_orb_only_copy_is_unchanged(self):
+        from lib.strat_levels import orb_only_text
+        from tests.lib.session_levels_helpers import session
+        sl = session({'PDH': 220.0, 'PWH': 225.0, 'PMH': 228.0, 'PDL': 215.0},
+                     prior_close=218.0, atr=2.0,
+                     premarket={'pre_high': 240.0, 'pre_low': 216.0, 'pre_vwap': 219.0})
+        text = format_levels_for_brief(sl.to_level_map(), 'bullish')
+        assert '  CALLS: ' + orb_only_text('all_broken_by_premarket', 'long') + '\n' in text
+
+
+# ─── ATR levels spec (2026-11-11), display only ────────────────────────
+
+D8_RUNG_PARAMS = ('atr_rung_anchors', 'atr_rung_step_atr', 'atr_rung_max_atr',
+                  'atr_rung_stretch_atr')
+
+
+def _rung_view(rungs):
+    return [(round(r['price'], 2), r['label']) for r in rungs]
+
+
+class TestAtrRungs:
+    """ATR levels spec, done_when 'ATR rungs', on the exits spec's Design 8
+    fixture with the seeded anchors [PDH, PDL, PMK_H, PMK_L], step 0.5, max
+    2.0 and stretch 1.5."""
+
+    def test_32_rungs_before_thinning(self):
+        from lib.strat_levels import _atr_rung_ladder
+        sl = d8_session()
+        rungs, distinct, anchors = _atr_rung_ladder(sl.levels, sl.params, sl.atr,
+                                                     sl.params.atr_rung_anchors())
+        assert len(rungs) == len(distinct) == 32
+        want = set()
+        for name, price in (('PDH', 253.00), ('PDL', 247.50), ('PMK_H', 252.10), ('PMK_L', 248.20)):
+            for k, mult in (('0.5', 0.5), ('1', 1.0), ('1.5', 1.5), ('2', 2.0)):
+                want.add((round(price + mult * 14.0, 2), f'{name}+{k}'))
+                want.add((round(price - mult * 14.0, 2), f'{name}-{k}'))
+        assert set(_rung_view(rungs)) == want
+        assert [a['name'] for a in anchors] == ['PDH', 'PDL', 'PMK_H', 'PMK_L']
+        assert {a['status'] for a in anchors} == {'ok'}
+
+    def test_design_8_keeps_four_rungs(self):
+        sl = d8_session()
+        assert sl.atr_rung_status == 'ok'
+        assert _rung_view(sl.atr_rungs) == [(234.20, 'PMK_L-1'), (241.20, 'PMK_L-0.5'),
+                                            (259.10, 'PMK_H+0.5'), (266.10, 'PMK_H+1')]
+        assert [r['name'] for r in sl.atr_rungs] == ['PMK_L-1ATR', 'PMK_L-0.5ATR',
+                                                     'PMK_H+0.5ATR', 'PMK_H+1ATR']
+        assert len(sl.atr_rungs_dropped) == 28
+        assert {r['reason'] for r in sl.atr_rungs_dropped} == {'neighbor', 'structural'}
+        pdh_m2 = next(r for r in sl.atr_rungs_dropped if r['price'] == 225.00)
+        assert (pdh_m2['name'], pdh_m2['reason'], pdh_m2['alias_of']) == ('PDH-2ATR', 'structural', 'PML')
+
+    def test_a_rung_far_from_its_neighbor_but_near_a_structural_level_is_dropped(self):
+        """273.10 (PMK_H+1.5) is 7.00 from 266.10 but 1.90 from 275.00 (PMH)."""
+        sl = d8_session()
+        r = next(r for r in sl.atr_rungs_dropped if r['label'] == 'PMK_H+1.5')
+        assert r['price'] == 273.10 and r['reason'] == 'structural' and r['near'] == 'PMH'
+
+    @pytest.mark.parametrize('pdh, kept', [(255.60, True), (255.61, False)])
+    def test_spacing_equal_to_a_structural_level_in_cents_is_kept(self, pdh, kept):
+        """259.10 against a structural PDH: 3.50 away (0.25 x 14.00 = 350
+        cents) is kept, 3.49 away is dropped as structural."""
+        sl = d8_session({**D8_LEVELS, 'PDH': pdh}, anchors=['PDL', 'PMK_H', 'PMK_L'])
+        assert (259.10 in [r['price'] for r in sl.atr_rungs]) is kept
+        if not kept:
+            r = next(r for r in sl.atr_rungs_dropped if r['price'] == 259.10)
+            assert r['reason'] == 'structural' and r['near'] == 'PDH'
+
+    @pytest.mark.parametrize('pdh, kept', [(255.60, True), (255.59, False)])
+    def test_spacing_equal_to_the_open_side_neighbor_in_cents_is_kept(self, pdh, kept):
+        """Anchors [PMK_H, PDH], one step of 0.5: 259.10 (PMK_H+0.5) is kept
+        and PDH+0.5 is the next rung out, clear of every structural level.
+        PDH 255.60 puts it 350 cents (0.25 x 14.00) past 259.10: kept; PDH
+        255.59 puts it 349 cents past: dropped as neighbor."""
+        sl = d8_session({'PDH': pdh, 'PDL': 247.50, 'PMH': 300.00}, anchors=['PMK_H', 'PDH'],
+                        atr_rung_max_atr=0.5)
+        assert 259.10 in [r['price'] for r in sl.atr_rungs]
+        rung = [r for r in sl.atr_rungs + sl.atr_rungs_dropped if r['label'] == 'PDH+0.5']
+        assert len(rung) == 1 and rung[0]['price'] == round(pdh + 7.0, 2)
+        assert (rung[0] in sl.atr_rungs) is kept
+        if not kept:
+            assert rung[0]['reason'] == 'neighbor' and rung[0]['near_price'] == 259.10
+
+    @pytest.mark.parametrize('stretch, marked', [(1.5, True), (21.01 / 14.0, False)])
+    def test_stretch_from_the_stretch_mark_in_cents(self, stretch, marked):
+        """PMK_H+1.5 is 21.00 from its anchor: stretch when the mark is
+        1.5 x 14.00 = 2100 cents, not when it is one cent more."""
+        from lib.strat_levels import _atr_rung_ladder
+        sl = d8_session(atr_rung_stretch_atr=stretch)
+        rungs, _d, _a = _atr_rung_ladder(sl.levels, sl.params, sl.atr, sl.params.atr_rung_anchors())
+        by_label = {r['label']: r for r in rungs}
+        assert by_label['PMK_H+1.5']['stretch'] is marked
+        assert by_label['PMK_H+2']['stretch'] is True
+        assert by_label['PMK_H+1']['stretch'] is False
+
+    def test_two_rungs_on_one_cent_take_the_first_anchor_name(self):
+        """PDL 246.00 = PDH 253.00 - 7.00: PDL-1 (232.00) and PDH-1.5
+        (232.00) share a cent, and so do PDL+0.5 and PDH (253.00 = 246+7,
+        a structural cent). The anchor listed first (PDH) keeps the name."""
+        from lib.strat_levels import _atr_rung_ladder
+        sl = d8_session({**D8_LEVELS, 'PDL': 246.00})
+        _all, distinct, _a = _atr_rung_ladder(sl.levels, sl.params, sl.atr,
+                                              sl.params.atr_rung_anchors())
+        at = {r['cents']: r for r in distinct}
+        assert at[23200]['name'] == 'PDH-1.5ATR' and at[23200]['aliases'] == ['PDL-1ATR']
+        flipped = d8_session({**D8_LEVELS, 'PDL': 246.00}, anchors=['PDL', 'PDH', 'PMK_H', 'PMK_L'])
+        _all, distinct, _a = _atr_rung_ladder(flipped.levels, flipped.params, flipped.atr,
+                                              flipped.params.atr_rung_anchors())
+        at = {r['cents']: r for r in distinct}
+        assert at[23200]['name'] == 'PDL-1ATR' and at[23200]['aliases'] == ['PDH-1.5ATR']
+
+    def test_no_premarket_snapshot_builds_from_pdh_and_pdl(self):
+        from lib.strat_levels import SessionLevels
+        from tests.lib.session_levels_helpers import basis, d8_params
+        sl = SessionLevels.from_basis(basis(D8_LEVELS, prior_close=247.00, atr=14.0,
+                                            premarket=None, params=d8_params()))
+        assert sl.atr_rung_status == 'ok'
+        assert {r['anchor'] for r in sl.atr_rungs + sl.atr_rungs_dropped} == {'PDH', 'PDL'}
+        assert len(sl.atr_rungs) + len(sl.atr_rungs_dropped) == 16
+        assert [(a['name'], a['status']) for a in sl.atr_rung_anchors] == [
+            ('PDH', 'ok'), ('PDL', 'ok'), ('PMK_H', 'anchor_unavailable'),
+            ('PMK_L', 'anchor_unavailable')]
+        basis_out = sl.to_basis()
+        assert [a['status'] for a in basis_out['atr_rung_anchors']][2:] == ['anchor_unavailable'] * 2
+
+    @pytest.mark.parametrize('key', D8_RUNG_PARAMS + ('target_min_spacing_atr',))
+    @pytest.mark.parametrize('status', ['insufficient_history', 'params_unavailable'])
+    def test_a_parameter_not_ok_gives_no_rungs(self, key, status):
+        sl = d8_session(statuses={key: status})
+        assert sl.atr_rungs == [] and sl.atr_rungs_dropped == []
+        assert sl.atr_rung_status == status
+
+
+def _gap_edges_off(monkeypatch):
+    """Read every plan_target_level_types row as {"level_types": []}, the
+    gap-edge spec's one-row way to turn gap edges off."""
+    import lib.strat_levels as sl_mod
+    monkeypatch.setattr(sl_mod, 'plan_target_level_types', lambda extra: ())
+
+
+class TestAtrRungsDisplayOnly:
+    """ATR levels spec, done_when 'Display only' and 'Unchanged': the plan
+    decisions, the NEXT LEVELS ladders and the brief's structured columns
+    are the base's for every case (tests/lib/atr_levels_display_only.py,
+    golden written on the base)."""
+
+    def test_every_case_matches_the_base(self, monkeypatch):
+        """With gap-edge plan targets off (plan_target_level_types read as an
+        empty list, the gap-edge spec's 'turn off' row), every case is the
+        base's byte for byte."""
+        import json
+        from pathlib import Path
+        from tests.lib.atr_levels_display_only import projections
+        _gap_edges_off(monkeypatch)
+        golden = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
+                             / 'atr_levels_display_only_base.json').read_text())
+        head = projections()
+        assert sorted(head) == sorted(golden)
+        for name in golden:
+            assert head[name] == golden[name], name
+
+    def test_gap_edges_move_only_plan_targets(self):
+        """Gap-edge plan targets spec, done_when 'Never anything but a plan
+        target': with the seeded row (gap edges on) every projected decision
+        but the plan's targets and skipped list (and the brief's plan_t
+        columns that print them) is the base's; the build_session_levels case
+        has gap edges in reach and its plan does change."""
+        import json
+        from pathlib import Path
+        from tests.lib.atr_levels_display_only import projections
+        golden = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
+                             / 'atr_levels_display_only_base.json').read_text())
+        head = projections()
+        plan_only = ('targets', 'skipped')
+        for name in golden:
+            h, b = json.loads(json.dumps(head[name])), json.loads(json.dumps(golden[name]))
+            for side in ('long', 'short'):
+                for k in plan_only:
+                    h[side].pop(k), b[side].pop(k)
+            for trig in ('calls_trigger', 'puts_trigger'):
+                for k in ('plan_targets', 'skipped'):
+                    (h['level_map'][trig] or {}).pop(k, None)
+                    (b['level_map'][trig] or {}).pop(k, None)
+            for col in [c for c in b['columns'] if '_plan_t' in c]:
+                h['columns'].pop(col), b['columns'].pop(col)
+            assert h == b, name
+        built = head['build_session_levels']
+        assert any(t['level_type'] in ('gap_high', 'gap_low')
+                   for side in ('long', 'short') for t in built[side]['targets'])
+        assert built != golden['build_session_levels']
+
+    def test_the_brief_writes_the_base_columns(self, monkeypatch):
+        """gcp.premarket_brief on the committed 2026-11-06 fixture (SPY, QQQ,
+        IWM, the production brief path offline): every premarket_analysis
+        column the brief writes is the base's, including calls/puts t1..t3
+        and plan_t1..plan_t3, except two. The playbook is the base's text
+        with exactly one line added, the last NEXT LEVELS line. level_basis
+        is the base's with the ATR rung keys and the four rung parameters
+        added and nothing else changed."""
+        import json
+        from pathlib import Path
+        from tests.lib.atr_levels_display_only import BRIEF_TICKERS, brief_entries
+        golden = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
+                             / 'atr_levels_brief_base.json').read_text())
+        head = brief_entries(monkeypatch)
+        assert sorted(head) == sorted(golden) == sorted(BRIEF_TICKERS)
+        rung_keys = {'atr_rungs', 'atr_rungs_dropped', 'atr_rung_status', 'atr_rung_anchors',
+                     'atr_rung_params',
+                     # Gap-edge plan targets spec: the rule's marker and types.
+                     'plan_target_level_types_status', 'plan_target_level_types'}
+        for t in BRIEF_TICKERS:
+            h, b = dict(head[t]), dict(golden[t])
+            hp, bp = h.pop('playbook').split('\n'), b.pop('playbook').split('\n')
+            added = [i for i, ln in enumerate(hp) if ln.startswith('    ATR levels')]
+            assert len(added) == 1 and hp[:added[0]] + hp[added[0] + 1:] == bp, t
+            assert hp[added[0] - 1].startswith('    Puts (down): '), t
+            hb, bb = h.pop('level_basis'), b.pop('level_basis')
+            assert set(hb) - set(bb) == rung_keys and not set(bb) - set(hb), t
+            assert hb['atr_rung_status'] == 'ok' and hb['atr_rungs'], t
+            hparams = dict(hb['params'])
+            for k in D8_RUNG_PARAMS:
+                hparams.pop(k)
+            assert hb['plan_target_level_types_status'] == 'ok', t
+            assert hparams.pop('plan_target_level_types')['extra'] == {
+                'level_types': ['gap_high', 'gap_low']}, t
+            assert hparams == bb['params'], t
+            assert {k: v for k, v in hb.items() if k not in rung_keys | {'params'}} == {
+                k: v for k, v in bb.items() if k != 'params'}, t
+            assert h == b, t
+            for side in ('calls', 'puts'):
+                for k in (1, 2, 3):
+                    assert f'{side}_t{k}_price' in h and f'{side}_plan_t{k}_price' in h
+
+    def test_design_8_plan(self):
+        sl = d8_session()
+        assert (sl.long.trigger['price'], sl.long.stop['price']) == (252.10, 248.20)
+        assert _prices(sl.long.gate_targets) == [253.00, 275.00, 280.00]
+        assert _prices(sl.long.targets) == [275.00, 280.00, 285.00]
+        assert _prices(sl.long.skipped) == [253.00]
+        assert (sl.short.trigger['price'], sl.short.stop['price']) == (248.20, 252.10)
+        assert _prices(sl.short.gate_targets) == [247.50, 247.00, 225.00]
+        assert _prices(sl.short.targets) == [225.00, 220.00, 215.00]
+        assert _prices(sl.short.skipped) == [247.50, 247.00]
+
+    def test_no_rung_reaches_the_candidates_or_the_side_pick(self, monkeypatch):
+        """A session whose only level past the trigger would be a rung
+        (259.10, PMK_H+0.5) gets the base's targets: none past the trigger.
+        _candidate_rungs and _pick_side are spied: no ATR rung name or
+        price reaches either."""
+        import lib.strat_levels as m
+        seen = []
+        real_cands, real_pick = m._candidate_rungs, m._pick_side
+
+        def cands(levels):
+            seen.extend(lv.name for lv in levels)
+            return real_cands(levels)
+
+        def pick(side, candidates, *a, **kw):
+            seen.extend(c['name'] for c in candidates)
+            return real_pick(side, candidates, *a, **kw)
+
+        monkeypatch.setattr(m, '_candidate_rungs', cands)
+        monkeypatch.setattr(m, '_pick_side', pick)
+        sl = d8_session({'PDL': 247.50, 'PML': 225.00})
+        assert sl.atr_rung_status == 'ok'
+        assert 259.10 in [r['price'] for r in sl.atr_rungs]
+        assert sl.long.trigger['price'] == 252.10
+        assert sl.long.gate_targets == [] and sl.long.targets == [] and sl.long.skipped == []
+        assert seen and not any(n.endswith('ATR') for n in seen)
+        assert not any(lv.name.endswith('ATR') for lv in sl.levels)
+
+    def test_the_rule_version_and_persisted_levels_are_unchanged(self):
+        from lib.strat_levels import LEVEL_RULE_VERSION
+        sl = d8_session()
+        assert LEVEL_RULE_VERSION == sl.rule_version == 'feat-strat-001.v3'
+        lm = sl.to_level_map()
+        assert sorted(lv.name for lv in lm.levels) == sorted(list(D8_LEVELS) + ['PMK_H', 'PMK_L'])
+        assert [(r['price'], r['name']) for r in lm.call_levels] == [(252.10, 'PMK_H'), (253.00, 'PDH')]
+        assert [(r['price'], r['name']) for r in lm.put_levels] == [(248.20, 'PMK_L'), (247.50, 'PDL')]
+
+
+D8_NEXT_LEVELS = """  NEXT LEVELS:
+    Calls (up):  252.10 PMK_H (intraday) +0.84%, 253.00 PDH (day) +1.20%
+    Puts (down): 248.20 PMK_L (intraday) -0.72%, 247.50 PDL (day) -1.00%"""
+D8_ATR_LINE = ("    ATR levels, ATR(14) 14.00: up 259.10 (PMK_H+0.5), 266.10 (PMK_H+1); "
+               "down 241.20 (PMK_L-0.5), 234.20 (PMK_L-1)")
+
+
+class TestAtrLevelsCopy:
+    """ATR levels spec, done_when 'Brief copy' (Design 5)."""
+
+    def test_design_8_golden_text(self):
+        text = format_levels_for_brief(d8_session().to_level_map(), 'neutral')
+        assert text == (D8_CALLS + "\n\n" + D8_PUTS + "\n\n" + D8_NEXT_LEVELS + "\n" + D8_ATR_LINE)
+
+    def test_every_other_line_is_the_base_text(self):
+        """Removing the one ATR line leaves the exits spec's Design 8 text
+        and the base's NEXT LEVELS lines, byte for byte."""
+        text = format_levels_for_brief(d8_session().to_level_map(), 'neutral')
+        lines = text.split('\n')
+        assert lines[-1] == D8_ATR_LINE and lines.count(D8_ATR_LINE) == 1
+        assert '\n'.join(lines[:-1]) == D8_CALLS + "\n\n" + D8_PUTS + "\n\n" + D8_NEXT_LEVELS
+
+    def test_stretch_and_alias_labels(self):
+        """Windows 3.0 and stretch 0.5: every kept rung is stretch; with PDL
+        on 246.00 the PDH-1.5 rung (232.00) also carries PDL-1."""
+        from lib.strat_levels import _format_atr_levels
+        sl = d8_session({**D8_LEVELS, 'PDL': 246.00}, window=3.0, atr_rung_stretch_atr=0.5)
+        line = _format_atr_levels(sl.to_level_map().atr_levels)
+        assert line.startswith("    ATR levels, ATR(14) 14.00: up ")
+        assert "(PMK_H+0.5 stretch)" in line
+        alias = [r for r in sl.atr_rungs + sl.atr_rungs_dropped if r['aliases']]
+        assert alias
+        kept_alias = [r for r in sl.atr_rungs if r['aliases']]
+        for r in kept_alias:
+            assert f", also {r['aliases'][0].removesuffix('ATR')}" in line
+
+    def test_a_kept_rung_with_an_alias_prints_it(self):
+        from lib.strat_levels import _format_atr_levels
+        lm = {'status': 'ok', 'atr': 14.0, 'atr_basis': 'atr_14',
+              'up': [{'label': 'PDH+1', 'price': 267.0, 'stretch': True, 'aliases': ['PDL+1.5ATR']}],
+              'down': []}
+        assert _format_atr_levels(lm) == (
+            "    ATR levels, ATR(14) 14.00: up 267.00 (PDH+1 stretch, also PDL+1.5); down none")
+
+    def test_rungs_outside_the_window_are_not_printed(self):
+        """Windows 0.7 x 14 = 9.80 from 250.00: 259.10 and 241.20 are
+        inside, 266.10 and 234.20 are not."""
+        sl = d8_session(window=0.7)
+        line = format_levels_for_brief(sl.to_level_map(), 'neutral').split('\n')[-1]
+        assert line == ("    ATR levels, ATR(14) 14.00: up 259.10 (PMK_H+0.5); "
+                        "down 241.20 (PMK_L-0.5)")
+
+    @pytest.mark.parametrize('key', D8_RUNG_PARAMS + ('target_min_spacing_atr',))
+    def test_unavailable_line(self, key):
+        text = format_levels_for_brief(
+            d8_session(statuses={key: 'params_unavailable'}).to_level_map(), 'neutral')
+        assert text.split('\n')[-1] == "    ATR levels unavailable (params_unavailable)."
+        assert "ATR levels, ATR(" not in text
+
+    def test_orb_only_and_no_trigger_sides_are_unchanged(self):
+        from lib.strat_levels import orb_only_text
+        from tests.lib.session_levels_helpers import session
+        sl = session({'PDH': 220.0, 'PWH': 225.0, 'PMH': 228.0, 'PDL': 215.0},
+                     prior_close=218.0, atr=2.0,
+                     premarket={'pre_high': 240.0, 'pre_low': 216.0, 'pre_vwap': 219.0})
+        text = format_levels_for_brief(sl.to_level_map(), 'bullish')
+        assert '  CALLS: ' + orb_only_text('all_broken_by_premarket', 'long') + '\n' in text
+        lines = text.split('\n')
+        calls = [ln for ln in lines if ln.startswith('  CALLS')]
+        assert calls == ['  CALLS: ' + orb_only_text('all_broken_by_premarket', 'long')]
+        assert lines[-1].startswith('    ATR levels')
+
+    def test_no_rung_at_or_below_zero(self):
+        """An anchor closer to zero than its downward offset builds no rung
+        at or below zero, so the brief never prints an unreachable price
+        (Codex P2 on #1951: PDH 1.20, PDL 0.80, reference 1.00, ATR 0.70
+        printed -0.20 and -0.60)."""
+        from lib.strat_levels import SessionLevels
+        from tests.lib.session_levels_helpers import basis, d8_params
+        sl = SessionLevels.from_basis(basis(
+            {'PDH': 1.20, 'PDL': 0.80}, prior_close=1.00, atr=0.70,
+            premarket={'pre_high': 1.05, 'pre_low': 0.95, 'pre_vwap': 1.00},
+            params=d8_params()))
+        assert sl.atr_rung_status == 'ok'
+        built = sl.atr_rungs + sl.atr_rungs_dropped
+        assert built and all(r['cents'] > 0 for r in built)
+        line = format_levels_for_brief(sl.to_level_map(), 'neutral').split('\n')[-1]
+        assert line.startswith('    ATR levels') and ' -0.' not in line and '(-' not in line
+
+    def test_a_basis_from_the_previous_loader_prints_no_line(self):
+        """Once the policy rows exist, the previous loader records the rung
+        keys among its parameters but writes no rung fields: that basis
+        still rebuilds none (Codex P2 on #1951)."""
+        import json
+        from lib.strat_levels import SessionLevels
+        stored = json.loads(json.dumps(d8_session().to_basis()))
+        for k in ('atr_rungs', 'atr_rungs_dropped', 'atr_rung_status', 'atr_rung_anchors',
+                  'atr_rung_params'):
+            stored.pop(k)
+        assert all(k in stored['params'] for k in D8_RUNG_PARAMS)
+        old = SessionLevels.from_basis(stored)
+        assert old.atr_rungs == [] and old.atr_rung_status is None
+        text = format_levels_for_brief(old.to_level_map(), 'neutral')
+        assert text == D8_CALLS + "\n\n" + D8_PUTS + "\n\n" + D8_NEXT_LEVELS
+
+    @pytest.mark.parametrize('side,key,word', [('long', 'trigger_window_long_atr', 'up'),
+                                               ('short', 'trigger_window_short_atr', 'down')])
+    @pytest.mark.parametrize('status', ['insufficient_history', 'params_unavailable'])
+    def test_a_side_window_not_ok_prints_its_status(self, side, key, word, status):
+        """A side whose window is not ok prints that status in place of its
+        rungs, never 'none', and the other side is unchanged (Codex P2 on
+        #1951)."""
+        sl = d8_session(statuses={key: status})
+        assert sl.atr_rung_status == 'ok'
+        line = format_levels_for_brief(sl.to_level_map(), 'neutral').split('\n')[-1]
+        other = ('down 241.20 (PMK_L-0.5), 234.20 (PMK_L-1)' if word == 'up'
+                 else 'up 259.10 (PMK_H+0.5), 266.10 (PMK_H+1)')
+        assert f'{word} unavailable ({status})' in line
+        assert other in line and 'none' not in line
+
+    def test_a_basis_without_rungs_prints_no_line(self):
+        """A stored level_basis written before ATR rungs rebuilds none and
+        renders the base's text."""
+        import json
+        from lib.strat_levels import SessionLevels
+        stored = json.loads(json.dumps(d8_session().to_basis()))
+        for k in ('atr_rungs', 'atr_rungs_dropped', 'atr_rung_status', 'atr_rung_anchors',
+                  'atr_rung_params'):
+            stored.pop(k)
+        for k in D8_RUNG_PARAMS:
+            stored['params'].pop(k)
+        old = SessionLevels.from_basis(stored)
+        assert old.atr_rungs == [] and old.atr_rung_status is None
+        text = format_levels_for_brief(old.to_level_map(), 'neutral')
+        assert text == D8_CALLS + "\n\n" + D8_PUTS + "\n\n" + D8_NEXT_LEVELS
+
+
+# ── Gap-edge plan targets spec (2026-11-15) ─────────────────────────────
+
+D4_CALLS = """  CALLS above 252.10 (PMK_H), new entries 09:30 to 16:00 ET
+    No entry if the open is at or above 252.10.
+    Stop: 248.20 (PMK_L)
+    T1: 262.40 (10/20 Gap High), sell 1/3
+    T2: 275.00 (PMH), sell 1/3
+    T3: 280.00 (PQH), sell the last 1/3, or hold to the close or the stop
+    Skipped, closer than 0.25 x ATR(14) = 3.50: 253.00 (PDH)
+    Room to trigger: 0.84%"""
+
+
+def _gap(name, price):
+    return {'name': name, 'price': float(price), 'timeframe': 'day',
+            'level_type': 'gap_high' if name.startswith('GAP_H_') else 'gap_low',
+            'period_label': name[6:]}
+
+
+def _gap_basis(gaps=(), *, params=None, marker=True, **kw):
+    """The Design 8 basis plus these gap edges, carrying the Design 3 marker
+    a basis built under the gap-edge rule records."""
+    from tests.lib.session_levels_helpers import d8_basis
+    b = d8_basis(params=params, **kw)
+    b['levels'] = b['levels'] + [_gap(n, p) for n, p in gaps]
+    if marker:
+        b['plan_target_level_types_status'] = None
+    return b
+
+
+def _gap_session(gaps=(), **kw):
+    from lib.strat_levels import SessionLevels
+    return SessionLevels.from_basis(_gap_basis(gaps, **kw))
+
+
+def _types_params(types, status='ok'):
+    from dataclasses import replace
+    from tests.lib.session_levels_helpers import d8_params
+    lp = d8_params()
+    p = lp.params['plan_target_level_types']
+    lp.params['plan_target_level_types'] = replace(
+        p, value=float(len(types)) if types is not None else None, status=status,
+        extra={'level_types': list(types)} if types is not None else {})
+    return lp
+
+
+def _side_keys(side):
+    """Everything on a side but its plan targets and skipped list."""
+    import json
+    d = {k: v for k, v in vars(side).items() if k not in ('targets', 'skipped')}
+    return json.loads(json.dumps(d, default=str))
+
+
+class TestPlanGapEdges:
+    """Gap-edge plan targets spec, done_when 'Plan walk' (a) to (e), 'Never
+    anything but a plan target' and 'Brief copy', on the exits spec's Design 8
+    fixture (spacing 0.25 x 14.00 = 3.50, both windows 2.6 x ATR from 250.00,
+    so 213.60 to 286.40)."""
+
+    def test_the_seeded_row_is_ok(self):
+        sl = _gap_session()
+        assert sl.plan_target_level_types_status == 'ok'
+        assert sl.plan_target_level_types == ['gap_high', 'gap_low']
+
+    def test_a_gap_edge_in_reach_is_a_target(self):
+        """(a): a gap high past the calls trigger and a gap low past the puts
+        trigger join the targets in price order, under their own names."""
+        sl = _gap_session([('GAP_H_2026-10-20', 262.40), ('GAP_L_2026-10-20', 235.00)])
+        assert _prices(sl.long.targets) == [262.40, 275.00, 280.00]
+        assert sl.long.targets[0]['name'] == 'GAP_H_2026-10-20'
+        assert sl.long.targets[0]['level_type'] == 'gap_high'
+        assert _prices(sl.long.skipped) == [253.00]
+        assert _prices(sl.short.targets) == [235.00, 225.00, 220.00]
+        assert sl.short.targets[0]['name'] == 'GAP_L_2026-10-20'
+        assert _prices(sl.short.skipped) == [247.50, 247.00]
+        assert sl.long.target_status == sl.short.target_status == 'ok'
+
+    def test_a_gap_edge_too_close_is_skipped(self):
+        """(b): 254.00 is 1.90 past the trigger; 273.00 is kept and then
+        pushes 275.00 (2.00 past it) into skipped."""
+        sl = _gap_session([('GAP_H_2026-10-20', 254.00)])
+        assert _prices(sl.long.targets) == [275.00, 280.00, 285.00]
+        assert _prices(sl.long.skipped) == [253.00, 254.00]
+        sl = _gap_session([('GAP_H_2026-10-20', 273.00)])
+        assert _prices(sl.long.targets) == [273.00, 280.00, 285.00]
+        assert _prices(sl.long.skipped) == [253.00, 275.00]
+
+    @pytest.mark.parametrize('price', [251.00, 252.10, 290.00, 275.00, 253.00])
+    def test_a_gap_edge_out_of_reach_adds_nothing(self, price):
+        """(c): before the trigger, on the trigger's cent, past the window, or
+        on a candidate's cent: the side is the no-gap side byte for byte, the
+        candidate's record (name, aliases) included."""
+        base = _gap_session()
+        sl = _gap_session([('GAP_H_2026-10-20', price)])
+        for side in ('long', 'short'):
+            assert getattr(sl, side).targets == getattr(base, side).targets
+            assert getattr(sl, side).skipped == getattr(base, side).skipped
+
+    @pytest.mark.parametrize('gaps, name', [
+        ([('GAP_H_2026-10-20', 262.40), ('GAP_L_2026-10-21', 262.40)], 'GAP_L_2026-10-21'),
+        ([('GAP_L_2026-10-21', 262.40), ('GAP_H_2026-10-20', 262.40)], 'GAP_L_2026-10-21'),
+        ([('GAP_L_2026-10-20', 262.40), ('GAP_H_2026-10-20', 262.40)], 'GAP_H_2026-10-20'),
+    ])
+    def test_two_gap_edges_on_one_cent(self, gaps, name):
+        """(c): one rung, the most recent gap's, high before low."""
+        sl = _gap_session(gaps)
+        assert _prices(sl.long.targets) == [262.40, 275.00, 280.00]
+        assert sl.long.targets[0]['name'] == name
+
+    def test_an_empty_list_is_the_old_walk(self):
+        """(d): the row's 'turn off' value gives the no-gap targets."""
+        base = _gap_session()
+        sl = _gap_session([('GAP_H_2026-10-20', 262.40)], params=_types_params([]))
+        assert sl.plan_target_level_types_status == 'ok'
+        assert sl.long.targets == base.long.targets and sl.long.skipped == base.long.skipped
+        assert _prices(sl.long.targets) == [275.00, 280.00, 285.00]
+
+    @pytest.mark.parametrize('status', ['input_unavailable', 'params_unavailable'])
+    def test_an_unusable_or_missing_row_publishes_no_target(self, status):
+        """(e): as for the spacing, leg and cutoff keys."""
+        if status == 'params_unavailable':
+            from tests.lib.session_levels_helpers import d8_params
+            lp = d8_params()
+            del lp.params['plan_target_level_types']
+        else:
+            lp = _types_params(None, status=status)
+        sl = _gap_session([('GAP_H_2026-10-20', 262.40)], params=lp)
+        for side in (sl.long, sl.short):
+            assert side.targets == []
+            assert side.target_status == status
+        assert sl.long.trigger['price'] == 252.10 and sl.short.trigger['price'] == 248.20
+
+    def test_never_anything_but_a_plan_target(self):
+        """Trigger, stop, gate targets, ladder, room, distance and every other
+        side field, and the level map's legacy targets, are the no-gap
+        session's; only the plan's targets and skipped list move."""
+        base = _gap_session()
+        sl = _gap_session([('GAP_H_2026-10-20', 262.40), ('GAP_L_2026-10-20', 235.00)])
+        assert sl.long.targets != base.long.targets and sl.short.targets != base.short.targets
+        for side in ('long', 'short'):
+            assert _side_keys(getattr(sl, side)) == _side_keys(getattr(base, side)), side
+        lm, blm = sl.to_level_map(), base.to_level_map()
+        for trig in ('calls_trigger', 'puts_trigger'):
+            a = {k: v for k, v in (getattr(lm, trig) or {}).items()
+                 if k not in ('plan_targets', 'skipped')}
+            b = {k: v for k, v in (getattr(blm, trig) or {}).items()
+                 if k not in ('plan_targets', 'skipped')}
+            assert a == b, trig
+
+    def test_build_session_levels_uses_the_gap_edges(self):
+        """The same rule through build_session_levels, the live builder: a
+        gap edge from the daily bars, in reach, is a plan target and never a
+        trigger, gate target or ladder rung."""
+        from tests.lib.atr_levels_display_only import projections
+        gap = ('gap_high', 'gap_low')
+        built = projections()['build_session_levels']
+        assert any(t['level_type'] in gap for t in built['long']['targets'])
+        assert any(t['level_type'] in gap for t in built['short']['targets'])
+        for side in ('long', 'short'):
+            s = built[side]
+            assert s['trigger']['level_type'] not in gap
+            for key in ('gate_targets', 'candidates', 'ladder'):
+                assert all(t.get('level_type') not in gap for t in s[key] or []), (side, key)
+
+    def test_design_4_text(self):
+        text = format_levels_for_brief(
+            _gap_session([('GAP_H_2026-10-20', 262.40)]).to_level_map(), 'neutral')
+        assert D4_CALLS in text
+        assert D8_PUTS in text
+
+    def test_the_design_8_goldens_are_unchanged(self):
+        text = format_levels_for_brief(_gap_session().to_level_map(), 'neutral')
+        assert D8_CALLS in text and D8_PUTS in text

@@ -16,7 +16,7 @@ done_when:
   - "This PR's description links the open solyra PR whose tests/fixtures/stocks-openapi.json, synced with STOCKS_OPENAPI_REF set to this branch, differs from solyra main only in the /api/earnings/health/ping description"
   - "Each new or changed assertion is shown failing against origin/main when the PR opens, and the Backtest Pipeline Run Tests job is green on the PR head"
   - "The FEAT-DEPLOY-001 record in 02-FEATURE-CATALOG shows a current Status and Last reviewed, and 12-PR-ISSUE-TRACEABILITY lists the PR under FEAT-DEPLOY-001"
-status: approved
+status: superseded
 supersedes: null
 ---
 

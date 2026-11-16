@@ -31,6 +31,8 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+from lib.eastern_time import market_today, market_today_sql
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from lib.config import AlphaVantageConfig
 from lib.logging_config import setup_logging
@@ -76,7 +78,7 @@ def fetch_for_ticker(ticker: str, api_key: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     rows = []
-    today = pd.Timestamp.utcnow().date()
+    today = market_today()
     skipped_future = 0
     for t in txns:
         td = t.get("transaction_date")
@@ -122,12 +124,12 @@ def _earnings_calendar_tickers(window_days: int) -> list[str]:
         from gcp.database import query_to_dataframe
     except ImportError:
         return []
-    sql = """
+    sql = f"""
         SELECT DISTINCT ticker
         FROM earnings_calendar
-        WHERE earnings_date BETWEEN
-            CURRENT_DATE - (:w || ' days')::interval AND
-            CURRENT_DATE + (:w || ' days')::interval
+        WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date BETWEEN
+            {market_today_sql()} - (:w || ' days')::interval AND
+            {market_today_sql()} + (:w || ' days')::interval
         ORDER BY ticker
     """
     try:

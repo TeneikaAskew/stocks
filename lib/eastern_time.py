@@ -25,9 +25,14 @@ wall time stamped as UTC (CLAUDE.md 3.9).
 from __future__ import annotations
 
 import re
+import threading
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time, timedelta, timezone
-from typing import TypeAlias
+from typing import TYPE_CHECKING, NamedTuple, TypeAlias
 from zoneinfo import ZoneInfo
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 #: The canonical Eastern zone name. Use it for the pandas / pytz string APIs
 #: (``tz_convert(ET_NAME)``, ``pytz.timezone(ET_NAME)``).
@@ -190,6 +195,15 @@ def utc_to_eastern_naive(values):
 # than the first session after the writer deploy.
 TRUE_UTC_FROM = date(2026, 9, 28)
 
+# The insert time from which a row is a true instant whatever its date: the
+# midnight that opens TRUE_UTC_FROM. Every writer has converted since then, and
+# inserted_at defaults to NOW() on insert and is not touched by an upsert, so a
+# row inserted from here on was written by a converting writer. A row a later
+# run rewrote in place keeps its old insert time and stays unproven, which errs
+# on the safe side.
+TRUE_UTC_INSERTED_FROM = datetime(
+    TRUE_UTC_FROM.year, TRUE_UTC_FROM.month, TRUE_UTC_FROM.day, tzinfo=UTC)
+
 
 def stored_intraday_to_eastern(ts, volume):
     """Naive-Eastern index for market_data_intraday rows, safe across the
@@ -323,6 +337,224 @@ def stored_intraday_to_eastern(ts, volume):
     return out_idx, keep.to_numpy()
 
 
+def replay_probe_window(d: date) -> tuple[datetime, datetime]:
+    """``[d - 7 days 00:00 UTC, d 00:00 UTC)``: where a replay of *d* looks
+    for 1-min coverage in ``market_data_intraday``.
+
+    The bounds are raw UTC on purpose. The table holds two timestamp
+    conventions (CLAUDE.md 3.9), and ``d 00:00 UTC`` is before any bar of *d*
+    and after the regular session of the day before in both. Seven days span
+    any weekend plus holidays. Only the calendar date of *d* is read.
+    """
+    hi = datetime(d.year, d.month, d.day, tzinfo=UTC)
+    return hi - timedelta(days=7), hi
+
+
+# The functions below read stored rows WITHOUT trusting the inference above. A
+# row counts as a true instant only when it is proven one, by its date or by
+# its insert time; where a count depends on the convention of rows that are not
+# proven, the answer says so instead of picking one (FEAT-DATA-001, Design F).
+
+_MINUTE_NS = 60 * 1_000_000_000
+
+
+def _stored_instants(values, *, name: str, allow_missing: bool = False):
+    """Stored TIMESTAMPTZ values as an aware-UTC DatetimeIndex.
+
+    Read as stored_intraday_to_eastern reads ``ts``: a naive value is UTC.
+    A missing value is refused unless *allow_missing*: ``ts`` is a key column,
+    and a row with no instant cannot be placed in any minute.
+    """
+    import pandas as pd
+
+    inst = pd.DatetimeIndex(pd.to_datetime(values))
+    if inst.tz is None:
+        inst = inst.tz_localize("UTC")  # tz-ok: pg8000 TIMESTAMPTZ in a UTC session
+    inst = inst.tz_convert("UTC")
+    if not allow_missing and inst.hasnans:
+        raise ValueError(f"{name} holds a missing timestamp")
+    return inst
+
+
+def proven_true_utc(ts, inserted_at):
+    """One bool per row: is the row PROVEN to be a true UTC instant?
+
+    Proven means its UTC date is TRUE_UTC_FROM or later, or its ``inserted_at``
+    is TRUE_UTC_INSERTED_FROM or later. Nothing about the shape of the row's
+    date enters: this is a fact about when the row was written, not an
+    inference. A missing ``inserted_at`` is not proof. Naive values are UTC.
+    """
+    import numpy as np
+    import pandas as pd
+
+    inst = _stored_instants(ts, name="ts")
+    inserted = _stored_instants(inserted_at, name="inserted_at", allow_missing=True)
+    if len(inserted) != len(inst):
+        raise ValueError(
+            f"ts has {len(inst)} rows and inserted_at has {len(inserted)}")
+    cutoff = pd.Timestamp(TRUE_UTC_INSERTED_FROM)
+    # NaT compares False, so a row with no insert time is never proven by it.
+    return np.asarray(inst >= cutoff) | np.asarray(inserted >= cutoff)
+
+
+class SessionReading(NamedTuple):
+    """One session's regular-hours minutes, counted three ways.
+
+    ``true_utc``: every row read as a true instant. ``eastern_label``: proven
+    rows as true instants, every other row as an Eastern clock time stamped
+    UTC. ``both``: proven rows, plus the minutes the other rows cover under
+    both readings. ``exact`` is True when no unproven row counts under either
+    reading, so the three counts are one fact and not three readings.
+    ``status`` is OK, THIN or MISSING when the three counts fall in the same
+    class and UNDETERMINED otherwise.
+    """
+
+    session: date
+    expected: int
+    true_utc: int
+    eastern_label: int
+    both: int
+    exact: bool
+    status: str
+
+
+def _minute_class(count: int, expected: int) -> str:
+    """MISSING at 0, THIN under 90% of *expected* (whole numbers), else OK."""
+    if count == 0:
+        return "MISSING"
+    return "THIN" if 10 * count < 9 * expected else "OK"
+
+
+def session_minute_readings(ts, inserted_at, schedule) -> list[SessionReading]:
+    """Count each session's distinct regular-hours minutes among stored rows.
+
+    *schedule* is the frame :func:`session_schedule` returns (index the session
+    date, ``market_open`` and ``market_close`` aware). One reading per row of
+    it, in its order. This function reads no calendar: the caller fetches the
+    schedule, so a calendar failure and a defect here stay different errors.
+
+    Regular hours run from the session's open to before its close, as the
+    schedule gives them, so a half day expects 210 minutes and not 390. A
+    minute is a whole-minute offset from the open; two rows inside one minute
+    count once.
+    """
+    import numpy as np
+    import pandas as pd
+
+    inst = _stored_instants(ts, name="ts")
+    proven = proven_true_utc(inst, inserted_at)
+    unproven = ~proven
+    inst_ns = inst.as_unit("ns").asi8
+    # The same stored clock read as a naive wall time, for the label reading.
+    raw_ns = inst.tz_localize(None).as_unit("ns").asi8  # tz-ok: the raw clock label
+
+    readings = []
+    for day, opened, closed in zip(
+            schedule.index, schedule["market_open"], schedule["market_close"]):
+        bounds = pd.DatetimeIndex([opened, closed]).tz_convert("UTC").as_unit("ns")
+        open_ns, close_ns = (int(v) for v in bounds.asi8)
+        expected = (close_ns - open_ns) // _MINUTE_NS
+        if expected <= 0:
+            raise ValueError(f"session {day} closes at or before its open")
+        # Naive against naive: no wall time is localized, so a row stored in a
+        # clock-change hour cannot raise.
+        wall_open_ns, wall_close_ns = (
+            int(v) for v in utc_to_eastern_naive(bounds).as_unit("ns").asi8)
+
+        true_off = (inst_ns - open_ns) // _MINUTE_NS
+        in_true = (inst_ns >= open_ns) & (inst_ns < close_ns)
+        label_off = (raw_ns - wall_open_ns) // _MINUTE_NS
+        in_label = (raw_ns >= wall_open_ns) & (raw_ns < wall_close_ns) & (label_off < expected)
+
+        p = np.unique(true_off[in_true & proven])
+        ut = np.unique(true_off[in_true & unproven])
+        ul = np.unique(label_off[in_label & unproven])
+        counts = (
+            len(np.union1d(p, ut)),
+            len(np.union1d(p, ul)),
+            len(np.union1d(p, np.intersect1d(ut, ul))),
+        )
+        classes = {_minute_class(n, int(expected)) for n in counts}
+        readings.append(SessionReading(
+            session=pd.Timestamp(day).date(),
+            expected=int(expected),
+            true_utc=counts[0],
+            eastern_label=counts[1],
+            both=counts[2],
+            exact=len(ut) == 0 and len(ul) == 0,
+            status=classes.pop() if len(classes) == 1 else "UNDETERMINED",
+        ))
+    return readings
+
+
+def place_stored_rows(ts, volume, inserted_at):
+    """Each stored row's UTC instant, by proof before inference.
+
+    Returns ``(instants, keep, proven)``, one entry per input row, in input
+    order: ``instants`` an aware-UTC DatetimeIndex, ``keep`` and ``proven``
+    boolean arrays.
+
+    A proven row (:func:`proven_true_utc`) is read at its stored instant,
+    whatever the other rows of its date look like. Any other row is placed by
+    :func:`stored_intraday_to_eastern`, run once over all the rows handed in so
+    its rule sees each date entire. Hand in a whole window (a month), never one
+    session's slice of it.
+
+    When two rows land on one instant, one is kept: a proven row over one that
+    is not, and between two that are not proven the one the resolver keeps.
+
+    Limit, by construction: rows that are not proven sit where the resolver
+    puts them, and it can put a whole flat-volume session stored under both
+    conventions on the wrong minutes (FEAT-DATA-001, Design F). ``proven``
+    says which rows that cannot have happened to.
+    """
+    import numpy as np
+    import pandas as pd
+
+    inst = _stored_instants(ts, name="ts")
+    proven = proven_true_utc(inst, inserted_at)
+    wall, resolver_keep = stored_intraday_to_eastern(inst, volume)
+    # The resolver either converted a row or read its raw clock as a label; a
+    # row whose wall time is not the converted one was read as a label.
+    as_label = np.asarray(wall != utc_to_eastern_naive(inst))
+    moved = as_label & ~proven
+    placed_ns = inst.as_unit("ns").asi8.copy()
+    if moved.any():
+        # Only label-read rows go back through the zone: a converted row's
+        # wall time can be an ambiguous hour, and its instant is already known.
+        placed_ns[moved] = eastern_index_to_utc(wall[moved]).as_unit("ns").asi8
+    instants = pd.DatetimeIndex(placed_ns, tz="UTC")
+
+    pos = range(len(inst))
+    rank = pd.DataFrame(
+        {"t": placed_ns, "unproven": ~proven, "dropped": ~np.asarray(resolver_keep)},
+        index=pos)
+    keep = ~rank.sort_values(
+        ["t", "unproven", "dropped"], kind="stable").duplicated("t").reindex(pos)
+    return instants, keep.to_numpy(), proven
+
+
+# Every row month M can hold, in either convention, lies in
+#   [M-01 02:00Z, (M+1)-01 02:00Z)
+#   * Eastern-labelled rows: raw labels 04:00-20:00 on each day of M.
+#   * True-UTC rows: 04:00 ET on the 1st (08:00Z EDT / 09:00Z EST) through
+#     the 20:00 ET bar on the last day (00:00Z EDT / 01:00Z EST on the next 1st).
+#     AV stores a bar AT 20:00 ET; the window must include it (code review C1).
+# and no neighbouring month's rows do: M-1's true-UTC rows end at 01:00Z on
+# the 1st of M; M+1's labelled rows start at 04:00Z on its 1st. Any boundary
+# in (01:00Z, 04:00Z] works; 02:00Z leaves an hour either side.
+# tests/gcp/test_intraday_replace_months.py checks this across DST changes.
+_INTRADAY_WINDOW_HOUR_UTC = 2
+
+
+def intraday_month_window(year: int, month: int) -> tuple[datetime, datetime]:
+    """UTC ``[start, end)`` holding every stored row of (year, month) in either
+    convention: ``[M-01 02:00Z, (M+1)-01 02:00Z)``."""
+    start = datetime(year, month, 1, _INTRADAY_WINDOW_HOUR_UTC, tzinfo=UTC)
+    ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
+    return start, datetime(ny, nm, 1, _INTRADAY_WINDOW_HOUR_UTC, tzinfo=UTC)
+
+
 # -- market dates and session windows ----------------------------------------
 
 
@@ -373,6 +605,218 @@ def market_date_sql(column: str) -> str:
 def market_today_sql() -> str:
     """SQL for today's Eastern date (the ``CURRENT_DATE`` replacement)."""
     return f"(now() AT TIME ZONE '{ET_NAME}')::date"
+
+
+# -- NYSE sessions -------------------------------------------------------------
+#
+# The one NYSE calendar every job, script and the API reads (FEAT-DATA-001).
+# Backed by pandas_market_calendars, imported inside the first calendar call so
+# the importers that only need the zone helpers above do not pay for it.
+#
+# Fails loud (CLAUDE.md 3.7, REQ-DATA-001): an import error and any error from
+# get_calendar or schedule propagate, and a build that returns no sessions
+# raises and is never cached -- an empty schedule would report every date
+# closed and every weekday a holiday. There is no weekday-only fallback.
+#
+# One schedule per process over a padded range (2000 through the current year
+# plus 2), extended on demand. Before answering, the cache must cover the asked
+# date(s) plus _SESSION_PAD on each side, so a date at either edge still finds
+# its true neighbour. Building and extending happen under one lock with the
+# coverage re-checked inside it: concurrent cold calls make one build, and an
+# extension is taken over the union with whatever the cache already holds, so
+# two extensions in opposite directions are both kept.
+
+_NYSE = "NYSE"
+_SESSION_CACHE_FIRST_DAY = date(2000, 1, 1)
+_SESSION_CACHE_YEARS_AHEAD = 2
+_SESSION_PAD = timedelta(days=10)
+# A neighbour search widens its window by this factor while it finds nothing
+# (only a closure longer than _SESSION_PAD needs it, e.g. 1914), up to the cap.
+_NEIGHBOUR_WIDEN = 4
+_NEIGHBOUR_MAX_PAD = timedelta(days=3660)
+
+
+class _SessionCache(NamedTuple):
+    """An immutable snapshot of the schedule over ``[first, last]``.
+
+    ``days`` is the session dates, ascending, parallel to ``frame``'s rows.
+    Readers take the module-level reference once and never see it change.
+    """
+
+    first: date
+    last: date
+    days: list[date]
+    frame: pd.DataFrame
+
+
+_session_cache: _SessionCache | None = None
+_session_cache_lock = threading.Lock()
+
+
+def _reset_session_cache() -> None:
+    """Drop the cached schedule (tests only)."""
+    global _session_cache
+    with _session_cache_lock:
+        _session_cache = None
+
+
+def _build_session_cache(first: date, last: date) -> _SessionCache:
+    """Read the NYSE schedule for ``[first, last]`` from the library.
+
+    No ``except`` here or in any caller: every library error propagates.
+    """
+    import pandas_market_calendars as mcal
+
+    schedule = mcal.get_calendar(_NYSE).schedule(
+        start_date=first.isoformat(), end_date=last.isoformat()
+    )
+    if len(schedule) == 0:
+        raise RuntimeError(
+            f"NYSE schedule for {first} to {last} has no sessions; refusing to "
+            "cache it (it would report every weekday as a holiday)"
+        )
+    frame = schedule[["market_open", "market_close"]]
+    return _SessionCache(first, last, list(frame.index.date), frame)
+
+
+def _sessions_covering(first: date, last: date) -> _SessionCache:
+    """The cached schedule, built or extended so it covers ``[first, last]``."""
+    global _session_cache
+    cache = _session_cache
+    if cache is not None and cache.first <= first and last <= cache.last:
+        return cache
+    with _session_cache_lock:
+        cache = _session_cache  # another thread may have built it meanwhile
+        if cache is not None and cache.first <= first and last <= cache.last:
+            return cache
+        if cache is None:
+            lo = _SESSION_CACHE_FIRST_DAY
+            hi = date(market_today().year + _SESSION_CACHE_YEARS_AHEAD, 12, 31)
+        else:
+            lo, hi = cache.first, cache.last
+        # Extend in whole years, so a run of requests for dates just past the
+        # cached range (a far-future ?date= stepping forward) builds once, not
+        # on every call; each build re-reads the whole range from the library.
+        if first < lo:
+            lo = date(first.year, 1, 1)
+        if last > hi:
+            hi = date(last.year + _SESSION_CACHE_YEARS_AHEAD, 12, 31)
+        built = _build_session_cache(lo, hi)
+        _session_cache = built
+        return built
+
+
+def _session_day(value: DateLike | str) -> date:
+    """Normalise a calendar argument to an Eastern market date.
+
+    An ISO ``YYYY-MM-DD`` string is a date; anything else goes through
+    :func:`market_date`, so an aware datetime is read as its Eastern date and a
+    naive one is refused.
+    """
+    if isinstance(value, str):
+        return date.fromisoformat(value)
+    day = market_date(value)
+    if not isinstance(day, date):
+        raise TypeError(f"expected a date, datetime or ISO date string, got {value!r}")
+    return day
+
+
+def _cache_around(day: date) -> _SessionCache:
+    return _sessions_covering(day - _SESSION_PAD, day + _SESSION_PAD)
+
+
+def is_session(day: DateLike | str) -> bool:
+    """True when NYSE trades on *day*, half days included."""
+    d = _session_day(day)
+    days = _cache_around(d).days
+    i = bisect_left(days, d)
+    return i < len(days) and days[i] == d
+
+
+def previous_session(day: DateLike | str) -> date:
+    """The last NYSE session strictly before *day*."""
+    d = _session_day(day)
+    pad = _SESSION_PAD
+    while True:
+        cache = _sessions_covering(d - pad, d + _SESSION_PAD)
+        i = bisect_left(cache.days, d)
+        if i > 0:
+            return cache.days[i - 1]
+        if pad >= _NEIGHBOUR_MAX_PAD:
+            raise RuntimeError(f"no NYSE session within {pad.days} days before {d}")
+        pad *= _NEIGHBOUR_WIDEN
+
+
+def next_session(day: DateLike | str) -> date:
+    """The first NYSE session strictly after *day*."""
+    d = _session_day(day)
+    pad = _SESSION_PAD
+    while True:
+        cache = _sessions_covering(d - _SESSION_PAD, d + pad)
+        i = bisect_right(cache.days, d)
+        if i < len(cache.days):
+            return cache.days[i]
+        if pad >= _NEIGHBOUR_MAX_PAD:
+            raise RuntimeError(f"no NYSE session within {pad.days} days after {d}")
+        pad *= _NEIGHBOUR_WIDEN
+
+
+def latest_session_on_or_before(day: DateLike | str) -> date:
+    """*day* when it is a session, else :func:`previous_session` of it."""
+    d = _session_day(day)
+    return d if is_session(d) else previous_session(d)
+
+
+def sessions_between(start: DateLike | str, end: DateLike | str) -> list[date]:
+    """NYSE sessions in ``[start, end]``, ascending; empty when ``end < start``."""
+    s, e = _session_day(start), _session_day(end)
+    days = _sessions_covering(min(s, e) - _SESSION_PAD, max(s, e) + _SESSION_PAD).days
+    return days[bisect_left(days, s):bisect_right(days, e)]
+
+
+def session_count(start: DateLike | str, end: DateLike | str) -> int:
+    """Number of NYSE sessions in ``(start, end]``; 0 when ``end <= start``."""
+    s, e = _session_day(start), _session_day(end)
+    days = _sessions_covering(min(s, e) - _SESSION_PAD, max(s, e) + _SESSION_PAD).days
+    return max(0, bisect_right(days, e) - bisect_right(days, s))
+
+
+def session_close(day: DateLike | str) -> datetime:
+    """The close of session *day* as an aware UTC datetime.
+
+    13:00 ET on half days. Raises ``ValueError`` when *day* is not a session:
+    a closed day has no close, and inventing 16:00 for it is the fallback this
+    module exists to prevent.
+    """
+    d = _session_day(day)
+    cache = _cache_around(d)
+    i = bisect_left(cache.days, d)
+    if i == len(cache.days) or cache.days[i] != d:
+        raise ValueError(f"{d} is not an NYSE session")
+    return cache.frame["market_close"].iloc[i].to_pydatetime().astimezone(UTC)
+
+
+def holidays_in(year: int) -> list[date]:
+    """Weekdays in *year* on which NYSE does not trade, ascending."""
+    first, last = date(year, 1, 1), date(year, 12, 31)
+    days = _sessions_covering(first - _SESSION_PAD, last + _SESSION_PAD).days
+    sessions = set(days[bisect_left(days, first):bisect_right(days, last)])
+    every_day = (first + timedelta(days=n) for n in range((last - first).days + 1))
+    return [d for d in every_day if d.weekday() < 5 and d not in sessions]
+
+
+def session_schedule(start: DateLike | str, end: DateLike | str) -> pd.DataFrame:
+    """The NYSE schedule for sessions in ``[start, end]``.
+
+    Indexed by session date (naive ``Timestamp``), with the library's actual
+    ``market_open`` and ``market_close`` as UTC timestamps: early closes and
+    delayed opens included (2002-09-11 opened at 12:00 ET). The primitive the
+    other calendar functions are built on; returns a copy.
+    """
+    s, e = _session_day(start), _session_day(end)
+    cache = _sessions_covering(min(s, e) - _SESSION_PAD, max(s, e) + _SESSION_PAD)
+    lo, hi = bisect_left(cache.days, s), bisect_right(cache.days, e)
+    return cache.frame.iloc[lo:max(lo, hi)].copy()
 
 
 def verify_eastern_is_dst_correct() -> None:

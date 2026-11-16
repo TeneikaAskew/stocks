@@ -9,8 +9,15 @@ day's market_data_intraday bars and computes:
   - Whether there was a reversal (price triggered, then went to stop)
   - Time-to-target-1 in minutes
   - MAE (max adverse excursion) and MFE (max favorable excursion) %
-  - Realized EOD pnl % (priority: stop_hit | target_hit | EOD_close)
+  - The traded outcome under rule ``cross-fill-t1-v1`` (FEAT-SIGNAL-001,
+    docs/superpowers/specs/2026-11-11-feat-signal-001-honest-outcome-scoring.md):
+    entry status, fill price, exit reason, and the realized pnl % from the
+    fill (all out at the first of the stop or T1, else the last RTH close)
   - EOD pnl in $ (assuming $10,000 notional)
+  - The brief's exit plan in thirds, scored (FEAT-STRAT-001,
+    docs/superpowers/specs/2026-11-11-feat-strat-001-brief-exits-in-thirds.md
+    Design 6): plan entry status, fill, R per position and each leg's exit,
+    see :func:`resolve_plan`
 
 Idempotent: re-running on the same date overwrites with the same values.
 
@@ -51,8 +58,9 @@ Usage:
 """
 from __future__ import annotations
 
-from lib.eastern_time import ET
+from lib.eastern_time import ET, is_session, session_close
 import logging
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -62,21 +70,15 @@ from typing import Optional
 import pandas as pd
 from sqlalchemy import text
 
-# Same NYSE holiday set audit_data_freshness.py uses to avoid false
-# "stale" alerts — reused here so a holiday date (a weekday brief row
-# with no session, per pending_dates()'s docstring) doesn't get
-# classified as a resolver failure. One source of truth for the
-# calendar rather than a second hardcoded list drifting from it.
-#
-# NYSE_FULL_CLOSURES excludes Black Friday: audit_data_freshness.py's own
-# comment says it's "early close, treated as closed" — a deliberate
-# leniency for ITS staleness check, not a real closure. NYSE trades an
-# abbreviated session that day, so intraday bars do land, and zero
-# resolved rows on it is a real gap this resolver must still flag red,
-# not the never-any-bars case the rest of the set represents.
-from scripts.audit_data_freshness import MARKET_HOLIDAYS_2026
-
-NYSE_FULL_CLOSURES = MARKET_HOLIDAYS_2026 - {date(2026, 11, 27)}
+# Holiday recognition reads the shared NYSE calendar
+# (lib/eastern_time.is_session, FEAT-DATA-001), so a holiday date (a weekday
+# brief row with no session, per pending_dates()'s docstring) is not
+# classified as a resolver failure in any year. It replaced a 2026-only set
+# imported from scripts/audit_data_freshness.py, which expired on 2027-01-01
+# (#1076). Half days are sessions: NYSE trades until 13:00 ET on Black
+# Friday, intraday bars do land, and zero resolved rows on it is a real gap
+# this resolver must still flag red. A calendar failure raises (CLAUDE.md
+# §3.7): there is no weekday-only fallback.
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +86,24 @@ _ET = ET
 
 # Resolver version stamped on every row — bump when the math changes so
 # callers can detect "this row was resolved by an older version, re-run."
-RESOLVER_VERSION = '2026-05-11.v1'
+# 2026-11-11.v2 is rule cross-fill-t1-v1 (FEAT-SIGNAL-001): no fill when the
+# session opens at or beyond the trigger, a later gap fills at its open, the
+# trade is all out at the first of the stop or T1 (T1 only from the bar after
+# the fill), and P&L is measured from the fill. Rows resolved by
+# 2026-05-11.v1 booked the last target reached from the trigger price.
+# 2026-11-12.v3 adds the plan columns (FEAT-STRAT-001 exits in thirds,
+# Design 6, :func:`resolve_plan`); the existing columns are unchanged from
+# 2026-11-11.v2. 2026-11-15.v4 ends the plan's bars at the exchange's close
+# (FEAT-STRAT-001 drop-entry-cutoff spec, Design 3), so on a half day a print
+# after the early close is never a plan entry and the close legs book at the
+# last bar before the close; the existing columns are unchanged.
+RESOLVER_VERSION = '2026-11-15.v4'
+
+# plan_r_status values, in the order the first that applies wins.
+PLAN_TARGETS_UNAVAILABLE = 'targets_unavailable'
+PLAN_STOP_UNAVAILABLE = 'stop_unavailable'
+PLAN_NOT_ENTERED = 'not_entered'
+PLAN_OK = 'ok'
 
 # Default notional for $-pnl computation. Per-ticker overrides via env
 # var; future enhancement could read from a config table.
@@ -105,12 +124,53 @@ class LegOutcome:
     mfe_pct: Optional[float] = None
     eod_pnl_pct: Optional[float] = None
     eod_pnl_dollar: Optional[float] = None
+    # Rule cross-fill-t1-v1: 'gap_through' (the session opened at or beyond
+    # the trigger: no entry), 'not_triggered', 'invalid_stop' (stop missing
+    # or not beyond the fill on the losing side) or 'filled'. fill_price and
+    # exit_reason ('stop', 't1', 'close') are set only for 'filled'.
+    entry_status: Optional[str] = None
+    fill_price: Optional[float] = None
+    exit_reason: Optional[str] = None
+
+
+@dataclass
+class PlanOutcome:
+    """The brief's exit plan for one side, scored (exits spec Design 6)."""
+    entry_status: Optional[str] = None     # entered | opened_through | late_cross | no_cross | no_trigger
+    fill_price: Optional[float] = None
+    fill_ts: Optional[datetime] = None
+    r: Optional[float] = None
+    r_status: Optional[str] = None         # ok | targets_unavailable | stop_unavailable | not_entered
+    t1_hit_ts: Optional[datetime] = None
+    t2_hit_ts: Optional[datetime] = None
+    t3_hit_ts: Optional[datetime] = None
+    exit: Optional[str] = None             # each leg's exit in order, e.g. 't1,t2,close'
+
+
+@dataclass
+class PlanInputs:
+    """What the brief published for one side's plan: its trigger, stop,
+    plan targets in order, leg count, entry cutoff (minutes after midnight
+    ET) and the level_basis target_status. A side with no published plan
+    has plan_available False."""
+    trigger_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    targets: tuple = ()
+    legs: Optional[int] = None
+    cutoff_minutes: Optional[int] = None
+    target_status: Optional[str] = None
+
+    @property
+    def plan_available(self) -> bool:
+        return (self.target_status == PLAN_OK and self.legs is not None and self.legs >= 1
+                and self.cutoff_minutes is not None)
 
 
 def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Optional[dict]:
     """Self-healing fallback: re-derive the structured CALL/PUT setup by
-    calling the same ``lib.strat_levels.build_level_map`` the brief writer
-    uses, against daily data filtered to dates < ``analysis_date``.
+    calling the same ``lib.strat_levels.build_session_levels`` the brief
+    writer uses, against daily data before ``analysis_date`` and the
+    session's own premarket snapshot (FEAT-STRAT-001).
 
     Returns a dict of structured fields ready to UPSERT into
     premarket_analysis (calls_trigger_price / puts_trigger_price /
@@ -124,13 +184,38 @@ def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Opt
     same answer. CLAUDE.md §3.6 — production replay paths, no throwaway
     harnesses.
     """
-    from lib.strat_levels import build_level_map  # local import to keep top-level light
+    from lib.strat_levels import (  # local import to keep top-level light
+        SessionLevels, atr_inputs_from_frame, basis_records_params,
+        build_session_levels, load_level_params, read_live_level_basis,
+        read_session_premarket,
+    )
+
+    def _query(sql, params):
+        return pd.read_sql(text(sql), engine, params=params)
+
+    def _params():
+        # The ticker's level parameters in force on analysis_date (a replay
+        # of session D reads the rows effective on D). A failed read raises
+        # LevelParamsUnavailable (CLAUDE.md 3.7); pd.read_sql does not
+        # swallow errors.
+        return load_level_params(_query, [ticker], analysis_date)[ticker.upper()]
+
+    # The session's LIVE level_basis, written by the brief with the row, is
+    # the source when present (a replay row is never read); only without
+    # one are the levels built from daily bars. A basis that recorded its
+    # parameters rebuilds with them and never reads the tables.
+    basis = read_live_level_basis(_query, ticker, analysis_date)
+    if basis is not None:
+        stored = SessionLevels.from_basis(
+            basis, params=None if basis_records_params(basis) else _params())
+        if stored.status == 'ok':
+            return _structured_inputs(stored.to_level_map())
 
     # Load daily history for this ticker. We want everything up to and
     # NOT including analysis_date so the level map only sees data the
     # brief could have known about premarket.
     daily_sql = text("""
-        SELECT date, open, high, low, close, atr_14, strat_candle, strat_combo
+        SELECT date, open, high, low, close, atr_14, atr_5, strat_candle, strat_combo
         FROM market_data_daily
         WHERE ticker = :t AND date < :d
         ORDER BY date
@@ -147,20 +232,22 @@ def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Opt
     })
 
     last = df.iloc[-1]
-    # current_price proxy: the most-recent close BEFORE analysis_date.
-    # This is what a live brief running at 8:30 AM would see when no
-    # premarket data has come in yet. Deterministic + reproducible.
-    current_price = float(last['Close'])
-    atr = float(last['atr_14']) if pd.notna(last['atr_14']) else None
+    # The last completed session's ATR columns; the policy's basis picks
+    # one. Missing gives no trigger (reason atr_unavailable), never a
+    # percent-only window.
+    atrs = atr_inputs_from_frame(df, analysis_date)
     strat_class = str(last.get('strat_candle') or '')
-    combo = str(last.get('strat_combo') or '')
+    premarket = read_session_premarket(_query, ticker, analysis_date)
 
-    level_map = build_level_map(
-        ticker=ticker, daily_df=df, current_price=current_price,
-        daily_strat_class=strat_class, combo=combo,
-        atr=atr, analysis_date=analysis_date,
-    )
+    level_map = build_session_levels(
+        ticker, analysis_date, df, atrs, premarket, _params(),
+        daily_strat_class=strat_class,
+    ).to_level_map()
+    return _structured_inputs(level_map)
 
+
+def _structured_inputs(level_map) -> dict:
+    """The structured CALL/PUT columns of one LevelMap."""
     ct = level_map.calls_trigger or {}
     pt = level_map.puts_trigger or {}
     ct_targets = ct.get('targets', []) if ct else []
@@ -198,6 +285,11 @@ def resolve_leg(
 
     Returns a LegOutcome with hit timestamps and pnl. Fields stay None
     when the leg was never triggered or the input prices are missing.
+
+    The touch timestamps, MAE/MFE and the reversal flag describe where price
+    went from the trigger and are computed exactly as before. The traded
+    outcome (entry_status, fill_price, exit_reason, eod_pnl_pct and
+    eod_pnl_dollar) follows rule cross-fill-t1-v1, see :func:`_traded_exit`.
     """
     out = LegOutcome()
     if trigger_price is None or trigger_price <= 0:
@@ -222,6 +314,7 @@ def resolve_leg(
                 break
     if trigger_idx is None:
         # Never triggered — no pnl, no timestamps.
+        out.entry_status = 'not_triggered'
         return out
     out.trigger_hit_ts = bars.loc[trigger_idx, 'time']
 
@@ -291,27 +384,260 @@ def resolve_leg(
         out.mfe_pct = round((trigger_price - mfe_price) / trigger_price * 100, 4)
         out.mae_pct = round((mae_price - trigger_price) / trigger_price * 100, 4)
 
-    # Realized EOD pnl: priority is stop / first target / EOD close
-    realized_price = None
-    if stop_hit_ts and (not out.t1_hit_ts or stop_hit_ts <= out.t1_hit_ts):
-        # Stop hit first or before any target
-        realized_price = stop_price
-    else:
-        # Pick the LAST target that was hit (T3 > T2 > T1) since the trade
-        # would have walked through them. If none, exit at EOD close.
-        for ti in range(len(targets) - 1, -1, -1):
-            if target_hit_ts[ti] is not None:
-                realized_price = targets[ti]
-                break
-        if realized_price is None:
-            realized_price = float(after.iloc[-1]['close'])  # EOD close
-
-    if realized_price is not None:
-        out.eod_pnl_pct = round(
-            sign * (realized_price - trigger_price) / trigger_price * 100, 4
-        )
+    # The traded outcome: rule cross-fill-t1-v1.
+    status, fill, exit_price, reason = _traded_exit(
+        is_call, trigger_price, stop_price, targets, bars)
+    out.entry_status = status
+    if status == 'filled':
+        out.fill_price = fill
+        out.exit_reason = reason
+        out.eod_pnl_pct = round(sign * (exit_price - fill) / fill * 100, 4)
         out.eod_pnl_dollar = round(out.eod_pnl_pct / 100.0 * notional, 2)
     return out
+
+
+def _traded_exit(
+    is_call: bool,
+    trigger_price: float,
+    stop_price: Optional[float],
+    targets: list[float],
+    bars: pd.DataFrame,
+) -> tuple[str, Optional[float], Optional[float], Optional[str]]:
+    """Rule cross-fill-t1-v1 for one leg on the session's RTH bars.
+
+    Returns ``(entry_status, fill, exit_price, exit_reason)``:
+
+    - the first bar opens at or beyond the trigger: ``gap_through``, no fill
+      (the brief's trigger means a cross, and at a gap there is none);
+    - no bar reaches the trigger: ``not_triggered``;
+    - the first bar that reaches it fills at the trigger when it opened on
+      the near side, else at its own open (a gap after the open);
+    - a stop missing or not beyond the fill on the losing side:
+      ``invalid_stop``, no exit;
+    - targets are those strictly beyond the fill, in their order; T1 is the
+      first of them;
+    - walking from the fill bar, the stop exits at the stop price (on the
+      fill bar, or on a later bar that did not open beyond it) or at a later
+      bar's open beyond it, and wins a tie with T1; T1 exits at its price
+      only from the bar after the fill, even when that bar opened beyond it;
+      otherwise the last RTH close.
+    """
+    o = bars['open'].to_numpy(dtype=float)
+    h = bars['high'].to_numpy(dtype=float)
+    lo = bars['low'].to_numpy(dtype=float)
+    c = bars['close'].to_numpy(dtype=float)
+
+    if (o[0] >= trigger_price) if is_call else (o[0] <= trigger_price):
+        return 'gap_through', None, None, None
+    reached = (h >= trigger_price) if is_call else (lo <= trigger_price)
+    if not reached.any():
+        return 'not_triggered', None, None, None
+    i = int(reached.argmax())
+    opened_beyond = (o[i] > trigger_price) if is_call else (o[i] < trigger_price)
+    fill = float(o[i]) if opened_beyond else float(trigger_price)
+
+    if stop_price is None or not math.isfinite(stop_price) or stop_price <= 0 or (
+            (stop_price >= fill) if is_call else (stop_price <= fill)):
+        return 'invalid_stop', fill, None, None
+
+    beyond = [t for t in targets if (t > fill if is_call else t < fill)]
+    t1 = beyond[0] if beyond else None
+
+    for j in range(i, len(o)):
+        stop_touched = (lo[j] <= stop_price) if is_call else (h[j] >= stop_price)
+        if stop_touched:
+            if j == i:
+                return 'filled', fill, float(stop_price), 'stop'
+            gap_exit = min(stop_price, o[j]) if is_call else max(stop_price, o[j])
+            return 'filled', fill, float(gap_exit), 'stop'
+        if j > i and t1 is not None and ((h[j] >= t1) if is_call else (lo[j] <= t1)):
+            return 'filled', fill, float(t1), 't1'
+    return 'filled', fill, float(c[-1]), 'close'
+
+
+def _valid_stop(is_call: bool, stop_price: Optional[float], fill: Optional[float]) -> bool:
+    """A stop that defines the trade's risk: finite, positive and, once
+    there is a fill, beyond it on the losing side."""
+    if stop_price is None or not math.isfinite(stop_price) or stop_price <= 0:
+        return False
+    if fill is None:
+        return True
+    return stop_price < fill if is_call else stop_price > fill
+
+
+def _bar_minutes_et(ts) -> int:
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize('UTC')
+    t = t.tz_convert(_ET)
+    return t.hour * 60 + t.minute
+
+
+def resolve_plan(direction: str, plan: PlanInputs, bars: pd.DataFrame) -> PlanOutcome:
+    """Score the brief's exit plan for one side on the session's RTH bars
+    (exits spec Design 6).
+
+    Entry: the first bar opens at or beyond the trigger -> ``opened_through``
+    (no entry, even if price later comes back and crosses); no bar reaches
+    it -> ``no_cross``; the first bar that reaches it starts at or after the
+    entry cutoff -> ``late_cross``; otherwise ``entered``, filled at the
+    trigger, or at that bar's open when it opened beyond the trigger.
+
+    Each of ``legs`` legs is 1/legs of the position; leg k exits at plan
+    target k, a leg with no target (fewer targets than legs) is held to the
+    stop or the close. Exits are causal: a target at or behind the fill is
+    not an exit (its leg is held), targets count only from the bar after the
+    fill bar and fill at their price even on a bar that opened beyond them;
+    the stop fills at its price, or at a later bar's open beyond it, and a
+    bar touching the stop and a target counts the stop first; legs still
+    open exit at the last RTH close. With no valid stop the legs exit at
+    their targets or the close, and plan_r is NULL (``stop_unavailable``).
+
+    The plan hit timestamps are touches of the plan targets by the same walk
+    as LegOutcome.t1_hit_ts (from the first bar reaching the trigger), not
+    exits. A side whose plan was not published (``targets_unavailable``)
+    keeps its entry status and fill but no exits, R or hit timestamps.
+    """
+    out = PlanOutcome()
+    is_call = (direction == 'call')
+    sign = 1 if is_call else -1
+    trigger = plan.trigger_price
+    if trigger is None or not math.isfinite(trigger) or trigger <= 0:
+        out.entry_status = 'no_trigger'
+        out.r_status = PLAN_TARGETS_UNAVAILABLE if (
+            plan.target_status not in (None, PLAN_OK)) else PLAN_NOT_ENTERED
+        return out
+    if bars.empty:
+        return out
+    if plan.cutoff_minutes is None:
+        # No entry cutoff in force: the plan's entry rule cannot be applied.
+        out.r_status = PLAN_TARGETS_UNAVAILABLE
+        return out
+
+    o = bars['open'].to_numpy(dtype=float)
+    h = bars['high'].to_numpy(dtype=float)
+    lo = bars['low'].to_numpy(dtype=float)
+    c = bars['close'].to_numpy(dtype=float)
+    times = list(bars['time'])
+    reached = (h >= trigger) if is_call else (lo <= trigger)
+
+    fill = i = None
+    if (o[0] >= trigger) if is_call else (o[0] <= trigger):
+        out.entry_status = 'opened_through'
+    elif not reached.any():
+        out.entry_status = 'no_cross'
+    else:
+        i = int(reached.argmax())
+        if _bar_minutes_et(times[i]) >= plan.cutoff_minutes:
+            out.entry_status = 'late_cross'
+            i = None
+        else:
+            out.entry_status = 'entered'
+            opened_beyond = (o[i] > trigger) if is_call else (o[i] < trigger)
+            fill = float(o[i]) if opened_beyond else float(trigger)
+            out.fill_price = fill
+            out.fill_ts = times[i]
+
+    if not plan.plan_available:
+        out.r_status = PLAN_TARGETS_UNAVAILABLE
+        return out
+
+    targets = [float(t) for t in plan.targets[:plan.legs]]
+    # Plan hit timestamps: the existing walk (first touch from the trigger bar).
+    if reached.any():
+        first = int(reached.argmax())
+        hits = []
+        for t in targets[:3]:
+            touched = (h[first:] >= t) if is_call else (lo[first:] <= t)
+            hits.append(times[first + int(touched.argmax())] if touched.any() else None)
+        out.t1_hit_ts, out.t2_hit_ts, out.t3_hit_ts = (hits + [None, None, None])[:3]
+
+    stop_ok = _valid_stop(is_call, plan.stop_price, fill)
+    if not stop_ok:
+        out.r_status = PLAN_STOP_UNAVAILABLE
+    elif out.entry_status != 'entered':
+        out.r_status = PLAN_NOT_ENTERED
+    else:
+        out.r_status = PLAN_OK
+    if out.entry_status != 'entered':
+        return out
+
+    legs = plan.legs
+    leg_target = [targets[k] if k < len(targets) else None for k in range(legs)]
+    # A target at or behind the fill is not an exit: the leg is held.
+    leg_target = [t if t is not None and (t > fill if is_call else t < fill) else None
+                  for t in leg_target]
+    exits: list = [None] * legs        # (price, label)
+    stop = plan.stop_price if stop_ok else None
+    for j in range(i, len(o)):
+        if stop is not None and ((lo[j] <= stop) if is_call else (h[j] >= stop)):
+            px = stop if j == i else (min(stop, o[j]) if is_call else max(stop, o[j]))
+            exits = [e if e is not None else (float(px), 'stop') for e in exits]
+            break
+        if j > i:
+            for k, t in enumerate(leg_target):
+                if exits[k] is None and t is not None and ((h[j] >= t) if is_call else (lo[j] <= t)):
+                    exits[k] = (t, f't{k + 1}')
+        if all(e is not None for e in exits):
+            break
+    exits = [e if e is not None else (float(c[-1]), 'close') for e in exits]
+    out.exit = ','.join(label for _, label in exits)
+    if out.r_status == PLAN_OK:
+        risk = abs(fill - stop)
+        out.r = round(sum(sign * (px - fill) / risk for px, _ in exits) / legs, 4)
+    return out
+
+
+def plan_inputs(side: str, row, basis: Optional[dict], policy_fn) -> PlanInputs:
+    """One side's published plan (exits spec Design 6). `side` is 'calls'
+    or 'puts'. A v3 level_basis is the source (rebuilt with the values it
+    recorded, so the table rows are never read); a v2 basis, which has no
+    plan, falls back to the row's structured trigger, stop and t1..t3
+    columns with the leg count and cutoff `policy_fn()` returns (the policy
+    in force on the session, a LevelParams). A row with no level_basis, or
+    a basis of any other version (v1, or none recorded), has no plan."""
+    from lib.strat_levels import (  # local import to keep top-level light
+        ENTRY_CUTOFF_KEY, EXIT_LEGS_KEY, LEVEL_RULE_V2, LEVEL_RULE_VERSION,
+        SessionLevels, policy_time_minutes,
+    )
+
+    def _f(v):
+        return float(v) if v is not None and pd.notna(v) else None
+
+    if basis is None:
+        return PlanInputs(trigger_price=_f(row.get(f'{side}_trigger_price')),
+                          stop_price=_f(row.get(f'{side}_stop_price')),
+                          target_status=PLAN_TARGETS_UNAVAILABLE)
+    if basis.get('rule_version') == LEVEL_RULE_VERSION:
+        sl = SessionLevels.from_basis(basis)
+        s = sl.long if side == 'calls' else sl.short
+        plan = s.plan or {}
+        legs = plan.get('legs')
+        return PlanInputs(
+            trigger_price=_f(s.trigger['price']) if s.trigger else None,
+            stop_price=_f(s.stop['price']) if s.stop else None,
+            targets=tuple(float(t['price']) for t in s.targets),
+            legs=int(legs) if legs is not None else None,
+            cutoff_minutes=policy_time_minutes(plan.get('entry_cutoff_et')),
+            # A side with a trigger and no plan has no leg count, so it is
+            # targets_unavailable; a side with no trigger is not entered.
+            target_status=s.target_status)
+    if basis.get('rule_version') != LEVEL_RULE_V2:
+        # Design 6 rebuilds a plan from the structured columns for v2 only.
+        return PlanInputs(trigger_price=_f(row.get(f'{side}_trigger_price')),
+                          stop_price=_f(row.get(f'{side}_stop_price')),
+                          target_status=PLAN_TARGETS_UNAVAILABLE)
+    params = policy_fn()
+    legs, cutoff = params.param(EXIT_LEGS_KEY), params.param(ENTRY_CUTOFF_KEY)
+    ok = legs.ok and cutoff.ok
+    return PlanInputs(
+        trigger_price=_f(row.get(f'{side}_trigger_price')),
+        stop_price=_f(row.get(f'{side}_stop_price')),
+        targets=tuple(t for t in (_f(row.get(f'{side}_t{k}_price')) for k in (1, 2, 3))
+                      if t is not None),
+        legs=int(legs.value) if legs.ok else None,
+        cutoff_minutes=int(cutoff.value) if cutoff.ok else None,
+        target_status=PLAN_OK if ok else (legs.status if not legs.ok else cutoff.status))
 
 
 def resolve_one(
@@ -334,7 +660,7 @@ def resolve_one(
             calls_t1_price, calls_t2_price, calls_t3_price,
             puts_trigger_price, puts_stop_price,
             puts_t1_price, puts_t2_price, puts_t3_price,
-            outcome_resolved_at
+            level_basis, outcome_resolved_at
         FROM premarket_analysis
         WHERE analysis_date = :d AND ticker = :t
         LIMIT 1
@@ -415,6 +741,31 @@ def resolve_one(
         notional=notional,
     )
 
+    # The brief's exit plan (FEAT-STRAT-001 exits spec, Design 6).
+    from lib.strat_levels import load_level_params, parse_level_basis
+
+    basis = parse_level_basis(row.get('level_basis') if hasattr(row, 'get') else None)
+    _policy = {}
+
+    def _policy_fn():
+        # A v2 row's leg count and cutoff: the policy in force on the session.
+        # A failed read raises (CLAUDE.md 3.7).
+        if 'p' not in _policy:
+            _policy['p'] = load_level_params(
+                lambda sql, params: pd.read_sql(text(sql), engine, params=params),
+                [ticker], analysis_date)[ticker.upper()]
+        return _policy['p']
+
+    # The plan's walk ends at the exchange's close (drop-entry-cutoff spec,
+    # Design 3): 13:00 ET on a half day, so a print after the early close is
+    # never a first cross or a close leg. The resolve_leg columns above keep
+    # reading every bar to 15:59 as before. A non-session raises; holidays
+    # already returned no_bars.
+    close_utc = pd.Timestamp(session_close(analysis_date))
+    plan_bars = bars[bars['time'] < close_utc].reset_index(drop=True)
+    calls_plan = resolve_plan('call', plan_inputs('calls', row, basis, _policy_fn), plan_bars)
+    puts_plan = resolve_plan('put', plan_inputs('puts', row, basis, _policy_fn), plan_bars)
+
     # Build update payload
     updates = {
         'calls_trigger_hit_ts': calls_out.trigger_hit_ts,
@@ -439,6 +790,17 @@ def resolve_one(
         'puts_mfe_pct':         puts_out.mfe_pct,
         'puts_eod_pnl_pct':     puts_out.eod_pnl_pct,
         'puts_eod_pnl_dollar':  puts_out.eod_pnl_dollar,
+        # Rule cross-fill-t1-v1 (FEAT-SIGNAL-001): a gap_through,
+        # not_triggered or invalid_stop leg binds its status with NULL fill,
+        # exit and P&L.
+        'calls_entry_status':   calls_out.entry_status,
+        'calls_fill_price':     calls_out.fill_price,
+        'calls_exit_reason':    calls_out.exit_reason,
+        'puts_entry_status':    puts_out.entry_status,
+        'puts_fill_price':      puts_out.fill_price,
+        'puts_exit_reason':     puts_out.exit_reason,
+        **_plan_updates('calls', calls_plan),
+        **_plan_updates('puts', puts_plan),
         'outcome_resolved_at':  datetime.utcnow(),
         'outcome_resolver_version': RESOLVER_VERSION,
     }
@@ -472,6 +834,13 @@ def resolve_one(
         "puts_mfe_pct = :puts_mfe_pct",
         "puts_eod_pnl_pct = :puts_eod_pnl_pct",
         "puts_eod_pnl_dollar = :puts_eod_pnl_dollar",
+        "calls_entry_status = :calls_entry_status",
+        "calls_fill_price = :calls_fill_price",
+        "calls_exit_reason = :calls_exit_reason",
+        "puts_entry_status = :puts_entry_status",
+        "puts_fill_price = :puts_fill_price",
+        "puts_exit_reason = :puts_exit_reason",
+        *(f"{col} = :{col}" for side in ('calls', 'puts') for col in _plan_columns(side)),
         "outcome_resolved_at = :outcome_resolved_at",
         "outcome_resolver_version = :outcome_resolver_version",
     ]
@@ -505,6 +874,19 @@ def resolve_one(
     return updates, 'resolved'
 
 
+_PLAN_FIELDS = ('entry_status', 'fill_price', 'fill_ts', 'r', 'r_status',
+                't1_hit_ts', 't2_hit_ts', 't3_hit_ts', 'exit')
+
+
+def _plan_columns(side: str) -> list[str]:
+    """The premarket_analysis plan columns of one side, in field order."""
+    return [f'{side}_plan_{f}' for f in _PLAN_FIELDS]
+
+
+def _plan_updates(side: str, plan: PlanOutcome) -> dict:
+    return {col: getattr(plan, f) for col, f in zip(_plan_columns(side), _PLAN_FIELDS)}
+
+
 def pending_dates(engine, today_et: date, lookback_days: int) -> list[date]:
     """Distinct weekday analysis_dates with unresolved rows, oldest first.
 
@@ -531,8 +913,8 @@ def pending_dates(engine, today_et: date, lookback_days: int) -> list[date]:
     # naive `isinstance(d, date)` check this used to have is true for BOTH
     # and never normalizes the Timestamp. A Timestamp then compares unequal
     # to every plain `date` it's checked against downstream — `analysis_date
-    # == now_et.date()` and `analysis_date in NYSE_FULL_CLOSURES` are both
-    # always False for it (Python: comparing a date/datetime across classes
+    # == now_et.date()` and the old 2026 holiday-set membership test were
+    # both always False for it (Python: comparing a date/datetime across classes
     # is never equal), so classify_date_outcome's benign_pending AND
     # benign_holiday cases were both unreachable from this sweep in
     # production. Check datetime first so a Timestamp gets .date()'d; a
@@ -581,7 +963,7 @@ def classify_date_outcome(analysis_date: date, n_resolved: int, n_skipped: int,
         return 'ok'
     if analysis_date == now_et.date():
         return 'benign_pending'
-    if analysis_date in NYSE_FULL_CLOSURES:
+    if not is_session(analysis_date):
         return 'benign_holiday'
     return 'failed'
 

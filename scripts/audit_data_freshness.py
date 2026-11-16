@@ -9,7 +9,17 @@ and compares against expected cadence. Catches failures like the April 13
 Usage:
     python scripts/audit_data_freshness.py                  # Pretty terminal table
     python scripts/audit_data_freshness.py --json           # JSON output
-    python scripts/audit_data_freshness.py --strict         # Exit 1 if any table is stale (for CI)
+    python scripts/audit_data_freshness.py --strict         # Exit 1 if any table is stale (for CI),
+                                                            # 2 if the NYSE calendar failed
+    python scripts/audit_data_freshness.py --intraday-gap-since 2015-01-01 --intraday-gap-tickers SPY
+                                                            # List the 1-min sessions of SPY that are missing,
+                                                            # thin or undetermined since a date; runs this scan
+                                                            # alone and exits 0 once its summary line is printed
+    python scripts/audit_data_freshness.py --intraday-gap-since 2015-01-01 --strict
+                                                            # The same as a gate (SPY, QQQ and IWM): exit 1 if
+                                                            # any session or ticker was listed
+    In the job: gcloud run jobs execute freshness-watchdog --region us-east1 \
+        --args="--intraday-gap-since=2015-01-01,--intraday-gap-tickers=SPY" --wait
 
 Required env vars: CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME
 """
@@ -17,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import logging
 import sys
 from dataclasses import dataclass, field, asdict
@@ -29,7 +40,20 @@ from zoneinfo import ZoneInfo
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-from lib.eastern_time import ET
+from lib.eastern_time import (
+    ET,
+    SessionReading,
+    as_utc_instant,
+    intraday_month_window,
+    is_session,
+    latest_session_on_or_before,
+    localize_assuming_eastern,
+    previous_session,
+    proven_true_utc,
+    session_close,
+    session_minute_readings,
+    session_schedule,
+)
 
 from gcp.database import is_cloud_sql_configured, query_to_dataframe  # noqa: E402
 
@@ -119,7 +143,13 @@ CHECKS: list[dict] = [
         "tickers": ("IWM", "SPY", "QQQ"),
         "where": "interval = '1min'",
         "min_rows_per_day": 350,    # ~full RTH session at 1-min
-        "gap_scan_days": 5,
+        # The session scan (_query_intraday_session_gaps) replaces the
+        # day-presence gap scan for this table. Every hole that scan could
+        # flag (no row on the UTC date) is MISSING here, so keeping both would
+        # report one hole twice; and it read this table by DATE(ts) through
+        # the swallowing reader, where 30 bars made a day present and a failed
+        # read made every day absent.
+        "session_gap_days": 5,
         # av-intraday-nightly cron `0 21 * * 2-6` ET — fires Tue-Sat at
         # 21 ET, picking up the PREVIOUS day's bars (Tue 21 ET writes
         # Mon's bars; Sat 21 ET writes Fri's). So intraday data lags by
@@ -318,6 +348,9 @@ CHECKS: list[dict] = [
     #   5m  → 70  (RTH 6.5h × 12 bars/hr = 78, give 10% margin)
     #   15m → 24  (RTH 26 bars, give margin)
     #   30m → 12  (RTH 13 bars, give margin)
+    # `rth_only_rows` scales the floor by the expected session's real length,
+    # so a 13:00 ET half day (3.5 h: 42 / 14 / 7 bars) is not reported stale
+    # when it is complete. Only RTH-only writers carry it.
     {
         "name": "strat_features_5m",
         "ts_column": "ts",
@@ -329,6 +362,7 @@ CHECKS: list[dict] = [
         "settle_hour_et": 23,
         "tolerate_holidays": True,
         "min_rows_per_day": 70,
+        "rth_only_rows": True,
         "gap_scan_days": 5,
     },
     {
@@ -342,6 +376,7 @@ CHECKS: list[dict] = [
         "settle_hour_et": 23,
         "tolerate_holidays": True,
         "min_rows_per_day": 24,
+        "rth_only_rows": True,
         "gap_scan_days": 5,
     },
     {
@@ -355,6 +390,7 @@ CHECKS: list[dict] = [
         "settle_hour_et": 23,
         "tolerate_holidays": True,
         "min_rows_per_day": 12,
+        "rth_only_rows": True,
         "gap_scan_days": 5,
     },
 ]
@@ -362,21 +398,94 @@ CHECKS: list[dict] = [
 
 # ── Domain helpers ───────────────────────────────────────────────────────────
 
-# Market holidays for 2026 (NYSE). Used to avoid false "stale" alerts
-# when the most recent expected trading session was a holiday.
-MARKET_HOLIDAYS_2026 = {
-    date(2026, 1, 1),    # New Year's
-    date(2026, 1, 19),   # MLK Day
-    date(2026, 2, 16),   # Presidents Day
-    date(2026, 4, 3),    # Good Friday
-    date(2026, 5, 25),   # Memorial Day
-    date(2026, 6, 19),   # Juneteenth
-    date(2026, 7, 3),    # Independence Day observed
-    date(2026, 9, 7),    # Labor Day
-    date(2026, 11, 26),  # Thanksgiving
-    date(2026, 11, 27),  # Black Friday (early close, treated as closed)
-    date(2026, 12, 25),  # Christmas
-}
+# Sessions and closes come from the shared NYSE calendar in
+# lib/eastern_time.py (FEAT-DATA-001). It replaced a hard-coded 2026-only
+# holiday set (which expired on 2027-01-01, #1076, and listed Black Friday,
+# a 13:00 ET half day, as closed) and a fixed 20:00 UTC close (16:00 ET only
+# under EDT; one hour early all winter and two hours late on half days,
+# #1066).
+#
+# The calendar fails loud (CLAUDE.md 3.7). Every call goes through
+# _calendar(), which re-raises any error as CalendarUnavailable so
+# audit_all() can tell a calendar failure apart from any other failure and
+# report it as ONE explicit `nyse_calendar` row with status "unknown" (and
+# `--strict` exit 2), instead of crashing the whole report or falling back to
+# weekdays.
+
+#: Row name of the explicit calendar-failure row (see audit_all).
+CALENDAR_ROW = "nyse_calendar"
+
+#: `FreshnessRow.detail` is capped at this many characters.
+_DETAIL_MAX_CHARS = 300
+
+#: The report header's expected close when the calendar could not answer.
+_HEADER_DATE_UNAVAILABLE = "unknown (NYSE calendar unavailable)"
+
+
+class CalendarUnavailable(RuntimeError):
+    """The shared NYSE calendar raised. ``cause`` is the original exception."""
+
+    def __init__(self, cause: BaseException):
+        super().__init__(f"{type(cause).__name__}: {cause}")
+        self.cause = cause
+
+
+def _calendar(fn, *args):
+    """Call one shared-calendar function; any error becomes CalendarUnavailable."""
+    try:
+        return fn(*args)
+    except Exception as exc:
+        raise CalendarUnavailable(exc) from exc
+
+
+def _exception_detail(exc: BaseException) -> str:
+    """``"<Type>: <message>"`` capped at _DETAIL_MAX_CHARS, for FreshnessRow.detail."""
+    return f"{type(exc).__name__}: {exc}"[:_DETAIL_MAX_CHARS]
+
+
+def _session_close_utc(day: date) -> datetime:
+    """Session *day*'s real close as a naive UTC datetime (the lag math's frame).
+
+    16:00 ET is 20:00 UTC under EDT and 21:00 UTC under EST; a half day closes
+    at 13:00 ET (18:00 UTC on 2026-11-27).
+    """
+    return _calendar(session_close, day).replace(tzinfo=None)  # tz-ok: session_close is aware UTC; drop the label only
+
+
+_FULL_SESSION = timedelta(hours=6, minutes=30)
+
+
+def _session_rth_fraction(day: date) -> float:
+    """Length of session *day*'s regular hours as a fraction of a full 6.5 h day.
+
+    1.0 for an ordinary session, about 0.54 for a 13:00 ET half day. A date
+    the calendar does not list as a session keeps 1.0: the floor is then the
+    writer's full-day count, which is what the check asked for. A calendar
+    failure raises CalendarUnavailable through _calendar, like every other
+    calendar read here.
+    """
+    frame = _calendar(session_schedule, day, day)
+    if len(frame) == 0:
+        return 1.0
+    row = frame.iloc[0]
+    length = row["market_close"] - row["market_open"]
+    return min(1.0, length / _FULL_SESSION)
+
+
+def _date_row_close_utc(day: date) -> datetime:
+    """Where a DATE row dated *day* is anchored, as a naive UTC datetime.
+
+    A session date is anchored at its real close. A non-session date is
+    legitimate for some checks (premarket_analysis writes live briefs on
+    weekday closures, the case gcp/premarket_playbook_resolver already
+    classifies as benign), so it is
+    anchored at 16:00 Eastern that day, DST-correct, and never passed to
+    session_close, which raises by contract for a non-session date.
+    """
+    if _calendar(is_session, day):
+        return _session_close_utc(day)
+    sixteen_et = localize_assuming_eastern(datetime.combine(day, time(16, 0)))
+    return as_utc_instant(sixteen_et).replace(tzinfo=None)  # tz-ok: converted to UTC first; drop the label only
 
 
 def most_recent_trading_day(
@@ -420,6 +529,10 @@ def most_recent_trading_day(
 
     Converts UTC to America/New_York to handle EDT/EST correctly (UTC-4
     in summer, UTC-5 in winter) before checking against settle_hour_et.
+
+    Sessions come from the shared NYSE calendar (lib/eastern_time.py), so
+    holidays are skipped in every year and half days such as Black Friday
+    are sessions. A calendar failure raises CalendarUnavailable.
     """
     et_now = now_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(ET)
     # Step 1: anchor on the most recent CALENDAR day whose settle-hour
@@ -432,21 +545,17 @@ def most_recent_trading_day(
     if et_now.time() < time(settle_hour_et, 0, 0):
         cron_day = cron_day - timedelta(days=1)
     # Step 2: convert cron_day to the trading-day whose data was written.
-    # For lag=0 (writer fires same-day): walk back from cron_day to the
-    # nearest trading day (handles Sun/Sat/holiday cron_days).
+    # For lag=0 (writer fires same-day): the latest session on or before
+    # cron_day (handles Sun/Sat/holiday cron_days).
     # For lag=N (writer fires N trading days AFTER the data, e.g.
     # av-intraday-nightly Tue 21 ET writes Mon's bars): walk back N
-    # trading days from cron_day.
-    data_day = cron_day
+    # sessions from cron_day.
     walks_remaining = max(settle_lag_days, 0)
     if walks_remaining == 0:
-        while data_day.weekday() >= 5 or data_day in MARKET_HOLIDAYS_2026:
-            data_day = data_day - timedelta(days=1)
-    else:
-        for _ in range(walks_remaining):
-            data_day = data_day - timedelta(days=1)
-            while data_day.weekday() >= 5 or data_day in MARKET_HOLIDAYS_2026:
-                data_day = data_day - timedelta(days=1)
+        return _calendar(latest_session_on_or_before, cron_day)
+    data_day = cron_day
+    for _ in range(walks_remaining):
+        data_day = _calendar(previous_session, data_day)
     return data_day
 
 
@@ -470,6 +579,11 @@ class FreshnessRow:
     # output and the terminal `format_terminal` summary. Added 2026-06-02
     # for the F11 silent-fallback follow-up.
     writer_job: Optional[str] = None
+    # Optional: why the row is what it is, when the other fields cannot say
+    # it -- e.g. the `nyse_calendar` row carries the calendar exception's
+    # type and message, capped at _DETAIL_MAX_CHARS. Shown in the JSON report,
+    # the terminal output and GET /api/health/freshness.
+    detail: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -593,8 +707,9 @@ def _query_freshness_one(
 
     # Normalize last_row_at to a naive UTC datetime for lag math.
     if isinstance(last_row_at, date) and not isinstance(last_row_at, datetime):
-        # DATE column — assume 16:00 ET = 20:00 UTC (market close) for lag
-        last_dt = datetime.combine(last_row_at, time(20, 0, 0))
+        # DATE column — its session's real close, or 16:00 ET on a non-session
+        # date (see _date_row_close_utc).
+        last_dt = _date_row_close_utc(last_row_at)
     else:
         # TIMESTAMPTZ — convert to naive UTC
         last_dt = last_row_at
@@ -604,12 +719,10 @@ def _query_freshness_one(
     # Measure lag relative to expected session close, not wall clock.
     # Wall-clock lag inflates over weekends/holidays (e.g., Friday data looks
     # 65h old on Monday morning), causing false stale alarms.
-    # ISSUE-1066: this 20:00 UTC is only 16:00 ET during EDT; under EST
-    # (winter) 16:00 ET is 21:00 UTC, so lag_hours under-counts by up to 1h
-    # for every check in CHECKS, not just this one. See issue for why a
-    # fix belongs in a dedicated PR (ET-aware close, full regression
-    # across every check) rather than here.
-    expected_close_dt = datetime.combine(expected_date, time(20, 0, 0))  # 4 PM ET = 20:00 UTC
+    # The close is the session's real one (#1066): 20:00 UTC under EDT,
+    # 21:00 UTC under EST, 18:00 UTC on a 13:00 ET half day. expected_date is
+    # always a session (most_recent_trading_day returns sessions only).
+    expected_close_dt = _session_close_utc(expected_date)
     lag_hours = max(0, (expected_close_dt - last_dt).total_seconds() / 3600.0)
     expected_max = check["expected_lag_hours"]
 
@@ -627,6 +740,10 @@ def _query_freshness_one(
     # Row-count floor: catches "fetcher ran but wrote 0 rows" (the exact
     # failure mode that sat silent for SPX for 4 months).
     min_rows = check.get("min_rows_per_day")
+    if min_rows is not None and check.get("rth_only_rows"):
+        # A half day holds proportionally fewer RTH bars: scale the floor by
+        # the expected session's length (13:00 ET close → 3.5 h of 6.5 h).
+        min_rows = math.ceil(min_rows * _session_rth_fraction(expected_date))
     if min_rows is not None and status == "ok" and row_count_recent < min_rows:
         status = "stale"
 
@@ -660,12 +777,9 @@ def _recent_trading_days(
     end = most_recent_trading_day(
         now_utc, settle_hour_et=settle_hour_et, settle_lag_days=settle_lag_days,
     )
-    days: list[date] = []
-    d = end
+    days: list[date] = [end] if n > 0 else []
     while len(days) < n:
-        if d.weekday() < 5 and d not in MARKET_HOLIDAYS_2026:
-            days.append(d)
-        d = d - timedelta(days=1)
+        days.append(_calendar(previous_session, days[-1]))
     return days
 
 
@@ -754,6 +868,93 @@ def _query_gap_scan(check: dict, now_utc: datetime) -> list[FreshnessRow]:
             writer_job=check.get("writer_job"),
             row_count_recent=len(expected_days) - len(missing),
         ))
+    return rows
+
+
+# ── 1-min session scan (FEAT-DATA-001) ───────────────────────────────────────
+#
+# market_data_intraday lost 31 whole sessions and kept dozens of thin ones for
+# a year without a single stale row: the gap scan above asks only whether a
+# day holds any row. This scan counts each settled session's regular-hours
+# minutes against the session's own length from the calendar.
+#
+# It fails loud. Its read goes through query_to_dataframe_strict with no
+# `try`, so a database error ends the audit (a failed watchdog run; 503 or 500
+# on the routes that serve this report) instead of reading as five missing
+# sessions. It does NOT follow _query_column_nullity, which turns a failed
+# read into an `unknown` row: `--strict` exits 0 on unknown, so a scan that
+# could not read would pass.
+
+#: The Cloud Run job that writes the bars the session scan reads.
+_SESSION_GAP_WRITER_JOB = "fetch-alphavantage-intraday"
+
+_SESSION_GAP_SQL = """
+    SELECT ts, inserted_at
+      FROM market_data_intraday
+     WHERE ticker = :t AND interval = '1min' AND ts >= :start AND ts < :end
+"""
+
+
+def _session_gap_row(check: dict, ticker: str, reading: SessionReading) -> FreshnessRow:
+    """The stale row for one session that is MISSING, THIN or UNDETERMINED."""
+    lowest = min(reading.true_utc, reading.eastern_label, reading.both)
+    if reading.status == "MISSING":
+        detail = f"MISSING: 0 of {reading.expected} regular-hours minutes"
+    elif reading.status == "THIN":
+        detail = f"THIN: {lowest} of {reading.expected} regular-hours minutes"
+    elif reading.status == "UNDETERMINED":
+        detail = (f"UNDETERMINED: {reading.true_utc} as true UTC, "
+                  f"{reading.eastern_label} as Eastern labels, "
+                  f"{reading.both} as both, of {reading.expected}")
+    else:
+        raise ValueError(f"no session-gap row for status {reading.status!r}")
+    return FreshnessRow(
+        table=f"{check['name']} [sessions]",
+        ticker=ticker,
+        last_row_at=None,
+        expected_latest=reading.session.isoformat(),
+        lag_hours=None,
+        expected_max_hours=check["expected_lag_hours"],
+        status="stale",
+        row_count_recent=lowest,
+        writer_job=_SESSION_GAP_WRITER_JOB,
+        detail=detail,
+    )
+
+
+def _query_intraday_session_gaps(check: dict, now_utc: datetime) -> list[FreshnessRow]:
+    """One stale row per ticker and settled session whose regular-hours 1-min
+    bars are missing or thin. Returns failing sessions only.
+
+    One strict query per ticker over the last ``session_gap_days`` settled
+    sessions; the minutes are counted by lib.eastern_time.session_minute_readings.
+    Only the schedule read goes through _calendar: wrapping the readings too
+    would report a defect in them as a calendar failure.
+    """
+    from gcp.database import query_to_dataframe_strict
+
+    days = _recent_trading_days(
+        now_utc, check["session_gap_days"],
+        settle_hour_et=check.get("settle_hour_et", 16),
+        settle_lag_days=check.get("settle_lag_days", 0),
+    )
+    newest, oldest = days[0], days[-1]
+    schedule = _calendar(session_schedule, oldest, newest)
+    # 02:00 UTC is lib.eastern_time.intraday_month_window's boundary hour: a
+    # session's rows lie between 02:00 UTC on its date and 02:00 UTC on the
+    # next, whichever convention they were stored in.
+    after_newest = newest + timedelta(days=1)
+    start = datetime(oldest.year, oldest.month, oldest.day, 2, tzinfo=UTC)
+    end = datetime(after_newest.year, after_newest.month, after_newest.day, 2, tzinfo=UTC)
+
+    rows: list[FreshnessRow] = []
+    for ticker in check["tickers"]:
+        df = query_to_dataframe_strict(
+            _SESSION_GAP_SQL, {"t": ticker, "start": start, "end": end},
+            timeout_s=_CHECK_QUERY_TIMEOUT_S)
+        for reading in session_minute_readings(df["ts"], df["inserted_at"], schedule):
+            if reading.status != "OK":
+                rows.append(_session_gap_row(check, ticker, reading))
     return rows
 
 
@@ -1281,6 +1482,115 @@ def _query_job_duration_regression(now_utc: datetime) -> list[FreshnessRow]:
     return rows
 
 
+_WATCHED_HEARTBEAT_JOB = "fetch-watched-tickers"
+
+
+def _query_watched_tickers_heartbeat(now_utc: datetime) -> list[FreshnessRow]:
+    """Heartbeat for the fetch-watched-tickers job (reads job_runs).
+
+    The check activates with the job's first job_runs row: while job_runs
+    holds no row at all for the job it returns exactly one skipped row
+    naming that condition and no finding, so a watchdog redeployed before
+    the job and its schedule exist does not page for a job that cannot run
+    yet. The latest-row select tells "no row at all" apart from "no success
+    row". Once activated: stale when the job has no success row, or its
+    latest success started before the session two sessions back from
+    today's Eastern date (both
+    session steps go through _calendar, so a calendar failure surfaces as
+    the explicit nyse_calendar row). Warn rows carry the latest run's
+    overflow note and non-zero failure count. Stale, not warn, for the
+    missed heartbeat: the watchdog's --strict exit code fires only on
+    stale (see _query_job_duration_regression).
+
+    No fabricated freshness (Rule 3.7): a strict-read failure propagates,
+    and the window compares the Eastern date of started_at, never a UTC
+    date. A job_runs table that does not exist yet logs and skips.
+    """
+    from gcp.database import query_to_dataframe_strict, table_exists
+    import pandas as pd
+    from lib.eastern_time import localize_assuming_utc
+
+    if not table_exists('job_runs'):
+        log.warning("job_runs table absent - watched-ticker heartbeat check "
+                    "skipped (run the schema migration to enable it)")
+        return []
+
+    sql = f"""
+        (SELECT 'latest' AS kind, status, started_at, note, items_failed
+           FROM job_runs
+          WHERE job_name = '{_WATCHED_HEARTBEAT_JOB}'
+          ORDER BY started_at DESC LIMIT 1)
+        UNION ALL
+        (SELECT 'success' AS kind, status, started_at, note, items_failed
+           FROM job_runs
+          WHERE job_name = '{_WATCHED_HEARTBEAT_JOB}' AND status = 'success'
+          ORDER BY started_at DESC LIMIT 1)
+    """
+    df = query_to_dataframe_strict(sql, {}, timeout_s=_CHECK_QUERY_TIMEOUT_S)
+    latest = success = None
+    for _, r in df.iterrows():
+        if r['kind'] == 'latest':
+            latest = r
+        elif r['kind'] == 'success':
+            success = r
+
+    heartbeat_table = f"job_runs.{_WATCHED_HEARTBEAT_JOB} heartbeat"
+    if latest is None:
+        # Not activated: no job_runs row exists for the job at all.
+        return [FreshnessRow(
+            table=heartbeat_table, ticker=None, last_row_at=None,
+            expected_latest="", lag_hours=None, expected_max_hours=0,
+            status="skipped", writer_job=_WATCHED_HEARTBEAT_JOB,
+            detail=(f"not active: the check starts with the first job_runs row "
+                    f"of {_WATCHED_HEARTBEAT_JOB}"))]
+
+    # audit_all passes naive UTC; an aware value is also accepted.
+    now_aware = localize_assuming_utc(now_utc) if now_utc.tzinfo is None else now_utc
+    today_et = now_aware.astimezone(ET).date()
+    cutoff = _calendar(previous_session, _calendar(previous_session, today_et))
+
+    rows: list[FreshnessRow] = []
+    if success is None:
+        rows.append(FreshnessRow(
+            table=heartbeat_table, ticker=None, last_row_at=None,
+            expected_latest=f"a success run on or after {cutoff}",
+            lag_hours=None, expected_max_hours=0, status="stale",
+            writer_job=_WATCHED_HEARTBEAT_JOB,
+            detail="no success row in job_runs"))
+    else:
+        started = success['started_at'].to_pydatetime() \
+            if hasattr(success['started_at'], 'to_pydatetime') else success['started_at']
+        if started.tzinfo is None:
+            started = localize_assuming_utc(started)
+        started_et = started.astimezone(ET).date()
+        if started_et < cutoff:
+            rows.append(FreshnessRow(
+                table=heartbeat_table, ticker=None,
+                last_row_at=f"latest success {started_et}",
+                expected_latest=f"a success run on or after {cutoff}",
+                lag_hours=None, expected_max_hours=0, status="stale",
+                writer_job=_WATCHED_HEARTBEAT_JOB,
+                detail=f"latest success started {started_et} ET, before {cutoff}"))
+
+    note = latest['note'] if isinstance(latest['note'], str) else None
+    if note and 'overflow=' in note:
+        rows.append(FreshnessRow(
+            table=f"job_runs.{_WATCHED_HEARTBEAT_JOB} overflow", ticker=None,
+            last_row_at=None, expected_latest="no overflow",
+            lag_hours=None, expected_max_hours=0, status="warn",
+            writer_job=_WATCHED_HEARTBEAT_JOB,
+            detail=note[:_DETAIL_MAX_CHARS]))
+    failed = latest['items_failed']
+    if failed is not None and not pd.isna(failed) and int(failed) > 0:
+        rows.append(FreshnessRow(
+            table=f"job_runs.{_WATCHED_HEARTBEAT_JOB} failures", ticker=None,
+            last_row_at=None, expected_latest="0 failed items",
+            lag_hours=None, expected_max_hours=0, status="warn",
+            writer_job=_WATCHED_HEARTBEAT_JOB,
+            detail=(note or f"items_failed={int(failed)}")[:_DETAIL_MAX_CHARS]))
+    return rows
+
+
 def _timed(name: str, fn, *args):
     """Run one check group, logging its wall-clock either way.
 
@@ -1318,15 +1628,63 @@ def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
     market-close → fetcher-run window.
     """
     now = now_utc or datetime.now(UTC).replace(tzinfo=None)
+    report = FreshnessReport(
+        checked_at=now.isoformat() + "Z",
+        expected_market_close=_HEADER_DATE_UNAVAILABLE,
+    )
+
+    # A calendar failure is caught ONCE, here: CalendarUnavailable is raised
+    # only by _calendar(), so no other failure is mistaken for it. The
+    # session-dependent checks stop at the failure (rows they already
+    # produced stay), the explicit nyse_calendar row says why, and the
+    # session-independent checks still run. No check falls back to weekdays.
+    calendar_error: CalendarUnavailable | None = None
+    try:
+        _session_dependent_checks(report, now)
+    except CalendarUnavailable as exc:
+        calendar_error = exc
+        log.error("NYSE calendar unavailable; session-dependent checks not run: %s",
+                  exc.cause)
+        report.rows.append(_calendar_failure_row(exc.cause))
+
+    # Value sanity across tables — only reports failures
+    report.rows.extend(_timed("value_sanity", _query_value_sanity, now))
+
+    if calendar_error is None:
+        try:
+            _session_dependent_late_checks(report, now)
+        except CalendarUnavailable as exc:
+            log.error("NYSE calendar unavailable; session-dependent checks not run: %s",
+                      exc.cause)
+            report.rows.append(_calendar_failure_row(exc.cause))
+
+    # Duration-regression: capacity drift trends from job_runs, warned
+    # on BEFORE a task-timeout cliff. Only reports offenders.
+    report.rows.extend(_timed("job_duration_regression", _query_job_duration_regression, now))
+
+    return report
+
+
+def _calendar_failure_row(cause: BaseException) -> FreshnessRow:
+    """The one explicit row a calendar failure produces (status unknown)."""
+    return FreshnessRow(
+        table=CALENDAR_ROW,
+        ticker=None,
+        last_row_at=None,
+        expected_latest="NYSE sessions (lib/eastern_time.py)",
+        lag_hours=None,
+        expected_max_hours=0,
+        status="unknown",
+        detail=_exception_detail(cause),
+    )
+
+
+def _session_dependent_checks(report: FreshnessReport, now: datetime) -> None:
+    """The per-table freshness and gap-scan checks; raise CalendarUnavailable."""
     # The "global" expected_date is anchored at market close (16 ET) for
     # the report header only — actual freshness checks use per-CHECK
     # settle_hour_et below.
-    expected_date_for_header = most_recent_trading_day(now)
-
-    report = FreshnessReport(
-        checked_at=now.isoformat() + "Z",
-        expected_market_close=expected_date_for_header.isoformat(),
-    )
+    report.expected_market_close = most_recent_trading_day(now).isoformat()
 
     for check in CHECKS:
         check_settle = check.get("settle_hour_et", 16)
@@ -1342,9 +1700,14 @@ def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
         # Gap scan: only reports failing (ticker, day) combinations
         report.rows.extend(_query_gap_scan(check, now))
 
-    # Value sanity across tables — only reports failures
-    report.rows.extend(_timed("value_sanity", _query_value_sanity, now))
+        # Session scan: only reports failing (ticker, session) combinations
+        if check.get("session_gap_days"):
+            report.rows.extend(_timed(
+                "intraday_session_gaps", _query_intraday_session_gaps, check, now))
 
+
+def _session_dependent_late_checks(report: FreshnessReport, now: datetime) -> None:
+    """Column nullity and enrichment coverage; raise CalendarUnavailable."""
     # Column-nullity checks — flag tables whose rows ARE writing on
     # schedule but a critical column is silently NULL because an upstream
     # source froze (the 2026-06 ^VIX/gamma cascade signature). Only
@@ -1356,11 +1719,10 @@ def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
     # instead of surfacing as a downstream job's timeout (issue #751).
     report.rows.extend(_timed("enrichment_coverage", _query_enrichment_coverage, now))
 
-    # Duration-regression: capacity drift trends from job_runs, warned
-    # on BEFORE a task-timeout cliff. Only reports offenders.
-    report.rows.extend(_timed("job_duration_regression", _query_job_duration_regression, now))
-
-    return report
+    # Watched-ticker job heartbeat: session-dependent (two sessions back),
+    # so a calendar failure must reach audit_all's CalendarUnavailable handler.
+    report.rows.extend(_timed("watched_tickers_heartbeat",
+                              _query_watched_tickers_heartbeat, now))
 
 
 # ── Output formats ───────────────────────────────────────────────────────────
@@ -1405,6 +1767,16 @@ def format_terminal(report: FreshnessReport) -> str:
         # operator doesn't have to grep deploy.sh to know who to debug.
         if r.writer_job and r.status in ("stale", "warn"):
             lines.append(f"  {DIM}    └─ writer-job: {r.writer_job}{RESET}")
+        if r.detail:
+            lines.append(f"  {DIM}    └─ detail: {r.detail}{RESET}")
+        if r.status == "stale":
+            # Keep the compact table, but preserve the full finding contract
+            # for execution-log alerts: display truncation must not hide the
+            # missing dates, bad-row counts or expected threshold.
+            details = json.dumps({"last_row_at": r.last_row_at,
+                                  "expected_latest": r.expected_latest,
+                                  "row_count_recent": r.row_count_recent}, default=str)
+            lines.append(f"  {DIM}    └─ details: {details}{RESET}")
 
     lines.append("")
     overall_color = {"ok": GREEN, "warn": YELLOW, "stale": RED, "unknown": DIM}[report.overall_status]
@@ -1413,13 +1785,164 @@ def format_terminal(report: FreshnessReport) -> str:
     return "\n".join(lines)
 
 
+# ── On-demand session scan (--intraday-gap-since) ────────────────────────────
+
+_FIRST_ROW_SQL = """
+    SELECT min(ts) AS first_ts
+      FROM market_data_intraday
+     WHERE ticker = :t AND interval = '1min'
+"""
+
+
+def _session_gap_check() -> dict:
+    """The CHECKS entry the session scan runs for."""
+    return next(c for c in CHECKS if c.get("session_gap_days"))
+
+
+def _months_from(first: date, last: date):
+    """(year, month) pairs from *first*'s month to *last*'s, ascending."""
+    year, month = first.year, first.month
+    while (year, month) <= (last.year, last.month):
+        yield year, month
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+
+
+def run_intraday_gap_since(
+    since: date,
+    tickers: tuple[str, ...],
+    strict: bool,
+    now_utc: Optional[datetime] = None,
+) -> int:
+    """List every 1-min session from *since* to the last settled session that
+    is MISSING, THIN or UNDETERMINED, for each of *tickers*. Returns the exit
+    code.
+
+    This is the scheduled session scan over history, run alone: audit_all()
+    is not called. Per ticker one first-row probe, then one read per month
+    window, one month in memory at a time (Rule 0: 143 months of a ticker's
+    history must not be one frame). Sessions before the ticker's first stored
+    row are history that was never stored, not gaps.
+
+    Printed, not logged, so the lines do not depend on the logging level:
+      SESSION-GAP TICKER YYYY-MM-DD STATUS true_utc=N eastern_label=N both=N expected=N exact=yes|no
+      MONTH TICKER,YYYY-MM rows=N unproven_rows=N      (a month window that holds a row)
+      NO-ROWS TICKER                                   (a ticker with no stored row)
+      intraday-gap-since summary: ...                  (last; a run without it crashed)
+
+    Exit 0 once the summary is printed, or 1 with *strict* when a SESSION-GAP
+    or NO-ROWS line was printed. Exit 2, with no summary, when *since* is
+    after the last settled session or the NYSE calendar failed: a run that
+    scanned nothing must not exit 0. A reader error is not caught.
+    """
+    import time as _time
+
+    import pandas as pd
+
+    from gcp.database import query_to_dataframe_strict
+
+    t0 = _time.monotonic()
+    now = now_utc or datetime.now(UTC).replace(tzinfo=None)  # tz-ok: naive UTC, the frame most_recent_trading_day takes
+    check = _session_gap_check()
+    summary: list[str] = []
+    listed = False
+    try:
+        last = most_recent_trading_day(
+            now, settle_hour_et=check.get("settle_hour_et", 16),
+            settle_lag_days=check.get("settle_lag_days", 0))
+        if since > last:
+            print(f"--intraday-gap-since {since.isoformat()} is after the last "
+                  f"settled session, {last.isoformat()}; nothing to scan.",
+                  file=sys.stderr)
+            return 2
+
+        for ticker in tickers:
+            probe = query_to_dataframe_strict(
+                _FIRST_ROW_SQL, {"t": ticker}, timeout_s=_CHECK_QUERY_TIMEOUT_S)
+            first_ts = probe["first_ts"].iloc[0]
+            counts = {"OK": 0, "MISSING": 0, "THIN": 0, "UNDETERMINED": 0}
+            if pd.isna(first_ts):
+                print(f"NO-ROWS {ticker}")
+                listed = True
+                summary.append(f"{ticker} first=none sessions=0 ok=0 missing=0 "
+                               "thin=0 undetermined=0")
+                continue
+            first_day = as_utc_instant(first_ts).date()
+            start = max(since, first_day)
+            for year, month in _months_from(start, last):
+                window_start, window_end = intraday_month_window(year, month)
+                df = query_to_dataframe_strict(
+                    _SESSION_GAP_SQL,
+                    {"t": ticker, "start": window_start, "end": window_end},
+                    timeout_s=_CHECK_QUERY_TIMEOUT_S)
+                if len(df):
+                    unproven = int((~proven_true_utc(df["ts"], df["inserted_at"])).sum())
+                    print(f"MONTH {ticker},{year}-{month:02d} rows={len(df)} "
+                          f"unproven_rows={unproven}")
+                next_month = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+                lo = max(start, date(year, month, 1))
+                hi = min(last, next_month - timedelta(days=1))
+                schedule = _calendar(session_schedule, lo, hi)
+                for r in session_minute_readings(df["ts"], df["inserted_at"], schedule):
+                    counts[r.status] += 1
+                    if r.status != "OK":
+                        listed = True
+                        print(f"SESSION-GAP {ticker} {r.session.isoformat()} {r.status} "
+                              f"true_utc={r.true_utc} eastern_label={r.eastern_label} "
+                              f"both={r.both} expected={r.expected} "
+                              f"exact={'yes' if r.exact else 'no'}")
+                del df
+            summary.append(
+                f"{ticker} first={first_day.isoformat()} sessions={sum(counts.values())} "
+                f"ok={counts['OK']} missing={counts['MISSING']} thin={counts['THIN']} "
+                f"undetermined={counts['UNDETERMINED']}")
+    except CalendarUnavailable as exc:
+        print(f"NYSE calendar unavailable; the session scan did not finish: {exc}",
+              file=sys.stderr)
+        return 2
+
+    print("intraday-gap-since summary: " + "; ".join(summary)
+          + f"; seconds={_time.monotonic() - t0:.1f}")
+    return 1 if strict and listed else 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Audit Cloud SQL data freshness across the platform."
     )
     parser.add_argument("--json", action="store_true", help="Output JSON instead of a pretty table")
-    parser.add_argument("--strict", action="store_true", help="Exit 1 if any table is stale (for CI)")
+    parser.add_argument("--strict", action="store_true",
+                        help="Exit 1 if any table is stale, 2 if the NYSE calendar failed (for CI)")
+    parser.add_argument("--intraday-gap-since", default=None, metavar="YYYY-MM-DD",
+                        help="Run only the 1-min session scan, from this date to the last "
+                             "settled session: lists each session of SPY, QQQ and IWM that "
+                             "is missing, thin or undetermined. Exit 0 once the summary line "
+                             "is printed; with --strict, 1 if anything was listed.")
+    parser.add_argument("--intraday-gap-tickers", default=None, metavar="T1,T2",
+                        help="With --intraday-gap-since: only these of SPY, QQQ and IWM.")
     args = parser.parse_args()
+
+    gap_since: Optional[date] = None
+    gap_tickers: tuple[str, ...] = ()
+    if args.intraday_gap_tickers is not None and args.intraday_gap_since is None:
+        parser.error("--intraday-gap-tickers needs --intraday-gap-since")
+    if args.intraday_gap_since is not None:
+        if args.json:
+            parser.error("--intraday-gap-since prints lines, not JSON; drop --json")
+        try:
+            gap_since = date.fromisoformat(args.intraday_gap_since)
+        except ValueError:
+            parser.error(f"--intraday-gap-since: not a YYYY-MM-DD date: "
+                         f"{args.intraday_gap_since!r}")
+        allowed = tuple(_session_gap_check()["tickers"])
+        if args.intraday_gap_tickers is None:
+            gap_tickers = allowed
+        else:
+            named = [t.strip().upper() for t in args.intraday_gap_tickers.split(",")]
+            for t in named:
+                if t not in allowed:
+                    parser.error(f"--intraday-gap-tickers: {t!r} is not one of "
+                                 f"{', '.join(allowed)}")
+            gap_tickers = tuple(dict.fromkeys(named))
 
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
     # Silence Cloud SQL query failures — we handle them gracefully and re-report
@@ -1434,6 +1957,9 @@ def main():
             print(msg, file=sys.stderr)
         sys.exit(2)
 
+    if gap_since is not None:
+        sys.exit(run_intraday_gap_since(gap_since, gap_tickers, args.strict))
+
     report = audit_all()
 
     if args.json:
@@ -1441,6 +1967,10 @@ def main():
     else:
         print(format_terminal(report))
 
+    # A calendar failure left the session-dependent checks unrun, so the
+    # report cannot vouch for freshness at all: exit 2, distinct from 1.
+    if args.strict and any(r.table == CALENDAR_ROW for r in report.rows):
+        sys.exit(2)
     if args.strict and report.overall_status == "stale":
         sys.exit(1)
 

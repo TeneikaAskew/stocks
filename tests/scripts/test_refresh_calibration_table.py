@@ -5,11 +5,17 @@ section replacement. Closes issue #251 doc auto-refresh.
 """
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 
 from scripts import refresh_calibration_table as rct
+
+REPO = Path(__file__).resolve().parents[2]
 
 
 def _row(ticker, **overrides):
@@ -107,3 +113,28 @@ def test_is_usable_rejects_nan_inf_none():
     assert not rct._is_usable(math.inf)
     assert not rct._is_usable(-math.inf)
     assert not rct._is_usable("hello")
+
+
+FOOTER = "_Manual refresh: `python -m scripts.refresh_calibration_table` (needs Cloud SQL access; not scheduled)._"
+
+
+def test_the_footer_names_the_manual_command_and_no_schedule():
+    out = rct._build_markdown([_row("IWM"), _row("QQQ")])
+    footer = out.rstrip("\n").splitlines()[-1]
+    assert footer == FOOTER
+    assert "python -m scripts.refresh_calibration_table" in footer
+    assert "monthly" not in footer.lower() and "refresh-architecture-docs" not in footer
+
+
+def test_the_doc_footer_equals_the_rendered_one():
+    doc = (REPO / "docs/INVESTMENT_MODELS_SUMMARY.md").read_text(encoding="utf-8")
+    region = doc.split(rct.BEGIN_MARK, 1)[1].split(rct.END_MARK, 1)[0]
+    assert region.rstrip("\n").splitlines()[-1] == FOOTER
+
+
+def test_the_check_without_cloud_sql_exits_2():
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("CLOUD_SQL_CONNECTION_NAME", "DB_HOST", "DB_USER", "DB_PASS", "DB_NAME")}
+    r = subprocess.run([sys.executable, "-m", "scripts.refresh_calibration_table", "--check"],
+                       cwd=REPO, env=env, capture_output=True, text=True)
+    assert r.returncode == 2, r.stderr

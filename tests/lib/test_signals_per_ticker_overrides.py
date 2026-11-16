@@ -16,10 +16,10 @@ This test suite locks both:
 from __future__ import annotations
 
 import pandas as pd
-from datetime import date
 
 import pytest
 
+from lib.eastern_time import market_today
 from lib.signals import evaluate_signal
 
 
@@ -58,7 +58,7 @@ def test_disabled_conditions_strips_above_vwap_globally(monkeypatch):
     monkeypatch.setattr(
         eco, "_latest_overrides",
         lambda t: {
-            "calibration_date": __import__("datetime").date.today(),
+            "calibration_date": market_today(),
             "disabled_conditions": ["above_vwap"],
             "disabled_directions": None,
             "call_target": 0.00184, "put_target": 0.00202,
@@ -85,7 +85,7 @@ def test_disabled_conditions_string_jsonb_form_handled(monkeypatch):
     monkeypatch.setattr(
         eco, "_latest_overrides",
         lambda t: {
-            "calibration_date": __import__("datetime").date.today(),
+            "calibration_date": market_today(),
             "disabled_conditions": '["above_vwap"]',  # JSON-encoded string
             "disabled_directions": None,
             "call_target": 0.00184, "put_target": 0.00202,
@@ -110,7 +110,7 @@ def test_disabled_conditions_drops_score_below_threshold(monkeypatch):
     monkeypatch.setattr(
         eco, "_latest_overrides",
         lambda t: {
-            "calibration_date": __import__("datetime").date.today(),
+            "calibration_date": market_today(),
             "disabled_conditions": [
                 "above_vwap", "stoch_rsi_overbought", "rsi_overbought_zone",
             ],
@@ -141,7 +141,7 @@ def test_disabled_directions_qqq_put_kill_switch(monkeypatch):
     monkeypatch.setattr(
         eco, "_latest_overrides",
         lambda t: {
-            "calibration_date": __import__("datetime").date.today(),
+            "calibration_date": market_today(),
             "disabled_conditions": None,
             "disabled_directions": ["PUT"],
             "call_target": 0.00301, "put_target": 0.00238,
@@ -169,7 +169,7 @@ def test_disabled_directions_does_not_block_other_side(monkeypatch):
     monkeypatch.setattr(
         eco, "_latest_overrides",
         lambda t: {
-            "calibration_date": __import__("datetime").date.today(),
+            "calibration_date": market_today(),
             "disabled_conditions": None,
             "disabled_directions": ["PUT"],
             "call_target": 0.00301, "put_target": 0.00238,
@@ -191,7 +191,7 @@ def test_disabled_directions_jsonb_string_form_handled(monkeypatch):
     monkeypatch.setattr(
         eco, "_latest_overrides",
         lambda t: {
-            "calibration_date": __import__("datetime").date.today(),
+            "calibration_date": market_today(),
             "disabled_conditions": None,
             "disabled_directions": '["PUT"]',  # JSON string
             "call_target": 0.00301, "put_target": 0.00238,
@@ -301,7 +301,7 @@ def test_one_failed_read_does_not_disable_the_kill_switch_for_the_process(monkey
 
     calls = {"n": 0}
     good = pd.DataFrame([{
-        "calibration_date": date.today(), "call_target": None, "put_target": None,
+        "calibration_date": market_today(), "call_target": None, "put_target": None,
         "call_stop": None, "put_stop": None, "call_time_stop": None,
         "put_time_stop": None, "consecutive_periods": None,
         "disabled_conditions": None, "disabled_directions": ["PUT"],
@@ -356,9 +356,8 @@ def test_the_tier_b_getters_still_degrade_on_a_failed_read(monkeypatch):
 
 
 def _overrides(disabled_conditions):
-    import datetime
     return {
-        "calibration_date": datetime.date.today(),
+        "calibration_date": market_today(),
         "disabled_conditions": disabled_conditions,
         "disabled_directions": None,
         "call_target": 0.00184, "put_target": 0.00202,

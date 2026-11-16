@@ -44,6 +44,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from gcp.database import (
     upsert_dataframe, is_cloud_sql_configured, query_to_dataframe,
 )
@@ -81,12 +82,12 @@ def _fetch(params: dict) -> list[dict]:
         resp = requests.get(AV_BASE_URL, params=params, timeout=30)
         resp.raise_for_status()
         data = resp.json()
-    except Exception as e:
-        logger.warning("AV NEWS_SENTIMENT request failed (%s): %s", params, e)
+    except Exception:
+        logger.warning("AV NEWS_SENTIMENT request failed")
         return []
 
     if "Information" in data:
-        logger.warning("AV info: %s", data["Information"])
+        logger.warning("AV NEWS_SENTIMENT provider Information response")
     return data.get("feed", []) or []
 
 
@@ -158,10 +159,10 @@ def _earnings_calendar_tickers(window_days: int) -> list[str]:
     Returns ``[]`` on DB error so the caller can fall back to the
     watchlist + DEFAULT_TICKERS chain rather than crashing.
     """
-    sql = """
+    sql = f"""
         SELECT DISTINCT ticker
         FROM earnings_calendar
-        WHERE earnings_date BETWEEN
+        WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date BETWEEN
             CURRENT_DATE - (:w || ' days')::interval AND
             CURRENT_DATE + (:w || ' days')::interval
         ORDER BY ticker

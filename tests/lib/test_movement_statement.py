@@ -694,12 +694,16 @@ def test_reach_rate_sql_excludes_zero_distance_and_nan_targets():
     # the t1 gap too, so a legacy trigger=100/t1=100/t2=101 row (where 101 is
     # really the first target) is out of every downstream slot, not just t1.
     g = lambda a, b: f"round({a}::numeric, 2) - round({b}::numeric, 2) >= 0.01"  # noqa: E731
-    # Seeded with the row's own anchor: a legacy trigger on the price's cent
-    # (which identify_triggers no longer produces) takes the row out of every
-    # population, trigger included.
+    # FEAT-STRAT-001: the trigger is anchored to the row's level_basis
+    # cleared mark, inclusive in cents, and only current-rule rows count.
+    mark_c = "(level_basis->>'cleared_above')::float8"
+    mark_p = "(level_basis->>'cleared_below')::float8"
+    ge0 = lambda a, b: f"round({a}::numeric, 2) - round({b}::numeric, 2) >= 0"  # noqa: E731
     trig_pop = calls.split("AS trigger_n")[0].rsplit("COUNT(*) FILTER", 1)[1]
-    assert g("calls_trigger_price", "price") in trig_pop
-    assert g("price", "puts_trigger_price") in puts.split("AS trigger_n")[0]
+    assert ge0("calls_trigger_price", mark_c) in trig_pop
+    assert ge0(mark_p, "puts_trigger_price") in puts.split("AS trigger_n")[0]
+    for sql in (calls, puts):
+        assert "level_basis->>'rule_version' = :rule_version" in sql
     assert g("calls_t1_price", "calls_trigger_price") in calls
     assert g("calls_t2_price", "calls_t1_price") in calls
     assert g("calls_t3_price", "calls_t2_price") in calls
@@ -710,7 +714,7 @@ def test_reach_rate_sql_excludes_zero_distance_and_nan_targets():
     assert g("calls_t2_price", "calls_t1_price") in t2_pop
     t3_pop = calls.split("AS t3_n")[0].rsplit("COUNT(*) FILTER", 1)[1]
     assert g("calls_t1_price", "calls_trigger_price") in t3_pop
-    assert g("calls_trigger_price", "price") in t3_pop
+    assert ge0("calls_trigger_price", mark_c) in t3_pop
     for sql in (calls, puts):
         assert "<> 'NaN'::float8" in sql
         # unconditional: no `WHERE ..._trigger_hit_ts IS NOT NULL` gate

@@ -385,12 +385,20 @@ class BacktestEngine:
         Uses shift(1) on the higher-TF classifications to avoid lookahead
         bias — only completed bars' classifications are used.
 
+        Causal membership (FEAT-STRAT-001): each row keeps exactly the scalar
+        this helper returns for the observed prefix ending at that row. A
+        timeframe joins a row's numerator and denominator only once that
+        prefix holds two native periods, so frames observed later cannot
+        change earlier rows. Weights, resampling, classification, shift and
+        arithmetic order are unchanged; the final row is identical.
+
         Returns a Series aligned to the input index with values in [-1, +1].
         """
         timeframes = self.strat_config.timeframes
         weights = self.strat_config.ftfc_weights
 
         classifications = {}
+        members = {}
 
         for tf in timeframes:
             rule = RESAMPLE_RULES.get(tf)
@@ -429,22 +437,49 @@ class BacktestEngine:
             classifications[tf] = numeric_shifted.reindex(
                 df.index,
             ).ffill().fillna(0.0)
+            members[tf] = self._prefix_has_two_native_periods(df, rule, resampled.index)
 
         if not classifications:
             return pd.Series(0.0, index=df.index)
 
-        # Compute weighted FTFC score
-        total_weight = sum(weights.get(tf, 0.0) for tf in classifications)
-        if total_weight == 0:
-            return pd.Series(0.0, index=df.index)
-
-        ftfc_score = pd.Series(0.0, index=df.index)
+        # Weighted FTFC score per row over the frames its own prefix admits.
+        # Adding 0.0 for a not-yet-admitted frame leaves the old sum exact.
+        numerator = np.zeros(len(df.index))
         for tf, numeric in classifications.items():
             w = weights.get(tf, 0.0)
-            ftfc_score += numeric * w
+            numerator = numerator + np.where(members[tf], numeric.to_numpy() * w, 0.0)
+        # The denominator keeps the old builtin sum() (compensated on 3.12+)
+        # over each distinct admitted set, in configured order.
+        frames = list(classifications)
+        admitted = np.column_stack([members[tf] for tf in frames])
+        patterns, inverse = np.unique(admitted, axis=0, return_inverse=True)
+        totals = np.array([sum(weights.get(tf, 0.0) for tf, used in zip(frames, pattern) if used)
+                           for pattern in patterns], dtype=float)
+        total_weight = totals[np.asarray(inverse).reshape(-1)]
 
-        ftfc_score /= total_weight
-        return ftfc_score
+        with np.errstate(divide='ignore', invalid='ignore'):
+            ftfc_score = np.where(total_weight == 0, 0.0, numerator / total_weight)
+        return pd.Series(ftfc_score, index=df.index)
+
+    @staticmethod
+    def _prefix_has_two_native_periods(df: pd.DataFrame, rule: str,
+                                       kept_labels: pd.Index) -> np.ndarray:
+        """Per row: does the prefix ending here resample to two or more periods?
+
+        The prefix holds every kept (non-empty, non-NaN) period that ended
+        before the row's own period, plus the row's own (possibly partial)
+        period. That is the old helper's ``len(resampled) >= 2`` rule applied
+        to the prefix rather than to the whole frame.
+        """
+        order = np.argsort(df.index.to_numpy(), kind='stable')
+        ordered = df.index[order]
+        counts = pd.Series(1, index=ordered).resample(rule).sum()
+        kept = counts.index.isin(kept_labels).astype(int)
+        kept_before = np.cumsum(kept) - kept
+        per_row = np.repeat(kept_before, counts.to_numpy().astype(int))
+        admitted = np.empty(len(df.index), dtype=bool)
+        admitted[order] = per_row >= 1
+        return admitted
 
     def run(
         self,

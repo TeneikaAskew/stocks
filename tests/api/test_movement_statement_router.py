@@ -346,6 +346,17 @@ def _synthetic_daily(n: int = 40, *, nan_last: bool = False, end=None):
     return df
 
 
+@pytest.fixture(autouse=True)
+def _level_params(monkeypatch):
+    """The level parameter tables (per-ticker parameters, 2026-11-08) read
+    through the strict reader: every key at the #1753 values for the index
+    ETFs, through load_level_params's own SQL."""
+    import gcp.database as database  # noqa: PLC0415
+    from tests.lib.level_params_fixtures import legacy_db  # noqa: PLC0415
+    monkeypatch.setattr(database, "query_to_dataframe_strict",
+                        legacy_db(["SPY", "QQQ", "IWM"]).query)
+
+
 def test_level_map_anchors_to_last_valid_close_not_nan(monkeypatch):
     """REAL _build_movement_level_map: a NaN-close premarket placeholder as the
     LAST row must be dropped, and the LevelMap anchored to the last VALID close
@@ -427,14 +438,14 @@ def test_level_map_reads_the_loaders_ATR14_column(monkeypatch):
     today = (df.index[-1] + _dt.timedelta(days=1)).date()
     seen = {}
 
-    def _spy(*a, **k):
-        seen.update(k)
+    def _spy(ticker, session_date, daily_df, atr, premarket=None, params=None, **k):
+        seen["atr"] = atr
         raise RuntimeError("stop here")
 
     with patch("lib.data_loader.DataLoader.load_daily", return_value=df), \
-         patch("lib.strat_levels.build_level_map", side_effect=_spy):
+         patch("lib.strat_levels.build_session_levels", side_effect=_spy):
         dashboard_router._build_movement_level_map("SPY", analysis_date=today)
-    assert seen["atr"] == pytest.approx(2.5)
+    assert seen["atr"]["atr_14"] == pytest.approx(2.5)
 
 
 def test_level_map_refuses_a_frame_missing_the_prior_session(monkeypatch):
@@ -467,6 +478,22 @@ def test_level_map_refuses_a_frame_missing_the_prior_session(monkeypatch):
         assert dashboard_router._build_movement_level_map("SPY", analysis_date=monday) is None
 
 
+def test_level_map_publishes_after_an_nyse_holiday(monkeypatch):
+    """FEAT-DATA-001 (2026-11-11 spec): the shared freshness rule counts NYSE
+    sessions, so the Tuesday after Memorial Day (2026-05-26) reading Friday
+    2026-05-22 gets a ladder, while a frame that also lacks that Friday is
+    still refused. On origin/main both were refused (calendar gap 4)."""
+    import datetime as _dt  # noqa: PLC0415
+
+    tuesday = _dt.date(2026, 5, 26)
+    ends_friday = _synthetic_daily(end=_dt.date(2026, 5, 22))
+    ends_thursday = _synthetic_daily(end=_dt.date(2026, 5, 21))
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=ends_friday):
+        assert dashboard_router._build_movement_level_map("SPY", analysis_date=tuesday) is not None
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=ends_thursday):
+        assert dashboard_router._build_movement_level_map("SPY", analysis_date=tuesday) is None
+
+
 def test_level_map_defaults_analysis_date_to_today_in_eastern(monkeypatch):
     """The default is today's date in America/New_York, not UTC, so an
     evening request does not roll the ladder forward a session (Rule 3.9)."""
@@ -475,14 +502,14 @@ def test_level_map_defaults_analysis_date_to_today_in_eastern(monkeypatch):
 
     seen = {}
 
-    def _spy(*a, **k):
-        seen["analysis_date"] = k.get("analysis_date")
+    def _spy(ticker, session_date, *a, **k):
+        seen["analysis_date"] = session_date
         raise RuntimeError("stop here")
 
     today_et = _dt.datetime.now(ZoneInfo("America/New_York")).date()
     fresh = _synthetic_daily(end=today_et - _dt.timedelta(days=1))  # last bar = yesterday
     with patch("lib.data_loader.DataLoader.load_daily", return_value=fresh), \
-         patch("lib.strat_levels.build_level_map", side_effect=_spy):
+         patch("lib.strat_levels.build_session_levels", side_effect=_spy):
         assert dashboard_router._build_movement_level_map("SPY") is None  # RuntimeError → None
     assert seen["analysis_date"] == today_et
 
@@ -620,3 +647,36 @@ def test_level_map_propagates_a_backend_outage(monkeypatch):
     monkeypatch.setattr(DataLoader, "load_daily", gap)
     assert dashboard_router._build_movement_level_map("SPY") is None
 
+
+
+def test_missing_atr_serves_levels_unavailable_not_an_empty_ladder(monkeypatch):
+    """Codex P1 on #1753: with no prior-session ATR the builder returns status
+    ok with both sides atr_unavailable. The served levels block must say so
+    (UNAVAILABLE with the atr_unavailable reason), live and from a stored
+    level_basis, never OK with empty call and put ladders."""
+    import datetime as _dt  # noqa: PLC0415
+
+    from lib.movement_statement import _build_levels  # noqa: PLC0415
+    from lib.strat_levels import SessionLevels, build_session_levels  # noqa: PLC0415
+
+    df = _synthetic_daily(end=_dt.date(2026, 11, 6))  # no ATR14 column
+    session = _dt.date(2026, 11, 7)
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=df):
+        live = dashboard_router._build_movement_level_map("SPY", analysis_date=session)
+    assert live is not None
+    assert (live.reason_long, live.reason_short) == ("atr_unavailable", "atr_unavailable")
+
+    tracked = {"status": "OK", "analysis_date": str(session), "calls": [], "puts": []}
+    reach = {"status": "OK", "slots": {}}
+    out = _build_levels(live, reach, reach, tracked)
+    assert out["status"] == "UNAVAILABLE"
+    assert out["reason"].startswith("atr_unavailable")
+    assert "calls" not in out and "puts" not in out
+
+    from tests.lib.level_params_fixtures import fixture_params  # noqa: PLC0415
+    built = build_session_levels("SPY", session, df[df.index < str(session)], {}, None,
+                                 fixture_params("SPY", session))
+    stored = SessionLevels.from_basis(built.to_basis()).to_level_map()
+    out_stored = _build_levels(stored, reach, reach, tracked)
+    assert out_stored["status"] == "UNAVAILABLE"
+    assert out_stored["reason"].startswith("atr_unavailable")

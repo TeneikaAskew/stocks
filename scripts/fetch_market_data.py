@@ -151,7 +151,7 @@ def fetch_minute_data_for_date(ticker, date):
             'interval': '1min',
             'month': month_str,
             'outputsize': 'full',
-            'adjusted': 'true',
+            'adjusted': 'false',  # as traded, like every 1-min request
             'entitlement': 'realtime',
             'extended_hours': 'true',
             'apikey': AV_API_KEY,
