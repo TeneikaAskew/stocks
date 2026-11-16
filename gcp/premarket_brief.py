@@ -27,9 +27,10 @@ from lib.indicators import add_brief_indicators
 from lib.strat import (CONTINUITY_DISPLAY_ORDER, StratClassifier, compute_strat_status,
                        timeframe_continuity_record)
 from lib.strat_levels import (
-    LevelParamsUnavailable, build_session_levels,
+    REACH_UNAVAILABLE, TARGET_REACH_RATE_KEY, LevelParamsUnavailable, build_session_levels,
     format_levels_for_brief, load_level_params, premarket_snapshot_from_daily,
 )
+from lib.target_reach import TargetReachUnavailable, load_target_reach
 from lib.signals import check_call_conditions, check_put_conditions
 from lib.strategies.calibration import resolve_rsi_bands
 from lib.config import load_config
@@ -954,6 +955,29 @@ def _level_params_query(sql: str, params: dict):
     return database.query_to_dataframe_strict(sql, params)
 
 
+def _target_reach_query(sql: str, params: dict):
+    """The strict reader load_target_reach runs on (target hit rates spec,
+    Design 5): the same database and the same strictness as the parameter
+    read, so a failed query raises and the brief prints the unavailable
+    line, never a rate (CLAUDE.md 3.7)."""
+    return _level_params_query(sql, params)
+
+
+def _load_reach_for_brief(level_params: dict, tickers, analysis_date):
+    """Every ticker's hit-rate table, read once for the run, and the
+    policy's min_sample. On an unusable policy row or a failed read, every
+    ticker gets REACH_UNAVAILABLE and min_sample None, so each plan prints
+    the unavailable line and the brief still writes."""
+    first = next((level_params[t.upper()] for t in tickers if t and t.upper() in level_params), None)
+    param = first.param(TARGET_REACH_RATE_KEY) if first is not None else None
+    try:
+        tables = load_target_reach(_target_reach_query, tickers, analysis_date, param)
+    except TargetReachUnavailable as exc:
+        logger.warning("target hit rates unavailable: %s", exc)
+        return {}, None
+    return tables, param.min_sample
+
+
 def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     """Generate pre-market brief for all tickers.
 
@@ -978,6 +1002,10 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     # query raises LevelParamsUnavailable here, before any ticker is built,
     # so the brief exits non-zero without writing a row.
     level_params = load_level_params(_level_params_query, tickers, analysis_date)
+    # Each target's hit rate, read once for every ticker of the run (target
+    # hit rates spec, Design 5). Display only; a failed read prints the
+    # unavailable line under each plan and changes nothing else.
+    reach_tables, reach_min_sample = _load_reach_for_brief(level_params, tickers, analysis_date)
 
     loader = DataLoader(data_dir=data_dir)
     strat = StratClassifier(strat_config=cfg.strat)
@@ -1405,6 +1433,8 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                 regime_short=d.get('regime_short'),
                 regime_compute_error=d.get('regime_compute_error'),
                 atr=atr_for_filter,
+                reach=reach_tables.get(ticker.upper(), REACH_UNAVAILABLE),
+                reach_min_sample=reach_min_sample,
             )
             d['recommended_orb_window'] = orb_choice['window']
             d['recommended_orb_reason'] = orb_choice['reason']

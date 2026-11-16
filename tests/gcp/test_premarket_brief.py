@@ -4077,3 +4077,77 @@ class TestLiveDateIsTheExchangeDate:
         assert seen['events'] == [(date(2026, 11, 10), 5)]
         assert sorted(tables['premarket_analysis']) == [
             ('2026-11-10', ticker) for ticker in self.TICKERS]
+
+
+class TestTargetHitRatesInTheBrief:
+    """Target hit rates spec (docs/superpowers/specs/2026-11-16-feat-strat-
+    001-target-hit-rates.md), Design 5: generate_premarket_brief reads the
+    hit rates ONCE for every ticker of the run, from plan_excursions on the
+    same database as the level parameters, and prints each plan's ladder;
+    a failed read prints the unavailable line and the brief still writes.
+    Driven on the committed 2026-11-06 fixture (SPY, QQQ, IWM)."""
+
+    TICKERS = ('SPY', 'QQQ', 'IWM')
+    # 40 past trades per ticker, the 2026-11-06 rule version, sessions before
+    # the brief's own: excursions 0.0, 0.1, ... 3.9 stop distances.
+    VALUES = [round(0.1 * i, 1) for i in range(40)]
+
+    def _db(self):
+        from datetime import timedelta
+        from lib.strat_levels import LEVEL_RULE_VERSION
+        from tests.lib.level_params_fixtures import legacy_db
+        db = legacy_db(list(self.TICKERS))
+        for t in self.TICKERS:
+            for i, x in enumerate(self.VALUES):
+                db.conn.execute(
+                    "INSERT INTO plan_excursions (ticker, session_date, rule_version, side, "
+                    "trigger_price, stop_price, fill_price, fill_ts, excursion_r, source, "
+                    "resolver_version) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (t, (date(2026, 8, 3) + timedelta(days=i)).isoformat(), LEVEL_RULE_VERSION,
+                     'calls', 100.0, 99.0, 100.0, '2026-08-03T13:31:00Z', x, 'history', 'test'))
+        db.conn.commit()
+        return db
+
+    @staticmethod
+    def _frames():
+        from tests.lib import strat_2026_11_06 as fx
+        return {t: fx.loader_frame(t) for t in TestTargetHitRatesInTheBrief.TICKERS}
+
+    def test_one_read_for_the_run_and_every_plan_prints_its_ladder(self, monkeypatch):
+        from lib.strat_levels import hit_rate_lines
+        from lib.target_reach import ReachTable
+        from tests.lib import strat_2026_11_06 as fx
+        db = self._db()
+        out = fx.run_briefs(monkeypatch, self._frames(), params_db=db)
+        assert sum('FROM plan_excursions' in q for q in db.queries) == 1
+        table = dict(n=40, first='2026-08-03', last='2026-09-11', values=tuple(self.VALUES))
+        for t in self.TICKERS:
+            playbook = out[t]['playbook']
+            assert out[t].get('status') != 'PLAYBOOK_FAILED', t
+            (level_map,) = out[t]['_persisted_level_maps']
+            reach = ReachTable(ticker=t, **table)
+            for side, trig in (('long', level_map.calls_trigger), ('short', level_map.puts_trigger)):
+                lines = hit_rate_lines(side, trig, reach, 30)
+                assert lines[0] == (f'    Hit rates, {t} trades 2026-08-03 to 2026-09-11 that '
+                                    'reached each price before the stop (40 trades):'), (t, side)
+                assert len(lines) > 1 and '\n'.join(lines) in playbook, (t, side)
+
+    def test_a_failed_read_still_writes_every_brief_with_the_unavailable_line(self, monkeypatch):
+        from tests.lib import strat_2026_11_06 as fx
+        db = self._db()
+        real = db.query
+
+        def query(sql, params=None):
+            if 'FROM plan_excursions' in sql:
+                raise RuntimeError('relation "plan_excursions" does not exist')
+            return real(sql, params)
+
+        db.query = query
+        out = fx.run_briefs(monkeypatch, self._frames(), params_db=db)
+        for t in self.TICKERS:
+            playbook = out[t]['playbook']
+            assert out[t].get('status') != 'PLAYBOOK_FAILED', t
+            assert playbook.count('    Hit rates unavailable (input_unavailable).') == 2, t
+            assert ' stop distances' not in playbook, t
+            assert not any('%' in ln for ln in playbook.split('\n')
+                           if ln.startswith('    Hit rates')), t

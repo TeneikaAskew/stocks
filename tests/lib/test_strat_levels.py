@@ -1413,6 +1413,12 @@ class TestAtrRungsDisplayOnly:
         for t in BRIEF_TICKERS:
             h, b = dict(head[t]), dict(golden[t])
             hp, bp = h.pop('playbook').split('\n'), b.pop('playbook').split('\n')
+            # Target hit rates spec: each plan's hit-rate lines (here the
+            # thin line, the fixture table holding no trades) are dropped
+            # before the comparison; the ATR line stays the only other one.
+            ladder = [ln for ln in hp if ln.startswith('    Hit rates') or ' stop distances' in ln]
+            assert ladder == [f'    Hit rates: too few {t} trades so far (0, at least 30 needed).'] * 2, t
+            hp = [ln for ln in hp if ln not in ladder]
             added = [i for i, ln in enumerate(hp) if ln.startswith('    ATR levels')]
             assert len(added) == 1 and hp[:added[0]] + hp[added[0] + 1:] == bp, t
             assert hp[added[0] - 1].startswith('    Puts (down): '), t
