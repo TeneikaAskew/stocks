@@ -1983,3 +1983,165 @@ def test_bars_held_only_as_displaced_labels_still_make_a_refetch_short(commit):
     assert r["missing"] == ["2026-04-10 (931/961)"]
     assert (r["label_copies"], r["label_dropped"]) == (0, 30)
     swap.assert_not_called()
+
+
+# -- FEAT-DATA-001, bar flags: a replace clears the flags by read span --------
+#
+# Spec: docs/superpowers/specs/2026-11-16-feat-data-001-bar-misprint-flags-r2.md
+# (Design 7)
+
+SPAN_TABLES = ("intraday_bar_flags", "intraday_bar_flag_coverage")
+
+
+def test_the_two_derived_tuples():
+    assert fai.DERIVED_TS_TABLES == (
+        "intraday_flow_15m", "intraday_gex_15m", "realtime_gex_15m",
+        "strat_features_1m", "strat_features_5m", "strat_features_15m",
+        "strat_features_30m", "strat_features_60m", "strat_features_4h",
+        "strat_features_levels_1m", "strat_features_levels_5m",
+        "strat_features_levels_15m", "strat_features_levels_30m",
+        "strat_features_levels_60m", "strat_features_levels_4h",
+    )
+    assert len(fai.DERIVED_TS_TABLES) == 15
+    assert fai.DERIVED_SPAN_TABLES == SPAN_TABLES
+    assert not set(fai.DERIVED_SPAN_TABLES) & set(fai.DERIVED_TS_TABLES)
+
+
+def test_both_swaps_receive_the_span_tables():
+    stored, feb = _february()
+    r, swap = _replace(stored, feb, "SPY", 2018, 2, commit=True)
+    assert r["status"] == fai.REPLACE_OK and swap.call_count == 2
+    window, tail = swap.call_args_list
+    assert window.kwargs["clear_span_tables"] == fai.DERIVED_SPAN_TABLES == SPAN_TABLES
+    assert tail.kwargs["clear_span_tables"] == fai.DERIVED_SPAN_TABLES
+    assert window.kwargs["clear_tables"] == fai.DERIVED_TS_TABLES
+    assert tail.kwargs["clear_tables"] == fai.DERIVED_TS_TABLES
+
+
+@pytest.mark.parametrize("name", ["bad name;", "x; DROP TABLE y", "Intraday_Bar_Flags", ""])
+def test_a_bad_span_table_name_is_refused_before_the_transaction_opens(name):
+    import gcp.database as db
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    with patch.object(db, "get_engine", side_effect=AssertionError("no DB call expected")), \
+         pytest.raises(ValueError, match="bad derived table"):
+        db.replace_rows_in_window(df, "market_data_intraday",
+                                  {"ticker": "SPY", "interval": "1min"}, "ts", start, end,
+                                  clear_span_tables=(name,))
+
+
+def test_span_tables_need_their_clear_key_in_the_key():
+    import gcp.database as db
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    with patch.object(db, "get_engine", side_effect=AssertionError("no DB call expected")), \
+         pytest.raises(ValueError, match="clear_key must be a subset of key"):
+        db.replace_rows_in_window(df, "market_data_intraday", {"interval": "1min"}, "ts",
+                                  start, end, clear_span_tables=SPAN_TABLES)
+
+
+def test_the_span_clear_runs_after_the_ts_clears_in_the_same_transaction():
+    import gcp.database as db
+    engine, conn, tbl = _engine_with(rowcount=1)
+    seen = []
+
+    def execute(stmt, *a, **k):
+        q = " ".join(str(stmt).split())
+        seen.append((q, a[0] if a else None))
+        r = MagicMock()
+        r.rowcount = {"DELETE FROM intraday_flow_15m": 7,
+                      "DELETE FROM intraday_bar_flags": 41}.get(" ".join(q.split()[:3]), 1)
+        r.scalar.return_value = (
+            None if "'intraday_bar_flag_coverage'" in str(a) else "exists")
+        r.scalar_one.return_value = 1
+        return r
+    conn.execute.side_effect = execute
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    cleared = {}
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}):
+        db.replace_rows_in_window(df, "market_data_intraday",
+                                  {"ticker": "SPY", "interval": "1min"}, "ts", start, end,
+                                  verify=lambda c: None,
+                                  clear_tables=("intraday_flow_15m",),
+                                  clear_span_tables=SPAN_TABLES, cleared=cleared)
+    texts = [q for q, _ in seen]
+    span = [(q, p) for q, p in seen if q.startswith("DELETE FROM intraday_bar_flags")]
+    # By read span, not by ts: every row whose [read_start, read_end) overlaps
+    # the swapped window, for the key's clear_key columns.
+    assert [q for q, _ in span] == [
+        "DELETE FROM intraday_bar_flags WHERE ticker = :k_ticker "
+        "AND read_start < :w_end AND read_end > :w_start"]
+    assert span[0][1]["w_start"] == start and span[0][1]["w_end"] == end
+    assert span[0][1]["k_ticker"] == "SPY"
+    # A table that does not exist is skipped.
+    assert not any(q.startswith("DELETE FROM intraday_bar_flag_coverage") for q in texts)
+    assert cleared == {"intraday_flow_15m": 7, "intraday_bar_flags": 41}
+    # After the source DELETE, the INSERT and the ts clears; one transaction.
+    assert texts.index(span[0][0]) > texts.index(
+        "DELETE FROM intraday_flow_15m WHERE ticker = :k_ticker "
+        "AND ts >= :w_start AND ts < :w_end")
+    assert texts.index(span[0][0]) > max(i for i, q in enumerate(texts) if q.startswith("INSERT"))
+    assert engine.begin.call_count == 1
+
+
+def test_without_span_tables_the_swap_issues_no_span_clear():
+    import gcp.database as db
+    engine, tbl, calls = _swap_engine(1)
+    start, end = fai.month_replace_window(2026, 9)
+    df = _rows(pd.DatetimeIndex(["2026-09-24 13:30"], tz="UTC"))
+    with patch.object(db, "get_engine", return_value=engine), \
+         patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}):
+        db.replace_rows_in_window(df, "market_data_intraday",
+                                  {"ticker": "SPY", "interval": "1min"}, "ts", start, end,
+                                  verify=lambda c: None, clear_tables=("intraday_flow_15m",))
+    assert not any("read_start" in q or "read_end" in q for q, _ in calls)
+
+
+def _committed_run_clearing(tmp_path, caplog, span_counts: dict) -> int:
+    """run_replace_months over SPY 2026-09, committed, the swap stubbed to
+    report *span_counts* rows cleared from the span tables it was handed."""
+    import logging
+
+    def fake_replace(df, table, key, ts_col, start, end, **kw):
+        kw["cleared"].update({"strat_features_1m": 390})
+        kw["cleared"].update({t: span_counts[t] for t in kw["clear_span_tables"]})
+        return 961, len(df)
+
+    lst = tmp_path / "l.csv"
+    lst.write_text("SPY,2026-09\n")
+    caplog.set_level(logging.INFO)
+    with patch.object(fai, "get_api_keys", return_value=["k"]), \
+         patch.object(fai.time, "sleep"), \
+         patch.object(fai, "fetch_month",
+                      return_value=(_vendor_month(["2026-09-24"]), fai.FETCH_OK)), \
+         patch.object(fai, "_stored_window_rows",
+                      return_value=_held_rows({date(2026, 9, 24): 1})), \
+         patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
+        return fai.run_replace_months(str(lst), commit=True, limit=None)
+
+
+def _rebuild_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("REBUILD ")]
+
+
+def test_a_committed_replace_prints_rebuild_lines_for_the_span_tables(tmp_path, caplog):
+    code = _committed_run_clearing(
+        tmp_path, caplog, {"intraday_bar_flags": 41, "intraday_bar_flag_coverage": 3})
+    assert code == 0
+    assert _rebuild_lines(caplog) == [
+        "REBUILD intraday_bar_flag_coverage rows_cleared=3",
+        "REBUILD intraday_bar_flags rows_cleared=41",
+        "REBUILD strat_features_1m rows_cleared=390",
+    ]
+
+
+def test_a_span_table_with_no_row_cleared_prints_no_rebuild_line(tmp_path, caplog):
+    code = _committed_run_clearing(
+        tmp_path, caplog, {"intraday_bar_flags": 0, "intraday_bar_flag_coverage": 3})
+    assert code == 0
+    assert _rebuild_lines(caplog) == [
+        "REBUILD intraday_bar_flag_coverage rows_cleared=3",
+        "REBUILD strat_features_1m rows_cleared=390",
+    ]

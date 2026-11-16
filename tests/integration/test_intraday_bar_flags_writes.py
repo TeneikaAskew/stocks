@@ -11,7 +11,7 @@ and QQQ's, in 2011, years before the first stored bar; only that year of
 those two tickers is wiped.
 
 Spec: docs/superpowers/specs/2026-11-16-feat-data-001-bar-misprint-flags-r2.md
-(Design 2, Design 3).
+(Design 2, Design 3, Design 7).
 """
 from __future__ import annotations
 
@@ -21,7 +21,10 @@ from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
+import gcp.database as db
+import gcp.fetchers.fetch_alphavantage_intraday as fai
 import gcp.fetchers.intraday_bar_flags as ibf
+from lib.eastern_time import intraday_month_window
 
 UTC = timezone.utc
 YEAR = (datetime(2011, 1, 1, tzinfo=UTC), datetime(2012, 1, 1, tzinfo=UTC))
@@ -291,3 +294,142 @@ def test_a_month_with_no_bar_writes_an_empty_coverage_row(own_rows, run_sql, exe
     assert pd.isna(row.first_judged_ts) and pd.isna(row.last_judged_ts)
     assert row.session_sha256 == {} and row.bars_basis["rows"] == 0
     assert len(_flags(run_sql)) == 0
+
+
+# -- A replace clears the flags by read span (Design 7) -----------------------
+
+FOUR_MONTHS = [(2011, 3), (2011, 4), (2011, 5), (2011, 6)]
+# One session a month, a Tuesday or a Wednesday, each with one 60 bp low wick
+# at 14:30Z.
+SESSION_OF = {(2011, 3): "2011-03-15", (2011, 4): "2011-04-05",
+              (2011, 5): "2011-05-17", (2011, 6): "2011-06-14"}
+SPY_KEY = {"ticker": "SPY", "interval": "1min"}
+
+
+def _month_start(month: tuple[int, int]) -> pd.Timestamp:
+    return pd.Timestamp(intraday_month_window(*month)[0])
+
+
+def _seed_four_months(seed) -> None:
+    rows = []
+    for ticker in ("SPY", "QQQ"):
+        for day in SESSION_OF.values():
+            session = _bars(ticker, day)
+            session[30]["low"] = 99.40
+            rows += session
+    seed("market_data_intraday", rows)
+
+
+def _judged_four_months(seed, execution) -> None:
+    _seed_four_months(seed)
+    execution("exec-1")
+    out = ibf.flag_months(("SPY", "QQQ"), FOUR_MONTHS, commit=True, now_utc=T1)
+    assert out["months"] == 8 and out["flags"] == 8
+
+
+def _new_bars(day: str, base: float = 200.0) -> pd.DataFrame:
+    """What a refetch returns for the session of *day*: other prices, no wick."""
+    first = pd.Timestamp(f"{day} 14:00", tz="UTC")
+    return pd.DataFrame({
+        "ticker": "SPY", "interval": "1min",
+        "ts": pd.DatetimeIndex([first + timedelta(minutes=k) for k in range(60)]),
+        "open": base, "high": base + 0.05, "low": base, "close": base, "volume": 2000,
+        "data_source": "alphavantage"})
+
+
+def _flag_months_held(run_sql, ticker: str) -> list[pd.Timestamp]:
+    return list(_flags(run_sql, ticker).ts)
+
+
+def _coverage_months(run_sql, ticker: str) -> list[date]:
+    return list(_coverage(run_sql, ticker).month)
+
+
+def test_a_replace_of_the_third_month_clears_its_flags_and_both_neighbours(
+        own_rows, seed, run_sql, execution):
+    _judged_four_months(seed, execution)
+    assert _coverage_months(run_sql, "SPY") == [date(2011, m, 1) for m in (3, 4, 5, 6)]
+    assert len(_flags(run_sql)) == 4
+    march_flags = _flags(run_sql)[lambda f: f.ts < _month_start((2011, 4))]
+    march_coverage = _coverage(run_sql)[lambda c: c.month == date(2011, 3, 1)]
+    qqq_flags, qqq_coverage = _flags(run_sql, "QQQ"), _coverage(run_sql, "QQQ")
+    assert len(march_flags) == 1 and len(qqq_flags) == 4 and len(qqq_coverage) == 4
+
+    start, end = intraday_month_window(2011, 5)
+    cleared: dict = {}
+    deleted, inserted = db.replace_rows_in_window(
+        _new_bars(SESSION_OF[(2011, 5)]), "market_data_intraday", SPY_KEY, "ts", start, end,
+        clear_span_tables=fai.DERIVED_SPAN_TABLES, cleared=cleared)
+
+    assert (deleted, inserted) == (60, 60)
+    # Before any rebuild: April, May and June read the swapped window through
+    # their margins, so their flags and coverage are gone; March is as it was.
+    assert cleared == {"intraday_bar_flags": 3, "intraday_bar_flag_coverage": 3}
+    assert _coverage_months(run_sql, "SPY") == [date(2011, 3, 1)]
+    pd.testing.assert_frame_equal(_coverage(run_sql), march_coverage.reset_index(drop=True))
+    pd.testing.assert_frame_equal(_flags(run_sql), march_flags.reset_index(drop=True))
+    # Nothing of the second ticker.
+    pd.testing.assert_frame_equal(_flags(run_sql, "QQQ"), qqq_flags)
+    pd.testing.assert_frame_equal(_coverage(run_sql, "QQQ"), qqq_coverage)
+
+    # The rebuild: the pass over the months the replace cleared.
+    execution("exec-2")
+    out = ibf.flag_months(("SPY",), FOUR_MONTHS[1:], commit=True, now_utc=T2)
+    assert out["months"] == 3 and out["flags"] == 2 and out["changed"] == 0
+    coverage = _coverage(run_sql)
+    assert list(coverage.month) == [date(2011, m, 1) for m in (3, 4, 5, 6)]
+    assert list(coverage.checked_at) == [_stamp(T1), _stamp(T2), _stamp(T2), _stamp(T2)]
+    assert list(coverage.run_id) == ["exec-1", "exec-2", "exec-2", "exec-2"]
+    # May's new bars hold no wick: its coverage row says 0, never a missing row.
+    may = coverage.iloc[2]
+    assert (may.flags_regular_low, may.bars_in_month, may.bars_judged) == (0, 60, 56)
+    assert [ts.month for ts in _flag_months_held(run_sql, "SPY")] == [3, 4, 6]
+
+
+def test_a_swap_whose_verify_raises_clears_nothing(own_rows, seed, run_sql, execution):
+    _judged_four_months(seed, execution)
+    flags_before, coverage_before = _flags(run_sql), _coverage(run_sql)
+    bars_before = run_sql(
+        "SELECT ts, open, high, low, close, volume FROM market_data_intraday "
+        "WHERE ticker = 'SPY' AND ts >= :s AND ts < :e ORDER BY ts",
+        {"s": YEAR[0], "e": YEAR[1]})
+
+    def refuse(conn) -> None:
+        raise RuntimeError("held rows changed")
+
+    start, end = intraday_month_window(2011, 5)
+    cleared: dict = {}
+    with pytest.raises(RuntimeError, match="held rows changed"):
+        db.replace_rows_in_window(
+            _new_bars(SESSION_OF[(2011, 5)]), "market_data_intraday", SPY_KEY, "ts",
+            start, end, verify=refuse, clear_span_tables=fai.DERIVED_SPAN_TABLES,
+            cleared=cleared)
+
+    assert cleared == {}
+    assert len(flags_before) == 4 and len(coverage_before) == 4
+    pd.testing.assert_frame_equal(_flags(run_sql), flags_before)
+    pd.testing.assert_frame_equal(_coverage(run_sql), coverage_before)
+    pd.testing.assert_frame_equal(run_sql(
+        "SELECT ts, open, high, low, close, volume FROM market_data_intraday "
+        "WHERE ticker = 'SPY' AND ts >= :s AND ts < :e ORDER BY ts",
+        {"s": YEAR[0], "e": YEAR[1]}), bars_before)
+
+
+def test_a_tail_swap_past_a_window_end_clears_that_month_and_the_next(
+        own_rows, seed, run_sql, execution):
+    """The second swap of a replace of April: a strip that starts at April's
+    window end. April's and May's reads hold it; March's and June's do not."""
+    _judged_four_months(seed, execution)
+    start = intraday_month_window(2011, 4)[1]
+    end = start + timedelta(hours=3)
+    cleared: dict = {}
+    db.replace_rows_in_window(
+        _new_bars("2011-05-01").assign(ts=pd.DatetimeIndex(
+            [pd.Timestamp(start) + timedelta(minutes=k) for k in range(60)])),
+        "market_data_intraday", SPY_KEY, "ts", start, end,
+        clear_span_tables=fai.DERIVED_SPAN_TABLES, cleared=cleared)
+
+    assert cleared == {"intraday_bar_flags": 2, "intraday_bar_flag_coverage": 2}
+    assert _coverage_months(run_sql, "SPY") == [date(2011, 3, 1), date(2011, 6, 1)]
+    assert [ts.month for ts in _flag_months_held(run_sql, "SPY")] == [3, 6]
+    assert len(_coverage(run_sql, "QQQ")) == 4 and len(_flags(run_sql, "QQQ")) == 4

@@ -490,6 +490,17 @@ DERIVED_TS_TABLES = (
     "strat_features_levels_60m", "strat_features_levels_4h",
 )
 
+# Tables derived from the bars whose rows record the span of bars they were
+# computed from, in read_start and read_end: the bar flags and their coverage
+# (gcp/fetchers/intraday_bar_flags.py). A flag of a month's last bars rests on
+# the next month's first bars, and a month's coverage row on seven days of
+# each neighbour, so a ts clear of the window would leave rows that describe
+# bars the table no longer holds. The replace deletes every row whose read
+# span overlaps the swapped window, in the same transaction: the replaced
+# month and the month on each side. Afterwards those months read as not
+# judged until --flag-bars-from runs over them.
+DERIVED_SPAN_TABLES = ("intraday_bar_flags", "intraday_bar_flag_coverage")
+
 # Result tables computed FROM the bars that the migration does NOT touch:
 # they hold outcomes people have read, so invalidating them is a separate,
 # approved recompute step, not a side effect of the replace (Codex P1 on
@@ -900,6 +911,7 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
             'ts', start, end, chunksize=5000,
             max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify,
             clear_tables=DERIVED_TS_TABLES, cleared=cleared,
+            clear_span_tables=DERIVED_SPAN_TABLES,
             # The previous month's late bars: this month's refetch cannot
             # return them, so they are left as they are, inserted_at included.
             # Their own month rewrites them (the tail swap below).
@@ -925,6 +937,7 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
             'ts', end, tail_end, chunksize=5000,
             max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify_tail,
             clear_tables=DERIVED_TS_TABLES, cleared=tail_cleared,
+            clear_span_tables=DERIVED_SPAN_TABLES,
             spare_ts=tail_spare)
     except Exception as e:
         # The window's swap has committed, so this month is neither untouched
@@ -1063,7 +1076,9 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
              counts, expected, len(items))
     if rebuild:
         # Derived rows for replaced windows were deleted, not recomputed: the
-        # gaps are explicit until each builder re-runs over the range.
+        # gaps are explicit until each builder re-runs over the range. For
+        # the two bar flag tables the builder is --flag-bars-from over the
+        # replaced months and one month on each side.
         for t in sorted(rebuild):
             log.warning("REBUILD %s rows_cleared=%d", t, rebuild[t])
     if replaced:

@@ -547,6 +547,7 @@ def replace_rows_in_window(
     clear_key: Sequence[str] = ("ticker",),
     cleared: Optional[dict] = None,
     spare_ts: Sequence = (),
+    clear_span_tables: Sequence[str] = (),
 ) -> tuple[int, int]:
     """Atomically replace every row of *table* matching *key* with
     ``start <= ts_col < end`` by the rows of *df*. Returns (deleted, inserted).
@@ -596,6 +597,16 @@ def replace_rows_in_window(
     The returned ``deleted``, the locked-rows check and ``max_delete_ratio``
     all count the rows the DELETE removed, so spared rows are in none of them.
     The ``clear_tables`` deletes still cover the whole window.
+
+    ``clear_span_tables``: tables derived from *table* whose rows record, in
+    ``read_start`` and ``read_end``, the span of source rows they were
+    computed from (the bar flags and their coverage, FEAT-DATA-001). A ``ts``
+    clear is not enough for them: a row keyed outside the window can rest on
+    rows inside it. In the SAME transaction, after the ``clear_tables``
+    deletes, their rows of the ``clear_key`` columns whose
+    ``[read_start, read_end)`` overlaps the window are deleted and counted in
+    ``cleared`` with the others. A bad name is refused before the transaction
+    opens and a table that does not exist is skipped, as for ``clear_tables``.
     """
     import sqlalchemy
     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -606,9 +617,9 @@ def replace_rows_in_window(
             raise ValueError("replace_rows_in_window: start/end must be tz-aware")
     if not key:
         raise ValueError("replace_rows_in_window: key must not be empty")
-    if clear_tables and not set(clear_key) <= set(key):
+    if (clear_tables or clear_span_tables) and not set(clear_key) <= set(key):
         raise ValueError("replace_rows_in_window: clear_key must be a subset of key")
-    for dt in clear_tables:   # interpolated into SQL below
+    for dt in (*clear_tables, *clear_span_tables):   # interpolated into SQL below
         if not _IDENT.match(dt):
             raise ValueError(f"replace_rows_in_window: bad derived table name {dt!r}")
     if not df.empty:
@@ -701,6 +712,18 @@ def replace_rows_in_window(
             n = conn.execute(sqlalchemy.text(
                 f"DELETE FROM {dt} WHERE {d_where} "
                 f"AND {ts_col} >= :w_start AND {ts_col} < :w_end"), params).rowcount
+            if cleared is not None:
+                cleared[dt] = int(n)
+        for dt in clear_span_tables:
+            exists = conn.execute(sqlalchemy.text("SELECT to_regclass(:t)"), {"t": dt}).scalar()
+            if exists is None:
+                continue
+            d_where = " AND ".join(f"{k} = :k_{k}" for k in clear_key)
+            # Every row whose read span overlaps the swapped window, wherever
+            # its own key lies.
+            n = conn.execute(sqlalchemy.text(
+                f"DELETE FROM {dt} WHERE {d_where} "
+                "AND read_start < :w_end AND read_end > :w_start"), params).rowcount
             if cleared is not None:
                 cleared[dt] = int(n)
     logger.info("replace_rows_in_window(%s %s [%s, %s)): deleted %d, inserted %d%s",
