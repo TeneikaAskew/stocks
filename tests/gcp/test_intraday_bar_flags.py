@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
 
 import gcp.database as database
 import gcp.fetchers.intraday_bar_flags as ibf
-from gcp.bar_recompute import UnprovenRows
+from gcp.bar_recompute import UnprovenRows, bars_basis
 from lib.bar_prints import isolated_prints
 from lib.eastern_time import intraday_month_window, utc_to_eastern_naive
 from tests.lib.test_bar_prints import load_session
@@ -95,22 +95,33 @@ class RecordingEngine:
     order. events: "begin", "commit", "rollback" and "close", in order.
     bars: the stored rows of one ticker; the read is answered from them by
     its own start and end. read_errors: one entry per read, an exception to
-    raise or None.
+    raise or None. coverage: the frame the strict coverage read returns;
+    coverage_reads: its (sql, params, kwargs) calls. order: "coverage" and
+    "statement", one per round trip, in the order they were made.
     """
 
     def __init__(self, bars=None, *, isolation="read committed", read_errors=(),
-                 write_result=(0, 0, 0)):
+                 write_result=(0, 0, 0), coverage=None):
         self.bars = bars if bars is not None else pd.DataFrame(columns=READ_COLUMNS)
         self.isolation = isolation
         self.read_errors = list(read_errors)
         self.write_result = write_result
+        self.coverage = coverage if coverage is not None else coverage_rows()
         self.statements: list[tuple[str, dict]] = []
         self.events: list[str] = []
+        self.coverage_reads: list[tuple[str, dict, dict]] = []
+        self.order: list[str] = []
+
+    def query_to_dataframe_strict(self, sql, params=None, **kwargs):
+        self.order.append("coverage")
+        self.coverage_reads.append((sql, dict(params or {}), kwargs))
+        return self.coverage.copy()
 
     def connect(self):
         return _Connection(self)
 
     def answer(self, text, params):
+        self.order.append("statement")
         self.statements.append((text, params))
         if text.startswith("SELECT set_config"):
             return _Result([("120s", self.isolation)])
@@ -133,14 +144,26 @@ class RecordingEngine:
     def reads(self):
         return [(t, p) for t, p in self.statements if "FROM market_data_intraday" in t]
 
+    def writes(self):
+        return [p for t, p in self.statements if "INSERT INTO intraday_bar_flags" in t]
+
+
+def coverage_rows(*rows) -> pd.DataFrame:
+    """What the pass's coverage read returns: one (month, checked_at,
+    session_sha256) per coverage row."""
+    return pd.DataFrame(list(rows), columns=["month", "checked_at", "session_sha256"])
+
 
 @pytest.fixture
 def engine_for(monkeypatch):
-    """Install a RecordingEngine as gcp.database.get_engine and return it."""
+    """Install a RecordingEngine as gcp.database's engine and strict read, and
+    return it."""
 
     def install(bars=None, **kwargs):
         engine = RecordingEngine(bars, **kwargs)
         monkeypatch.setattr(database, "get_engine", lambda: engine)
+        monkeypatch.setattr(database, "query_to_dataframe_strict",
+                            engine.query_to_dataframe_strict)
         return engine
 
     return install
@@ -411,3 +434,285 @@ def test_month_edge_bar_belongs_to_one_month():
     assert may_counts["bars_judged"] == 28 and june_counts["bars_judged"] == 29
     assert may_counts["last_judged_ts"] == pd.Timestamp("2023-06-01 01:59:00", tz="UTC")
     assert june_counts["first_judged_ts"] == pd.Timestamp(edge, tz="UTC")
+
+
+# Task 6: the pass locks, writes and compares
+
+
+CONFIG_SQL = ("SELECT set_config('lock_timeout', '120s', true), "
+              "current_setting('transaction_isolation')")
+LOCK_SQL = "SELECT pg_advisory_xact_lock(:k)"
+NIGHT_ONE = datetime(2026, 11, 12, 2, 0, 5, tzinfo=UTC)
+NIGHT_TWO = datetime(2026, 11, 13, 2, 0, 7, tzinfo=UTC)
+
+
+def changed_messages(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records
+            if r.getMessage().startswith("BARS-CHANGED")]
+
+
+def day_sha(bars: pd.DataFrame, utc_day: str) -> str:
+    """The digest of the rows stamped on one UTC day. Every bar these tests
+    write sits at 14:00Z to 15:00Z, where the UTC and the Eastern date agree."""
+    return bars_basis(bars[bars.ts.dt.strftime("%Y-%m-%d") == utc_day])["sha256"]
+
+
+def test_lock_key():
+    assert ibf.flag_lock_key("SPY", (2023, 5)) == 2323874143540971683
+    assert ibf.LOCK_TIMEOUT == "120s"
+
+    months = [(year, month) for year in range(2015, 2027) for month in range(1, 13)]
+    months = [m for m in months if m <= (2026, 11)]
+    assert len(months) == 143
+    keys = [ibf.flag_lock_key(ticker, m) for ticker in ("SPY", "QQQ", "IWM") for m in months]
+    assert len(set(keys)) == 429
+    assert all(type(k) is int and -2**63 <= k < 2**63 for k in keys)
+
+
+def test_commit_issues_four_statements_in_order(engine_for):
+    engine = engine_for(low_wick(minutes("2023-05-10 14:00", 60), "2023-05-10 14:30:00"))
+    out = ibf.flag_months(("SPY",), [(2023, 5)], commit=True, now_utc=NIGHT_ONE)
+
+    texts = engine.texts()
+    assert len(texts) == 4
+    assert texts[0] == CONFIG_SQL
+    assert texts[1] == LOCK_SQL
+    assert engine.statements[1][1] == {"k": 2323874143540971683}
+    assert engine.statements[1][1] == {"k": ibf.flag_lock_key("SPY", (2023, 5))}
+    assert texts[2] == READ_SQL
+    assert "pg_advisory" not in texts[2] and "pg_advisory" not in texts[3]
+    assert texts[3] == ibf.write_month_sql()
+    for clause in ("DELETE FROM intraday_bar_flags", "INSERT INTO intraday_bar_flags (",
+                   "INSERT INTO intraday_bar_flag_coverage (",
+                   "ON CONFLICT (ticker, interval, ts, side, rule_version) DO UPDATE",
+                   "ON CONFLICT (ticker, interval, ts, rule_version) DO UPDATE"):
+        assert texts[3].count(clause) == 1, clause
+    assert "market_data_intraday" not in texts[3]
+    assert "detected_at = " not in texts[3]          # an update keeps the first pass's time
+    assert engine.events == ["begin", "commit", "close"]
+    assert out["months"] == 1 and out["flags"] == 1 and out["changed"] == 0
+
+    # One strict coverage read for the ticker, before its first month.
+    assert engine.order == ["coverage"] + ["statement"] * 4
+    (sql, params, kwargs), = engine.coverage_reads
+    assert "FROM intraday_bar_flag_coverage" in sql and "interval = '1min'" in sql
+    assert params == {"t": "SPY", "v": "isolated-print-v1",
+                      "first": datetime(2023, 5, 1, 2, tzinfo=UTC),
+                      "last": datetime(2023, 5, 1, 2, tzinfo=UTC)}
+    assert kwargs == {}
+
+
+def test_commit_statements_of_two_tickers_and_two_months(engine_for):
+    engine = engine_for(minutes("2023-05-10 14:00", 60))
+    ibf.flag_months(("SPY", "QQQ"), [(2023, 5), (2023, 6)], commit=True, now_utc=NIGHT_ONE)
+
+    assert engine.order == (["coverage"] + ["statement"] * 8) * 2
+    assert engine.texts() == [CONFIG_SQL, LOCK_SQL, READ_SQL, ibf.write_month_sql()] * 4
+    locks = [p["k"] for t, p in engine.statements if t == LOCK_SQL]
+    assert locks == [ibf.flag_lock_key(ticker, month) for ticker in ("SPY", "QQQ")
+                     for month in ((2023, 5), (2023, 6))]
+    assert [p["t"] for _, p, _ in engine.coverage_reads] == ["SPY", "QQQ"]
+    assert all(p["first"] == datetime(2023, 5, 1, 2, tzinfo=UTC)
+               and p["last"] == datetime(2023, 6, 1, 2, tzinfo=UTC)
+               for _, p, _ in engine.coverage_reads)
+    assert engine.events == ["begin", "commit", "close"] * 4
+
+
+def test_dry_run_reads_the_coverage_once_a_ticker(engine_for):
+    engine = engine_for(minutes("2023-05-10 14:00", 60))
+    ibf.flag_months(("SPY",), [(2023, 5), (2023, 6)], commit=False)
+
+    assert engine.order == ["coverage", "statement", "statement"]
+    assert engine.texts() == [READ_SQL, READ_SQL]
+    assert engine.events == ["begin", "rollback", "close"] * 2
+
+
+def test_other_isolation_raises_before_the_lock(engine_for):
+    engine = engine_for(minutes("2023-05-10 14:00", 60), isolation="repeatable read")
+
+    with pytest.raises(RuntimeError, match="repeatable read"):
+        ibf.flag_months(("SPY",), [(2023, 5)], commit=True, now_utc=NIGHT_ONE)
+    assert engine.texts() == [CONFIG_SQL]
+    assert engine.events == ["begin", "rollback", "close"]
+
+
+def test_a_failing_month_leaves_earlier_months_written(engine_for):
+    error = ConnectionError("connection refused")
+    engine = engine_for(minutes("2023-05-10 14:00", 60), read_errors=[None, error, None])
+
+    with pytest.raises(ConnectionError) as raised:
+        ibf.flag_months(("SPY",), [(2023, 5), (2023, 6), (2023, 7)], commit=True,
+                        now_utc=NIGHT_ONE)
+    assert raised.value is error
+    # May committed; June stopped at its read; July was not started.
+    assert engine.events == ["begin", "commit", "close", "begin", "rollback", "close"]
+    assert engine.texts() == [CONFIG_SQL, LOCK_SQL, READ_SQL, ibf.write_month_sql(),
+                              CONFIG_SQL, LOCK_SQL, READ_SQL]
+    assert [w["month"] for w in engine.writes()] == [date(2023, 5, 1)]
+
+
+def test_coverage_row_holds_the_read_window_and_the_session_digests(engine_for, monkeypatch):
+    monkeypatch.setenv("CLOUD_RUN_EXECUTION", "fetch-alphavantage-intraday-abc12")
+    # The third group crosses midnight UTC inside one Eastern evening
+    # (19:30 to 20:29 ET on 2023-05-18), and the last sits in June, inside
+    # May's read and outside its window.
+    bars = stack(minutes("2023-05-10 14:00", 60), minutes("2023-05-11 14:00", 60),
+                 minutes("2023-05-18 23:30", 60), minutes("2023-06-02 14:00", 60))
+    low_wick(bars, "2023-05-11 14:30:00")
+    engine = engine_for(bars)
+    ibf.flag_months(("SPY",), [(2023, 5)], commit=True, now_utc=NIGHT_ONE)
+
+    (written,) = engine.writes()
+    assert written["read_start"] == datetime(2023, 4, 24, 2, tzinfo=UTC)
+    assert written["read_end"] == datetime(2023, 6, 8, 2, tzinfo=UTC)
+    assert written["m_start"] == datetime(2023, 5, 1, 2, tzinfo=UTC)
+    assert written["m_end"] == datetime(2023, 6, 1, 2, tzinfo=UTC)
+    assert written["month"] == date(2023, 5, 1)
+    assert written["t"] == "SPY" and written["v"] == "isolated-print-v1"
+    assert written["params"] == {"neighbours": 2, "scale_bars": 61, "scale_multiple": 6.0,
+                                 "floor_bp": 50.0}
+    assert written["now"] == NIGHT_ONE
+    assert written["run_id"] == "fetch-alphavantage-intraday-abc12"
+    assert written["code_version"] == {"git_commit": None, "git_dirty": None, "built_at": None}
+
+    assert written["bars_basis"] == bars_basis(bars)
+    assert written["bars_basis"]["rows"] == 240
+    assert list(written["session_sha256"]) == ["2023-05-10", "2023-05-11", "2023-05-18",
+                                               "2023-06-02"]
+    for n, day in enumerate(written["session_sha256"]):
+        rows = bars.iloc[60 * n:60 * (n + 1)]
+        assert written["session_sha256"][day] == bars_basis(rows)["sha256"], day
+    assert len(set(written["session_sha256"].values())) == 4
+
+    # The first two bars of the read have no two bars before them.
+    assert written["bars_in_month"] == 180 and written["bars_judged"] == 178
+    assert written["first_judged_ts"] == datetime(2023, 5, 10, 14, 2, tzinfo=UTC)
+    assert written["last_judged_ts"] == datetime(2023, 5, 19, 0, 29, tzinfo=UTC)
+    assert (written["flags_regular_high"], written["flags_regular_low"],
+            written["flags_extended_high"], written["flags_extended_low"]) == (0, 1, 0, 0)
+    (flag,) = written["flags"]
+    assert flag == {
+        "ts": "2023-05-11T14:30:00+00:00", "side": "low", "print_kind": "wick",
+        "session_part": "regular", "observed": 99.40, "reference": 100.0,
+        "bound": 99.50, "scale": pytest.approx(0.05), "excess_bp": pytest.approx(60.0),
+    }
+
+
+def _october() -> pd.DataFrame:
+    return stack(*[minutes(f"2026-10-{day} 14:00", 60) for day in (13, 14, 15, 16)])
+
+
+def _earlier_row(bars: pd.DataFrame, **overrides) -> pd.DataFrame:
+    """The coverage row of an earlier pass over the 13th to the 15th."""
+    shas = {f"2026-10-{day}": day_sha(bars, f"2026-10-{day}") for day in (13, 14, 15)}
+    shas.update(overrides)
+    return coverage_rows(
+        (date(2026, 10, 1), pd.Timestamp("2026-10-16 01:00:05", tz="UTC"), shas))
+
+
+def test_bars_changed(engine_for, caplog):
+    bars = _october()
+
+    # One date both hold differs.
+    engine_for(bars, coverage=_earlier_row(bars, **{"2026-10-14": "0" * 64}))
+    with caplog.at_level(logging.INFO, logger=ibf.__name__):
+        out = ibf.flag_months(("SPY",), [(2026, 10)], commit=False)
+    assert changed_messages(caplog) == [
+        "BARS-CHANGED SPY 2026-10 sessions=2026-10-14 since=2026-10-16T01:00:05+00:00"]
+    assert out["changed"] == 1
+
+    # With commit, the write's own counts: 3 inserted and 2 deleted (1 updated).
+    caplog.clear()
+    engine = engine_for(bars, coverage=_earlier_row(bars, **{"2026-10-14": "0" * 64}),
+                        write_result=(2, 3, 1))
+    with caplog.at_level(logging.INFO, logger=ibf.__name__):
+        out = ibf.flag_months(("SPY",), [(2026, 10)], commit=True, now_utc=NIGHT_ONE)
+    assert changed_messages(caplog) == [
+        "BARS-CHANGED SPY 2026-10 sessions=2026-10-14 since=2026-10-16T01:00:05+00:00 "
+        "inserted=3 deleted=2"]
+    assert out["changed"] == 1
+    assert len(engine.writes()) == 1
+
+    # A date the earlier row holds and the read does not is named too.
+    caplog.clear()
+    engine_for(bars, coverage=_earlier_row(
+        bars, **{"2026-10-09": "f" * 64, "2026-10-14": "0" * 64}))
+    with caplog.at_level(logging.INFO, logger=ibf.__name__):
+        ibf.flag_months(("SPY",), [(2026, 10)], commit=False)
+    assert changed_messages(caplog) == [
+        "BARS-CHANGED SPY 2026-10 sessions=2026-10-09,2026-10-14 "
+        "since=2026-10-16T01:00:05+00:00"]
+
+    # A date only the read holds (the 16th) was appended: nothing is logged.
+    caplog.clear()
+    engine_for(bars, coverage=_earlier_row(bars))
+    with caplog.at_level(logging.INFO, logger=ibf.__name__):
+        out = ibf.flag_months(("SPY",), [(2026, 10)], commit=False)
+    assert changed_messages(caplog) == []
+    assert out["changed"] == 0
+
+    # No earlier row for the month, or one for another month: nothing to compare.
+    caplog.clear()
+    other_month = _earlier_row(bars, **{"2026-10-14": "0" * 64})
+    other_month["month"] = [date(2026, 9, 1)]
+    engine_for(bars, coverage=other_month)
+    with caplog.at_level(logging.INFO, logger=ibf.__name__):
+        out = ibf.flag_months(("SPY",), [(2026, 10)], commit=False)
+    assert changed_messages(caplog) == [] and out["changed"] == 0
+
+
+# Review Focus: the live edge, an empty month and a short read
+
+
+def test_live_edge_night_over_night(engine_for, caplog):
+    # Night one: the month ends at bar N, 2026-11-11 14:59Z. Bar N-1 is a
+    # 60 bp wick with one bar after it, so it cannot be judged yet.
+    stored = stack(minutes("2026-11-10 14:00", 60), minutes("2026-11-11 14:00", 60))
+    low_wick(stored, "2026-11-11 14:58:00")
+    first = engine_for(stored)
+    ibf.flag_months(("SPY",), [(2026, 11)], commit=True, now_utc=NIGHT_ONE)
+    (one,) = first.writes()
+    assert one["flags"] == []
+    assert one["last_judged_ts"] == datetime(2026, 11, 11, 14, 57, tzinfo=UTC)
+    assert list(one["session_sha256"]) == ["2026-11-10", "2026-11-11"]
+
+    # Night two: the same bars and one more session.
+    grown = stack(stored, minutes("2026-11-12 14:00", 60))
+    second = engine_for(grown, coverage=coverage_rows(
+        (one["month"], pd.Timestamp(one["now"]), one["session_sha256"])),
+        write_result=(0, 1, 0))
+    with caplog.at_level(logging.INFO, logger=ibf.__name__):
+        out = ibf.flag_months(("SPY",), [(2026, 11)], commit=True, now_utc=NIGHT_TWO)
+    (two,) = second.writes()
+
+    assert changed_messages(caplog) == [] and out["changed"] == 0
+    assert two["last_judged_ts"] == datetime(2026, 11, 12, 14, 57, tzinfo=UTC)
+    assert two["last_judged_ts"] > one["last_judged_ts"]
+    assert [(f["ts"], f["side"]) for f in two["flags"]] == [
+        ("2026-11-11T14:58:00+00:00", "low")]
+    assert list(two["session_sha256"]) == ["2026-11-10", "2026-11-11", "2026-11-12"]
+    assert two["session_sha256"]["2026-11-11"] == one["session_sha256"]["2026-11-11"]
+
+
+def test_month_with_no_bar(engine_for):
+    engine = engine_for()
+    out = ibf.flag_months(("IWM",), [(2023, 5)], commit=True, now_utc=NIGHT_ONE)
+
+    (written,) = engine.writes()
+    assert written["flags"] == []
+    assert written["bars_in_month"] == 0 and written["bars_judged"] == 0
+    assert written["first_judged_ts"] is None and written["last_judged_ts"] is None
+    assert written["session_sha256"] == {}
+    assert written["bars_basis"]["rows"] == 0
+    assert out == {"months": 1, "flags": 0, "changed": 0, "seconds": out["seconds"]}
+
+
+def test_short_read_judges_nothing(engine_for):
+    engine = engine_for(low_wick(minutes("2023-05-10 14:00", 4), "2023-05-10 14:01:00"))
+    out = ibf.flag_months(("SPY",), [(2023, 5)], commit=True, now_utc=NIGHT_ONE)
+
+    (written,) = engine.writes()
+    assert written["flags"] == []
+    assert written["bars_in_month"] == 4 and written["bars_judged"] == 0
+    assert written["first_judged_ts"] is None and written["last_judged_ts"] is None
+    assert out["flags"] == 0
