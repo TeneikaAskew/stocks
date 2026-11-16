@@ -354,9 +354,12 @@ class TestNoPersist:
 # upsert. A field that starts to differ fails the parity tests below until it
 # is fixed or named here.
 WRITE_ONLY_FIELDS = ()
-# Not a write and not a decision: the wall clock at which build_session_levels
-# ran, which differs between any two runs, dry or not.
-RUN_CLOCK_FIELDS = (('level_basis', 'built_at'),)
+# Not a write and not a decision: the wall clock of the run, which differs
+# between any two runs, dry or not. level_basis.built_at is when
+# build_session_levels ran; the Strat observation time is the brief's own
+# 08:30 ET on a replay and the wall clock on a live run ('*' is every frame).
+RUN_CLOCK_FIELDS = (('level_basis', 'built_at'), ('strat_observation_ts',),
+                    ('tf_continuity_frames', '*', 'observation_ts'))
 STALE_TICKER = 'QQQ'
 STALE_LAST_BAR = pd.Timestamp('2026-10-30')     # four sessions short of 2026-11-05
 # What a dry run of the three tickers executes in a new process, every one a
@@ -387,21 +390,29 @@ def _stale_playbook_read(monkeypatch, db, ticker: str = STALE_TICKER) -> None:
     monkeypatch.setattr(DataLoader, 'load_daily', load_daily)
 
 
-def _stale_session_count(monkeypatch, ticker: str = STALE_TICKER) -> list:
+def _stale_session_count(monkeypatch, ticker: str = STALE_TICKER, *, failing=None) -> list:
     """The stale-source refusal for one ticker. On real frames two earlier
     gates stop a stale frame first (the brief's data freshness gate, and
     build_session_levels, which gives a stale frame no levels, and a level map
     with no levels is never refused), so the refusal is forced where it is
     decided: the session count the check reads answers three sessions too many
-    for `ticker`, whose turn is its place in the run's ticker order. Returns
-    the list of counts the check was given, one a ticker."""
+    for `ticker`, whose turn is its place in the run's ticker order. For
+    `failing`, the count raises as an unavailable calendar does, which marks
+    that ticker PLAYBOOK_FAILED. Returns the list of counts the check was
+    given, one a ticker it answered."""
     import lib.strat_levels as sl
     real = getattr(sl._trading_days_between, '__wrapped__', sl._trading_days_between)
     turn = dry.TICKERS.index(ticker)
     counts = []
 
+    fail_turn = dry.TICKERS.index(failing) if failing else None
+    asked = []
+
     def count(source_ts, ref_ts):
-        n = real(source_ts, ref_ts) + (3 if len(counts) == turn else 0)
+        asked.append(None)
+        if len(asked) - 1 == fail_turn:
+            raise RuntimeError('NYSE calendar unavailable')
+        n = real(source_ts, ref_ts) + (3 if len(asked) - 1 == turn else 0)
         counts.append(n)
         return n
 
@@ -417,23 +428,51 @@ def _params():
     return legacy_db(list(dry.TICKERS))
 
 
-def _run(monkeypatch, argv, params_db, *, stale_read=None, stale_count=None):
+EXISTS_SQL = 'SELECT 1 FROM premarket_analysis WHERE'
+HISTORY_HEAD = '--- history rows (no-persist) ---'
+HISTORY_END = '--- end history rows (no-persist) ---'
+DECISION = 'no-persist: canonical '
+# A live dry run adds one row_exists SELECT for each canonical row it built.
+LIVE_DRY_RUN_STATEMENTS = DRY_RUN_STATEMENTS + len(dry.TICKERS)
+
+
+def _run(monkeypatch, argv, params_db, *, stale_read=None, stale_count=None,
+         failing=None, live_with_rows_for=None):
+    """One brief run through main. `live_with_rows_for` makes it a live run
+    (no BRIEF_AS_OF, the exchange's date read as the fixture's session) in
+    which premarket_analysis already holds a live row for those tickers."""
     from lib.strategies import calibration
     calibration._latest_calibration.cache_clear()
-    db = dry.RecordingDb(dry.brief_frames(), params_db=params_db)
-    pb = dry.install(monkeypatch, db)
+    routes = ()
+    if live_with_rows_for is not None:
+        def exists(_sql, params):
+            hit = params['ticker'] in live_with_rows_for
+            return pd.DataFrame({'?column?': [1]} if hit else {})
+        routes = ((EXISTS_SQL, exists),)
+    db = dry.RecordingDb(dry.brief_frames(), params_db=params_db, routes=routes)
+    pb = dry.install(monkeypatch, db, as_of=None if live_with_rows_for is not None else dry.SESSION)
+    if live_with_rows_for is not None:
+        monkeypatch.setattr(pb, 'market_today', lambda: _date(2026, 11, 6))
     if stale_read:
         _stale_playbook_read(monkeypatch, db, stale_read)
-    db.session_counts = _stale_session_count(monkeypatch, stale_count) if stale_count else None
+    db.session_counts = (_stale_session_count(monkeypatch, stale_count, failing=failing)
+                         if stale_count else None)
     code = dry.run_main(pb, argv)
     return pb, db, code
 
 
 def _decisions(entry: dict) -> dict:
+    def without(node, path):
+        if not isinstance(node, dict):
+            return node
+        head, rest = path[0], path[1:]
+        if not rest:
+            return {k: v for k, v in node.items() if k != head}
+        return {k: without(v, rest) if head in ('*', k) else v for k, v in node.items()}
+
     out = {k: v for k, v in _plain(entry).items() if k not in WRITE_ONLY_FIELDS}
-    for outer, inner in RUN_CLOCK_FIELDS:
-        if isinstance(out.get(outer), dict):
-            out[outer] = {k: v for k, v in out[outer].items() if k != inner}
+    for path in RUN_CLOCK_FIELDS:
+        out = without(out, path)
     return out
 
 
@@ -551,6 +590,98 @@ class TestDryRunDecides:
                 'strat_levels persist failed: RuntimeError: NYSE calendar unavailable')
         _assert_same_brief(dried, real)
         _assert_wrote_nothing(db)
+
+    def test_it_reports_which_rows_a_real_run_would_write(self, monkeypatch, capsys):
+        """A live run without --update leaves a canonical row that already
+        exists alone. The dry run asks the same question with the same
+        statement and prints the answer for every canonical row it built."""
+        params = _params()
+        _pb, real_db, real_code = _run(monkeypatch, (), params, live_with_rows_for={'QQQ'})
+        capsys.readouterr()
+        _pb, dry_db, dry_code = _run(monkeypatch, ('--no-persist',), params,
+                                     live_with_rows_for={'QQQ'})
+        out = capsys.readouterr().out
+        assert (real_code, dry_code) == (0, 0)
+
+        # What the real run did, from its record.
+        (table, canon), = real_db.frames['upsert_dataframe']
+        assert table == 'premarket_analysis'
+        written = list(canon['ticker'])
+        assert written == ['SPY', 'IWM'] and set(canon['run_kind']) == {'live'}
+        real_asked = real_db.matching(EXISTS_SQL)
+        assert [p['ticker'] for _t, p in real_asked] == list(dry.TICKERS)
+        assert all(p['run_kind'] == 'live' and str(p['analysis_date']) == dry.SESSION
+                   for _t, p in real_asked)
+
+        # The dry run asked the same, and wrote nothing.
+        assert dry_db.matching(EXISTS_SQL) == real_asked
+        _assert_wrote_nothing(dry_db)
+        assert len(dry_db.statements) == LIVE_DRY_RUN_STATEMENTS
+        real_reads = [t for t in real_db.texts if t not in real_db.not_reads()]
+        assert dry_db.texts == real_reads
+
+        decisions = dict(line[len(DECISION):].split(': ', 1)
+                         for line in out.splitlines() if line.startswith(DECISION))
+        assert decisions == {
+            ticker: 'WRITE' if ticker in written else 'SKIP (row already exists)'
+            for ticker in dry.TICKERS}
+        assert decisions['QQQ'].startswith('SKIP') and decisions['SPY'] == 'WRITE'
+        # The rows section is still every canonical row built, parseable.
+        printed = json.loads(out.split(ROWS_HEAD, 1)[1].split(ROWS_END, 1)[0])
+        assert [r['ticker'] for r in printed] == list(dry.TICKERS)
+        _assert_same_brief(dry_db.briefs[0], real_db.briefs[0])
+
+    def test_a_replay_overwrites_and_asks_nothing(self, monkeypatch, capsys):
+        """BRIEF_AS_OF implies the overwrite in a run that writes, so the dry
+        run of a replay reports WRITE for every row and reads no row."""
+        params = _params()
+        _pb, real_db, _code = _run(monkeypatch, (), params)
+        capsys.readouterr()
+        _pb, dry_db, _code = _run(monkeypatch, ('--no-persist',), params)
+        out = capsys.readouterr().out
+        (_table, canon), = real_db.frames['upsert_dataframe']
+        assert list(canon['ticker']) == list(dry.TICKERS)
+        assert real_db.matching(EXISTS_SQL) == [] and dry_db.matching(EXISTS_SQL) == []
+        decisions = [line[len(DECISION):] for line in out.splitlines()
+                     if line.startswith(DECISION)]
+        assert decisions == [f'{ticker}: WRITE' for ticker in dry.TICKERS]
+
+    def test_the_history_notes_are_the_real_runs(self, monkeypatch, capsys):
+        """QQQ is refused as stale and IWM's check fails: the notes the dry
+        run prints with its history rows are the notes the real run wrote."""
+        params = _params()
+        kw = dict(stale_count=STALE_TICKER, failing='IWM')
+        _pb, real_db, real_code = _run(monkeypatch, (), params, **kw)
+        capsys.readouterr()
+        _pb, dry_db, dry_code = _run(monkeypatch, ('--no-persist',), params, **kw)
+        out = capsys.readouterr().out
+        assert (real_code, dry_code) == (0, 0)
+
+        (table, hist), = real_db.frames['bulk_insert_dataframe']
+        assert table == 'premarket_analysis_history'
+        real_rows = {r['ticker']: r for r in _records(hist.to_dict('records'))}
+        assert real_rows['SPY']['notes'] is None
+        assert real_rows['QQQ']['notes'].startswith('STALE_DAILY_DATA: data_as_of=')
+        assert real_rows['IWM']['notes'] == (
+            'PLAYBOOK_FAILED: strat_levels persist failed: '
+            'RuntimeError: NYSE calendar unavailable')
+
+        assert out.count(HISTORY_HEAD) == 1 and out.count(HISTORY_END) == 1
+        printed = json.loads(out.split(HISTORY_HEAD, 1)[1].split(HISTORY_END, 1)[0])
+        assert [r['ticker'] for r in printed] == list(dry.TICKERS)
+        for row in _records(printed):
+            real_row = real_rows[row['ticker']]
+            assert set(row) == set(real_row)
+            for field in ('notes', 'run_kind', 'triggered_by'):
+                assert row[field] == real_row[field], (row['ticker'], field)
+        # Only SPY has a canonical row, in both.
+        (_t, canon), = real_db.frames['upsert_dataframe']
+        assert list(canon['ticker']) == ['SPY']
+        decisions = [line[len(DECISION):] for line in out.splitlines()
+                     if line.startswith(DECISION)]
+        assert decisions == ['SPY: WRITE']
+        _assert_wrote_nothing(dry_db)
+        assert len(dry_db.statements) == DRY_RUN_STATEMENTS
 
     def test_one_check_two_callers(self):
         """persist_level_map refuses through the function the dry run calls,

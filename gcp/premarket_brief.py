@@ -3987,6 +3987,73 @@ def build_persist_rows(brief: dict) -> PersistRows:
                        stale_data=frozenset(stale_data))
 
 
+def history_row_note(brief: dict, built: PersistRows, row: dict) -> Optional[str]:
+    """The `notes` text of one premarket_analysis_history row: why a
+    STALE_DAILY_DATA or PLAYBOOK_FAILED ticker has no canonical row, None for
+    any other ticker. ONE function for persist_to_cloud_sql and the dry run."""
+    ticker = row['ticker']
+    if ticker in built.stale_data:
+        data = brief['tickers'][ticker]
+        gap = data.get('freshness_gap_days')
+        return (
+            f"STALE_DAILY_DATA: data_as_of={data.get('data_as_of')}; "
+            f"gap={gap} session(s); analysis skipped to avoid "
+            f"republishing stale signals (Track B audit G.P0.4)."
+        )
+    if ticker in built.playbook_failed:
+        return f"PLAYBOOK_FAILED: {brief['tickers'][ticker].get('playbook_error')}"
+    return None
+
+
+def build_history_rows(brief: dict, built: PersistRows, run_kind: str,
+                       triggered_by: Optional[str],
+                       late_note: Optional[str] = None) -> list:
+    """The premarket_analysis_history rows of one run: every built row with
+    its run_kind, triggered_by and notes. `late_note` is the late slot's
+    LATE_SLOT_APPLIED or LATE_SLOT_NOT_APPLIED text, put in front of the
+    ticker's own stale or failed note when it has one. It makes no query.
+    ONE function for persist_to_cloud_sql and the dry run."""
+    def _notes(row):
+        own = history_row_note(brief, built, row)
+        if late_note is None:
+            return own
+        return f"{late_note}; {own}" if own else late_note
+
+    return [
+        {**row, 'run_kind': run_kind, 'triggered_by': triggered_by,
+         'notes': _notes(row)}
+        for row in built.rows
+    ]
+
+
+def plan_canonical_writes(canonical_rows: list, allow_update: bool) -> tuple[list, list]:
+    """Which canonical rows a run writes: (rows to write, tickers skipped).
+
+    With `allow_update` every row is written and nothing is read. Without
+    it, one `row_exists` SELECT a row decides: a row already in
+    premarket_analysis for (analysis_date, ticker) is skipped, which protects
+    the canonical morning row. A live run asks only for a live row, so a
+    replay's row does not block the day's first live brief; a replay asks
+    for any row. ONE function for persist_to_cloud_sql, which then writes the
+    first list, and the dry run, which prints the decision and writes
+    nothing."""
+    if allow_update:
+        return list(canonical_rows), []
+    from gcp.database import row_exists
+    canonical_run_kind = 'replay' if _as_of_override() else 'live'
+    exists_key = {'run_kind': 'live'} if canonical_run_kind == 'live' else {}
+    rows_to_write = []
+    skipped = []
+    for row in canonical_rows:
+        if row_exists('premarket_analysis',
+                      {'analysis_date': row['analysis_date'],
+                       'ticker': row['ticker'], **exists_key}):
+            skipped.append(row['ticker'])
+        else:
+            rows_to_write.append(row)
+    return rows_to_write, skipped
+
+
 def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
                          run_kind: str = 'scheduled',
                          triggered_by: Optional[str] = None,
@@ -4056,35 +4123,12 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
     # brief detected staleness and skipped". Pre-W6 rows have NULL
     # notes; future stale rows will carry the gap-in-sessions
     # descriptor.
-    def _row_notes(row):
-        ticker = row['ticker']
-        if ticker in stale_data:
-            data = brief['tickers'][ticker]
-            gap = data.get('freshness_gap_days')
-            return (
-                f"STALE_DAILY_DATA: data_as_of={data.get('data_as_of')}; "
-                f"gap={gap} session(s); analysis skipped to avoid "
-                f"republishing stale signals (Track B audit G.P0.4)."
-            )
-        if ticker in playbook_failed:
-            return f"PLAYBOOK_FAILED: {brief['tickers'][ticker].get('playbook_error')}"
-        return None
-
+    # The text is history_row_note's, through build_history_rows.
     def _insert_history(late_note: Optional[str] = None) -> int:
         """The history rows of this run (append-only). `late_note` is the
         late slot's LATE_SLOT_APPLIED or LATE_SLOT_NOT_APPLIED text, put in
         front of the ticker's own stale or failed note when it has one."""
-        def _notes(row):
-            own = _row_notes(row)
-            if late_note is None:
-                return own
-            return f"{late_note}; {own}" if own else late_note
-
-        history_rows = [
-            {**row, 'run_kind': run_kind, 'triggered_by': triggered_by,
-             'notes': _notes(row)}
-            for row in rows
-        ]
+        history_rows = build_history_rows(brief, built, run_kind, triggered_by, late_note)
         history_df = pd.DataFrame(history_rows)
         n_hist = bulk_insert_dataframe(history_df, 'premarket_analysis_history')
         logger.info("Inserted %d rows into premarket_analysis_history (run_kind=%s)",
@@ -4164,7 +4208,6 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
     # empty values.
     # The canonical rows and their run_kind ('replay' under BRIEF_AS_OF,
     # 'live' otherwise) are build_persist_rows' own.
-    canonical_run_kind = 'replay' if _as_of_override() else 'live'
     canonical_rows = built.canonical
     if playbook_failed:
         logger.warning(
@@ -4179,8 +4222,12 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             len(stale_data), ', '.join(sorted(stale_data)))
     if not canonical_rows:
         return 0
+    # Which rows this run writes is plan_canonical_writes' decision, shared
+    # with the dry run: every row under allow_update (no read), else the
+    # rows that do not exist yet (see the default path below).
+    rows_to_write, skipped = plan_canonical_writes(canonical_rows, allow_update)
     if allow_update:
-        df = pd.DataFrame(canonical_rows)
+        df = pd.DataFrame(rows_to_write)
         n = upsert_dataframe(df, 'premarket_analysis', ['analysis_date', 'ticker'])
         logger.info("UPSERTED %d rows to premarket_analysis (allow_update=True)", n)
         return n
@@ -4196,16 +4243,6 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
     # DO NOTHING, in the sibling writer (Codex on #1098 round 4). An
     # existing live row is still protected: only --update / BRIEF_UPDATE
     # overwrite one, and that is the explicit operator path.
-    exists_key = {'run_kind': 'live'} if canonical_run_kind == 'live' else {}
-    rows_to_write = []
-    skipped = []
-    for row in canonical_rows:
-        if row_exists('premarket_analysis',
-                      {'analysis_date': row['analysis_date'],
-                       'ticker': row['ticker'], **exists_key}):
-            skipped.append(row['ticker'])
-        else:
-            rows_to_write.append(row)
     if rows_to_write:
         df = pd.DataFrame(rows_to_write)
         n = upsert_dataframe(df, 'premarket_analysis',
@@ -4484,14 +4521,53 @@ def _resolve_no_persist(args) -> bool:
     return bool(getattr(args, 'no_persist', False)) or _env_true('BRIEF_NO_PERSIST')
 
 
-def _print_dry_run(brief: dict) -> None:
-    """What a dry run would have written and posted, on stdout: the canonical
-    rows build_persist_rows gives, each with its run_kind, then every Discord
-    payload. Nothing is written and nothing is posted."""
+def _print_dry_run(brief: dict, *, allow_update: bool = False,
+                   run_kind: str = 'scheduled',
+                   triggered_by: Optional[str] = None) -> None:
+    """What a dry run would have written and posted, on stdout. Nothing is
+    written and nothing is posted.
+
+    Between the `--- rows (no-persist) ---` markers: every canonical row
+    build_persist_rows gives, each with its run_kind, as JSON. A row there is
+    a row BUILT. Whether a run that writes would write it is on the lines
+    after the end marker, one for each canonical row, as a prefix line (the
+    rows carry no added field, so they stay exactly what would be upserted):
+
+        no-persist: canonical SPY: WRITE
+        no-persist: canonical QQQ: SKIP (row already exists)
+
+    The decision is plan_canonical_writes', the function
+    persist_to_cloud_sql writes by: with `allow_update` (BRIEF_AS_OF implies
+    it) every row is WRITE and no row is read; without it, one row_exists
+    SELECT a row decides. When Cloud SQL is not configured a run that writes
+    skips the whole persist, and one line says so in place of the decisions.
+
+    Between the `--- history rows (no-persist) ---` markers: the history
+    rows build_history_rows gives, as JSON, each with the run_kind,
+    triggered_by and notes a run that writes would insert (the notes say why
+    a STALE_DAILY_DATA or PLAYBOOK_FAILED ticker has no canonical row).
+
+    Then every Discord payload."""
+    from gcp.database import is_cloud_sql_configured
     built = build_persist_rows(brief)
     print("\n--- rows (no-persist) ---")
     print(json.dumps(built.canonical, indent=2, default=str))
     print("--- end rows (no-persist) ---")
+    if not is_cloud_sql_configured():
+        print("no-persist: Cloud SQL is not configured: a run that writes "
+              "would skip the DB persist and write no row")
+    else:
+        to_write, skipped = plan_canonical_writes(built.canonical, allow_update)
+        for row in built.canonical:
+            decision = ('SKIP (row already exists)' if row['ticker'] in skipped
+                        else 'WRITE')
+            print(f"no-persist: canonical {row['ticker']}: {decision}")
+        print(f"no-persist: a run that writes would write {len(to_write)} canonical "
+              f"row(s) and skip {len(skipped)} (allow_update={allow_update})")
+    print("\n--- history rows (no-persist) ---")
+    print(json.dumps(build_history_rows(brief, built, run_kind, triggered_by),
+                     indent=2, default=str))
+    print("--- end history rows (no-persist) ---")
     history_only = sorted(built.playbook_failed | built.stale_data)
     print(f"no-persist: {len(built.canonical)} canonical row(s) and {len(built.rows)} "
           f"history row(s) built, none written"
@@ -4672,7 +4748,8 @@ def main(argv: Optional[list[str]] = None):
 
     if no_persist:
         print(f"Generating pre-market brief... (no-persist: nothing is written "
-              f"or posted, triggered_by={triggered_by})")
+              f"or posted, allow_update={allow_update}, run_kind={run_kind}, "
+              f"triggered_by={triggered_by})")
     else:
         print(f"Generating pre-market brief... (allow_update={allow_update}, "
               f"run_kind={run_kind}, triggered_by={triggered_by})")
@@ -4692,7 +4769,8 @@ def main(argv: Optional[list[str]] = None):
     if no_persist:
         # The dry run: persist_to_cloud_sql is not called and nothing is
         # posted. The rows and the payloads are printed instead.
-        _print_dry_run(brief)
+        _print_dry_run(brief, allow_update=allow_update, run_kind=run_kind,
+                       triggered_by=triggered_by)
         return
 
     # Persist to Cloud SQL — always writes history; current-table
