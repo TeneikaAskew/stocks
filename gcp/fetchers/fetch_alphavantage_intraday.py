@@ -1464,9 +1464,11 @@ def _run_bars_export(tickers: Sequence[str], months: Sequence[tuple[int, int]]) 
     return True
 
 
-def _run_bar_flags(tickers: Sequence[str], months: Sequence[tuple[int, int]]) -> bool:
-    """Judge *months* of *tickers* for isolated prints and write their flags
-    and coverage; True only when the pass returned.
+def _run_bar_flags(tickers: Sequence[str], months: Sequence[tuple[int, int]], *,
+                   commit: bool = True) -> bool:
+    """Judge *months* of *tickers* for isolated prints and, with *commit*
+    (the nightly's default), write their flags and coverage; True only when
+    the pass returned.
 
     The bars are already in Cloud SQL when this runs, and the pass changes
     none of them. A pass that raises is never reported as success: the
@@ -1478,7 +1480,7 @@ def _run_bar_flags(tickers: Sequence[str], months: Sequence[tuple[int, int]]) ->
     from lib.infra_errors import is_infrastructure_error  # noqa: PLC0415
 
     try:
-        done = intraday_bar_flags.flag_months(tickers, months, commit=True)
+        done = intraday_bar_flags.flag_months(tickers, months, commit=commit)
     except Exception as exc:
         kind = "outage" if is_infrastructure_error(exc) else "defect"
         log.error("bar flags failed (%s): %s", kind, exc, exc_info=True)
@@ -1534,6 +1536,60 @@ def run_export_bars_from(first: tuple[int, int], symbol: str) -> int:
     return 0 if _run_bars_export(tickers, months) else 1
 
 
+def run_flag_bars_from(first: tuple[int, int], last: Optional[tuple[int, int]],
+                       symbol: str, commit: bool) -> int:
+    """Judge every month from *first* (year, month) to *last*, or to the
+    current Eastern month when *last* is None, for isolated prints, for SPY,
+    QQQ and IWM (*symbol* ``ALL``) or the one of them *symbol* names. A dry
+    run unless *commit*: without it nothing is locked or written. Fetches
+    nothing and needs no API key. Returns the exit code.
+
+    A history run never ends quietly: more than one Cloud Run task (each
+    would judge the same months at once), a ticker other than the three, the
+    database not configured, a month after the current Eastern one, or a
+    *last* before *first* all return 1, each before any query. Each month is
+    its own transaction, so a run that stops keeps what it wrote and a rerun
+    converges.
+    """
+    from gcp.fetchers.export_intraday_bars import months_between  # noqa: PLC0415
+    from gcp.fetchers.intraday_bar_flags import FLAG_TICKERS  # noqa: PLC0415
+
+    task_cnt = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1'))
+    if task_cnt > 1:
+        log.error("flag-bars-from: %d Cloud Run tasks would each judge the same "
+                  "months; run it as one task. Nothing was read.", task_cnt)
+        return 1
+    name = symbol.strip().upper()
+    if name == 'ALL':
+        tickers = tuple(FLAG_TICKERS)
+    elif name in FLAG_TICKERS:
+        tickers = (name,)
+    else:
+        log.error("flag-bars-from: --symbol %r; only ALL or one of %s is judged. "
+                  "Nothing was read.", symbol, ", ".join(FLAG_TICKERS))
+        return 1
+    if not is_cloud_sql_configured():
+        log.error("flag-bars-from: the database is not configured. Nothing was read.")
+        return 1
+    today = market_today()
+    current = (today.year, today.month)
+    first = tuple(first)
+    last = current if last is None else tuple(last)
+    for flag, value in (('--flag-bars-from', first), ('--flag-bars-to', last)):
+        if value > current:
+            log.error("flag-bars-from: %s %d-%02d is after the current Eastern month "
+                      "%d-%02d. Nothing was read.", flag, value[0], value[1], *current)
+            return 1
+    if last < first:
+        log.error("flag-bars-from: --flag-bars-to %d-%02d is before --flag-bars-from "
+                  "%d-%02d. Nothing was read.", last[0], last[1], first[0], first[1])
+        return 1
+    months = months_between(first, last)
+    log.info("flag-bars-from: %s, %d months, %d-%02d to %d-%02d, commit=%s",
+             ", ".join(tickers), len(months), first[0], first[1], last[0], last[1], commit)
+    return 0 if _run_bar_flags(tickers, months, commit=commit) else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
@@ -1559,7 +1615,8 @@ def main():
                              'month is refetched and swapped in atomically. Dry run '
                              'unless --commit.')
     parser.add_argument('--commit', action='store_true',
-                        help='With --replace-months: actually delete and insert.')
+                        help='With --replace-months: actually delete and insert. '
+                             'With --flag-bars-from: write the flags and coverage.')
     parser.add_argument('--limit', type=int, default=None,
                         help='With --replace-months / --verify-months: process at '
                              'most N items per task.')
@@ -1581,15 +1638,46 @@ def main():
                              'for SPY, QQQ and IWM or the one of them named by '
                              '--symbol. One task. Run per ticker, e.g. '
                              '--args="--export-bars-from=2015-01,--symbol=SPY".')
+    parser.add_argument('--flag-bars-from', default=None, metavar='YYYY-MM',
+                        help='Fetches nothing: judges every month from the one given '
+                             'to the current Eastern month, or to --flag-bars-to, of '
+                             'the stored 1-min bars for isolated prints, for SPY, QQQ '
+                             'and IWM or the one of them named by --symbol. A dry run '
+                             'unless --commit. One task. Run per ticker, e.g. '
+                             '--args="--flag-bars-from=2015-01,--flag-bars-to=2020-12,'
+                             '--symbol=SPY".')
+    parser.add_argument('--flag-bars-to', default=None, metavar='YYYY-MM',
+                        help='With --flag-bars-from: the last month judged. Defaults '
+                             'to the current Eastern month.')
     args = parser.parse_args()
 
     list_modes = [flag for flag, value in (
         ('--replace-months', args.replace_months),
         ('--verify-months', args.verify_months),
         ('--verify-basis', args.verify_basis),
-        ('--export-bars-from', args.export_bars_from)) if value]
+        ('--export-bars-from', args.export_bars_from),
+        ('--flag-bars-from', args.flag_bars_from)) if value]
     if len(list_modes) > 1:
         parser.error(f"{' and '.join(list_modes)} are separate runs")
+    flag_months_given = {}
+    for flag, value in (('--flag-bars-from', args.flag_bars_from),
+                        ('--flag-bars-to', args.flag_bars_to)):
+        if value is None:
+            continue
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value):
+            parser.error(f"{flag} takes a month as YYYY-MM, not {value!r}")
+        flag_months_given[flag] = (int(value[:4]), int(value[5:]))
+    if args.flag_bars_to is not None and args.flag_bars_from is None:
+        log.error("flag-bars-from: --flag-bars-to %s was given without "
+                  "--flag-bars-from. Nothing was read.", args.flag_bars_to)
+        sys.exit(1)
+    if args.flag_bars_from:
+        if args.symbols_file or args.start_date or args.end_date:
+            parser.error("--flag-bars-from fetches nothing: it takes --symbol and "
+                         "no --symbols-file, --start-date or --end-date")
+        sys.exit(run_flag_bars_from(
+            flag_months_given['--flag-bars-from'], flag_months_given.get('--flag-bars-to'),
+            args.symbol, args.commit))
     if args.export_bars_from:
         if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", args.export_bars_from):
             parser.error(f"--export-bars-from takes a month as YYYY-MM, "

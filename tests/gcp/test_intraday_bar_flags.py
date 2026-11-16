@@ -944,3 +944,171 @@ def test_the_pass_reads_what_the_refetch_left(engine_for, monkeypatch, caplog,
     else:
         assert lines == []
         assert flag_lines(caplog)[-1].startswith("bar flags: 6 months, 0 flags, 0 changed, ")
+
+
+# Task 8: the history run
+
+
+HISTORY_TODAY = date(2026, 11, 16)
+
+
+def run_history(monkeypatch, argv, *, env=None, configured=True):
+    """Run fai.main() for a --flag-bars-from run, the Eastern date stubbed to
+    2026-11-16. Returns (exit code, calls): each call is the
+    (tickers, months, kwargs) flag_months was given. Reading an API key or
+    fetching anything fails the test."""
+    calls: list = []
+
+    def fake_flags(tickers, months, **kwargs):
+        calls.append((tickers, months, kwargs))
+        return dict(PASS_RESULT)
+
+    def no_fetch(*_args, **_kwargs):
+        raise AssertionError("the history run fetches nothing and reads no API key")
+
+    monkeypatch.setattr(fai, "get_api_keys", no_fetch)
+    monkeypatch.setattr(fai, "resolve_all_symbols", no_fetch)
+    monkeypatch.setattr(fai, "process_symbol", no_fetch)
+    monkeypatch.setattr(fai, "fetch_month", no_fetch)
+    monkeypatch.setattr(fai, "is_cloud_sql_configured", lambda: configured)
+    monkeypatch.setattr(fai, "market_today", lambda: HISTORY_TODAY)
+    monkeypatch.setattr(xb, "export_window", no_fetch)
+    monkeypatch.setattr(ibf, "flag_months", fake_flags)
+    for name in ("CLOUD_RUN_TASK_COUNT", "CLOUD_RUN_TASK_INDEX", "INTRADAY_BARS_EXPORT",
+                 "INTRADAY_BAR_FLAGS", "ALPHA_VANTAGE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in (env or {}).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(sys, "argv", ["fetch_alphavantage_intraday", *argv])
+    try:
+        fai.main()
+        code = 0
+    except SystemExit as stop:
+        code = stop.code
+    return code, calls
+
+
+def test_history_months(monkeypatch, caplog):
+    with caplog.at_level(logging.INFO):
+        code, calls = run_history(monkeypatch, ["--flag-bars-from", "2015-01", "--symbol", "SPY"])
+    assert code == 0
+    ((tickers, months, kwargs),) = calls
+    assert tickers == ("SPY",)
+    assert len(months) == 143
+    assert months[0] == (2015, 1) and months[-1] == (2026, 11)
+    assert months == xb.months_between((2015, 1), (2026, 11))
+    assert kwargs == {"commit": False}
+    assert flag_lines(caplog)[-1] == "bar flags: 6 months, 41 flags, 2 changed, 9.8 s"
+
+    code, calls = run_history(
+        monkeypatch, ["--flag-bars-from", "2015-01", "--flag-bars-to", "2020-12",
+                      "--symbol", "SPY"])
+    assert code == 0
+    ((tickers, months, kwargs),) = calls
+    assert len(months) == 72
+    assert months[0] == (2015, 1) and months[-1] == (2020, 12)
+    assert kwargs == {"commit": False}
+
+    code, calls = run_history(monkeypatch, ["--flag-bars-from", "2015-01", "--symbol", "ALL"])
+    assert code == 0
+    assert calls[0][0] == ("SPY", "QQQ", "IWM") and len(calls[0][1]) == 143
+
+    # --symbol defaults to ALL.
+    code, calls = run_history(monkeypatch, ["--flag-bars-from=2026-10"])
+    assert code == 0
+    assert calls == [(("SPY", "QQQ", "IWM"), [(2026, 10), (2026, 11)], {"commit": False})]
+
+    code, calls = run_history(
+        monkeypatch, ["--flag-bars-from", "2021-01", "--symbol", "QQQ", "--commit"])
+    assert code == 0
+    ((tickers, months, kwargs),) = calls
+    assert tickers == ("QQQ",)
+    assert len(months) == 71 and months[0] == (2021, 1) and months[-1] == (2026, 11)
+    assert kwargs == {"commit": True}
+
+
+def test_history_of_one_month(monkeypatch):
+    code, calls = run_history(
+        monkeypatch, ["--flag-bars-from", "2023-05", "--flag-bars-to", "2023-05",
+                      "--symbol", "IWM"])
+    assert code == 0
+    assert calls == [(("IWM",), [(2023, 5)], {"commit": False})]
+
+
+@pytest.mark.parametrize("argv,env,configured", [
+    (["--flag-bars-from", "2015-01", "--symbol", "AAPL"], None, True),
+    (["--flag-bars-from", "2015-01", "--symbol", "SPY,QQQ"], None, True),
+    (["--flag-bars-from", "2015-01", "--symbol", "SPY"], {"CLOUD_RUN_TASK_COUNT": "2"}, True),
+    (["--flag-bars-from", "2015-01", "--symbol", "SPY"], None, False),
+    (["--flag-bars-from", "2026-12", "--symbol", "SPY"], None, True),
+    (["--flag-bars-from", "2021-01", "--flag-bars-to", "2020-12", "--symbol", "SPY"],
+     None, True),
+    (["--flag-bars-from", "2021-01", "--flag-bars-to", "2026-12", "--symbol", "SPY"],
+     None, True),
+    (["--flag-bars-to", "2020-12", "--symbol", "SPY"], None, True),
+    (["--flag-bars-to", "2020-12", "--symbol", "SPY", "--commit"], None, True),
+])
+def test_refusals_exit_1_before_any_query(monkeypatch, caplog, argv, env, configured):
+    def no_query(*_args, **_kwargs):
+        raise AssertionError("a refused history run issues no query")
+
+    monkeypatch.setattr(database, "get_engine", no_query)
+    monkeypatch.setattr(database, "query_to_dataframe_strict", no_query)
+    with caplog.at_level(logging.INFO):
+        code, calls = run_history(monkeypatch, argv, env=env, configured=configured)
+
+    assert code == 1
+    assert calls == []
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and errors[0].startswith("flag-bars-from: ")
+    assert errors[0].endswith("Nothing was read.")
+
+
+@pytest.mark.parametrize("other", [
+    ["--replace-months", "list.csv"],
+    ["--verify-months", "list.csv"],
+    ["--verify-basis", "list.csv"],
+    ["--export-bars-from", "2015-01"],
+])
+def test_usage_errors(monkeypatch, other):
+    code, calls = run_history(
+        monkeypatch, ["--flag-bars-from", "2015-01", "--symbol", "SPY", *other])
+    assert code == 2 and calls == []
+
+
+@pytest.mark.parametrize("argv", [
+    ["--flag-bars-from", "2026-13"],
+    ["--flag-bars-from", "2026-1"],
+    ["--flag-bars-from", "202601"],
+    ["--flag-bars-from", "2015-01", "--flag-bars-to", "2026-13"],
+    ["--flag-bars-from", "2015-01", "--flag-bars-to", "2026-1"],
+    ["--flag-bars-from", "2015-01", "--flag-bars-to", "202601"],
+    ["--flag-bars-from", "2015-01", "--symbols-file", "symbols.txt"],
+    ["--flag-bars-from", "2015-01", "--start-date", "2026-10-01"],
+    ["--flag-bars-from", "2015-01", "--end-date", "2026-10-31"],
+])
+def test_history_month_format_is_a_usage_error(monkeypatch, argv):
+    code, calls = run_history(monkeypatch, [*argv, "--symbol", "SPY"])
+    assert code == 2 and calls == []
+
+
+def test_history_symbol_letter_case(monkeypatch):
+    code, calls = run_history(monkeypatch, ["--flag-bars-from", "2026-10", "--symbol", "spy"])
+    assert code == 0
+    assert calls == [(("SPY",), [(2026, 10), (2026, 11)], {"commit": False})]
+
+
+def test_history_pass_that_raises_exits_1(monkeypatch, caplog):
+    def refuse(*_args, **_kwargs):
+        raise ConnectionError("connection refused")
+
+    with caplog.at_level(logging.INFO):
+        code, _calls = run_history(monkeypatch, ["--flag-bars-from", "2026-10", "--symbol", "SPY"])
+        assert code == 0
+        monkeypatch.setattr(ibf, "flag_months", refuse)
+        monkeypatch.setattr(sys, "argv", ["fetch_alphavantage_intraday",
+                                          "--flag-bars-from", "2026-10", "--symbol", "SPY"])
+        with pytest.raises(SystemExit) as stop:
+            fai.main()
+    assert stop.value.code == 1
+    assert flag_lines(caplog)[-1].startswith("bar flags failed (outage)")
