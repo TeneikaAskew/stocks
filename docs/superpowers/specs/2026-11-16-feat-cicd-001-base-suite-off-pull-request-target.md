@@ -5,10 +5,11 @@ issues: []
 canvases: []
 site_source_notes: [SHARED-01]
 done_when:
-  - "A contract-stage PR changes only scripts/gate/spec_gate.py and the two gate suites: WORKFLOW_CONTRACTS accepts the base-suite duties (fetch the head, `git show` the proposed spec_gate.py and export_model_registry.py, run main's tests/scripts/test_spec_gate.py and tests/scripts/test_export_model_registry.py in a job without checkout credentials) in exactly one of two layouts, judged across the live pair and, separately, across the pinned pair: today's (spec-gate.yml job base-suite after the verdict, artifact handoff) or the moved one (registry-check.yml job base-suite: base checkout with `persist-credentials: false`, the proposed files written over scripts/gate before the suites, no secret, no cache action, contents: read, not the registry job); each other rule of both contracts is unchanged; the topology assertions at tests/scripts/test_spec_gate.py (`list(workflow[\"jobs\"]) == [\"gate\", \"base-suite\"]`) and tests/scripts/test_export_model_registry.py (`list(jobs) == [\"registry\"]`) change to accept exactly those two layouts and nothing else, which the owner's approval of this spec permits, and no other test, case or assertion changes; new tests show the gate refusing, in the moved layout, a base-suite job that checks out the head, keeps credentials, runs a suite before the proposed files are written, reads a secret or restores a cache, refusing a pair that holds both layouts or neither, and accepting each layout whole, each recorded failing on main and passing on the head; main's own suites pass against the proposed gate in the hosted base-suite job, and both suites pass serially and with `-n 4`."
+  - "Before the contract stage, a throwaway draft PR (closed unmerged, its red gate expected) whose registry-check.yml carries the moved base-suite job as designed here records one hosted run on this repository while it is private: the head checkout reaches the PR's commits, the two proposed files land in scripts/gate, and main's two suites run against them; a design change that run forces is made to this spec first."
+  - "A contract-stage PR changes only scripts/gate/spec_gate.py and the two gate suites: WORKFLOW_CONTRACTS accepts the base-suite duties in exactly one of two layouts, judged across the live pair and, separately, across the pinned pair: today's (spec-gate.yml job base-suite after the verdict, artifact handoff) or the moved one (registry-check.yml job base-suite as the Design section gives it: base checkout and sparse head checkout both with `persist-credentials: false`, no `git fetch`, the proposed files copied over scripts/gate with no action after, unconditional suites, no secret, no cache action, contents: read, not the registry job); every existing refusal keeps its wording and each other rule of both contracts is unchanged. Only the assertions that read the real workflow files' job layout change, which the owner's approval of this spec permits: the job lists at tests/scripts/test_spec_gate.py (`list(workflow[\"jobs\"]) == [\"gate\", \"base-suite\"]`) and tests/scripts/test_export_model_registry.py (`list(jobs) == [\"registry\"]`), and the base-suite block of `test_the_invoked_command_is_the_contract_and_policy_files_keep_their_schema` (export and upload in the gate job, `needs: gate`, the credential-free checkout, the download, the unconditional suite step); each asserts the same duty in whichever of the two layouts the files hold, and no other test, case or assertion changes. New tests show the gate refusing, in the moved layout, a base-suite job whose head checkout keeps credentials or is not sparse to the two files, that runs a `git fetch`, runs a suite before the copy or an action after it, reads a secret or restores a cache, refusing a pair that holds both layouts or neither, and accepting each layout whole, each recorded failing on main and passing on the head; main's own suites pass against the proposed gate in the hosted base-suite job, and both suites pass serially and with `-n 4`."
   - "A pin-stage PR, whose base holds the contract stage, changes only scripts/gate/pinned/registry-check.yml (gains job base-suite) and scripts/gate/pinned/spec-gate.yml (keeps only job gate) to the moved layout; the base's gate accepts it, and .github/workflows/registry-check.yml and .github/workflows/spec-gate.yml stay byte-identical to MAIN."
   - "A live-stage PR makes each live workflow byte-equal to its pinned copy on MAIN (`cmp` recorded) and changes nothing else executable; on its exact head the registry-check base-suite job (plain `pull_request`, the head's workflow) and the spec-gate base-suite job (`pull_request_target`, the base's workflow) both pass every test of main's suites; its body lists every workflow file with its trigger and each job that executes head content, showing no workflow runs pull-request-controlled code under `pull_request_target`, and gives the owner's one settings step for the same sitting as its merge (in the required status checks of main's branch protection or ruleset, replace `spec-gate / base-suite` with `registry-check / base-suite`)."
-  - "A tighten-stage PR, whose base holds the live stage, removes today's layout from WORKFLOW_CONTRACTS and narrows the two topology assertions to the moved layout alone, so a later PR that puts a suite back into spec-gate.yml is refused, with that refusal recorded failing on the live stage's merge and passing on the head; the first PR opened after the live stage shows `registry-check / base-suite` reported and required."
+  - "A tighten-stage PR, whose base holds the live stage, removes today's layout from WORKFLOW_CONTRACTS and narrows the layout assertions to the moved layout alone, so a later PR that puts a suite back into spec-gate.yml is refused, with that refusal recorded failing on the live stage's merge and passing on the head; the first PR opened after the live stage shows `registry-check / base-suite` reported and required."
   - "Each stage's own delivery records, ordinary SHARED-01 source proof, full-default main and proposed docs audits with no new finding, the gate-file red-team pass on each frozen head, current-head review as CLAUDE.md section 2.5 counts it, every required check green and zero unresolved threads are complete."
 status: approved
 supersedes: null
@@ -41,11 +42,17 @@ its pinned copy on the base (`PINNED`), and `WORKFLOW_CONTRACTS` checks what eac
 do. The base-suite job moves there as a second job, `base-suite`, doing what it does today:
 
 - check out the base sha with `persist-credentials: false`;
-- fetch the head as git objects and write the proposed `scripts/gate/spec_gate.py` and
-  `scripts/gate/export_model_registry.py` over the base copies with `git show`;
+- check out the head sha a second time, into a subdirectory, with `persist-credentials: false`
+  and `sparse-checkout` (with `sparse-checkout-cone-mode: false`) limited to `scripts/gate/spec_gate.py` and
+  `scripts/gate/export_model_registry.py`. `actions/checkout` authenticates its own fetch with the
+  job's read-only token and keeps no credentials after it, so the head is reached in a private
+  repository too and no later step holds a token. There is no `git fetch` step: once credentials
+  are gone an unauthenticated fetch fails in a private repository;
+- copy the two proposed files over the base copies in `scripts/gate/`, remove the subdirectory,
+  and run no action after that copy, so nothing puts the base's files back;
 - install the same pinned tools as the registry job and run main's
   `tests/scripts/test_spec_gate.py` (on four workers, as the live stage of Part A set) and
-  `tests/scripts/test_export_model_registry.py`;
+  `tests/scripts/test_export_model_registry.py`, unconditionally;
 - `permissions: contents: read`, no secret, no cache action, 10-minute timeout.
 
 `spec-gate.yml` keeps only its `gate` job, unchanged.
@@ -67,16 +74,19 @@ contract today requires the suites inside `spec-gate.yml`. A pull request that m
 step is refused by the very gate it carries a fix for, so the move lands in four stages, each
 judged by a base that already accepts it:
 
+0. Experiment: a throwaway draft PR runs the moved job once on this private repository, to prove
+   the head checkout and the copy work before anything is built on them.
 1. Contract stage (FEAT-CICD-001): `WORKFLOW_CONTRACTS` accepts either layout whole, never both or
-   neither, and the two topology assertions accept the same two layouts. The workflows and pinned
-   copies do not change. The owner's approval of this spec is the say-so for changing those two
-   assertions; any other existing test the stage would have to change goes back to the owner first.
+   neither, and the assertions that read the real workflows' job layout (named in done_when) accept
+   the same two layouts. The workflows and pinned copies do not change. The owner's approval of
+   this spec is the say-so for changing those assertions; any other existing test the stage would
+   have to change goes back to the owner first.
 2. Pin stage (FEAT-CICD-001): the pinned copies move to the new layout.
 3. Live stage (FEAT-CICD-001): each live workflow becomes a `cp` of its pinned copy.
    Owner, in the same sitting as its merge: replace the required check `spec-gate / base-suite`
    with `registry-check / base-suite`. Until then every pull request waits on a check that no
    longer reports.
-4. Tighten stage (FEAT-CICD-001): the contract and the two assertions drop today's layout, so the
+4. Tighten stage (FEAT-CICD-001): the contract and the layout assertions drop today's layout, so the
    suites cannot move back under `pull_request_target`.
 5. Owner, only if the repository becomes public: allow `pull_request_target` for
    `.github/workflows/spec-gate.yml` only, in Settings, Actions, Policies, as written up separately.
