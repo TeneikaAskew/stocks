@@ -12,7 +12,7 @@ done_when:
   - "Source identity (DASHBOARD-05): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-SIGNAL-001, DASHBOARD-05) note row carries that source_identity_sha256"
   - "The FEAT-SIGNAL-001 catalog record (Status, Last reviewed) and the PR traceability entry are updated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
   - "The PR body carries the Capacity section of this spec with the attach run's measured numbers from a --dry-run on one ticker (signals, read queries, seconds per stage), next to the estimates"
-status: draft
+status: approved
 supersedes: null
 ---
 
