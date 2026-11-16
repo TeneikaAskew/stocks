@@ -48,6 +48,8 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 | `insight_reports` | table | [`gcp/schema.sql:1554`](../../../gcp/schema.sql#L1554) |
 | `insight_reports_history` | table | [`gcp/schema.sql:2349`](../../../gcp/schema.sql#L2349) |
 | `insight_runs` | table | [`gcp/schema.sql:1590`](../../../gcp/schema.sql#L1590) |
+| `intraday_bar_flag_coverage` | table | [`gcp/schema.sql:5629`](../../../gcp/schema.sql#L5629) |
+| `intraday_bar_flags` | table | [`gcp/schema.sql:5606`](../../../gcp/schema.sql#L5606) |
 | `intraday_flow_15m` | table | [`gcp/schema.sql:422`](../../../gcp/schema.sql#L422) |
 | `intraday_gex_15m` | table | [`gcp/schema.sql:443`](../../../gcp/schema.sql#L443) |
 | `job_runs` | table | [`gcp/schema.sql:5267`](../../../gcp/schema.sql#L5267) |
@@ -199,7 +201,7 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 | `walk_forward_results` | 0 | 264 kB | `gcp/schema.sql` |
 | `watchlists` | 0 | 64 kB | `gcp/schema.sql` |
 
-Declared in `gcp/schema.sql` but absent live: `bar_recompute_ledger`, `level_param_policy`, `schema_apply_history`, `ticker_level_params`, `user_watchlists`, `watched_tickers`, `watchlist_history`, `watchlist_history_origin`
+Declared in `gcp/schema.sql` but absent live: `bar_recompute_ledger`, `intraday_bar_flag_coverage`, `intraday_bar_flags`, `level_param_policy`, `schema_apply_history`, `ticker_level_params`, `user_watchlists`, `watched_tickers`, `watchlist_history`, `watchlist_history_origin`
 <!-- inventory:dbtables:end -->
 
 ---
@@ -316,6 +318,12 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [389](../../../gcp/discord_interactions/main.py#L389)
 - [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [202](../../../gcp/insight_pipeline_job.py#L202), [248](../../../gcp/insight_pipeline_job.py#L248), [258](../../../gcp/insight_pipeline_job.py#L258), [267](../../../gcp/insight_pipeline_job.py#L267)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [340](../../../platform/api/routers/insights.py#L340), [393](../../../platform/api/routers/insights.py#L393), [399](../../../platform/api/routers/insights.py#L399), [408](../../../platform/api/routers/insights.py#L408)
+
+### `intraday_bar_flag_coverage`
+- _no writer found in gcp/, lib/, scripts/, platform/api_
+
+### `intraday_bar_flags`
+- _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `intraday_flow_15m`
 - [`gcp/build_intraday_flow.py`](../../../gcp/build_intraday_flow.py) — line [73](../../../gcp/build_intraday_flow.py#L73)
@@ -666,6 +674,12 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [359](../../../platform/api/routers/insights.py#L359)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [174](../../../scripts/backfill_history_tables.py#L174)
 
+### `intraday_bar_flag_coverage`
+- _no readr found in gcp/, lib/, scripts/, platform/api_
+
+### `intraday_bar_flags`
+- _no readr found in gcp/, lib/, scripts/, platform/api_
+
 ### `intraday_flow_15m`
 - [`gcp/build_intraday_flow.py`](../../../gcp/build_intraday_flow.py) — line [92](../../../gcp/build_intraday_flow.py#L92)
 - [`lib/features/intraday_flow.py`](../../../lib/features/intraday_flow.py) — line [186](../../../lib/features/intraday_flow.py#L186)
@@ -988,6 +1002,8 @@ Notes on the ones that matter operationally:
 | `archive_yahoo_market_data_intraday` | 0 | 0 | no writer and no reader in code |
 | `backtest_reports` | 1 | 0 | write-only (no reader in code) |
 | `indicator_correlation` | 1 | 0 | write-only (no reader in code) |
+| `intraday_bar_flag_coverage` | 0 | 0 | no writer and no reader in code |
+| `intraday_bar_flags` | 0 | 0 | no writer and no reader in code |
 | `level_param_policy` | 0 | 2 | read-only (no writer names it in code) |
 | `market_data_intraday_iwm` | 0 | 5 | partition of `market_data_intraday` — routed by Postgres; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
 | `market_data_intraday_other` | 0 | 0 | partition of `market_data_intraday` — routed by Postgres, never named in code; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
