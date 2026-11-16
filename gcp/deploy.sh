@@ -1548,46 +1548,6 @@ deploy_premarket_playbook_resolver() {
         --quiet
 }
 
-# ── Plan excursions history (Cloud Run Job, run once by hand) ───────────────
-# FEAT-STRAT-001 target hit rates (docs/superpowers/specs/2026-11-16-feat-
-# strat-001-target-hit-rates.md, Design 4 "History, once"): rebuilds each
-# session's level basis through the brief (nothing persisted, no model call)
-# and writes plan_excursions rows with source 'history' from 2022-01-03 on.
-# No schedule: the owner says yes to one execution after the deploy.
-#
-# Capacity (CLAUDE.md §0):
-#   Volume:    about 3,500 rows once (one per traded ticker-day), about 1 MB
-#   Velocity:  one bar query per ticker-month (177 for SPY, QQQ, IWM since
-#              2022-01) plus the brief's own reads per session (about 3,660)
-#   Wall:      measured on the local copy: 0.48 s per session for the basis
-#              rebuild and 13 s per ticker for the bar reads and scoring, so
-#              about 10 min per ticker and 30 min for three; allowing 2x for
-#              Cloud SQL round trips, about 60 min
-#   timeout:   14400s = 4h (4x the 60 min estimate)
-#   memory:    2Gi (one ticker-month of 1-minute bars plus the brief's daily
-#              history; the resolver's 1Gi without the brief)
-#   retries:   0 (re-running is safe: an explicit range reprocesses, no range
-#              resumes after the last session written)
-deploy_backfill_plan_excursions() {
-    echo "Deploying backfill-plan-excursions job..."
-    gcloud run jobs create backfill-plan-excursions \
-        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
-        --memory 2Gi --cpu 1 --max-retries 0 \
-        --task-timeout 14400 \
-        --service-account "${SA_EMAIL}" \
-        --command "python,-m,gcp.backfill_plan_excursions" \
-        ${DB_SECRET_FLAG} \
-        --set-env-vars "${ENV_STRING}" \
-        --quiet 2>/dev/null || \
-    gcloud run jobs update backfill-plan-excursions \
-        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
-        --memory 2Gi --task-timeout 14400 \
-        --command "python,-m,gcp.backfill_plan_excursions" \
-        ${DB_SECRET_FLAG} \
-        --set-env-vars "${ENV_STRING}" \
-        --quiet
-}
-
 # ── Phase 6 playbook generator (Cloud Run Job) ──────────────────────────────
 # Builds the 12 structured setup cards per ticker and upserts them into the
 # playbook_cards Cloud SQL table (the typed source /api/playbook reads).
@@ -5414,7 +5374,6 @@ case "${1:-help}" in
     monitor) _run build_image deploy_monitor ;;
     eod-resolver) _run build_image deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) _run build_image deploy_premarket_playbook_resolver ;;
-    backfill-plan-excursions) _run build_image deploy_backfill_plan_excursions ;;
     phase6-playbook) _run build_image deploy_phase6_playbook ;;
     strat-engine) deploy_strat_engine ;;
     gamma-levels) deploy_p2_build_gamma_levels ;;   # research image; build separately (build-research)
