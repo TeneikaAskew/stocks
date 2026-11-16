@@ -7,16 +7,17 @@ site_source_notes: [DASHBOARD-01]
 done_when:
   - "Policy: gcp/schema.sql seeds one new level_param_policy row target_reach_rate (method_id plan_excursion_share, lookback_sessions NULL, min_sample 30, effective 2015-01-02, extra {\"since\": \"2022-01-03\", \"measure\": \"touch\"}) with ON CONFLICT DO NOTHING; no other level_param_policy row changes; lib/strat_levels.py names the key once (TARGET_REACH_RATE_KEY) in POLICY_WIDE_KEYS, and policy_wide_param gives it status ok with value equal to min_sample when min_sample is a positive integer, lookback_sessions is NULL or a positive integer, since is an ISO date and measure is touch or held_5m, and input_unavailable otherwise; a test in tests/lib/test_level_params_loader.py loads the seeded policy from gcp/schema.sql and asserts status ok and value 30, and each unusable field gives input_unavailable"
   - "Table: gcp/schema.sql creates plan_excursions (ticker, session_date, rule_version, side, trigger_price, stop_price, fill_price, fill_ts, stop_ts, excursion_r, excursion_held5_r, source, resolver_version, written_at) with PRIMARY KEY (ticker, session_date, rule_version), CREATE TABLE IF NOT EXISTS, and source limited to resolver or history by a CHECK; tests/gcp/test_schema_sql.py (or the file that already checks schema.sql) asserts the table, key and check"
-  - "Excursion: a pure function in gcp/premarket_playbook_resolver.py, sharing resolve_plan's entry walk (no second copy of it), returns for one side on the session's bars cut at the exchange close: nothing unless the side is entered with a valid stop; otherwise the fill bar, the stop bar (the first bar from the fill bar on that touches the stop, or none), excursion_r as Design 3 defines it and excursion_held5_r likewise; tests/gcp/test_premarket_playbook_resolver.py pins hand-built sessions for calls and puts: a rung touched only on the fill bar is not reached, a bar touching the stop and a rung counts the stop first, no bar between the fill bar and the stop bar gives NULL for both, five closes beyond a level that end on the stop bar do not count as held, a cross bar that opened beyond the trigger is still measured from the trigger, and on every fixture a rung counts as reached exactly when the touch-based plan hit for that rung would be set by resolve_plan's exit walk"
+  - "Excursion: a pure function in gcp/premarket_playbook_resolver.py, sharing resolve_plan's entry walk (no second copy of it), returns for one side on the session's bars cut at the exchange close: nothing unless the side is entered with a valid stop; otherwise the fill bar, the stop bar (the first bar from the fill bar on that touches the stop, or none), excursion_r as Design 3 defines it and excursion_held5_r likewise; tests/gcp/test_premarket_playbook_resolver.py pins hand-built sessions for calls and puts: a rung touched only on the fill bar is not reached, a bar touching the stop and a rung counts the stop first, no bar between the fill bar and the stop bar gives NULL for both, five closes beyond a level that end on the stop bar do not count as held, a cross bar that opened beyond the trigger is still measured from the trigger, and on every fixture a rung counts as reached exactly when a bar after the fill bar touches it before the stop bar; for a rung beyond the fill that is exactly when resolve_plan's exit walk would sell a leg there; a rung at or behind the fill (only possible when the cross bar opened beyond the trigger, where resolve_plan holds that leg) is pinned on its own fixture (trigger 100, stop 99, cross bar opening at 102, a later high of 102.9: excursion_r 2.9, rungs 101 and 102 reached, rung 103 not) and the existing test_a_gap_fill_past_t1_and_t2_holds_every_leg_to_the_close still passes unchanged"
   - "One trade per ticker-day: the function that picks the row takes both sides' results and returns the side whose fill bar is earlier; both sides filled on the same bar, or neither entered, gives no row; tests cover the four cases"
-  - "Live writer: resolve_one upserts at most one plan_excursions row per resolved (analysis_date, ticker) with source resolver, the basis's rule_version and RESOLVER_VERSION, in the same transaction as the premarket_analysis update; re-resolving with force replaces it; a row whose basis has no rule_version writes nothing; RESOLVER_VERSION moves to 2026-11-16.v5; the existing outcome and plan columns are byte-identical to origin/main's on the existing resolver tests"
-  - "History writer: gcp/backfill_plan_excursions.py (TICKERS, START, END; START defaults to the policy row's since) rebuilds each session's level basis through the same build the brief runs under BRIEF_AS_OF, without writing premarket_analysis or premarket_analysis_history, reads one ticker-month of market_data_intraday bars per query, scores with the Excursion function and upserts source history rows that never replace a source resolver row; a re-run over the same span writes the same rows; tests cover resume and the never-replace rule"
+  - "Live writer: resolve_one upserts at most one plan_excursions row per resolved (analysis_date, ticker) with source resolver, the basis's rule_version and RESOLVER_VERSION, in the same transaction as the premarket_analysis update; re-resolving with force replaces it, and when the forced re-resolution gives no trade (a same-bar tie or no entry) it deletes the existing row for that ticker, session and rule version in the same transaction, pinned by a writer test that first resolves a trade and then force-resolves the session to no trade; a row whose basis has no rule_version writes nothing; RESOLVER_VERSION moves to 2026-11-16.v5; the existing outcome and plan columns are byte-identical to origin/main's on the existing resolver tests"
+  - "History writer: gcp/backfill_plan_excursions.py (TICKERS, START, END; START defaults to the policy row's since) rebuilds each session's level basis through the same build the brief runs under BRIEF_AS_OF, without writing premarket_analysis or premarket_analysis_history, reads one ticker-month of market_data_intraday bars per query, scores with the Excursion function and upserts source history rows that never replace a source resolver row, and deletes its own source history row for a session that now gives no trade; a re-run over the same span writes the same rows; tests cover resume, the delete and the never-replace rule"
   - "Reader: lib/target_reach.py loads, in ONE query per brief run for all of the run's tickers, the excursions of rows with rule_version equal to LEVEL_RULE_VERSION, session_date before the brief's session and on or after since (or within the last lookback_sessions sessions when that is set), and gives per ticker the trade count, the first and last dates, and for any distance the share whose excursion (touch or held5 per the policy's measure) is at least that distance, NULL counting as reaching nothing; a failed query or a missing table raises and the brief prints the unavailable line of Design 5 for that ticker, never a rate; tests cover the window, the point-in-time cut, the measure switch and the NULL rule"
-  - "Brief copy: tests/lib/test_strat_levels.py has a new golden on the IWM 2025-10-22 basis of Design 5 (stored in tests as a fixture) with a fixed reach table equal to the Experiment's 906 IWM trades before that date, giving the puts lines of Design 5 byte for byte; the thin line (fewer trades than min_sample) and the unavailable line are pinned; with no reach table passed (every caller but the brief) format_levels_for_brief's output equals origin/main's, so the existing D8 goldens are unchanged"
+  - "Brief copy: tests/lib/test_strat_levels.py has a new golden on the IWM 2025-10-22 basis of Design 5 (stored in tests as a fixture) with a fixed reach table equal to the Experiment's 906 IWM trades before that date, giving the puts lines of Design 5 byte for byte; the thin line (fewer trades than min_sample), the unavailable line and the no-stop line (a side whose plan is published with no stop, or with a stop not on the losing side of the trigger, as _pick_side allows) are pinned, each with the rest of the side's block unchanged and no percent printed; with no reach table passed (every caller but the brief) format_levels_for_brief's output equals origin/main's, so the existing D8 goldens are unchanged"
+  - "Wired into the brief: a test in tests/gcp/ on generate_premarket_brief (the production path, BRIEF_AS_OF with a stubbed database) asserts that the run issues the reach read once for all of its tickers, that the stored playbook text carries the ladder lines of Design 5, and that a failed reach read leaves every ticker's brief written with the unavailable line in place of the ladder (no PLAYBOOK_FAILED, no rate)"
   - "Unchanged, each pinned by an existing test that passes on origin/main and on the implementation head: the trigger and stop rule, gate targets and the t1..t3 columns, the plan's targets, spacing, thirds, entry cutoff and gap edges, the ATR levels line, the signal monitor, the movement statement, persona plans and every premarket_analysis column the resolver writes today; LEVEL_RULE_VERSION does not change"
   - "Experiment through the production paths, before any production change: the implementation PR body shows the history writer run on a local copy built like this spec's Experiment (as-traded bars, 2022-01-03 to 2026-11-10, SPY 2025-04-09 and IWM 2026-06-26 left out) producing the same 3,463 trades (same ticker, date, side and stop) and, on every trade filled at the trigger, excursions within 1e-6 of this spec's rung_rows_trades.csv; the reach curve and the out-of-sample table of this spec reproduced from those rows; and the measured wall-clock per ticker, which sets the job's timeout at four times or more; a reproduction for the record, not a gate"
   - "Source identity (DASHBOARD-01): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, DASHBOARD-01) note row carries that source_identity_sha256 with implementation and test prose for this PR"
-  - "The FEAT-STRAT-001 catalog record and the PR traceability entry are updated; python3 scripts/gate/spec_gate.py --pr origin/main passes; the production table and policy row are created only after the owner's yes, by Design 6's statements, before the code that reads them is deployed, and the history run starts only after a separate yes, each recorded with its row counts"
+  - "The FEAT-STRAT-001 catalog record and the PR traceability entry are updated; python3 scripts/gate/spec_gate.py --pr origin/main passes; the owner's merge of the implementation PR is the yes for the table and the policy row, which the apply-schema build creates from gcp/schema.sql on that merge (both additive: CREATE TABLE IF NOT EXISTS and ON CONFLICT DO NOTHING), before any deploy; the deploy and the history run each wait for their own yes and are recorded with their row counts"
 status: approved
 supersedes: null
 ---
@@ -151,12 +152,16 @@ fill is at the trigger, or at the open of a cross bar that opened beyond it):
 
 So a rung at distance d past the trigger is reached exactly when `excursion_r >= d`: a bar after the
 fill bar touched it before any bar touched the stop, with a bar touching both counting the stop
-first. That is the walk the plan's exits use. The Experiment checked this on all 8,022 rungs.
+first. For a rung beyond the fill that is the walk the plan's exits use. A rung at or behind the
+fill exists only when the cross bar opened beyond the trigger; `resolve_plan` holds that leg rather
+than sell at a price already passed, but the rung still counts as reached when a later bar touches it
+before the stop, as in the Experiment. The Experiment checked the rule on all 8,022 rungs.
 
 ### 4. Who writes it
 
 - **Every resolved day:** `resolve_one` writes the day's row after it scores the plans, in the same
-  transaction, `source` resolver. `RESOLVER_VERSION` moves to `2026-11-16.v5`. Nothing else it writes
+  transaction, `source` resolver. A forced re-resolution that now gives no trade deletes the day's
+  row, so a corrected session never leaves a stale trade in the rates. `RESOLVER_VERSION` moves to `2026-11-16.v5`. Nothing else it writes
   changes.
 - **History, once:** `gcp/backfill_plan_excursions.py` rebuilds each session's level basis the way the
   brief builds it under BRIEF_AS_OF (the path the Experiment's replay used), scores it with the same
@@ -190,24 +195,23 @@ trades than the policy's minimum:
     Hit rates: too few IWM trades so far (12, at least 30 needed).
 ```
 
-With the row or the table unusable: `    Hit rates unavailable (input_unavailable).` A side with no plan
-prints no ladder. Every other line of the brief is unchanged.
+With the row or the table unusable: `    Hit rates unavailable (input_unavailable).` A side whose plan
+has no stop, or a stop not on the losing side of the trigger (`_pick_side` can publish a plan without
+one), has no stop distance to measure in: `    Hit rates unavailable (no stop to measure from).` A
+side with no plan prints no ladder. Every other line of the brief is unchanged.
 
 ### 6. Production order
 
-After the owner's yes: create the table and insert the policy row, then deploy the resolver and the
-brief. The brief prints "too few" until the history run fills the table; that run is its own yes. The
-statements:
+`gcp/cloudbuild/apply-schema-cloudbuild.yaml` applies `gcp/schema.sql` on every push to main that
+touches it, so the table (Design 2) and the policy row (Design 1) are created when the implementation
+PR merges, before anything is deployed. That is why the owner's merge of the implementation PR is the
+yes for them, not a later step. Both are additive: the table is new and empty, the row is a new key
+that today's deployed code never reads, so nothing live changes until the deploy. Then, each on its
+own yes:
 
-```sql
--- the CREATE TABLE of Design 2, then:
-INSERT INTO level_param_policy (param_key, method_id, statistic_q, lookback_sessions, min_sample,
-                                extra, effective_from, note)
-VALUES ('target_reach_rate', 'plan_excursion_share', NULL, NULL, 30,
-        '{"since": "2022-01-03", "measure": "touch"}', '2015-01-02',
-        'trades a target hit rate is read from: since a date or the last lookback_sessions, touch or held_5m, at least min_sample')
-ON CONFLICT (param_key, effective_from) DO NOTHING;
-```
+1. Deploy the resolver and the brief. The brief prints "too few" until the history run fills the
+   table.
+2. Run `gcp/backfill_plan_excursions.py` per ticker and record the rows written per ticker.
 
 ## Experiment
 
@@ -319,9 +323,9 @@ lines. Only the `(FEAT-STRAT-001, DASHBOARD-01)` row of the Implementation-sourc
 describe this implementation, as backend source and local tests only. Every other SITE byte stays
 unchanged.
 
-After the merge, separately and never as a pre-merge box: on the owner's yes, run Design 6's
-statements and record the row counts, then deploy; on a second yes, run the history job and record
-the rows per ticker; confirm the next live brief prints the ladder with the trade count; and complete
+After the merge, separately and never as a pre-merge box: confirm the apply-schema build created the
+table and the one policy row (record both counts); on the owner's yes, deploy; on a second yes, run
+the history job and record the rows per ticker; confirm the next live brief prints the ladder with the trade count; and complete
 the DOC close-out as the product-delivery skill prescribes.
 
 ## Risks
@@ -333,8 +337,8 @@ the DOC close-out as the product-delivery skill prescribes.
   brief cannot know the fill. The implementation PR reports how many trades differ.
 - **A new level rule restarts the rates.** Only rows built under the current `LEVEL_RULE_VERSION` are
   read, so a rule change needs the history run again.
-- **Deploy order.** The brief before the table or row prints the unavailable line; Design 6 puts them
-  first.
+- **Deploy order.** The brief before the table or row prints the unavailable line; the apply-schema
+  build creates both on the implementation's merge, before any deploy (Design 6).
 
 ## Found while reading (not changed by this spec)
 
