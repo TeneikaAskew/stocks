@@ -675,6 +675,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [174](../../../scripts/backfill_history_tables.py#L174)
 
 ### `intraday_bar_flag_coverage`
+- [`gcp/fetchers/export_intraday_bars.py`](../../../gcp/fetchers/export_intraday_bars.py) — line [61](../../../gcp/fetchers/export_intraday_bars.py#L61)
 - [`gcp/fetchers/intraday_bar_flags.py`](../../../gcp/fetchers/intraday_bar_flags.py) — line [75](../../../gcp/fetchers/intraday_bar_flags.py#L75)
 
 ### `intraday_bar_flags`
