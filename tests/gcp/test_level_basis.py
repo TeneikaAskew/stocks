@@ -596,6 +596,39 @@ def test_from_basis_v2_rebuilds_the_v2_targets():
     assert "    T1: 253.00 (PDH)\n" in text and "sell" not in text
 
 
+def test_known_versions_round_trip():
+    """Unknown rule version spec, U3: every version this image knows
+    rebuilds to what it wrote, a v2 basis keeps v2, and a v1 basis or one
+    with no rule_version rebuilds under the v2 rule with the v2 picks."""
+    from lib.strat_levels import PICK_RULE_VERSIONS
+    from tests.lib.session_levels_helpers import d8_basis
+    keys = ("rule_version", "long", "short")
+    for v in PICK_RULE_VERSIONS:
+        first = json.loads(json.dumps(
+            SessionLevels.from_basis({**d8_basis(), "rule_version": v}).to_basis()))
+        second = json.loads(json.dumps(SessionLevels.from_basis(first).to_basis()))
+        assert first["rule_version"] == v
+        assert first["long"]["plan"] is not None
+        assert {k: second[k] for k in keys} == {k: first[k] for k in keys}, v
+
+    v2 = json.loads(json.dumps(d8_basis()))
+    v2["rule_version"] = "feat-strat-001.v2"
+    for key in EXIT_KEYS:
+        v2["params"].pop(key)
+    first = json.loads(json.dumps(SessionLevels.from_basis(v2).to_basis()))
+    second = json.loads(json.dumps(SessionLevels.from_basis(first).to_basis()))
+    assert first["rule_version"] == "feat-strat-001.v2"
+    assert {k: second[k] for k in keys} == {k: first[k] for k in keys}
+
+    v2_picks = _exit_picks(SessionLevels.from_basis(v2))
+    v1 = {**v2, "rule_version": "feat-strat-001.v1"}
+    missing = {k: val for k, val in v2.items() if k != "rule_version"}
+    for stored in (v1, missing):
+        rebuilt = SessionLevels.from_basis(stored)
+        assert rebuilt.rule_version == "feat-strat-001.v2"
+        assert _exit_picks(rebuilt) == v2_picks
+
+
 def test_a_replay_with_no_spacing_row_publishes_no_unspaced_target():
     """A session the history run did not cover for the exits keys reads
     target_min_spacing_atr as params_unavailable: the side keeps its

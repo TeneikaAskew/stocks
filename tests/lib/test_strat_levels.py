@@ -19,7 +19,7 @@ from lib.strat_levels import (
 )
 from lib.strat_levels import build_level_map as _build_level_map
 from tests.lib.level_params_fixtures import fixture_params
-from tests.lib.session_levels_helpers import D8_LEVELS, d8_session
+from tests.lib.session_levels_helpers import D8_LEVELS, d8_session, newer_rule_versions
 
 
 def build_level_map(ticker, df, price, *args, atr=None, **kw):
@@ -1937,3 +1937,33 @@ def test_a_gap_in_the_known_versions_is_unreadable(monkeypatch):
     assert m.rule_version_status('feat-strat-001.v5') == 'known'
     assert m.rule_version_status('feat-strat-001.v6') == 'rule_version_newer'
     assert m.newest_pick_rule_version() == 'feat-strat-001.v5'
+
+
+# ── Unknown rule version spec, Design 2: the rebuild refuses (U2) ──────
+
+@pytest.mark.parametrize('version', [*newer_rule_versions(), 'feat-strat-001.vX', '', 5])
+def test_from_basis_refuses_a_version_it_does_not_know(version):
+    """A stored basis of a version newer than this image knows, or one it
+    cannot read, raises LevelRuleVersionUnknown naming the status and the
+    stored value; it is never rebuilt under the v2 rule. _assemble refuses
+    an in-memory SessionLevels of the same version instead of relabelling
+    it as the current version."""
+    from lib.strat_levels import LevelRuleVersionUnknown, SessionLevels, rule_version_status
+    from tests.lib.session_levels_helpers import d8_basis
+    basis = {**d8_basis(), 'rule_version': version}
+    with pytest.raises(LevelRuleVersionUnknown) as e:
+        SessionLevels.from_basis(basis)
+    assert e.value.reason == rule_version_status(version)
+    assert e.value.reason in ('rule_version_newer', 'rule_version_unreadable')
+    if isinstance(version, int):
+        assert e.value.recorded is version
+    else:
+        assert e.value.recorded == version
+    assert str(e.value).startswith(e.value.reason)
+
+    sl = SessionLevels.from_basis(d8_basis())
+    sl.rule_version = version
+    with pytest.raises(LevelRuleVersionUnknown) as e:
+        sl.with_reference(250.0)
+    assert e.value.reason == rule_version_status(version)
+    assert e.value.recorded is version

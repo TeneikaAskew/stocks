@@ -1060,6 +1060,22 @@ class LevelParamsUnavailable(RuntimeError):
     reason = 'level_params_unavailable'
 
 
+class LevelRuleVersionUnknown(RuntimeError):
+    """A stored level basis names a rule version this image does not know
+    (`rule_version_newer`) or cannot read (`rule_version_unreadable`), as
+    rule_version_status classifies it. It is refused, never rebuilt under an
+    older rule: each reader turns it into its own unavailable state (spec
+    2026-11-16-feat-strat-001-unknown-rule-version, Design 2 and 3).
+    `reason` is the status and `recorded` the stored value, unchanged."""
+
+    def __init__(self, reason: str, recorded):
+        self.reason = reason
+        self.recorded = recorded
+        super().__init__(
+            f"{reason}: level_basis rule_version {recorded!r}; this image knows up to "
+            f"{newest_pick_rule_version()}")
+
+
 class LevelParamUnavailable(LookupError):
     """A caller asked for the value of a parameter whose status is not ok.
     Names the key, the status and the sample so the copy can say why."""
@@ -2012,6 +2028,11 @@ class SessionLevels:
         is orb_only with reason params_unavailable."""
         if not isinstance(basis, dict):
             raise ValueError('level_basis must be a JSON object')
+        # A version this image does not know, or cannot read, is refused by
+        # name before anything is built, never rebuilt under the v2 rule.
+        status = rule_version_status(basis.get('rule_version'))
+        if status in REFUSED_RULE_VERSION_STATUSES:
+            raise LevelRuleVersionUnknown(status, basis.get('rule_version'))
         session = _to_date(basis.get('session_date'))
         if session is None:
             raise ValueError('level_basis has no session_date')
@@ -2500,6 +2521,11 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
               reference: Optional[float], reference_source: Optional[str]) -> SessionLevels:
     """Recompute reference, cleared marks, broken status and picks from a
     SessionLevels' structural levels plus a premarket snapshot."""
+    # A version this image does not know, or cannot read, is refused, not
+    # relabelled as the current version.
+    status = rule_version_status(base.rule_version)
+    if status in REFUSED_RULE_VERSION_STATUSES:
+        raise LevelRuleVersionUnknown(status, base.rule_version)
     keeps = base.rule_version == LEVEL_RULE_V2 or is_current_pick_rule(base.rule_version)
     rule = base.rule_version if keeps else LEVEL_RULE_VERSION
     out = SessionLevels(
