@@ -43,10 +43,10 @@ Holiday and early-close schedules must remain real NYSE sessions; DST opens must
 
 Spec: done_when items 1 to 3, 5 to 6; Sequencing with #1546.
 
-- [ ] Collect actual base repository nodes and evaluator nodes; retain their exact inventory outside the checkout before edits.
-- [ ] Add tests/gcp/test_nyse_sessions_shim.py: holiday week excluding 2026-11-26, 2026-11-27 close 18:00Z, 2027-03-15 open 13:30Z, ImportError without the library, exact original wrapper source and absent scorer surface. Run against original module and record the expected surface failure.
-- [ ] Replace gcp/fetchers/evaluate_ew_strikes.py with the preserved wrapper, required imports and binding-spec docstring. Move the seven vendor functions and helpers verbatim from current main to tests/gcp/test_fetch_market_data_vendor_answers.py; remove only the 49 scorer cases and original test container. Remove this module from tests/lib/test_av_account_allowance.py CONSUMERS.
-- [ ] Run the new shim/vendor, unchanged collector/session and account suites. Verify exact base/head node relation: minus 49 plus new shim nodes; no other suite loses nodes. Regenerate timezone baseline with its supported command and prove only the two scorer violations disappear.
+- [x] Collect actual base repository nodes and evaluator nodes; retain their exact inventory outside the checkout before edits.
+- [x] Add tests/gcp/test_nyse_sessions_shim.py: holiday week excluding 2026-11-26, 2026-11-27 close 18:00Z, 2027-03-15 open 13:30Z, ImportError without the library, exact original wrapper source and absent scorer surface. Run against original module and record the expected surface failure.
+- [x] Replace gcp/fetchers/evaluate_ew_strikes.py with the preserved wrapper, required imports and binding-spec docstring. Move the seven vendor functions and helpers verbatim from current main to tests/gcp/test_fetch_market_data_vendor_answers.py; remove only the 49 scorer cases and original test container. Remove this module from tests/lib/test_av_account_allowance.py CONSUMERS.
+- [x] Run the new shim/vendor, unchanged collector/session and account suites. Verify exact base/head node relation: minus 49 plus new shim nodes; no other suite loses nodes. Regenerate timezone baseline with its supported command and prove only the two scorer violations disappear.
 
 ## Task 2: model and delivery records (done_when 4 to 5, 7 to 8)
 
@@ -87,3 +87,25 @@ evidence for this branch.
 ## Re-cut execution, November 17
 
 Receipts for this branch are recorded here as each step runs.
+
+Task 1, on base d35d9ce2:
+
+- Base inventory: `python3 -m pytest tests/ --collect-only -q` collected 11,717 cases (sorted node list
+  sha256 091b3985c8efa6772b648c01928df832ada01005bae1a53bbfed6b4f61db8591, kept outside the checkout);
+  `tests/gcp/test_evaluate_ew_strikes.py` collected 71 cases over 35 functions.
+- The new shim test against the original module: 4 passed, 1 failed
+  (`test_scorer_surface_is_removed`: `hasattr(ew, 'scoring_session')`), as expected; the wrapper-source
+  case passed, so the pinned wrapper equals main's L196-204 byte for byte.
+- After the strip: the kept wrapper equals main's L196-204 (L205 is the blank line after it); the module
+  exports `nyse_sessions` and imports only `date`, `pd` and `session_schedule`. The vendor block (`_Resp`
+  through `test_every_price_call_sends_the_listed_share_class`) is current main's block byte for byte,
+  #2047's `_daily` included; it differs from #1914's moved copy only in `_daily`.
+- Shim, vendor, collector entry and allowance suites: 88 passed, 1 skipped (the existing
+  `tests/gcp/test_av_options_collector_entry.py:188` integration-only skip).
+- Head inventory: 11,673 cases. Per file, only `tests/gcp/test_evaluate_ew_strikes.py` (71 to 0),
+  `tests/gcp/test_fetch_market_data_vendor_answers.py` (0 to 22) and `tests/gcp/test_nyse_sessions_shim.py`
+  (0 to 5) change: 11,673 minus 11,717 is minus 44, which is minus 49 plus 5. The 22 moved node ids equal
+  the base ids; the 49 retired ids equal #1914's receipt. The only other node-id difference is the two
+  gzip-mtime parameter ids of `tests/gcp/test_av_realtime_transport_cli.py`, whose count is unchanged.
+- `python -m tests.meta.test_timezone_boundaries --write-baseline` removed exactly the two
+  `scoring_session` entries; `tests/meta/test_timezone_boundaries.py`: 6 passed.
