@@ -53,8 +53,8 @@ Spec: done_when items 1 to 3, 5 to 6; Sequencing with #1546.
 Spec: done_when items 4 to 5, 7 to 8; Source identity and close-out.
 
 - [x] Mark MODEL-EWV-001 Retired / REMOVE with date, retain history; add retirement header, exact historical counts and preserved-test pointers to its model document. Regenerate model export and run model-pointer/vocabulary checks.
-- [ ] Refresh only FEAT-DATA catalog, own lineage, and declared SHARED-07 note; preserve previous own prose and all foreign SITE bytes. Use supported generated-inventory renderer and fixed-bound source producer/verifier, with the sidecar written whole by the producer as one record.
-- [ ] Run matched main/head documentation audits, unchanged source/audit suites, normal commit and PR gates. Record full counts, failures and boundaries. Name P-J docs/ew-retirement-product-docs as separate follow-up, never alter 06-DATA-ARCHITECTURE here.
+- [x] Refresh only FEAT-DATA catalog, own lineage, and declared SHARED-07 note; preserve previous own prose and all foreign SITE bytes. Use supported generated-inventory renderer and fixed-bound source producer/verifier, with the sidecar written whole by the producer as one record.
+- [x] Run matched main/head documentation audits, unchanged source/audit suites, normal commit and PR gates. Record full counts, failures and boundaries. Name P-J docs/ew-retirement-product-docs as separate follow-up, never alter 06-DATA-ARCHITECTURE here.
 - [ ] Publish Draft only after prerequisite receipts and shared-file coordination, bind the number, then spend the first complete review on the final qualified head. Preserve the two-round limit and #1914's review history; no reset is claimed.
 
 ## Close-out
@@ -124,3 +124,34 @@ Task 2, model records:
 - `docs/review-evidence/ew-module-shim/node-disposition.json` and `preservation.json` are #1914's files,
   carried unchanged (blobs 5d1e1429 and c833f2a3, equal to #1914's): no tool in the repository generates
   them, so they are not regenerated. They describe #1914's bases; this branch's receipts are in this plan.
+
+Task 2, records, identity and checks:
+
+- `python3 scripts/maintenance/doc_inventory.py --snapshot tests/fixtures/live_gcp_snapshot_2026-09-07.json
+  --insert` over 05-a, 05-c and 05-e updated 05-a and 05-c (the module's summary line, and the module
+  leaving the `earnings_calendar` writer, reader and multi-writer lists) and left 05-e unchanged.
+- FEAT-DATA-001 catalog Status names this re-cut; Last reviewed reads 2026-11-17. The FEAT-DATA-001
+  lineage records #1914 and its re-cut; this branch's PR number is added once it exists.
+- Producer preflight reported source identity
+  f719860b10696121d8badcb38c1c7cd034d8598be84d41617fff75bb1d74cece with "each declared own note must be
+  added or updated". The `(FEAT-DATA-001, SHARED-07)` row was rebound to it, its earlier content kept after
+  "Earlier:", and committed (30b7505b); the SITE diff is that one row. `produce` then wrote the sidecar
+  whole (6b6c5446): `json.load` and the tool's `json_record` each read one record. `verify --policy-ref
+  origin/main --source-ref HEAD --max-seconds 5 --max-input-bytes 16777216 --max-entries 20000` reported
+  `identity-matched` on the `declared-note` route, 1,895 entries, 14,658,398 counted bytes, SITE body
+  6dcd9717a82b1c1d49a067bcfb699fa528854ee5a867b5792fd6498b1ed63c86. `docs/DOC_REGISTRY.md` is blob
+  c101b844, mode 100644, as on main.
+- Matched docs audit (`LC_ALL=C python3 scripts/maintenance/docs_audit.py`, normalized and sorted): main
+  d35d9ce2 316 findings, branch 313; `comm -23 branch main` is empty. The three main-only findings are
+  SITE's two changed-since findings and its source-provenance finding.
+- `python3 scripts/gate/spec_gate.py --pr origin/main`: `spec gate ok` over 18 changed files; every commit
+  passed `--commit` and the pre-commit hook.
+- Suites: `tests/gcp` (without `tests/gcp/test_av_realtime_transport_cli.py`) with the importer, earnings,
+  allowance, eastern-time, model-registry and timezone suites, `-n auto`: 5,119 passed, 8 skipped (the
+  collector integration-only case and seven deploy differential cases that need `DEPLOY_BASELINE_REV`), in
+  548 s; `tests/gcp/test_av_realtime_transport_cli.py` alone: 33 passed;
+  `tests/scripts/test_check_generated_docs.py`, `tests/scripts/test_doc_source_snapshot.py` and
+  `tests/scripts/test_docs_audit.py`, unchanged: 964 passed, 1 skipped (a root-only case), in 195 s.
+- Read on 2026-11-17 at 20:24:56Z: `gcloud run jobs describe evaluate-ew-strikes` answered
+  `Cannot find job` and the `evaluate-ew-strikes-daily` scheduler answered `NOT_FOUND` in us-east1.
+- P-J (`docs/ew-retirement-product-docs`) is named in the PR body; `06-DATA-ARCHITECTURE.md` is unchanged.
