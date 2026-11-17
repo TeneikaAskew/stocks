@@ -5,16 +5,17 @@ issues: [2027]
 canvases:
   - https://claude.ai/artifact/LXZ5iRtXogCyFfApfsxXVN
 done_when:
-  - "D1 the store is declared: gcp/schema.sql creates schema replay and the tables of Design 1, each with replay_run_id as the first column of its primary key; tests/gcp/test_replay_store.py::test_schema_declares_every_replay_table_keyed_by_run passes by parsing gcp/schema.sql, and fails when any table of Design 1 is missing or its key does not start with replay_run_id"
-  - "D2 the write fence: tests/gcp/test_replay_store.py::test_a_run_writes_nothing_outside_the_replay_schema passes: with REPLAY_RUN_ID set, gcp.database.upsert_dataframe, bulk_insert_dataframe, bulk_copy_upsert, replace_rows_in_window and execute_sql with an INSERT, UPDATE or DELETE naming market_data_intraday, market_data_daily, intraday_bar_flags, premarket_analysis, premarket_analysis_history, strat_levels, insight_runs, insight_reports or insight_reports_history raise ReplayWriteRefused before an engine is created (a stub get_engine records no call), and the same calls naming the replay.* table of Design 1 reach the engine; with REPLAY_RUN_ID unset every live write is unchanged (the existing tests/gcp/test_database*.py pass unchanged)"
-  - "D3 the pull is the nightly's own fetch: tests/gcp/test_replay_full_pull.py::test_pull_uses_fetch_month_and_writes_replay_bars_only passes: with requests.get stubbed to answer a TIME_SERIES_INTRADAY body of four bars (2026-11-16 04:00 to 04:03 ET, the SPY values of Design 8) and a recording engine, the pull sends exactly the params of gcp.fetchers.fetch_alphavantage_intraday.fetch_month (adjusted 'false', entitlement 'realtime', extended_hours 'true', outputsize 'full', month '2026-11') plus apikey, writes four replay.intraday_bars rows whose ts are 2026-11-16 09:00 to 09:03 UTC (lib.eastern_time.eastern_index_to_utc), writes one replay.pulls row with reason 'success', rows 4, the request without the key and the sha256 of the body, and issues no statement naming a table outside schema replay"
+  - "D1 the store is declared and owns its ids: gcp/schema.sql creates schema replay and the tables of Design 1, each with replay_run_id as the first column of its primary key; tests/gcp/test_replay_store.py::test_schema_declares_every_replay_table_keyed_by_run passes by parsing gcp/schema.sql and fails when a table of Design 1 is missing, its key does not start with replay_run_id, a column default in schema replay calls nextval or names an object outside schema replay, or a foreign key in schema replay references a table outside it; tests/integration/test_replay_store_pg.py::test_replay_inserts_use_replay_ids_under_the_replay_role passes on a Postgres built from gcp/schema.sql: connected as a role with SELECT on schema public and write only on schema replay, an insert that omits id into replay.premarket_analysis, replay.premarket_analysis_history and replay.insight_reports_history succeeds, and the last_value of the three live sequences (the BIGSERIAL ids of gcp/schema.sql:1328, :2054, :2350) is unchanged"
+  - "D2 the write fence holds every write path: tests/gcp/test_replay_store.py::test_a_run_writes_nothing_outside_the_replay_schema passes: with REPLAY_RUN_ID set and a fake DBAPI connection that records what reaches it, each of gcp.database.upsert_dataframe, bulk_insert_dataframe, bulk_copy_upsert, bulk_copy_update, replace_rows_in_window, execute_sql and execute_returning_scalar (an INSERT ... RETURNING id), a statement run through get_engine().begin() (the calibration writer gcp/calibrate_level_params.py:424-433), a cursor of get_engine().connect().connection (lib.strat_levels.persist_level_map), and a cursor of lib.agents.model_routing.connect() (the insight writer) raises ReplayWriteRefused for an INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY ... FROM, SELECT ... INTO or DDL naming a table outside schema replay and the statement never reaches the connection, while the same statement naming the replay.* table of Design 1, and a temporary table, reaches it; with REPLAY_RUN_ID unset the existing tests/gcp/test_database*.py and tests/lib/test_model_routing*.py pass unchanged"
+  - "D3 the pull is the nightly's own fetch: tests/gcp/test_replay_full_pull.py::test_pull_uses_fetch_month_and_writes_replay_bars_only passes: with requests.get stubbed to answer a TIME_SERIES_INTRADAY body of four bars (2026-11-16 04:00 to 04:03 ET, the SPY values of Design 8) and a recording connection, the pull sends exactly the params of gcp.fetchers.fetch_alphavantage_intraday.fetch_month (adjusted 'false', entitlement 'realtime', extended_hours 'true', outputsize 'full', month '2026-11') plus apikey, writes four replay.intraday_bars rows whose ts are 2026-11-16 09:00 to 09:03 UTC (lib.eastern_time.eastern_index_to_utc), writes one replay.pulls row with reason 'success', rows 4, the request without the key and the sha256 of the body, and writes no table outside schema replay; ::test_pull_months_cover_each_read_window passes: for sessions 2026-11-09 to 11-16 run on 2026-11-17 the months fetched are 2026-10 and 2026-11 (read_window((2026, 11)) starts 2026-10-25 02:00Z; 2026-12 is after the current Eastern month), and for sessions 2026-10-26 to 10-30 run on 2026-11-17 they are 2026-09, 2026-10 and 2026-11"
   - "D4 the pull never ends quietly: tests/gcp/test_replay_full_pull.py::test_pull_refuses_and_records passes: a ticker other than SPY, QQQ or IWM, a session after the current Eastern date, a run id that exists with other parameters, and the database not configured each exit 1 before any vendor call; a month answered with a rate-limit note or a request error is recorded in replay.pulls with that FETCH_* reason, no bar row is written for it, and the run exits 1; the API key appears in no log line, no row and no object (asserted by searching every captured record for the key)"
-  - "D5 the data fixes are the live functions: tests/gcp/test_replay_full_pull.py::test_premarket_reads_are_premarket_snapshot_at_each_cutoff passes on tests/fixtures/replay_2026_11_16/ (the SPY, QQQ and IWM 2026-11-16 bars of the experiment of 2026-11-17, the prior session row and the session's market_data_daily pre_filter_params): each replay.premarket row equals gcp.fetchers.fetch_market_data.premarket_snapshot on the same bars cut at the same instant with the same prior and filter, and with the recorded filter the refresh_0820 reads give pre_high and pre_low SPY 752.90 and 747.96 (cutoff 08:20:58 ET), QQQ 675.49 and 668.33 (08:20:55), IWM 276.97 and 275.74 (08:20:48); the flag rows equal gcp.fetchers.intraday_bar_flags.judge_month on the same bars"
-  - "D6 the brief replays into the store and posts nothing: tests/gcp/test_premarket_brief_replay_store.py::test_replay_run_reads_and_writes_the_store_only passes: with REPLAY_RUN_ID and BRIEF_AS_OF=2026-11-16, BRIEF_POST_TO_DISCORD=true and a recording engine, the session premarket is read from replay.premarket (read_kind refresh_0820) and never from the market_data_daily session row, rows are written to replay.premarket_analysis (run_kind 'replay'), replay.premarket_analysis_history and replay.strat_levels with the run id, no statement names a table outside schema replay, the null-close cleanup is not run, and send_to_discord is never called; without REPLAY_RUN_ID the existing tests/gcp/test_premarket_brief*.py pass unchanged"
-  - "D7 the insight replays into the store: tests/gcp/test_insight_pipeline_replay_store.py::test_replay_run_reads_the_runs_brief_and_writes_the_store_only passes: with REPLAY_RUN_ID and INSIGHT_AS_OF set, summarize_session_levels reads the level_basis of the run's replay.premarket_analysis row and never the live row (read_live_level_basis is not called), the session premarket comes from replay.premarket, the insight_runs, insight_reports and insight_reports_history rows go to schema replay with the run id, no statement names a table outside schema replay, and no Discord push is made; without REPLAY_RUN_ID the existing tests/gcp/test_insight_pipeline*.py pass unchanged"
-  - "D8 the comparison report: tests/gcp/test_replay_compare.py::test_compare_lists_every_difference_with_its_cause passes on fixture rows copied from the experiment of 2026-11-17 (Design 7): bars SPY 2026-11-16 960 replay and 960 stored, 0 differing; triggers SPY 2026-11-16 calls PMK_H published 754.3772 replay 752.90 cause rule_change, IWM 2026-11-16 puts PMK_L published 275.86 replay 275.74 cause data_revision, QQQ 2026-11-12 puts PMK_L published 679.14 replay 674.76 cause data_revision, SPY 2026-11-11 puts PMK_L 753.99 equal; the summary says accurate false and counts each cause; a published row that is missing is a row with status not_published, never a zero or a skipped line"
-  - "D9 the guards hold: tests/meta/test_production_writers.py passes with gcp/replay_full_pull.py registered in REPLAY_PATH and one new entry, REPLAY_FETCH_INTO_STORE, holding exactly (gcp/replay_full_pull.py, pull); a new test there asserts that every write reached from that entry names a replay.* table and that the test fails on a snippet writing market_data_intraday from it; test_only_the_two_fetchers_write_one_minute_bars and test_only_named_entry_points_reach_the_intraday_writers pass with their lists unchanged"
-  - "D10 close: make test passes on the PR head; the PR body's Capacity section carries the numbers of this spec's Capacity section re-measured on the head; the FEAT-REPLAY-001 catalog record and the traceability entry name the PR"
+  - "D5 the data fixes are the live functions on the live windows: tests/gcp/test_replay_full_pull.py::test_premarket_reads_are_premarket_snapshot_at_each_cutoff passes on tests/fixtures/replay_2026_11/ (the experiment's bars for 2026-11-13 and 11-16, the prior session rows and each session's market_data_daily pre_filter_params): each replay.premarket row equals gcp.fetchers.fetch_market_data.premarket_snapshot on the same bars cut at the same instant with the same prior and filter; with the recorded filter the refresh_0820 reads of 2026-11-16 give pre_high and pre_low SPY 752.90 and 747.96 (cutoff 08:20:58 ET), QQQ 675.49 and 668.33 (08:20:55), IWM 276.97 and 275.74 (08:20:48); ::test_each_read_kind_reads_its_own_source passes: for SPY 2026-11-13, with an as-read record built by gcp.fetchers.premarket_as_read.build_record from the fixture bars before 08:20:57 ET and the full pull beside it, refresh_0820 is computed from the record (pre_high 759.75, filter-only high 759.86) and nightly_0930 from the pull (pre_high 762.67, filter-only high 762.6931, a high set after the refresh), and a nightly_0930 read is never computed from an as-read record; ::test_flags_are_judged_over_the_live_read_window passes on synthetic bars written in the test from 2026-09-24 to 2026-11-08 with one isolated print in the last bar of 2026-10-30 (20:00 ET, the last bar before the 2026-10 month window ends): the replay's 2026-10 flags equal gcp.fetchers.intraday_bar_flags.judge_month over read_window((2026, 10)) cut at the coverage checked_at given, and flag that bar, while judge_month over the month window alone does not flag it (lib/bar_prints.py judges no bar without two neighbours on each side), so the margin is proven to matter"
+  - "D6 the brief replays into the store, reads only what it is allowed, and posts nothing: tests/gcp/test_premarket_brief_replay_store.py::test_replay_run_reads_and_writes_the_store_only passes: with REPLAY_RUN_ID, BRIEF_AS_OF=2026-11-16 and BRIEF_POST_TO_DISCORD=true, and a recording connection that logs every statement, (a) the session premarket handed to build_session_levels equals the replay.premarket row (read_kind refresh_0820), (b) no statement reads premarket_analysis or market_data_intraday in schema public (the live basis, the late slot's rows and the dry run's bars are replaced by the run's own rows), (c) every other relation read is in the test's named allowlist of reference reads (market_data_daily rows before the session, ticker_level_params, level_param_policy, ticker_calibration, watchlists, etf_options_snapshots, economic_events, earnings_calendar and the earnings tables the earnings section reads), and a read of a relation outside it fails the test, (d) every write names replay.premarket_analysis (run_kind 'replay'), replay.premarket_analysis_history or replay.strat_levels with the run id, (e) the null-close cleanup is not run and send_to_discord is never called; without REPLAY_RUN_ID the existing tests/gcp/test_premarket_brief*.py pass unchanged"
+  - "D7 the insight replays into the store and reads only what it is allowed: tests/gcp/test_insight_pipeline_replay_store.py::test_replay_run_reads_the_runs_brief_and_writes_the_store_only passes: with REPLAY_RUN_ID and INSIGHT_AS_OF=2026-11-16T08:45:00-05:00 and a recording connection, (a) the level basis is the run's replay.premarket_analysis row and the session premarket the replay.premarket row, and neither LIVE_LEVEL_BASIS_SQL nor SESSION_PREMARKET_SQL (lib/strat_levels.py:3030, :2167) is issued, (b) every other relation read is in the test's named allowlist of reference reads (market_data_daily rows before the session read by summarize_market_context, etf_options_snapshots, economic_events, earnings_calendar, news_sentiment, sec_filings, journal_entries, ticker_level_params, level_param_policy, model_routing, watchlists) and a read outside it fails the test, (c) every write names replay.insight_runs, replay.insight_reports or replay.insight_reports_history with the run id, (d) no Discord push is made; a date-only INSIGHT_AS_OF with REPLAY_RUN_ID set exits 1 before any read; without REPLAY_RUN_ID the existing tests/gcp/test_insight_pipeline*.py pass unchanged"
+  - "D8 a replay reads no news or filing from after its instant: tests/lib/test_summarizers_as_of_bounds.py::test_catalyst_news_stops_at_the_instant passes against a Postgres fixture (tests/integration) or a query stub that applies the bound SQL: with as_of 2026-11-16T08:45:00-05:00 and catalyst-tagged SPY headlines published at 08:44:59, 08:45:00 and 2026-11-17 08:00 ET, summarize_catalysts returns only the 08:44:59 headline (today 08:45:00 and the next morning are both admitted on origin/main, where the bound is the as_of plus 23 hours 59 minutes, lib/agents/summarizers.py:1723-1737); ::test_same_day_filings_are_left_out_of_a_replay passes: an 8-K with filing_date 2026-11-16 is left out for that as_of and kept for as_of 2026-11-17T08:45:00-05:00 (sec_filings holds a date only, so a filing of the session day cannot be placed before or after 08:45); with as_of None every query and result equals origin/main's"
+  - "D9 the comparison report covers every family: tests/gcp/test_replay_compare.py passes one case per family, each a fixture equal on both sides except one item, where the summary says accurate false and only that family counts one difference: bars (SPY 2026-11-16 04:02 ET volume 7151 stored, 968 replay), flags (one flag on the replay side only), premarket (IWM 2026-11-16 refresh_0820 low published 275.86, replay 275.74, cause data_revision), trigger (SPY 2026-11-16 calls PMK_H published 754.3772, replay 752.90, cause rule_change), stop (IWM 2026-11-16 calls stop PMK_L published 275.86, replay 275.74, cause data_revision), level pick (calls trigger name PMK_H published, PDH replay, cause level_pick), targets (calls_plan_t1 one cent apart), and the insight plan (InsightReport.stop, lib/agents/schema.py:329, one cent apart; and each of direction, entry_zone, targets and persona_plans in its own case); an all-equal fixture gives accurate true with zero in every family; a missing side is a row with status not_published or not_replayed, never a zero or a skipped line"
+  - "D10 the guards hold: tests/meta/test_production_writers.py passes with gcp/replay_full_pull.py registered in REPLAY_PATH and one new entry, REPLAY_FETCH_INTO_STORE, holding exactly (gcp/replay_full_pull.py, pull); a new test there asserts that every write reached from that entry names a replay.* table and that the test fails on a snippet writing market_data_intraday from it; test_only_the_two_fetchers_write_one_minute_bars and test_only_named_entry_points_reach_the_intraday_writers pass with their lists unchanged"
+  - "D11 close: make test and make test-integration pass on the PR head; the PR body's Capacity section carries the numbers of this spec's Capacity section re-measured on the head; the FEAT-REPLAY-001 catalog record and the traceability entry name the PR"
 status: draft
 supersedes: null
 ---
@@ -58,7 +59,7 @@ change (Non-goals).
 | 1 Pull from AV as live | `fetch_month` (`gcp/fetchers/fetch_alphavantage_intraday.py:123-185`) sends TIME_SERIES_INTRADAY with `adjusted 'false'`, `entitlement 'realtime'`, `extended_hours 'true'`, `outputsize 'full'` (`:137-147`) and returns the month with naive Eastern stamps. `minute_bars_request` / `fetch_minute_bars` (`gcp/fetchers/fetch_market_data.py:85-179`) send the same request and keep one date. | Every caller writes the live table or nothing: `process_symbol` upserts into `market_data_intraday` (`:329-334`), `--replace-months` swaps months of the live table (`replace_month` `:765`, `replace_rows_in_window` at `:920` and `:948`), the daily fetcher's `write_intraday_to_sql` upserts the live table (`fetch_market_data.py:650-674`). With the database unconfigured `process_symbol` drops the frame. No caller keeps a pull anywhere else. |
 | 2 Data fixes as live | Print filter and the extreme rules in `calculate_premarket_context` (`lib/indicators.py:563-843`: stale-close-report-v1, prior-close-print-v1, thin-bar-v1, two-bars-or-body-v1 at `:544-560`); `premarket_snapshot` (`fetch_market_data.py:392-474`, pure, the one function the nightly, the recompute and the brief dry run call); the isolated-print rule (`lib/bar_prints.py`, `RULE_VERSION` `:21`; `judge_month` `gcp/fetchers/intraday_bar_flags.py:247`, pure). | The writers are in place: the nightly premarket write (`fetch_market_data.py:578-628`) and `upsert_premarket` (`fetch_premarket_refresh.py:317`, `ON CONFLICT (ticker, date)` at `:412`) write `market_data_daily`; `--recompute-premarket --commit` rewrites it (`:1491`); `flag_months` writes `intraday_bar_flags` and `intraday_bar_flag_coverage`. The recompute and the dry run read only stored bars (`premarket_bars_sql` `:1379`, `PREMARKET_BARS_SQL` `premarket_brief.py:1028`). No consumer reads a bar flag: the only importers of `intraday_bar_flags` / `bar_prints` are the fetcher and `export_intraday_bars.py` (searched). |
 | 3 Separate store | None. No schema, table, env var or argument chooses another target: a search of `lib`, `gcp`, `platform`, `scripts` for `search_path`, `DB_SCHEMA`, `REPLAY_STORE`, `REPLAY_RUN` and similar found nothing; `gcp/database.py` takes only `DB_NAME` for a whole database (`:63`, `:88`). The bucket copy `intraday-bars/v1/1min` is a copy of stored bars that no job, replay or route may read (`export_intraday_bars.py:1-19`). `premarket-as-read/v1` (`premarket_as_read.py:43`) keeps the refresh run's own read, from the first refresh after #2044 deploys; none existed at 12:25 UTC on 2026-11-17 (`gcloud storage ls` matched no object). | Nothing to write a replay into. |
-| 4 Brief and insight as live | `BRIEF_AS_OF` (`premarket_brief.py:930`), `BRIEF_NO_PERSIST` (`:4549`), `BRIEF_PREMARKET_FROM_BARS` (`:1105-1185`, `:4689-4694`, dry run only, stored bars cut at the live basis's `fetched_at`); `INSIGHT_AS_OF` (`insight_pipeline_job.py:133`). | A replay writes the live tables in place. `BRIEF_AS_OF` sets `allow_update` (`:3851-3852`) and upserts `premarket_analysis` on `(analysis_date, ticker)` (`:4261`), the table's unique key (`gcp/schema.sql:1371`), so the replay row replaces the published one; `persist_level_map` upserts `strat_levels` on `(ticker, as_of, level_name)` with no run kind (`lib/strat_levels.py:3614-3618`, called at `premarket_brief.py:1777`); the null-close cleanup deletes from `market_data_daily` (`:1289`). The dry run writes nothing but prints only. The brief reads the session premarket from the `market_data_daily` row (`:1616`), not from bars. `INSIGHT_AS_OF` also sets `allow_update` (`insight_pipeline_job.py:307`) and upserts `insight_reports` on `(ticker, as_of)` (`:395`, `:439`), always writes `insight_runs` (`:195-210`), has no dry run, and reads the level basis only from the LIVE brief row (`lib/agents/summarizers.py:528-532`, `lib/strat_levels.py:3030-3034`) and the premarket from `market_data_daily` (`summarizers.py:518-525`). The outcome resolver updates `premarket_analysis` in place (`gcp/premarket_playbook_resolver.py:895`). |
+| 4 Brief and insight as live | `BRIEF_AS_OF` (`premarket_brief.py:930`), `BRIEF_NO_PERSIST` (`:4549`), `BRIEF_PREMARKET_FROM_BARS` (`:1105-1185`, `:4689-4694`, dry run only, stored bars cut at the live basis's `fetched_at`); `INSIGHT_AS_OF` (`insight_pipeline_job.py:133`). | A replay writes the live tables in place. `BRIEF_AS_OF` sets `allow_update` (`:3851-3852`) and upserts `premarket_analysis` on `(analysis_date, ticker)` (`:4261`), the table's unique key (`gcp/schema.sql:1371`), so the replay row replaces the published one; `persist_level_map` upserts `strat_levels` on `(ticker, as_of, level_name)` with no run kind (`lib/strat_levels.py:3614-3618`, called at `premarket_brief.py:1777`); the null-close cleanup deletes from `market_data_daily` (`:1289`). The dry run writes nothing but prints only. The brief reads the session premarket from the `market_data_daily` row (`:1616`), not from bars. `INSIGHT_AS_OF` also sets `allow_update` (`insight_pipeline_job.py:307`) and upserts `insight_reports` on `(ticker, as_of)` (`:395`, `:439`), always writes `insight_runs` (`:195-210`), has no dry run, and reads the level basis only from the LIVE brief row (`lib/agents/summarizers.py:528-532`, `lib/strat_levels.py:3030-3034`) and the premarket from `market_data_daily` (`summarizers.py:518-525`). An `INSIGHT_AS_OF` instant does not bound catalyst news: `summarize_catalysts` ends the news window at the instant plus 23 hours 59 minutes (`summarizers.py:1723-1737`; the production query text run on a local Postgres 16 with as_of 2026-11-16 08:45 ET returned headlines stamped 08:45:00, 16:30 and 2026-11-17 08:00 ET), its 8-K read keeps every filing dated the session (`:1739-1752`, a date column), and a date-only `INSIGHT_AS_OF` reads the whole day's sentiment (`:1898-1901`). The outcome resolver updates `premarket_analysis` in place (`gcp/premarket_playbook_resolver.py:895`). |
 | 5 Comparison | `premarket_as_read.compare_bars` (`:327`) counts as-read against stored bars. | Nothing compares a replay's brief or insight with the published one. |
 
 So: **no**. The code cannot pull from AlphaVantage into a separate store, apply the fixes there, run
@@ -86,7 +87,9 @@ functions on local files.
   one side, 0 differing (`compare_bars`, and again at a 0.0001 tolerance). Every stored row reads as a
   true UTC instant (`stored_intraday_to_eastern`: 0 label rows, 0 dropped of 30,719).
 - **Flags.** `judge_month` on the fresh bars gives the same 188 isolated-print flags for those sessions
-  as `intraday_bar_flags` holds, none on one side only.
+  as `intraday_bar_flags` holds, none on one side only. That used November bars only: enough for
+  those sessions, not for every flag of the month, whose live read window starts 2026-10-25 02:00Z
+  (Design 3).
 - **The stored premarket is the old rule, not the brief's read.** `market_data_daily` premarket values
   for 2026-11-05 to 11-13 were rewritten on 2026-11-15 06:01Z by `--recompute-premarket --commit`
   (`pre_recompute_run` = `fetch-market-data-686d7`; the marker is set only by that path,
@@ -135,9 +138,10 @@ functions on local files.
    but the replay store, and every existing replay path stays table-only (recommended). Or keep it
    and drop this capability.
 4. **What the morning read is.** For a session with a premarket-as-read object (from the first
-   refresh after #2044 deploys), the 08:20 and 09:20 reads use that object; for every earlier session
-   they use the full pull cut at the morning cutoff, labelled `vendor_revised`, and the report never
-   calls it as-live (recommended; the experiment's 11 of 12). Or treat the pull as the morning read.
+   refresh after #2044 deploys), the 08:20 and 09:20 reads use the object of that refresh; for every
+   earlier session they use the full pull cut at the morning cutoff, labelled `vendor_revised`, and the
+   report never calls it as-live (recommended; the experiment's 11 of 12). The nightly read always
+   uses the pull (Design 4). Or treat the pull as the morning read.
 5. **Daily inputs** (prior close, open, ATR, daily bars). Read live `market_data_daily` rows before
    the session, as the brief does, and record the values used (recommended). Or pull
    TIME_SERIES_DAILY_ADJUSTED full into the store (one call a ticker; note the daily rows for
@@ -182,33 +186,77 @@ the owner's step). Every table has `replay_run_id TEXT NOT NULL` first in its pr
   inputs and `bars_basis`.
 - `replay.premarket_analysis`, `replay.premarket_analysis_history`, `replay.strat_levels`,
   `replay.insight_runs`, `replay.insight_reports`, `replay.insight_reports_history`: the live columns
-  (`LIKE ... INCLUDING DEFAULTS`) plus run id, keyed by run then the live key.
+  plus run id, keyed by run then the live key, each column written out in `gcp/schema.sql`.
+
+No table of schema `replay` takes a default, a sequence or a foreign key from schema `public` (D1).
+`LIKE ... INCLUDING DEFAULTS` is not used: it copies `nextval('<live sequence>')`. Run on a local
+Postgres 16 (2026-11-17, throwaway cluster): the copied default read
+`nextval('premarket_analysis_history_id_seq'::regclass)`, one replay insert moved the live sequence
+from 1 to 2, and a role with SELECT on `public` and write on `replay` only got `permission denied for
+sequence premarket_analysis_history_id_seq`. The three serial ids (`premarket_analysis`,
+`premarket_analysis_history`, `insight_reports_history`: BIGSERIAL at `gcp/schema.sql:1328`, `:2054`,
+`:2350`; the writers omit the id, e.g. `insight_pipeline_job.py:329-331`) are
+`GENERATED BY DEFAULT AS IDENTITY` owned by the replay table: in the same run, inserts as the
+restricted role succeeded and the live sequence stayed at 2. Other defaults (`gen_random_uuid()`,
+`NOW()`, literals) are written out. `replay.insight_reports_history` references
+`replay.insight_runs` on (run id, id), where the live table references `insight_runs` (`:2353`).
 
 ### 2. The write fence
 
 `gcp/replay_store.py` holds the run context (`REPLAY_RUN_ID`, validated) and the table map. While a
-run id is set, every write function of `gcp/database.py` refuses a target outside schema `replay`
-with `ReplayWriteRefused`, before an engine is created (D2). With no run id nothing changes. The
-guard of #1891 registers the new module in `REPLAY_PATH` with one named exemption,
-`REPLAY_FETCH_INTO_STORE`, and a new test that every write reached from it names `replay.*` (D9).
+run id is set, every statement is checked where it reaches the database driver, not in the helpers
+alone, because the brief and the insight write past them: `persist_level_map` takes a raw cursor of
+`get_engine().connect().connection` (`premarket_brief.py:1776-1781`, `lib/strat_levels.py:3633-3634`), the
+calibration writer runs `get_engine().begin()` (`gcp/calibrate_level_params.py:424-433`, reached from
+the insight through `_calibrate_on_demand`, `summarizers.py:547-565`), `bulk_copy_update` and
+`execute_returning_scalar` open their own connections (`gcp/database.py:895`, `:1091`), and the
+insight writes `insight_runs`, `insight_reports` and `insight_reports_history` through
+`lib.agents.model_routing.connect()` (`model_routing.py:76-99`; `insight_pipeline_job.py:196`,
+`:243`, `:324`, `:384`), which never touches `gcp.database`.
+
+So the DBAPI connection made by `gcp.database`'s engine and the one `model_routing.connect()` returns
+are both wrapped: a cursor refuses with `ReplayWriteRefused`, before the statement is sent, any
+INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY ... FROM, SELECT ... INTO or DDL whose target is not
+in schema `replay` or a temporary table. The helpers of `gcp/database.py` check their table argument
+first as well, so a refusal names the helper. With no run id nothing changes (D2). `record_job_run`
+(`gcp/database.py:1180`) swallows its failure, so no replay entry point calls it; a run records
+itself in `replay.runs`. The database role of Decision 2 is the backstop for a path the wrapper
+misses. The guard of #1891 registers the new module in `REPLAY_PATH` with one named exemption,
+`REPLAY_FETCH_INTO_STORE`, and a new test that every write reached from it names `replay.*` (D10).
 
 ### 3. Pull
 
-`python -m gcp.replay_full_pull pull --run-id R --tickers SPY,QQQ,IWM --from D1 --to D2`. Months: those
-holding `[D1 - 7 days, D2]` (the flag pass reads 7 days past each month end,
-`intraday_bar_flags.py:56`). One `fetch_month` call per ticker-month, unchanged, paced by
+`python -m gcp.replay_full_pull pull --run-id R --tickers SPY,QQQ,IWM --from FIRST --to LAST`. Target months:
+the months holding a session in `[FIRST, LAST]`. Months pulled: every month that holds part of
+`read_window(m)` for a target month m (`gcp/fetchers/intraday_bar_flags.py:185-189`: the month window
+`[M-01 02:00Z, (M+1)-01 02:00Z)`, `lib/eastern_time.py:550-555`, widened by `READ_MARGIN`, 7 days,
+`:56`, on each side), up to the current Eastern month. For 2026-11-09 to 11-16 run on 2026-11-17:
+2026-10 and 2026-11, since `read_window((2026, 11))` is `[2026-10-25 02:00Z, 2026-12-08 02:00Z)` and
+2026-12 has not begun. One `fetch_month` call per ticker-month, unchanged, paced by
 `AlphaVantageConfig.delay_between_calls`; stamps converted with `eastern_index_to_utc`; one
 transaction per ticker-month into `replay.intraday_bars`; one `replay.pulls` row per call, whatever
 its reason. Refusals and exit codes as D4. The key is read from the environment and redacted.
 
 ### 4. Data fixes
 
-`python -m gcp.replay_full_pull fix --run-id R`. Per ticker-month: one read of the run's bars;
-`judge_month` into the replay flag tables; per session `premarket_snapshot` at three cutoffs: the
-morning refresh (the live run's recorded `fetched_at` when the live basis has one, else 08:20:00 ET,
-the schedule `20 8 * * 1-5`, `gcp/deploy.sh:4894`), the late refresh at 09:20 ET once that slot is
-deployed, and 09:30 ET (the nightly's window). Bars come from the as-read object when the session has
-one (Decision 4), else from the run's pull. Prior inputs and thresholds per Decisions 5 and 6.
+`python -m gcp.replay_full_pull fix --run-id R`.
+
+Flags, per ticker and target month: one read of the run's bars over `read_window(month)`, cut where
+the live pass's read could reach (bars stamped before the live coverage row's `checked_at` when there
+is one, since the live pass read the table as it stood then; the whole window otherwise; the cut is
+recorded on the replay coverage row), then `judge_month` over that read, as `flag_months` does
+(`intraday_bar_flags.py:397-410`), into the replay flag tables. Judging the month window alone would
+lose the neighbours and the 61-bar scale of the bars near each month end.
+
+Premarket, per session, `premarket_snapshot` once per read_kind, each from its own source:
+
+| read_kind | Cutoff | Bars |
+|---|---|---|
+| `refresh_0820` | the live run's recorded `fetched_at` when the live basis has one, else 08:20:00 ET (schedule `20 8 * * 1-5`, `gcp/deploy.sh:4894`) | the session's 08:20 premarket-as-read object when one exists, else the run's pull cut at the cutoff (`vendor_revised`) |
+| `refresh_0920` | 09:20 ET, once the late slot (#2020) is deployed | the 09:20 as-read object when one exists, else the pull cut at the cutoff (`vendor_revised`) |
+| `nightly_0930` | 09:30 ET | the run's pull, always: an as-read object holds only the bars its refresh read, so a premarket extreme set after 08:20 or 09:20 is not in it (SPY 2026-11-13: filter-only high 759.86 before 08:20:57 ET, 762.6931 by 09:30, measured in the experiment) |
+
+Prior inputs and thresholds per Decisions 5 and 6.
 
 ### 5. Brief
 
@@ -222,57 +270,90 @@ the null-close cleanup does not run; Discord is never posted, whatever `BRIEF_PO
 
 `INSIGHT_AS_OF=<D 08:45 ET> REPLAY_RUN_ID=R python -m gcp.insight_pipeline_job`: the level basis is
 the run's own `replay.premarket_analysis` row, the premarket is `replay.premarket`; run, report and
-history rows go to schema `replay`; no Discord push. Other inputs are read live with the as-of clock,
-as `INSIGHT_AS_OF` does today (whether every reader honours it: not checked).
+history rows go to schema `replay`; no Discord push. Other inputs are read live with the as-of clock
+(the reference reads of D7), as `INSIGHT_AS_OF` does today, with three bounds tightened, each only when
+`as_of` is an instant, so a live run (as_of None) is unchanged (D8):
+
+- catalyst news ends at the instant itself, `published_ts < :as_of`, not the instant plus 23 hours
+  59 minutes (`summarizers.py:1723-1737`);
+- an 8-K dated the session day is left out, because `sec_filings` holds a filing date and no time
+  (`:1739-1752`), so it cannot be placed before or after the instant;
+- under `REPLAY_RUN_ID` a date-only `INSIGHT_AS_OF` is refused, since `summarize_news_sentiment`
+  reads a date as the whole day (`:1898-1901`).
+
+Other insight readers were read for the same pattern: `summarize_signals_history` also widens a date
+to the whole day (`:986`) but is not in the bundle (`:944-959`); the options and gamma reads compare
+`snapshot_date < :as_of` with `inclusive_today` False for the insight; the remaining readers were not
+checked for intraday leakage (What was not checked).
 
 ### 7. Comparison
 
 `python -m gcp.replay_full_pull compare --run-id R` prints, and writes `rows.csv` and `summary.json`
 under `replay/v1/<run_id>/compare/`:
 
-- bars and flags, run against `market_data_intraday` and `intraday_bar_flags` (`compare_bars`);
-- premarket high and low per read_kind beside the published read (`level_basis.premarket` of the
-  published row), the stored `market_data_daily` values, and the filter-only extremes
-  (`confirmed.raw_high` / `raw_low`), which split a rule change from a data revision;
-- triggers, stops, t1 to t3 and every `plan_t` column both rows hold, names and prices, published
-  (Decision 8) against the run's brief row; the insight plan fields of the live and replay reports;
-- per item: equal, or differs with cause `rule_change`, `data_revision`, `both` or `level_pick`; a
-  missing side is `not_published` or `not_replayed`. The summary says accurate only when every item
-  is equal, and counts each cause.
+Seven families, each its own rows and its own count in the summary (D9):
+
+| Family | Replay side | Published side |
+|---|---|---|
+| bars | `replay.intraday_bars` | `market_data_intraday` (`compare_bars`) |
+| flags | `replay.intraday_bar_flags` | `intraday_bar_flags`, same rule version |
+| premarket | `replay.premarket` high and low per read_kind, with the filter-only extremes (`confirmed.raw_high` / `raw_low`) | the published row's `level_basis.premarket` for the morning reads, `market_data_daily` for `nightly_0930` |
+| triggers | calls and puts trigger name and price | the published row (Decision 8) |
+| stops | calls and puts stop name and price | the published row |
+| targets | t1 to t3 and every `plan_t` column both rows hold | the published row |
+| insight plan | `InsightReport` direction, entry_zone, stop, targets and persona_plans (`lib/agents/schema.py:311-353`) | the live insight report of the session |
+
+Per item: equal, or differs with a cause. For a premarket value, or a trigger, stop or target that is
+PMK_H or PMK_L on both sides, the cause comes from the filter-only value of the same read, as in the
+experiment: `rule_change` when the filter-only value equals the published one, `data_revision` when
+it differs and the replay value equals it, `both` when it differs and the replay value differs from
+it too. A different level name is `level_pick`; any other differing item is `value`. A missing side
+is `not_published` or `not_replayed`. The summary says accurate only when every item of every family
+is equal.
 
 ### 8. Fixtures
 
-`tests/fixtures/replay_2026_11_16/`: the experiment's fresh bars for 2026-11-16 (04:00 to 09:29 ET
-for the three tickers; SPY 04:00 to 04:03 ET are 752.55/753.01/749.70/752.20 vol 14169,
+`tests/fixtures/replay_2026_11/`: the experiment's fresh bars for 2026-11-13 and 2026-11-16 (04:00 to
+09:29 ET for the three tickers; SPY 2026-11-16 04:00 to 04:03 ET are 752.55/753.01/749.70/752.20 vol 14169,
 752.30/752.90/749.70/752.13 vol 21038, 752.10/752.29/749.74/749.78 vol 7151,
-749.73/752.78/749.73/752.07 vol 20902), the 2026-11-13 daily rows, and the recorded
-`pre_filter_params`, with the read executions named in a `sources.json`.
+749.73/752.78/749.73/752.07 vol 20902), the prior session daily rows, and each session's recorded
+`pre_filter_params`, with the read executions named in a `sources.json`. The cross-month flag case
+of D5 uses synthetic bars written in the test.
 
 ## Capacity
 
-- **Vendor calls.** One a ticker-month. The week 2026-11-09 to 11-16: 3 (the 7-day margin stays in
-  November; first bar 2026-11-02 04:00 ET). A year: 36, plus 3 for a margin month. 2015-01 to
-  2026-11: 143 months (143 SPY objects in the bucket copy) x 3 = 429. Measured 0.69 to 0.86 s a
-  call; at the configured 150 a minute a year is under a minute and the whole history about 3
-  minutes. The daily budget is not checked against the vendor's plan.
+- **Vendor calls.** One a ticker-month, for each month a target month's read window touches
+  (Design 3). The week 2026-11-09 to 11-16: 2 months (2026-10, 2026-11) x 3 = 6; the experiment made
+  only the 3 November calls, enough for those sessions' flags but not for the whole month's. A year:
+  12 target months and one month on each side, 14 x 3 = 42 (13 x 3 = 39 when the year ends in the
+  current month). 2015-01 to 2026-11: 143 target months (143 SPY objects in the bucket copy) plus
+  2014-12, 144 x 3 = 432 (whether the vendor answers 2014-12: not checked). Measured 0.69 to 0.86 s
+  a call one after another, so a year is under a minute and the whole history about 6 minutes; the
+  configured limit is 150 a minute. The daily budget is not checked against the vendor's plan.
 - **Volume.** A full month is about 19,200 to 21,130 bars a ticker (October coverage rows: SPY
-  21,129, QQQ 21,120, IWM 19,199). A year of three tickers is about 740,000 rows; at the live SPY
-  partition's 364 bytes a row with indexes (911,327,232 bytes over 2,503,499 rows, `db-query-w4l46`)
-  about 270 MB a run. The week's November pull was 31,219 rows (10,767, 10,761, 9,691), about 11 MB.
-  Premarket rows: 3 a session a ticker, about 2,270 a year.
-- **Velocity.** Writes in chunks of 5,000 per ticker-month (about 5 statements, 180 a year); one bar
-  read per ticker-month for the fixes; one brief run per session; one insight run per ticker-session.
+  21,129, QQQ 21,120, IWM 19,199; 61,448 for the three). At the live SPY partition's 364 bytes a row
+  with indexes (911,327,232 bytes over 2,503,499 rows, `db-query-w4l46`): the week, October in full
+  plus the November pull of 31,219 rows (10,767, 10,761, 9,691), is about 92,700 rows and 34 MB; a
+  year, 14 months, about 860,000 rows and 313 MB a run. Premarket rows: 3 a session a ticker, about
+  2,270 a year.
+- **Velocity.** Writes in chunks of 5,000 per ticker-month (about 5 statements, about 210 a year for
+  42 ticker-months); one bar read per ticker and target month for the flags (its read window, about
+  1.4 months of bars) and one per ticker-month for the premarket reads; one brief run per session;
+  one insight run per ticker-session.
 - **Wall-clock.** Brief executions measured 28 to 110 s (2026-11-13 to 11-16). The week: 6 runs, 3 to
   11 minutes in sequence. A year: 252 runs, 2 to 8 hours in sequence, so striped by session over
   Cloud Run tasks (10 tasks: under an hour). Insight executions measured 32 to 72 s a ticker
   (2026-11-16), mean latency 32.6 to 43.2 s (`insight_reports` since 2026-10-17); the week 18 runs,
   a year 756 runs, 7 to 15 hours in sequence, striped (20 tasks: under an hour). Task timeout at 4x.
 - **Cost.** Insight LLM: 18 x about $0.0125 = about $0.23 for the week, about $9.50 a year. Brief
-  LLM explanations: not checked. Cloud SQL storage for 270 MB: price not checked. Max retries 0.
+  LLM explanations: not checked. Cloud SQL storage for 313 MB a year-run: price not checked. Max
+  retries 0.
 
 ## Close-out (the owner's steps, after the merge and the FEAT-DEPLOY-001 wiring)
 
-1. Apply the schema; create the replay role (Decision 2).
+1. Apply the schema; create the replay role (Decision 2); as that role insert and delete one row in
+   each replay table that has an identity id, and read the three live sequences' `last_value`
+   before and after, unchanged.
 2. Run the week: pull, fix, brief for each session, insight for each ticker-session, compare.
 3. Before and after, read-only: `SELECT count(*), max(inserted_at) FROM market_data_intraday WHERE
    ticker IN ('SPY','QQQ','IWM') AND ts >= '2026-11-02'`, the same on `premarket_analysis_history`
@@ -283,18 +364,26 @@ for the three tickers; SPY 04:00 to 04:03 ET are 752.55/753.01/749.70/752.20 vol
 
 ## Risks
 
-- A reader the switch misses reads live rows: D6 and D7 assert the named reads; a missed one shows
-  as a `level_pick` difference in the report, not as a live write (the fence holds writes).
-- A writer the fence misses: D2 covers every write function of `gcp/database.py`; a raw connection
-  (`persist_level_map` takes one) is covered by D6's recording engine and by the role of Decision 2.
+- A reader the switch misses reads live rows: D6 and D7 fail on any relation outside their allowlist
+  and on the replaced reads; a reader added later that reads an allowlisted relation for the session
+  would show as a difference in the report, not as a live write (the fence holds writes).
+- A writer the fence misses: D2 covers the driver connections of `gcp.database` and
+  `model_routing.connect()` and every helper; a new connection factory would bypass it, and the role
+  of Decision 2 is the backstop.
+- A shared sequence or foreign key: D1 parses for them and the integration test inserts as the role.
+- News or filings after the instant: D8; other readers are listed as not checked.
 - Reading a revised pull as the morning: Decision 4 labels it and the report says it.
-- The #1891 guard weakened: D9 keeps its lists and adds one named, tested exemption.
+- The #1891 guard weakened: D10 keeps its lists and adds one named, tested exemption.
 
 ## What was not checked
 
 - The vendor's daily call limit and price; Cloud SQL storage price; brief LLM cost.
 - Whether every insight input honours `INSIGHT_AS_OF`.
 - Whether an `INSIGHT_AS_OF` report's `as_of` can equal a live report's (the upsert key).
-- What the current brief would pick on 2026-11-09 and 11-10, and the insight plan fields to compare
-  (no brief or insight was run).
+- What the current brief would pick on 2026-11-09 and 11-10, and what the replayed insight plans
+  would say (no brief or insight was run; the fields compared are named in Design 7).
 - How the late 09:20 slot (#2020) records its cutoff once deployed.
+- Whether any brief or insight reader other than the three of Design 6 admits a row from after the
+  instant (the earnings tables, economic events as revised, options snapshots under a pg8000 text
+  parameter, journal entries).
+- Whether the vendor answers 2014-12 (the history run's first margin month).
