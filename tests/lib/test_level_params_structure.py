@@ -191,6 +191,8 @@ def test_the_walk_reaches_the_rules_it_must_cover():
     assert {"_pick_side", "_within_staleness_window", "detect_level_clusters",
             "_accept_premarket", "compute_gap_levels", "_plan_targets"} <= reach
     assert {"_place_atr_rungs", "_atr_rung_ladder", "_thin_atr_rungs"} <= reach
+    # ATR marks spec (2026-11-16): the mark walk and the waypoint builder.
+    assert {"_plan_mark_targets", "_plan_waypoints"} <= reach
     plan = set(_reachable(_tree("lib/agents/trade_planner.py"), "compute_persona_plans"))
     assert {"_plan", "compute_risk_metrics", "_build_rationale"} <= plan
 

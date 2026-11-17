@@ -222,3 +222,23 @@ def test_entry_rationale_states_the_reach_share_of_each_edge():
     assert agg.startswith("entry at the trigger to 0.50x ATR past the trigger, reached by 25%")
     for persona, p in plans.items():
         assert "reached by 20%" not in p.rationale and "reached by 65%" not in p.rationale
+
+
+# ATR marks spec (2026-11-16 r2), done_when "No numbers and no names": the
+# marks, the leg count and the history length are read only from LevelParams
+# and level_param_policy, and the percent and share texts are formatted from
+# those values. Each count is the number of string literals of
+# lib/strat_levels.py (every ast.Constant str, docstrings and the constant
+# parts of f-strings included) that contain the string, on the merge base
+# origin/main f3b2344c4: none for the five texts, and five for 'quarter',
+# the quarter timeframe's own names and the docstrings that mention it (the
+# docstrings that open at lines 258 and 3341, '_quarter' and 'quarter' at
+# line 340, '_quarter' at line 347). A share or percent text typed into the
+# level code, or a docstring that says 'quarter', raises a count.
+MERGE_BASE_COUNTS = {"25%": 0, "50%": 0, "75%": 0, "100%": 0, "1/4": 0, "quarter": 5}
+
+
+@pytest.mark.parametrize("text", sorted(MERGE_BASE_COUNTS))
+def test_no_new_mark_share_or_quarter_text(text):
+    hits = [ln for ln, s in _strings("lib/strat_levels.py") if text in s]
+    assert len(hits) == MERGE_BASE_COUNTS[text], (text, hits)
