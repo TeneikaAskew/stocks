@@ -1401,3 +1401,150 @@ def test_price_basis_is_as_traded_and_split_checked():
     assert gate(frame, on_first, False)['available']
     native_first = gate(frame, on_first, True)
     assert not native_first['available'] and native_first['reason'] == 'split_in_window'
+
+
+def _two_ticker_run(monkeypatch, splits_for):
+    """populate_for_tickers wired for AAA (BMO 2026-02-02 and 2025-11-03) and
+    BBB (BMO 2026-02-02), each window D-12 to D+5 of as-traded bars.
+    `splits_for(ticker)` answers fetch_splits. Returns the recorders."""
+    import gcp.fetchers.compute_earnings_reactions as module
+    from lib.earnings_reactions import earnings_session_schedule
+
+    schedule = earnings_session_schedule(date(2025, 9, 1), date(2026, 3, 1))
+    days = [x.date() for x in schedule.index]
+
+    def window(reported):
+        d = days.index(reported)
+        return pd.DataFrame([dict(date=day, open=100. + i, high=102. + i, low=99. + i,
+                                  close=101. + i, volume=1000, atr_14=1.5,
+                                  data_source='alphavantage_daily')
+                             for i, day in enumerate(days[d - 12:d + 6])])
+
+    def event(ticker, reported, fiscal):
+        return dict(_eps(reported, ticker=ticker), fiscal_date_ending=fiscal,
+                    report_time='BMO')
+
+    eps = pd.DataFrame([event('AAA', date(2026, 2, 2), date(2025, 12, 31)),
+                        event('AAA', date(2025, 11, 3), date(2025, 9, 30)),
+                        event('BBB', date(2026, 2, 2), date(2025, 12, 31))])
+    rec = {'splits': [], 'upserts': [], 'pages': [], 'sleeps': [], 'history': 0}
+
+    def history(tickers):
+        rec['history'] += 1
+        return eps[eps['ticker'].isin(tickers)].reset_index(drop=True)
+
+    def fetch_splits(ticker, api_key):
+        rec['splits'].append(ticker)
+        return splits_for(ticker)
+
+    monkeypatch.setattr(module, 'fetch_earnings_history_for_tickers', history)
+    monkeypatch.setattr(module, 'fetch_calendar_timing_map', lambda *a: {})
+    monkeypatch.setattr(module, 'fetch_daily_windows_for_ticker_dates',
+                        lambda ticker, dates: {d: window(d) for d in dates})
+    monkeypatch.setattr(module, 'fetch_splits', fetch_splits)
+    monkeypatch.setattr(module, 'is_cloud_sql_configured', lambda: True)
+    monkeypatch.setattr(module, '_upsert_reaction_frame',
+                        lambda f, *a, **k: (rec['upserts'].extend(f.to_dict('records')) or len(f)))
+    monkeypatch.setattr(module.time, 'sleep', rec['sleeps'].append)
+    return module, rec
+
+
+def _skips(pages):
+    return {(e['event_id'], e['reason']) for page in pages for e in page['events']
+            if e['disposition'] == 'write_skipped'}
+
+
+def test_split_in_loaded_window_skips_the_event(monkeypatch, caplog):
+    """A split inside an event's loaded window (after its first bar, on or
+    before its last) skips the event by name: the ATR fallback and the
+    pre-report fields read bars as far back as the window goes. A split on
+    the first loaded bar leaves every bar after it and is admitted. One
+    ticker's SPLITS outage refuses its own events by name only."""
+    import logging
+
+    from lib.config import AlphaVantageConfig
+    from lib.earnings_reactions import Splits, SplitsUnavailable
+
+    straddle = 'AAA:2025-12-31:2026-02-02'
+    clock = '2026-02-20T21:01:00Z'
+
+    # Case 1: 2026-01-20 is inside AAA's 2026-02-02 loaded window and outside
+    # the reaction's required sessions (D-1 to D+5).
+    module, rec = _two_ticker_run(monkeypatch, lambda t: Splits.of(
+        t, ((date(2026, 1, 20), 2.0),) if t == 'AAA' else ()))
+    with caplog.at_level(logging.INFO, logger=module.log.name):
+        written = module.populate_for_tickers(['AAA', 'BBB'], observation_ts=clock,
+                                              receipt_sink=rec['pages'].append, api_key='k')
+    assert rec['splits'] == ['AAA', 'BBB']
+    assert rec['sleeps'] == [AlphaVantageConfig().delay_between_calls]
+    assert (straddle, 'split_in_window') in _skips(rec['pages'])
+    keys = {(r['ticker'], str(r['reported_date'])) for r in rec['upserts']}
+    assert keys == {('AAA', '2025-11-03'), ('BBB', '2026-02-02')} and written == 2
+    for row in rec['upserts']:
+        assert row['daily_path_v1']['basis_id'] == 'av-as-traded-no-split-v1'
+    assert 'ticker=AAA splits=1 processed=1/2' in caplog.text
+    assert 'ticker=BBB splits=0 processed=2/2' in caplog.text
+    assert 'splits_unavailable=0' in caplog.text
+
+    # Case 2: a split effective on the first loaded bar (D-12, 2026-01-14).
+    module, rec = _two_ticker_run(monkeypatch, lambda t: Splits.of(
+        t, ((date(2026, 1, 14), 2.0),) if t == 'AAA' else ()))
+    module.populate_for_tickers(['AAA', 'BBB'], observation_ts=clock,
+                                receipt_sink=rec['pages'].append, api_key='k')
+    assert not any(reason == 'split_in_window' for _, reason in _skips(rec['pages']))
+    keys = {(r['ticker'], str(r['reported_date'])) for r in rec['upserts']}
+    assert ('AAA', '2026-02-02') in keys and len(keys) == 3
+
+    # Case 3: BBB's SPLITS reply held Information.
+    def outage(ticker):
+        if ticker == 'BBB':
+            raise SplitsUnavailable('Information')
+        return Splits.of(ticker, ())
+
+    caplog.clear()
+    module, rec = _two_ticker_run(monkeypatch, outage)
+    with caplog.at_level(logging.INFO, logger=module.log.name):
+        module.populate_for_tickers(['AAA', 'BBB'], observation_ts=clock,
+                                    receipt_sink=rec['pages'].append, api_key='k')
+    assert ('BBB:2025-12-31:2026-02-02', 'split_status_unavailable') in _skips(rec['pages'])
+    assert {r['ticker'] for r in rec['upserts']} == {'AAA'}
+    assert len(rec['upserts']) == 2
+    assert 'splits_unavailable=1' in caplog.text
+
+
+def test_every_splits_request_failing_fails_the_run(monkeypatch, caplog):
+    """The job's entry point exits non-zero when no ticker's split evidence
+    could be read, and 0 when at least one could; without an API key it
+    fails before reading anything. On main it printed the count and exited
+    0 when nothing was written."""
+    import logging
+    import sys
+
+    from lib.earnings_reactions import Splits, SplitsUnavailable
+
+    def none_available(ticker):
+        raise SplitsUnavailable('Information')
+
+    argv = ['compute_earnings_reactions', '--tickers', 'AAA,BBB', '--force']
+    monkeypatch.setattr(sys, 'argv', argv)
+    monkeypatch.setenv('ALPHA_VANTAGE_API_KEY', 'k')
+
+    module, rec = _two_ticker_run(monkeypatch, none_available)
+    with caplog.at_level(logging.INFO, logger=module.log.name):
+        assert module.main() == 1
+    assert rec['upserts'] == []
+    assert 'splits_unavailable=2' in caplog.text
+
+    def aaa_only(ticker):
+        if ticker == 'BBB':
+            raise SplitsUnavailable('Information')
+        return Splits.of(ticker, ())
+
+    module, rec = _two_ticker_run(monkeypatch, aaa_only)
+    assert module.main() == 0
+    assert {r['ticker'] for r in rec['upserts']} == {'AAA'}
+
+    monkeypatch.delenv('ALPHA_VANTAGE_API_KEY')
+    module, rec = _two_ticker_run(monkeypatch, aaa_only)
+    assert module.main() == 1
+    assert rec['history'] == 0 and rec['splits'] == []

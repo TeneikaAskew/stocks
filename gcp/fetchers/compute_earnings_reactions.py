@@ -757,17 +757,26 @@ def fetch_daily_windows_for_ticker_dates(
 
 
 def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observation_ts=None,
-                         receipt_sink=None, api_key=None) -> int:
+                         receipt_sink=None, api_key=None, counts: dict | None = None) -> int:
     """Build earnings_reactions rows for the given tickers, upsert.
 
     Each ticker's splits are read once from AlphaVantage SPLITS (`api_key`,
-    default ALPHA_VANTAGE_API_KEY) and held for the run; the price gate
-    checks every window against them (FEAT-DATA-001, no adjusted prices).
+    default ALPHA_VANTAGE_API_KEY) and held for the run (FEAT-DATA-001, no
+    adjusted prices). An event whose loaded window holds a split, or whose
+    ticker's split evidence could not be read, is skipped by name and its
+    stored row left as it is; the price gate checks every other window.
+
+    `counts`, when given, is filled with `split_tickers` (tickers whose
+    SPLITS was requested) and `splits_unavailable` (those whose request
+    failed), which the job's entry point turns into its exit code.
 
     Returns the number of rows produced.
     """
     if api_key is None:
         api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
+    if counts is None:
+        counts = {}
+    counts.update(split_tickers=0, splits_unavailable=0)
     eps_df = fetch_earnings_history_for_tickers(tickers)
     if eps_df.empty:
         log.warning("No earnings_history rows for %s", tickers)
@@ -815,11 +824,21 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
         # per event below, never read as "no split" (CLAUDE.md 3.7).
         if ti > 1:
             time.sleep(split_delay)
+        counts['split_tickers'] += 1
         try:
             splits = fetch_splits(ticker, api_key)
         except SplitsUnavailable as exc:
-            log.warning("ticker=%s SPLITS unavailable: %s", ticker, exc.reason)
-            splits = exc
+            # Every event of this ticker is refused by name; nothing is
+            # written, a stored row stays as it is, and no daily window is
+            # read for it. The other tickers go on.
+            counts['splits_unavailable'] += 1
+            skipped += len(ticker_eps)
+            _emit_event_receipts([_event_receipt(eps.to_dict(), 'price_inputs',
+                'split_status_unavailable', 'write_skipped')
+                for _, eps in ticker_eps.iterrows()], receipt_sink)
+            log.warning("ticker=%s splits=unavailable processed=%d/%d skipped=%d (%s)",
+                        ticker, ti, n_tickers, len(ticker_eps), exc.reason)
+            continue
 
         # Collect every reported_date this ticker has, then bulk-fetch
         # the daily bars in one query covering the full date span.
@@ -861,12 +880,16 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
                     continue
                 daily = daily[daily['date'].map(lambda day: session_closes[day] <= clock)].copy()
                 daily = daily.reset_index(drop=True)
-            if isinstance(splits, SplitsUnavailable):
-                # No split evidence for this ticker this run: nothing is
-                # written, and a stored row stays as it is.
+            if not daily.empty and any(daily['date'].min() < effective <= daily['date'].max()
+                                       for effective, _ in splits.events):
+                # A split inside the loaded window: the bars before it are on
+                # another share basis. The whole window counts, not only the
+                # required sessions, because the ATR fallback and the
+                # pre-report fields read as far back as it goes. Never
+                # adjusted, never written; a stored row stays as it is.
                 ticker_skipped += 1
                 _emit_event_receipts([_event_receipt(eps.to_dict(), 'price_inputs',
-                    'split_status_unavailable', 'write_skipped')], receipt_sink)
+                    'split_in_window', 'write_skipped')], receipt_sink)
                 continue
             result = compute_reaction(eps.to_dict(), daily, basis)
             if result is None:
@@ -914,14 +937,16 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
             ticker_kept += 1
 
         skipped += ticker_skipped
-        # Per-ticker progress log — every 25 tickers + the final one.
-        # CLAUDE.md Rule 0.4: "Observable progress — log per-group counts
-        # so a 30-minute job is debuggable, not a black box."
-        if ti % 25 == 0 or ti == n_tickers:
-            log.info("ticker=%s [%d/%d] kept=%d skipped=%d  (cum rows=%d)",
-                     ticker, ti, n_tickers,
-                     ticker_kept, ticker_skipped, len(rows))
+        # Per-ticker progress log, every ticker. CLAUDE.md Rule 0.4:
+        # "Observable progress: log per-group counts so a 30-minute job is
+        # debuggable, not a black box."
+        log.info("ticker=%s splits=%d processed=%d/%d kept=%d skipped=%d (cum rows=%d)",
+                 ticker, len(splits.events), ti, n_tickers,
+                 ticker_kept, ticker_skipped, len(rows))
 
+    (log.warning if counts['splits_unavailable'] else log.info)(
+        "splits_unavailable=%d of %d tickers", counts['splits_unavailable'],
+        counts['split_tickers'])
     log.info("Computed %d reaction rows (skipped=%d, unknown event timing=%d)",
              len(rows), skipped, unknown_timing)
 
@@ -1054,7 +1079,13 @@ def _filter_already_have_reactions(
     return remaining, n_skipped
 
 
-def main():
+def main() -> int:
+    """The job's entry point; returns its exit code.
+
+    1 when ALPHA_VANTAGE_API_KEY is missing (before anything is read), or
+    when every ticker's SPLITS request failed, so no reaction could be
+    checked; else 0. A partial outage exits 0 with each refused event named.
+    """
     parser = argparse.ArgumentParser(
         description="Populate earnings_reactions from earnings_history × market_data_daily"
     )
@@ -1075,10 +1106,16 @@ def main():
                              "in the next 7 days.")
     args = parser.parse_args()
 
+    api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
+    if not api_key:
+        log.error("ALPHA_VANTAGE_API_KEY is required: the run reads each reporter's "
+                  "splits from AlphaVantage SPLITS")
+        return 1
+
     tickers = _resolve_tickers(args)
     if not tickers:
         log.warning("No tickers to process — exiting")
-        return
+        return 0
 
     if not args.force:
         scope = _resolve_scope(args.scope)
@@ -1093,12 +1130,18 @@ def main():
         )
         if not tickers:
             log.info("All resolved tickers already processed — exiting")
-            return
+            return 0
 
     log.info("compute_earnings_reactions: %d tickers (after window-aware skip)",
              len(tickers))
-    n = populate_for_tickers(tickers, dry_run=args.dry_run)
+    counts: dict = {}
+    n = populate_for_tickers(tickers, dry_run=args.dry_run, api_key=api_key, counts=counts)
     print(f"compute_earnings_reactions: {n} rows {'computed' if args.dry_run else 'upserted'}")
+    if counts['split_tickers'] and counts['splits_unavailable'] == counts['split_tickers']:
+        log.error("SPLITS unavailable for all %d tickers: no reaction could be split-checked",
+                  counts['split_tickers'])
+        return 1
+    return 0
 
 
 
@@ -1366,4 +1409,4 @@ def compute_local_reaction(*, event, daily, price_receipts, observation_ts, mode
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
