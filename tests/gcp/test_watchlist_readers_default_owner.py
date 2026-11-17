@@ -56,7 +56,7 @@ READERS: dict[str, tuple[str, ...]] = {
     "gcp/signal_monitor.py": (LOAD,),
     "gcp/premarket_brief.py": (LOAD,),
     "gcp/insight_pipeline_job.py": (LOAD, RESOLVE),
-    "lib/agents/summarizers.py": (RESOLVE,),
+    "lib/agents/summarizers.py": (RESOLVE, OWN_SQL),
     "gcp/insight_tasks.py": (UNIVERSE,),
     "gcp/calibrate_level_params.py": (OWN_SQL,),
     "gcp/fetchers/fetch_alphavantage_intraday.py": (STRICT_HELPER,),
@@ -95,6 +95,12 @@ OWN_SQL_PINS: dict[str, tuple[str, ...]] = {
         '"SELECT DISTINCT ticker FROM watchlists WHERE removed_at IS NULL "',
         '"SELECT ticker, added_at, source FROM watchlists WHERE user_id = :u AND removed_at IS NULL ORDER BY ticker"',
         '{"u": WATCHLIST_USER_ID}',
+    ),
+    # The brief's tickers (FEAT-INSIGHT-001, brief_tickers): one strict read, the owner bound
+    # to the literal default.
+    "lib/agents/summarizers.py": (
+        '"SELECT ticker FROM watchlists WHERE user_id = :u AND removed_at IS NULL AND in_brief = TRUE"',
+        '_query_strict(BRIEF_TICKERS_SQL, {"u": "default"})',
     ),
     # GET /api/insights/watchlist/default names the owner in the SQL text itself.
     "platform/api/routers/insights.py": (
