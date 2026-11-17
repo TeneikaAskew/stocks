@@ -52,6 +52,16 @@ The owner chose one set of target lines on 2026-11-17 (below). So:
    they go live, as the thirds test did.
 5. **The history job's deploy entry** is left to a FEAT-DEPLOY-001 change; the gate assigns
    `gcp/deploy.sh` there.
+6. **Thirds retired, history included.** The owner, 2026-11-17, as relayed with the owner's words
+   copied by the server: "I want thirds removed from everything in the data. It can be scored
+   separately as needed by referencing old code if ever needed" and "It should be everywhere, even
+   historical". The quarter-target spec r3 does that: quarters in every new brief, alert, exit and
+   stored field, every stored brief row back to 2022 rebuilt on them with the old values archived
+   first, and the thirds columns dropped last on the owner's yes (its Designs 11 to 13). This
+   spec's table stores no target, only the trigger, the stop, the ATR and how far price went, so
+   nothing in it holds thirds and nothing in it is rebuilt; its rows from 2022 serve the quarter
+   lines as they are. Where this spec says "the thirds plan" or "the level rule", it means main as
+   it stands until the quarter change merges.
 
 Unchanged from r1: the table's one trade per ticker-day, the excursion rule, the writers, the
 policy row's window, per-ticker reading with sides pooled, the Experiment's Tables 1 to 5 and every
@@ -90,6 +100,8 @@ further out (Table 2).
 
 - Exits and targets. The plan's targets, spacing, legs, cutoff and gap edges are unchanged here; the
   quarter targets are their own spec. Counts describe reach; they do not pick targets.
+- Retiring thirds, rebuilding the stored brief rows and dropping the thirds columns: the
+  quarter-target spec r3 (Designs 11 to 13).
 - Rating the ATR levels line, the NEXT LEVELS list or PMG ZONES.
 - The movement statement's own reach rates and its feature flag.
 - The signal monitor, Discord alerts and persona plans.
