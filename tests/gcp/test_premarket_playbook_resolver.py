@@ -1208,7 +1208,8 @@ def test_a_half_day_close_leg_books_the_last_bar_before_the_close(monkeypatch):
 
 # ── FEAT-PLAYBOOK-001 B8b: a v3 plan resolves as before the bump ────────
 
-@pytest.mark.parametrize('version', ['feat-strat-001.v3', 'feat-strat-001.v4'])
+@pytest.mark.parametrize('version', ['feat-strat-001.v3', 'feat-strat-001.v4',
+                                     'feat-strat-001.v5'])
 def test_v3_plan_resolves_as_on_main(version):
     """The literals are plan_inputs on d8_basis() as printed on the unchanged
     code (head 219a4c0c3, where the fixture was v3)."""

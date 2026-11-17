@@ -1301,10 +1301,11 @@ def test_the_reads_propagate_a_backend_outage_but_keep_a_source_envelope():
 
 V3_RULE = "feat-strat-001.v3"
 V4_RULE = "feat-strat-001.v4"
+V5_RULE = "feat-strat-001.v5"
 
 
 class _VersionedRows:
-    """A query_fn stand-in holding resolved rows of v3 and of v4. The reach
+    """A query_fn stand-in holding resolved rows of v3, v4 and v5. The reach
     statement gets the counts of the rule_version it bound, and nothing else;
     the tracked-levels statement gets the session's own row."""
 
@@ -1314,7 +1315,8 @@ class _VersionedRows:
         self.sql = []
         # (n, hits) of the calls trigger and t1 slots, per stored version.
         self.counts = {V3_RULE: {"trigger": (10, 9), "t1": (10, 8)},
-                       V4_RULE: {"trigger": (4, 1), "t1": (4, 0)}}
+                       V4_RULE: {"trigger": (4, 1), "t1": (4, 0)},
+                       V5_RULE: {"trigger": (3, 2), "t1": (3, 1)}}
 
     def __call__(self, sql, params=None):
         if "premarket_analysis" not in sql:
@@ -1337,6 +1339,7 @@ class _VersionedRows:
 
 
 @pytest.mark.parametrize("session_rule, want", [
+    (V5_RULE, {"trigger": (2, 3), "t1": (1, 3)}),
     (V4_RULE, {"trigger": (1, 4), "t1": (0, 4)}),
     (V3_RULE, {"trigger": (9, 10), "t1": (8, 10)}),
 ])
@@ -1361,14 +1364,14 @@ def test_reach_rates_default_to_the_current_rule():
     """Called without a version (or for a session with no tracked row) the
     population is the current rule's, never every version."""
     from lib.strat_levels import LEVEL_RULE_VERSION
-    q = _VersionedRows(V4_RULE)
+    q = _VersionedRows(V5_RULE)
     out = ms._fetch_reach_rates("SPY", "calls", q)
-    assert q.bound == [LEVEL_RULE_VERSION] == [V4_RULE]
-    assert out["slots"]["trigger"]["sample_n"] == 4
+    assert q.bound == [LEVEL_RULE_VERSION] == [V5_RULE]
+    assert out["slots"]["trigger"]["sample_n"] == 3
     ms._fetch_reach_rates("SPY", "calls", q, rule_version=V3_RULE)
     assert q.bound[-1] == V3_RULE
     got = ms._fetch_tracked_levels("SPY", q, SESSION)
-    assert got["rule_version"] == V4_RULE
+    assert got["rule_version"] == V5_RULE
     assert ms._fetch_tracked_levels("SPY", _VersionedRows(None), SESSION)["rule_version"] is None
 
 
@@ -1390,5 +1393,7 @@ def test_v3_trigger_on_the_reference_cent_keeps_its_slot():
     assert ms._new_rule_mark(basis, "calls") == 100.0
     assert ms._new_rule_mark({**basis, "rule_version": V4_RULE}, "calls") == 100.0
     assert ms._new_rule_mark({**basis, "rule_version": V4_RULE}, "puts") == 99.5
+    assert ms._new_rule_mark({**basis, "rule_version": V5_RULE}, "calls") == 100.0
+    assert ms._new_rule_mark({**basis, "rule_version": V5_RULE}, "puts") == 99.5
     assert ms._new_rule_mark({**basis, "rule_version": "feat-strat-001.v2"}, "calls") is None
     assert ms._new_rule_mark(None, "calls") is None
