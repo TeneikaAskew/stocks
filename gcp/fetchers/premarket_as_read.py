@@ -223,7 +223,7 @@ def write_records(bucket_factory: Callable[[], Any], session_date: date,
     reason ``deadline`` and is not written. A write that raises (an object
     already at the name included: ``if_generation_match=0``, never
     overwritten) fails that ticker and the next one continues; a bucket that
-    cannot be built fails every ticker.
+    cannot be built fails every ticker. With no reads nothing is built.
     """
     now = clock if clock is not None else time.monotonic
     execution = env.get('CLOUD_RUN_EXECUTION')
@@ -231,6 +231,9 @@ def write_records(bucket_factory: Callable[[], Any], session_date: date,
     tickers = _ordered(reads)
     written: list[str] = []
     failed: list[tuple[str, str]] = []
+    if not tickers:
+        log.info('as_read_records written=0 failed=0 session=%s', session_date.isoformat())
+        return written, failed
 
     def fail(ticker: str, reason: str) -> None:
         failed.append((ticker, reason))

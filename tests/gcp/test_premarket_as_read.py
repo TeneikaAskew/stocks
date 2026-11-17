@@ -98,6 +98,17 @@ def test_record_carries_the_request_as_sent(monkeypatch):
     assert request['extended_hours'] == 'true'
     assert 'apikey' not in request
 
+    # The record half: a refresh run stores that same request, and the key
+    # appears nowhere in the object.
+    from tests.fixtures.intraday_bars_bucket import MemoryBucket
+    from tests.gcp.test_fetch_premarket_refresh import _as_read_name, _r1_bars, _run_refresh
+
+    bucket = MemoryBucket()
+    _run_refresh(monkeypatch, bars_for=_r1_bars, tickers=('SPY', 'QQQ', 'IWM'), bucket=bucket)
+    text = gzip.decompress(bucket.objects[_as_read_name('SPY')]).decode()
+    assert json.loads(text)['vendor_params'] == request
+    assert 'TEST-KEY-not-real' not in text and 'apikey' not in text
+
 
 def test_record_is_exact_and_deterministic():
     """R1: the record holds the bars as text whose sha256 is pinned, equal
