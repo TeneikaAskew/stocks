@@ -339,7 +339,7 @@ from tests.gcp.test_premarket_filter_callers import _sql_param  # noqa: E402
 # ATR marks spec (2026-11-16) seeds two policy rows and adds eight nullable
 # columns (it was 4467b253db2db684c9ecf5d3364aee4f9c123a3d33ebc989c86431bd74c99967
 # before).
-SCHEMA_SHA256 = "b5814abd5d8cf4a4d94f9592b5b6be190b348e304e9cb328b26c1668b381447d"
+SCHEMA_SHA256 = "e1df21ac24753448f571b97ada9d6a9b46aca515083fe4df6abac840c35bd96f"
 
 # What an earlier run left in the session's market_data_daily row.
 STORED = {"pre_high": 660.398, "pre_low": 649.62, "pre_range_atr": 0.9876, "pre_vwap": 655.0,

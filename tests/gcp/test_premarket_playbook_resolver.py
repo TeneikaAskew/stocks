@@ -669,8 +669,8 @@ def test_resolve_one_sets_and_binds_the_new_outcome_columns(monkeypatch):
     assert bound['puts_eod_pnl_pct'] is None
     assert bound['puts_eod_pnl_dollar'] is None
     assert bound['puts_trigger_hit_ts'] == pd.Timestamp(_ts(0))
-    assert mod.RESOLVER_VERSION == '2026-11-15.v4'
-    assert bound['outcome_resolver_version'] == '2026-11-15.v4'
+    assert mod.RESOLVER_VERSION == '2026-11-16.v5'
+    assert bound['outcome_resolver_version'] == '2026-11-16.v5'
     assert bound['d'] == '2026-05-06' and bound['t'] == 'SPY'
 
 
@@ -1728,3 +1728,169 @@ def test_schema_declares_the_t4_columns():
                                  ('premarket_analysis_history', 'DOUBLE PRECISION')], side
         assert re.search(rf'ADD COLUMN IF NOT EXISTS {side}_plan_t4_hit_ts\s+TIMESTAMPTZ\b', sql)
         assert _column_statement_table(sql, f'{side}_plan_t4_hit_ts') == 'premarket_analysis'
+
+
+# ─── ATR marks spec (2026-11-16), Design 4: how far price went before the stop ──
+
+def _mfe_call(**kw) -> PlanInputs:
+    base = dict(cutoff_minutes=CUTOFF_SEEDED, atr=2.0)
+    base.update(kw)
+    return _plan(**base)
+
+
+def _mfe_put(**kw) -> PlanInputs:
+    base = dict(stop_price=101.0, targets=(99.0, 98.0, 97.0))
+    base.update(kw)
+    return _mfe_call(**base)
+
+
+class TestPlanMfe:
+    def test_high_before_a_later_stop(self):
+        bars = _entered_at_0931(_bar(_ts(2), 100.10, 100.50, 100.00, 100.40),
+                                _bar(_ts(3), 100.40, 103.00, 100.30, 102.00),
+                                _bar(_ts(4), 102.00, 102.10, 98.90, 99.00))
+        out = resolve_plan('call', _mfe_call(), bars)
+        assert out.entry_status == 'entered' and out.mfe_atr == pytest.approx(1.5)
+
+    def test_the_stop_bar_does_not_count(self):
+        bars = _entered_at_0931(_bar(_ts(2), 100.10, 103.00, 100.00, 102.00),
+                                _bar(_ts(3), 102.00, 104.00, 98.90, 99.00))
+        assert resolve_plan('call', _mfe_call(), bars).mfe_atr == pytest.approx(1.5)
+
+    def test_the_fill_bar_does_not_count(self):
+        bars = _bars([_bar(_ts(0), 99.50, 99.80, 99.40, 99.70),
+                      _bar(_ts(1), 99.70, 103.00, 99.60, 99.80),
+                      _bar(_ts(2), 99.80, 99.90, 99.50, 99.60)])
+        out = resolve_plan('call', _mfe_call(), bars)
+        assert out.entry_status == 'entered' and out.mfe_atr == 0.0
+
+    def test_never_above_the_trigger_after_the_fill(self):
+        bars = _entered_at_0931(_bar(_ts(2), 99.90, 99.95, 99.50, 99.60),
+                                _bar(_ts(3), 99.60, 99.80, 99.30, 99.50))
+        assert resolve_plan('call', _mfe_call(), bars).mfe_atr == 0.0
+
+    def test_not_entered_is_null(self):
+        no_cross = _bars([_bar(_ts(0), 99.50, 99.80, 99.40, 99.70),
+                          _bar(_ts(1), 99.70, 99.90, 99.60, 99.80)])
+        out = resolve_plan('call', _mfe_call(), no_cross)
+        assert out.entry_status == 'no_cross' and out.mfe_atr is None
+        opened = _bars([_bar(_ts(0), 100.50, 103.00, 100.40, 102.00),
+                        _bar(_ts(1), 102.00, 104.00, 101.90, 103.00)])
+        out = resolve_plan('call', _mfe_call(), opened)
+        assert out.entry_status == 'opened_through' and out.mfe_atr is None
+
+    def test_no_atr_is_null(self):
+        bars = _entered_at_0931(_bar(_ts(2), 100.10, 103.00, 100.00, 102.00))
+        out = resolve_plan('call', _mfe_call(atr=None), bars)
+        assert out.entry_status == 'entered' and out.mfe_atr is None
+
+    def test_stop_less_side_is_measured_to_the_close(self):
+        bars = _entered_at_0931(_bar(_ts(2), 100.10, 100.50, 98.00, 98.50),
+                                _bar(_ts(3), 98.50, 102.00, 98.40, 101.50))
+        out = resolve_plan('call', _mfe_call(stop_price=None), bars)
+        assert out.r_status == 'stop_unavailable' and out.mfe_atr == pytest.approx(1.0)
+
+    def test_fill_bar_touching_the_stop_is_zero(self):
+        bars = _bars([_bar(_ts(0), 99.50, 99.80, 99.40, 99.70),
+                      _bar(_ts(1), 99.70, 100.20, 98.90, 99.00),
+                      _bar(_ts(2), 99.00, 106.00, 98.80, 105.00)])
+        out = resolve_plan('call', _mfe_call(), bars)
+        assert out.exit == 'stop,stop,stop' and out.mfe_atr == 0.0
+
+    def test_put_mirror(self):
+        bars = _put_entered_at_0931(_bar(_ts(2), 99.90, 100.00, 99.50, 99.60),
+                                    _bar(_ts(3), 99.60, 99.70, 97.00, 98.00),
+                                    _bar(_ts(4), 98.00, 101.10, 97.90, 101.00))
+        assert resolve_plan('put', _mfe_put(), bars).mfe_atr == pytest.approx(1.5)
+        # The stop bar does not count: its low of 96.00 is ignored.
+        bars = _put_entered_at_0931(_bar(_ts(2), 99.90, 100.00, 97.00, 98.00),
+                                    _bar(_ts(3), 98.00, 101.10, 96.00, 101.00))
+        assert resolve_plan('put', _mfe_put(), bars).mfe_atr == pytest.approx(1.5)
+        # Nor does the fill bar: a low of 97.00 there, then bars above the trigger.
+        bars = _bars([_bar(_ts(0), 100.50, 100.60, 100.20, 100.30),
+                      _bar(_ts(1), 100.30, 100.40, 97.00, 100.20),
+                      _bar(_ts(2), 100.20, 100.50, 100.10, 100.40)])
+        assert resolve_plan('put', _mfe_put(), bars).mfe_atr == 0.0
+
+    def test_entered_on_the_last_bar(self):
+        """Review Focus 3: a side entered on the last bar before the close has
+        no later bar: 0.0, not NULL and not an error."""
+        bars = _entered_at_0931()
+        out = resolve_plan('call', _mfe_call(), bars)
+        assert out.entry_status == 'entered' and out.mfe_atr == 0.0
+
+    def test_computed_whatever_plan_available_says(self):
+        bars = _entered_at_0931(_bar(_ts(2), 100.10, 103.00, 100.00, 102.00))
+        out = resolve_plan('call', _mfe_call(targets=(), legs=None, target_status='input_unavailable'),
+                           bars)
+        assert out.r_status == 'targets_unavailable' and out.mfe_atr == pytest.approx(1.5)
+
+    def test_half_day_is_cut_at_the_close(self, monkeypatch):
+        """2025-11-28 (close 13:00 ET): a high of 101.00 before 13:00 counts,
+        105.00 at 14:30 does not."""
+        import gcp.premarket_playbook_resolver as mod
+
+        t0 = datetime(2025, 11, 28, 14, 30, tzinfo=timezone.utc)      # 09:30 ET
+        bars = pd.DataFrame([
+            {'time': t0, 'open': 99.50, 'high': 99.80, 'low': 99.40, 'close': 99.70},
+            {'time': t0 + timedelta(minutes=15), 'open': 99.70, 'high': 100.20, 'low': 99.60,
+             'close': 100.10},
+            {'time': t0 + timedelta(minutes=150), 'open': 100.50, 'high': 101.00, 'low': 100.40,
+             'close': 100.80},                                          # 12:00 ET
+            {'time': t0 + timedelta(minutes=300), 'open': 104.00, 'high': 105.00, 'low': 103.90,
+             'close': 104.50},                                          # 14:30 ET
+        ])
+        plans = {'calls': _mfe_call(), 'puts': _mfe_put(trigger_price=95.0, stop_price=96.0,
+                                                         targets=(94.0, 93.0, 92.0))}
+        monkeypatch.setattr(mod, 'plan_inputs', lambda side, *a, **k: plans[side])
+        reads = iter([_half_day_row(), bars])
+        monkeypatch.setattr(mod.pd, 'read_sql', lambda *a, **k: next(reads))
+        engine = _RecordingEngine()
+        assert mod.resolve_one(_date(2025, 11, 28), 'tst', engine)[1] == 'resolved'
+        bound = _plan_set_and_bound(engine)[1]
+        assert bound['calls_plan_mfe_atr'] == pytest.approx(0.5)
+        assert bound['puts_plan_mfe_atr'] is None
+
+
+def test_resolve_one_update_sets_both_mfe_columns(monkeypatch):
+    import json
+
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib.session_levels_helpers import d8_basis
+
+    row = pd.DataFrame([{**V3_PLAN_COLUMNS, 'level_basis': json.dumps(d8_basis()),
+                         'outcome_resolved_at': None}])
+    bars = pd.DataFrame([
+        {'time': _ts(0), 'open': 251.00, 'high': 251.50, 'low': 250.80, 'close': 251.40},
+        {'time': _ts(1), 'open': 251.90, 'high': 252.50, 'low': 251.80, 'close': 252.40},
+        {'time': _ts(2), 'open': 252.40, 'high': 255.00, 'low': 252.30, 'close': 254.00},
+        {'time': _ts(3), 'open': 254.00, 'high': 254.10, 'low': 248.00, 'close': 248.10},
+    ])
+    reads = iter([row, bars])
+    monkeypatch.setattr(mod.pd, 'read_sql', lambda *a, **k: next(reads))
+    engine = _RecordingEngine()
+    assert mod.resolve_one(_date(2026, 5, 6), 'tst', engine)[1] == 'resolved'
+    set_list, bound = _plan_set_and_bound(engine)
+    for side in ('calls', 'puts'):
+        assert f'{side}_plan_mfe_atr = :{side}_plan_mfe_atr' in set_list
+    # A three-leg level-rule row entered and stopped: (255.00 - 252.10) / ATR 14.
+    assert bound['calls_plan_exit'] == 'stop,stop,stop'
+    assert bound['calls_plan_mfe_atr'] == pytest.approx(2.90 / 14.0)
+    assert bound['calls_plan_t4_hit_ts'] is None
+    # The puts side crosses 248.20 in the last bar: entered, nothing after it.
+    assert bound['puts_plan_entry_status'] == 'entered' and bound['puts_plan_mfe_atr'] == 0.0
+
+
+def test_resolver_version_moved():
+    import gcp.premarket_playbook_resolver as mod
+    assert mod.RESOLVER_VERSION != '2026-11-15.v4'
+    assert mod.RESOLVER_VERSION == '2026-11-16.v5'
+
+
+def test_plan_inputs_carries_the_basis_atr():
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib.session_levels_helpers import d8_basis
+
+    no_policy = lambda: pytest.fail('no policy read')  # noqa: E731
+    assert mod.plan_inputs('calls', {}, d8_basis(), policy_fn=no_policy).atr == 14.0
+    assert mod.plan_inputs('calls', {'calls_trigger_price': 100.0}, None, no_policy).atr is None

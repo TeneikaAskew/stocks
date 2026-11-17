@@ -67,7 +67,7 @@ import logging
 import math
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -101,7 +101,11 @@ _ET = ET
 # (FEAT-STRAT-001 drop-entry-cutoff spec, Design 3), so on a half day a print
 # after the early close is never a plan entry and the close legs book at the
 # last bar before the close; the existing columns are unchanged.
-RESOLVER_VERSION = '2026-11-15.v4'
+# 2026-11-16.v5 adds plan_t4_hit_ts and plan_mfe_atr (FEAT-STRAT-001 ATR mark
+# targets spec, docs/superpowers/specs/2026-11-16-feat-strat-001-atr-quarter-targets-r2.md,
+# Designs 4 and 5): how far price went past the trigger before the stop, in
+# the basis ATR; every other column is unchanged from 2026-11-15.v4.
+RESOLVER_VERSION = '2026-11-16.v5'
 
 # plan_r_status values, in the order the first that applies wins.
 PLAN_TARGETS_UNAVAILABLE = 'targets_unavailable'
@@ -151,6 +155,11 @@ class PlanOutcome:
     # ATR mark targets spec (2026-11-16): a plan of four targets; None for three.
     t4_hit_ts: Optional[datetime] = None
     exit: Optional[str] = None             # each leg's exit in order, e.g. 't1,t2,close'
+    # ATR mark targets spec, Design 4: for an entered side, how far price went
+    # past the trigger from the bar after the fill bar up to the bar that hits
+    # the stop (not counted), or to the last bar, floored at 0, in the basis
+    # ATR. None when not entered or the basis has no ATR.
+    mfe_atr: Optional[float] = None
 
 
 @dataclass
@@ -165,6 +174,10 @@ class PlanInputs:
     legs: Optional[int] = None
     cutoff_minutes: Optional[int] = None
     target_status: Optional[str] = None
+    # The basis ATR the plan is measured in (ATR marks spec, Design 4), for
+    # mfe_atr; None for a v2 basis or no basis. Not part of what the brief
+    # published, so it takes no part in comparing two plans.
+    atr: Optional[float] = field(default=None, compare=False)
 
     @property
     def plan_available(self) -> bool:
@@ -543,6 +556,10 @@ def resolve_plan(direction: str, plan: PlanInputs, bars: pd.DataFrame) -> PlanOu
             fill = float(o[i]) if opened_beyond else float(trigger)
             out.fill_price = fill
             out.fill_ts = times[i]
+            # It reads only the trigger, the stop and the ATR, so it is
+            # measured whether or not the plan was published.
+            out.mfe_atr = _reach_before_stop(is_call, trigger, plan.stop_price, fill,
+                                             plan.atr, i, h, lo)
 
     if not plan.plan_available:
         out.r_status = PLAN_TARGETS_UNAVAILABLE
@@ -593,6 +610,27 @@ def resolve_plan(direction: str, plan: PlanInputs, bars: pd.DataFrame) -> PlanOu
     return out
 
 
+def _reach_before_stop(is_call: bool, trigger: float, stop_price: Optional[float],
+                       fill: float, atr: Optional[float], i: int, h, lo) -> Optional[float]:
+    """mfe_atr (ATR marks spec, Design 4) for a side filled in bar `i`: over
+    the bars after the fill bar, up to and not including the bar in which
+    the stop is hit (looked for from the fill bar itself, as resolve_plan
+    does), or to the last bar when no stop is hit or the side has no valid
+    stop: calls max(high) - trigger, puts trigger - min(low), floored at 0,
+    over the basis ATR. No such bar gives 0.0; no positive ATR gives None."""
+    if atr is None or not math.isfinite(atr) or atr <= 0:
+        return None
+    end = len(h)
+    if _valid_stop(is_call, stop_price, fill):
+        hit = (lo[i:] <= stop_price) if is_call else (h[i:] >= stop_price)
+        if hit.any():
+            end = i + int(hit.argmax())
+    if end <= i + 1:
+        return 0.0
+    move = (float(h[i + 1:end].max()) - trigger) if is_call else (trigger - float(lo[i + 1:end].min()))
+    return max(move, 0.0) / atr
+
+
 def plan_inputs(side: str, row, basis: Optional[dict], policy_fn) -> PlanInputs:
     """One side's published plan (exits spec Design 6). `side` is 'calls'
     or 'puts'. A v3 or v4 level_basis is the source (rebuilt with the values it
@@ -626,7 +664,8 @@ def plan_inputs(side: str, row, basis: Optional[dict], policy_fn) -> PlanInputs:
             cutoff_minutes=policy_time_minutes(plan.get('entry_cutoff_et')),
             # A side with a trigger and no plan has no leg count, so it is
             # targets_unavailable; a side with no trigger is not entered.
-            target_status=s.target_status)
+            target_status=s.target_status,
+            atr=sl.atr)
     if basis.get('rule_version') != LEVEL_RULE_V2:
         # Design 6 rebuilds a plan from the structured columns for v2 only.
         return PlanInputs(trigger_price=_f(row.get(f'{side}_trigger_price')),
@@ -908,7 +947,7 @@ def resolve_one(
 # The plan's stored hit slots: four since the ATR mark targets spec.
 _PLAN_HIT_FIELDS = ('t1_hit_ts', 't2_hit_ts', 't3_hit_ts', 't4_hit_ts')
 _PLAN_FIELDS = ('entry_status', 'fill_price', 'fill_ts', 'r', 'r_status',
-                *_PLAN_HIT_FIELDS, 'exit')
+                *_PLAN_HIT_FIELDS, 'exit', 'mfe_atr')
 
 
 def _plan_columns(side: str) -> list[str]:

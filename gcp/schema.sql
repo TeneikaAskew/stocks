@@ -2010,6 +2010,14 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS puts_plan_t3_hit_ts   TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS puts_plan_t4_hit_ts   TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS puts_plan_exit        TEXT,
+    -- ATR mark targets spec, Design 4 (outcome_resolver_version 2026-11-16.v5):
+    -- for an entered side, how far price went past the trigger before the
+    -- stop (the stop bar not counted, from the bar after the fill bar to the
+    -- last bar before the exchange's close), floored at 0, over the basis
+    -- ATR. NULL when not entered or the basis has no ATR. The brief's reach
+    -- counts read it.
+    ADD COLUMN IF NOT EXISTS calls_plan_mfe_atr     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_mfe_atr      DOUBLE PRECISION,
 
     -- ── Resolver metadata ────────────────────────────────────────────
     ADD COLUMN IF NOT EXISTS outcome_resolved_at   TIMESTAMPTZ,
