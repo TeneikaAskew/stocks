@@ -669,8 +669,8 @@ def test_resolve_one_sets_and_binds_the_new_outcome_columns(monkeypatch):
     assert bound['puts_eod_pnl_pct'] is None
     assert bound['puts_eod_pnl_dollar'] is None
     assert bound['puts_trigger_hit_ts'] == pd.Timestamp(_ts(0))
-    assert mod.RESOLVER_VERSION == '2026-11-16.v5'
-    assert bound['outcome_resolver_version'] == '2026-11-16.v5'
+    assert mod.RESOLVER_VERSION == '2026-11-17.v5'
+    assert bound['outcome_resolver_version'] == '2026-11-17.v5'
     assert bound['d'] == '2026-05-06' and bound['t'] == 'SPY'
 
 
@@ -1375,6 +1375,48 @@ class TestPlanExcursion:
             reached = got.excursion_r is not None and got.excursion_r >= d - 1e-9
             assert reached == (out.exit.split(',')[k] == f't{k + 1}'), (name, t)
 
+    # r2, done_when[2]: the same distances in the basis's ATR.
+    @staticmethod
+    def _atr_calls():
+        """Trigger 100.00, stop 99.00: the 09:31 bar fills at the trigger, a
+        later high is 103.00, and a still later bar touches the stop."""
+        return _entered_at_0931(
+            _bar(_ts(5), 100.10, 103.00, 100.00, 102.50),
+            _bar(_ts(9), 102.50, 102.60, 98.90, 99.00),
+            _bar(_ts(389), 99.00, 99.20, 98.80, 99.10))
+
+    def test_a_call_three_stop_distances_out_is_one_and_a_half_atr(self):
+        got = plan_excursion('call', _calls_plan(), self._atr_calls(), 2.00)
+        assert got.stop_i is not None
+        assert got.excursion_r == pytest.approx(3.0)
+        assert got.excursion_atr == pytest.approx(1.5)
+        assert got.atr == pytest.approx(2.00)
+
+    def test_the_mirrored_put_gives_the_same(self):
+        bars = _puts_entered_at_0931(
+            _bar(_ts(5), 99.90, 100.00, 97.00, 97.50),
+            _bar(_ts(9), 97.50, 101.10, 97.40, 101.00),
+            _bar(_ts(389), 101.00, 101.20, 100.80, 100.90))
+        got = plan_excursion('put', _puts_plan(), bars, 2.00)
+        assert got.stop_i is not None
+        assert got.excursion_r == pytest.approx(3.0)
+        assert got.excursion_atr == pytest.approx(1.5)
+
+    def test_the_held_distance_in_atr_is_the_held_distance_over_the_atr(self):
+        _, plan, bars, _, _ = EXCURSION_FIXTURES['calls_five_closes_held']
+        got = plan_excursion('call', plan, bars, 2.00)
+        assert got.excursion_held5_atr == pytest.approx(got.excursion_held5_r * 1.0 / 2.00)
+
+    @pytest.mark.parametrize('atr', [None, 0.0, -1.0, float('nan')])
+    def test_no_usable_atr_gives_none_in_atr_and_the_stop_distances_unchanged(self, atr):
+        got = plan_excursion('call', _calls_plan(), self._atr_calls(), atr)
+        assert got.atr is None and got.excursion_atr is None and got.excursion_held5_atr is None
+        assert got.excursion_r == pytest.approx(3.0)
+        _, plan, bars, want, want_held = EXCURSION_FIXTURES['calls_five_closes_held']
+        got = plan_excursion('call', plan, bars, atr)
+        assert got.excursion_r == pytest.approx(want)
+        assert got.excursion_held5_r == pytest.approx(want_held)
+
     def test_not_entered_or_no_valid_stop_gives_none(self):
         bars = _bars([_bar(_ts(0), 100.05, 100.30, 99.90, 100.10),
                       _bar(_ts(389), 100.10, 103.00, 100.00, 102.90)])
@@ -1469,6 +1511,37 @@ def test_resolve_one_upserts_the_day_s_trade_in_the_same_transaction(monkeypatch
     assert bound['fill_ts'] == pd.Timestamp(_ts(1)) and bound['stop_ts'] is None
     assert bound['xr'] == pytest.approx((276.00 - 252.10) / 3.9)
     assert bound['xh'] is None
+    # r2: the basis's own ATR (d8_basis: atr_14 14.0) and the same move in it.
+    assert bound['atr'] == pytest.approx(14.0)
+    assert bound['xa'] == pytest.approx((276.00 - 252.10) / 14.0)
+    assert bound['xha'] is None
+
+
+@pytest.mark.parametrize('version', ['feat-strat-001.v3', 'feat-strat-001.v4', 'feat-strat-001.v5'])
+def test_the_row_is_keyed_by_the_entry_rule_version(monkeypatch, version):
+    import json
+
+    from lib.strat_levels import entry_rule_version
+
+    row = _v3_row()
+    basis = json.loads(row.loc[0, 'level_basis'])
+    basis['rule_version'] = version
+    row.loc[0, 'level_basis'] = json.dumps(basis)
+    _, calls = _resolve(monkeypatch, row, _CALLS_TRADE_BARS)
+    assert calls[1][1]['v'] == entry_rule_version(version) == version
+
+
+def test_a_basis_with_no_entry_rule_version_writes_nothing(monkeypatch):
+    """entry_rule_version None (v2 today, or a later version that keeps no
+    trigger and stop rule) writes and deletes no plan_excursions row; the
+    premarket_analysis update is as before."""
+    import lib.strat_levels as levels
+    from lib.strat_levels import LEVEL_RULE_V2, entry_rule_version
+
+    assert entry_rule_version(LEVEL_RULE_V2) is None
+    monkeypatch.setattr(levels, 'entry_rule_version', lambda v: None)
+    _, calls = _resolve(monkeypatch, _v3_row(), _CALLS_TRADE_BARS)
+    assert len(calls) == 1 and calls[0][0].startswith('UPDATE premarket_analysis SET ')
 
 
 def test_a_forced_re_resolution_to_no_trade_deletes_the_day_s_row(monkeypatch):
@@ -1508,8 +1581,10 @@ def test_a_history_write_never_replaces_a_resolver_row_and_deletes_only_its_own(
     assert sql.text.endswith("DO UPDATE SET side = EXCLUDED.side, trigger_price = EXCLUDED.trigger_price, "
                              "stop_price = EXCLUDED.stop_price, fill_price = EXCLUDED.fill_price, "
                              "fill_ts = EXCLUDED.fill_ts, stop_ts = EXCLUDED.stop_ts, "
-                             "excursion_r = EXCLUDED.excursion_r, "
+                             "atr = EXCLUDED.atr, excursion_r = EXCLUDED.excursion_r, "
                              "excursion_held5_r = EXCLUDED.excursion_held5_r, "
+                             "excursion_atr = EXCLUDED.excursion_atr, "
+                             "excursion_held5_atr = EXCLUDED.excursion_held5_atr, "
                              "source = EXCLUDED.source, resolver_version = EXCLUDED.resolver_version, "
                              "written_at = EXCLUDED.written_at WHERE plan_excursions.source = 'history'")
     assert bound['source'] == 'history' and bound['t'] == 'SPY'

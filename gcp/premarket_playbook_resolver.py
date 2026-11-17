@@ -101,9 +101,10 @@ _ET = ET
 # (FEAT-STRAT-001 drop-entry-cutoff spec, Design 3), so on a half day a print
 # after the early close is never a plan entry and the close legs book at the
 # last bar before the close; the existing columns are unchanged.
-# 2026-11-16.v5 also writes the day's trade to plan_excursions (FEAT-STRAT-001
-# target hit rates, Design 4); every premarket_analysis column is unchanged.
-RESOLVER_VERSION = '2026-11-16.v5'
+# 2026-11-17.v5 also writes the day's trade to plan_excursions, keyed by the
+# entry rule version and with the basis's ATR (FEAT-STRAT-001 target hit
+# rates r2, Design 4); every premarket_analysis column is unchanged.
+RESOLVER_VERSION = '2026-11-17.v5'
 
 # plan_r_status values, in the order the first that applies wins.
 PLAN_TARGETS_UNAVAILABLE = 'targets_unavailable'
@@ -633,7 +634,7 @@ HELD_CLOSES = 5
 @dataclass
 class ExcursionResult:
     """One entered side's move past the trigger before the stop (target hit
-    rates spec, Design 3), in stop distances."""
+    rates r2 spec, Design 3), in stop distances and in the basis's ATR."""
     fill_i: int
     fill_price: float
     fill_ts: object
@@ -641,9 +642,25 @@ class ExcursionResult:
     stop_ts: object
     excursion_r: Optional[float]
     excursion_held5_r: Optional[float]
+    atr: Optional[float] = None
+    excursion_atr: Optional[float] = None
+    excursion_held5_atr: Optional[float] = None
 
 
-def plan_excursion(direction: str, plan: PlanInputs, bars: pd.DataFrame) -> Optional[ExcursionResult]:
+def basis_atr(basis: Optional[dict]) -> Optional[float]:
+    """The basis's own ATR for its atr_basis (target hit rates r2, Design
+    2), the number its ATR targets are built from: SessionLevels.from_basis
+    on a basis of a version is_current_pick_rule accepts, else None. The
+    unit plan_excursions' ATR excursions are measured in."""
+    from lib.strat_levels import SessionLevels, is_current_pick_rule
+    if not basis or not is_current_pick_rule(basis.get('rule_version')):
+        return None
+    atr = SessionLevels.from_basis(basis).atr
+    return float(atr) if atr is not None and math.isfinite(atr) and atr > 0 else None
+
+
+def plan_excursion(direction: str, plan: PlanInputs, bars: pd.DataFrame,
+                   atr: Optional[float] = None) -> Optional[ExcursionResult]:
     """How far one side's trade went past the trigger before the stop
     (target hit rates spec, Design 3). None unless resolve_plan's entry walk
     enters the side and the stop is valid against the fill.
@@ -658,7 +675,9 @@ def plan_excursion(direction: str, plan: PlanInputs, bars: pd.DataFrame) -> Opti
     rung d stop distances past the trigger is reached exactly when
     excursion_r >= d, a bar touching the stop and the rung counting the
     stop first. A value can be negative (the move never went back past the
-    trigger); it reaches no rung."""
+    trigger); it reaches no rung. excursion_atr and excursion_held5_atr are
+    the same two distances over `atr` (the basis's ATR, basis_atr), None
+    when it is not a positive number or the distance is None."""
     is_call = (direction == 'call')
     trigger = plan.trigger_price
     if trigger is None or not math.isfinite(trigger) or trigger <= 0:
@@ -677,18 +696,23 @@ def plan_excursion(direction: str, plan: PlanInputs, bars: pd.DataFrame) -> Opti
     sign = 1.0 if is_call else -1.0
     seg_h = (e.h if is_call else e.lo)[i + 1:end]
     seg_c = e.c[i + 1:end]
-    excursion = None
+    dist = held_dist = None
     if len(seg_h):
         far = seg_h.max() if is_call else seg_h.min()
-        excursion = float(sign * (far - trigger) / risk)
-    held = None
+        dist = float(sign * (far - trigger))
     if len(seg_c) >= HELD_CLOSES:
         w = pd.Series(sign * seg_c).rolling(HELD_CLOSES).min()
-        held = float((w.max() - sign * trigger) / risk)
+        held_dist = float(w.max() - sign * trigger)
+    atr = float(atr) if atr is not None and math.isfinite(atr) and atr > 0 else None
+
+    def per(d, unit):
+        return None if d is None or unit is None else d / unit
+
     return ExcursionResult(
         fill_i=i, fill_price=e.fill, fill_ts=e.times[i], stop_i=stop_i,
         stop_ts=e.times[stop_i] if stop_i is not None else None,
-        excursion_r=excursion, excursion_held5_r=held)
+        excursion_r=per(dist, risk), excursion_held5_r=per(held_dist, risk),
+        atr=atr, excursion_atr=per(dist, atr), excursion_held5_atr=per(held_dist, atr))
 
 
 def trade_of_day(calls: Optional[ExcursionResult],
@@ -912,12 +936,15 @@ def resolve_one(
     puts_in = plan_inputs('puts', row, basis, _policy_fn)
     calls_plan = resolve_plan('call', calls_in, plan_bars)
     puts_plan = resolve_plan('put', puts_in, plan_bars)
-    # The day's trade for the target hit rates (2026-11-16 spec, Design 4):
-    # the same bars and the same published plans, the first side to fill.
-    trade = trade_of_day(plan_excursion('call', calls_in, plan_bars),
-                         plan_excursion('put', puts_in, plan_bars))
+    # The day's trade for the target hit rates (r2 spec, Design 4): the same
+    # bars and the same published plans, the first side to fill, keyed by the
+    # basis's entry rule version.
+    from lib.strat_levels import entry_rule_version
+    atr = basis_atr(basis)
+    trade = trade_of_day(plan_excursion('call', calls_in, plan_bars, atr),
+                         plan_excursion('put', puts_in, plan_bars, atr))
     excursion_sql = excursion_statement(
-        ticker, analysis_date, (basis or {}).get('rule_version'), trade,
+        ticker, analysis_date, entry_rule_version((basis or {}).get('rule_version')), trade,
         {'calls': calls_in, 'puts': puts_in}, 'resolver')
 
     # Build update payload
@@ -1041,13 +1068,16 @@ _EXCURSION_UPSERT = {
 
 def excursion_statement(ticker: str, session_date, rule_version: Optional[str],
                         trade: Optional[tuple], plans: dict, source: str):
-    """The plan_excursions write for one ticker-day (target hit rates spec,
-    Design 4), as (sql, params) for conn.execute, or None.
+    """The plan_excursions write for one ticker-day (target hit rates r2
+    spec, Design 4), as (sql, params) for conn.execute, or None.
+    `rule_version` is the entry rule version (entry_rule_version of the
+    basis's rule_version), the row's key.
 
     With a trade, an upsert keyed (ticker, session_date, rule_version); a
     history write never replaces a resolver row. With no trade (a same-bar
     tie or no entry), a delete of the day's row, a history delete touching
-    only a history row. A basis with no rule_version writes nothing."""
+    only a history row. A None rule_version (no basis version, or one with
+    no entry rule version) writes nothing."""
     if not rule_version:
         return None
     key = {'t': ticker.upper(), 'd': str(session_date), 'v': rule_version}
@@ -1060,17 +1090,21 @@ def excursion_statement(ticker: str, session_date, rule_version: Optional[str],
     params = {**key, 'side': side, 'trigger': float(plan.trigger_price),
               'stop': float(plan.stop_price), 'fill': float(ex.fill_price),
               'fill_ts': ex.fill_ts, 'stop_ts': ex.stop_ts, 'xr': ex.excursion_r,
-              'xh': ex.excursion_held5_r, 'source': source, 'rv': RESOLVER_VERSION}
+              'xh': ex.excursion_held5_r, 'atr': ex.atr, 'xa': ex.excursion_atr,
+              'xha': ex.excursion_held5_atr, 'source': source, 'rv': RESOLVER_VERSION}
     sql = (
         "INSERT INTO plan_excursions (ticker, session_date, rule_version, side, trigger_price, "
-        "stop_price, fill_price, fill_ts, stop_ts, excursion_r, excursion_held5_r, source, "
-        "resolver_version, written_at) VALUES (:t, :d, :v, :side, :trigger, :stop, :fill, "
-        ":fill_ts, :stop_ts, :xr, :xh, :source, :rv, NOW()) "
+        "stop_price, fill_price, fill_ts, stop_ts, atr, excursion_r, excursion_held5_r, "
+        "excursion_atr, excursion_held5_atr, source, resolver_version, written_at) VALUES "
+        "(:t, :d, :v, :side, :trigger, :stop, :fill, :fill_ts, :stop_ts, :atr, :xr, :xh, :xa, "
+        ":xha, :source, :rv, NOW()) "
         "ON CONFLICT (ticker, session_date, rule_version) DO UPDATE SET "
         "side = EXCLUDED.side, trigger_price = EXCLUDED.trigger_price, "
         "stop_price = EXCLUDED.stop_price, fill_price = EXCLUDED.fill_price, "
         "fill_ts = EXCLUDED.fill_ts, stop_ts = EXCLUDED.stop_ts, "
-        "excursion_r = EXCLUDED.excursion_r, excursion_held5_r = EXCLUDED.excursion_held5_r, "
+        "atr = EXCLUDED.atr, excursion_r = EXCLUDED.excursion_r, "
+        "excursion_held5_r = EXCLUDED.excursion_held5_r, excursion_atr = EXCLUDED.excursion_atr, "
+        "excursion_held5_atr = EXCLUDED.excursion_held5_atr, "
         "source = EXCLUDED.source, resolver_version = EXCLUDED.resolver_version, "
         "written_at = EXCLUDED.written_at" + _EXCURSION_UPSERT[source])
     return text(sql), params
