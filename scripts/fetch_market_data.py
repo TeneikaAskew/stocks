@@ -293,7 +293,7 @@ def calculate_all_indicators(df, ticker_symbol, is_minute_data=False):
 
 def fetch_historical_daily_data(ticker_symbol, start_date, end_date):
     """
-    Fetch historical daily data from AlphaVantage TIME_SERIES_DAILY_ADJUSTED.
+    Fetch historical daily data, as traded, from AlphaVantage TIME_SERIES_DAILY.
 
     Args:
         ticker_symbol: Ticker symbol (e.g., 'SPY', 'SPX')
@@ -311,7 +311,7 @@ def fetch_historical_daily_data(ticker_symbol, start_date, end_date):
         print(f"  Fetching historical daily data from {start_date} to {end_date}...")
 
         params = {
-            'function': 'TIME_SERIES_DAILY_ADJUSTED',
+            'function': 'TIME_SERIES_DAILY',
             'symbol': ticker_symbol,
             'outputsize': 'full',
             'datatype': 'json',
@@ -339,8 +339,7 @@ def fetch_historical_daily_data(ticker_symbol, start_date, end_date):
             '2. high': 'High',
             '3. low': 'Low',
             '4. close': 'Close',
-            '5. adjusted close': 'Adj Close',
-            '6. volume': 'Volume',
+            '5. volume': 'Volume',
         })
         for col in ['Open', 'High', 'Low', 'Close']:
             if col in df.columns:
@@ -528,7 +527,7 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None, target_date=None, histori
                             column_mapping[col] = 'High'
                         elif normalized == 'low':
                             column_mapping[col] = 'Low'
-                        elif normalized in ('close', 'adj_close', 'adjclose'):
+                        elif normalized == 'close':
                             column_mapping[col] = 'Close'
                         elif normalized == 'volume':
                             column_mapping[col] = 'Volume'
@@ -572,7 +571,7 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None, target_date=None, histori
                                 column_mapping[col] = 'High'
                             elif normalized == 'low':
                                 column_mapping[col] = 'Low'
-                            elif normalized in ('close', 'adj_close', 'adjclose'):
+                            elif normalized == 'close':
                                 column_mapping[col] = 'Close'
                             elif normalized == 'volume':
                                 column_mapping[col] = 'Volume'

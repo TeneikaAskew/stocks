@@ -34,9 +34,12 @@ Tunable knobs (env vars, defaults match the values locked in Phase 0.5):
 """
 from __future__ import annotations
 
+import hashlib as _hashlib
+import json as _json
 import logging
 import math
 import os
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional
 
@@ -1319,18 +1322,69 @@ def compute_daily_path_v1(event, daily, *, observation_ts, price_evidence=None,
         return {'available': False, 'reason': str(exc)[:160], 'payload': payload}
 
 
-def database_daily_price_evidence(event, frame, *, schedule, observed_at, native=False):
+@dataclass(frozen=True)
+class Splits:
+    """A ticker's split history from AlphaVantage SPLITS, held for one run.
+
+    `events` are (effective_date, split_factor) pairs sorted by date; an
+    empty tuple is a valid answer (no split on record). `digest` is the
+    sha256 hex of their canonical JSON, so a receipt can name the evidence
+    that admitted it (FEAT-DATA-001, no adjusted prices, Design 6).
+    """
+    ticker: str
+    events: tuple
+    digest: str
+
+    @classmethod
+    def of(cls, ticker, events) -> 'Splits':
+        ordered = tuple(sorted((effective, float(factor)) for effective, factor in events))
+        canonical = _json.dumps(
+            [{'effective_date': effective.isoformat(), 'split_factor': factor}
+             for effective, factor in ordered],
+            sort_keys=True, separators=(',', ':'))
+        return cls(ticker=ticker, events=ordered,
+                   digest=_hashlib.sha256(canonical.encode()).hexdigest())
+
+
+class SplitsUnavailable(Exception):
+    """The vendor gave no usable split evidence (EXTERNAL, CLAUDE.md 3.7).
+
+    Never read as "no split": every event of the ticker is refused with
+    split_status_unavailable instead.
+    """
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+# The market_data_daily.data_source tags of the AlphaVantage daily writers,
+# each of which stores fields 1 to 4 of the daily endpoint, as traded
+# (FEAT-DATA-001, no adjusted prices, Design 6). Any other tag, NULL
+# included, is a writer this gate cannot vouch for.
+AS_TRADED_DAILY_SOURCES = ('alphavantage', 'alphavantage_daily',
+                           'av_daily_backfill', 'av_watched_backfill')
+
+
+def database_daily_price_evidence(event, frame, *, schedule, observed_at, splits,
+                                  native=False):
     """Conservative current-DB declaration, not original provider/PIT proof.
 
-    Only the merged AV raw-OHLC writer tags and explicit equal raw/adjusted
-    closes qualify here. A changed/unclear adjustment factor is unavailable;
-    this never guesses a split threshold, quote currency or issuer equivalence.
+    Only the AlphaVantage daily writer tags (AS_TRADED_DAILY_SOURCES), whose
+    prices are as traded, qualify here, and only after an explicit split
+    check: `splits` is the ticker's Splits from AlphaVantage SPLITS, or the
+    SplitsUnavailable that fetching it raised. A split effective after the
+    first and on or before the last required session refuses the window
+    (split_in_window); unavailable evidence refuses it
+    (split_status_unavailable). No stored adjusted column is read. This never
+    guesses a split threshold, quote currency or issuer equivalence.
     Stronger retained receipts may be supplied by the same producer's caller.
     """
     from datetime import date
     import hashlib
-    import json
-    import pandas as pd
+    if not isinstance(splits, (Splits, SplitsUnavailable)):
+        # This job's own wiring, not the vendor's answer: fail loud.
+        raise TypeError('splits must be Splits or SplitsUnavailable')
     try:
         ev = normalize_local_event_dates(event)
         from datetime import timedelta
@@ -1344,25 +1398,25 @@ def database_daily_price_evidence(event, frame, *, schedule, observed_at, native
         if (native and (d<10 or len(required)!=16)) or (not native and len(required) < (7 if ev.get('reaction_basis') == 'BMO' else 6)):
             raise ValueError('insufficient_canonical_sessions')
         rows = frame[frame['date'].isin(required)].copy()
-        if not {'data_source', 'adjusted_close'} <= set(rows.columns):
+        if 'data_source' not in rows.columns:
             raise ValueError('missing_database_price_basis_metadata')
-        if rows.empty or not rows['data_source'].isin(['alphavantage', 'alphavantage_daily']).all():
+        if rows.empty or not rows['data_source'].isin(AS_TRADED_DAILY_SOURCES).all():
             raise ValueError('unrecognized_database_price_writer')
-        raw = pd.to_numeric(rows['close'], errors='coerce')
-        adjusted = pd.to_numeric(rows['adjusted_close'], errors='coerce')
-        if not (raw.gt(0) & adjusted.gt(0) & raw.eq(adjusted)).all():
-            raise ValueError('unresolved_adjustment_or_corporate_action')
-        projection = rows[['date', 'open', 'high', 'low', 'close',
-                           'adjusted_close', 'data_source']].copy()
+        if isinstance(splits, SplitsUnavailable):
+            raise ValueError('split_status_unavailable')
+        if any(required[0] < effective <= required[-1] for effective, _ in splits.events):
+            raise ValueError('split_in_window')
+        projection = rows[['date', 'open', 'high', 'low', 'close', 'data_source']].copy()
         projection['date'] = projection['date'].map(str)
         digest = hashlib.sha256(projection.to_json(orient='records',
                         double_precision=15).encode()).hexdigest()
         stamp = local_earnings_clock(observed_at).isoformat()
         event_id = f"{ev['ticker']}:{ev['fiscal_date_ending']}:{ev['reported_date']}"
         return {'available': True, 'receipt': {
-            'event_id': event_id, 'source_id': 'current-db-projection:' + digest,
+            'event_id': event_id,
+            'source_id': 'current-db-projection:' + digest + ':splits:' + splits.digest,
             'observed_at': stamp, 'acquired_at': stamp,
-            'price_basis_id': 'db-declared-av-raw-equal-adjusted-v1',
+            'price_basis_id': 'av-as-traded-no-split-v1',
             'evidence_grade': 'current_db_writer_declaration_only'}}
     except (ValueError, TypeError, KeyError, IndexError) as exc:
         return {'available': False, 'reason': str(exc)[:160], 'receipt': None}
