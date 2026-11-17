@@ -3,7 +3,7 @@ feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-11-07-feat-strat-001-one-level-source-r2.md
 branch: feature/feat-strat-001-one-level-source
 pr: 1753
-status: ready
+status: done
 ---
 
 # One level source for the brief, the planner and every consumer implementation plan

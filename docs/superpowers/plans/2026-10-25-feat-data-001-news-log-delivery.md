@@ -3,7 +3,7 @@ feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-10-25-feat-data-001-news-log-source-proof.md
 branch: fix/feat-data-001-news-log-delivery
 pr: 1607
-status: ready
+status: done
 ---
 
 # Credential safe news logger implementation plan
