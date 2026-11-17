@@ -16,7 +16,7 @@ done_when:
   - "U8 the brief's dry run: tests/gcp/test_premarket_brief_no_discord.py::test_premarket_from_bars_keeps_the_stored_values_for_an_unknown_rule_version passes: _premarket_from_bars on a live basis of newest plus 1 returns (None, line) with the line naming rule_version_newer and the stored high and low kept, and reads no bars"
   - "U9 the one-helper rule holds: tests/meta/test_level_rule_version_readers.py passes with its ALLOWED map unedited, and lib/, gcp/ and platform/ hold no comparison of a stored rule_version outside lib.strat_levels.rule_version_status, is_current_pick_rule and the two reach-population lines of lib/movement_statement.py"
   - "U10 close: make test passes on the PR head; the FEAT-STRAT-001 catalog record and the PR traceability entry are updated; the (FEAT-STRAT-001, DASHBOARD-01) implementation-source note carries the source identity that scripts/maintenance/doc_source_snapshot.py produce and verify prove on the committed head; python3 scripts/maintenance/docs_audit.py on the branch reports nothing origin/main does not; python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -80,6 +80,8 @@ contain it. Today the only protection is deploy order (prior-close r2, Close-out
 - The brief does not check a row's version before a replay overwrites it (decision 5).
 
 ## Decisions for the owner (recommended pick first)
+
+Owner, 2026-11-17: approved with every decision below taking its recommended pick (the first option listed).
 
 1. **Refuse, do not mark.** Recommended: `from_basis` raises a named exception and each reader turns
    it into its own unavailable state. The alternative, returning a `SessionLevels` with a new
