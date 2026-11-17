@@ -98,7 +98,7 @@ from the changed retry values, if the docs audit requires them.
 - [x] Produce the SHARED-07 note from producer preflight's source identity, commit,
   produce and verify the sidecar from the committed HEAD. 2026-11-17: note rebound,
   sidecar produced and committed, `verify` reports identity-matched on route declared-note.
-- [x] Docs audit on this branch and on origin/main: no new finding. 2026-11-17: 312 and 312, 0 new.
+- [x] Docs audit on this branch and on origin/main: no new finding. 2026-11-17: 313 findings on the branch and 313 on main `af1f7e3f5`, 0 new.
 - [x] `python3 scripts/gate/spec_gate.py --pr origin/main`. 2026-11-17: spec gate ok.
 - [ ] Record exact historical and current review lineage on the PR; an authorized
   independent final review, current-head CODE/SEC review and CI before release.
