@@ -5,7 +5,7 @@ Cloud Run Job: Fetch daily market data and write to Cloud SQL.
 Replaces the GitHub Actions workflow fetch-market-data.yml.
 Scheduled by Cloud Scheduler at 5 PM ET (22:00 UTC) weekdays.
 
-Daily OHLCV source: AlphaVantage TIME_SERIES_DAILY_ADJUSTED (split/dividend-adjusted close).
+Daily OHLCV source: AlphaVantage TIME_SERIES_DAILY (as traded; FEAT-DATA-001).
 Intraday 1-min source: AlphaVantage TIME_SERIES_INTRADAY (current month).
 
 Usage:
@@ -182,7 +182,7 @@ def fetch_minute_data(ticker: str, fetch_date: str, api_key: str, *, adjusted: b
 def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str,
                         allow_fallback: bool = True) -> dict:
     """
-    Fetch daily OHLCV + adjusted_close from AlphaVantage TIME_SERIES_DAILY_ADJUSTED.
+    Fetch daily OHLCV, as traded, from AlphaVantage TIME_SERIES_DAILY.
 
     Uses outputsize=compact (last 100 trading days) for the nightly update.
     Returns a dict of price fields, or {} on any error.
@@ -200,7 +200,7 @@ def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str,
         return {}
 
     params = {
-        'function': 'TIME_SERIES_DAILY_ADJUSTED',
+        'function': 'TIME_SERIES_DAILY',
         'symbol': av_symbol,
         'outputsize': 'compact',
         'datatype': 'json',
@@ -241,14 +241,17 @@ def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str,
             return {}
 
         return {
-            'open':           float(row_data['1. open']),
-            'high':           float(row_data['2. high']),
-            'low':            float(row_data['3. low']),
-            'close':          float(row_data['4. close']),
-            'adjusted_close': float(row_data['5. adjusted close']),
-            'volume':         int(row_data['6. volume']),
+            'open':   float(row_data['1. open']),
+            'high':   float(row_data['2. high']),
+            'low':    float(row_data['3. low']),
+            'close':  float(row_data['4. close']),
+            'volume': int(row_data['5. volume']),
         }
 
+    # AUDIT-2026-05-13: silent fallback. A vendor reply or parse failure
+    # returns {}, and process_ticker then builds the row from 1-minute bars
+    # (or skips the ticker when it has none), so a changed reply shape reads
+    # as "AV daily unavailable" rather than as an error.
     except Exception as e:
         log.warning("    AV daily fetch failed for %s: %s", ticker, e)
         return {}
@@ -260,7 +263,7 @@ def build_daily_row(ticker: str, minute_df: pd.DataFrame, fetch_date: str,
     Build a single daily OHLCV row.
 
     OHLCV source priority:
-      1. AlphaVantage TIME_SERIES_DAILY_ADJUSTED (split/dividend-adjusted, canonical)
+      1. AlphaVantage TIME_SERIES_DAILY (as traded, canonical)
       2. AV intraday 1-min aggregation (fallback if AV daily unavailable)
 
     Intraday-derived fields (VWAP, Price_vs_VWAP) are computed from 1-min bars
@@ -696,8 +699,8 @@ def process_ticker(ticker: str, fetch_date: str, av_api_key: str, *, level_param
     av_ohlcv = fetch_daily_from_av(ticker, fetch_date, av_api_key,
                                    allow_fallback=has_intraday)
     if av_ohlcv:
-        log.info("    AV daily: open=%.2f close=%.2f adj=%.2f",
-                 av_ohlcv['open'], av_ohlcv['close'], av_ohlcv['adjusted_close'])
+        log.info("    AV daily: open=%.2f close=%.2f",
+                 av_ohlcv['open'], av_ohlcv['close'])
     elif has_intraday:
         log.info("    AV daily unavailable; aggregating from AV intraday bars")
     else:
@@ -753,7 +756,6 @@ def fetch_and_upsert_vix(lookback_days: int = 7) -> int:
             "high": quote["high"][i],
             "low": quote["low"][i],
             "close": close,
-            "adjusted_close": close,  # index: no splits/divs → adj == close
             "data_source": "yahoo",
         })
     if not rows:
@@ -1004,10 +1006,9 @@ def _pick_backfill_outputsize(bar_count: int, max_date,
 
 def _av_get_full_daily_series(ticker: str, api_key: str,
                               outputsize: str) -> pd.DataFrame:
-    """Pull the entire daily series response from AV TIME_SERIES_DAILY_ADJUSTED.
+    """Pull the entire daily series response from AV TIME_SERIES_DAILY.
 
-    Uses adjusted endpoint so split-adjusted close is available
-    downstream. Returns a DataFrame with columns
+    The series is as traded (FEAT-DATA-001). Returns a DataFrame with columns
         ticker, date, open, high, low, close, volume
     or empty on any error. The caller is responsible for filtering
     to the lookback cap and upserting to market_data_daily.
@@ -1017,7 +1018,7 @@ def _av_get_full_daily_series(ticker: str, api_key: str,
         return pd.DataFrame()
     try:
         resp = requests.get(AV_BASE_URL, params={
-            'function': 'TIME_SERIES_DAILY_ADJUSTED',
+            'function': 'TIME_SERIES_DAILY',
             'symbol': av_symbol,
             'outputsize': outputsize,
             'datatype': 'json',
@@ -1041,7 +1042,7 @@ def _av_get_full_daily_series(ticker: str, api_key: str,
                 'high':   float(v['2. high']),
                 'low':    float(v['3. low']),
                 'close':  float(v['4. close']),
-                'volume': int(v['6. volume']),
+                'volume': int(v['5. volume']),
             })
         if not rows:
             return pd.DataFrame()

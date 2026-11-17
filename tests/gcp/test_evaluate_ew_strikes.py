@@ -563,11 +563,10 @@ def test_av_listed_symbol(ticker, sent):
 
 
 def _daily(day: str) -> dict:
-    """A TIME_SERIES_DAILY_ADJUSTED reply holding one day."""
+    """A TIME_SERIES_DAILY reply holding one day."""
     return {"Meta Data": {}, "Time Series (Daily)": {day: {
         "1. open": "26.03", "2. high": "26.305", "3. low": "25.895", "4. close": "26.16",
-        "5. adjusted close": "26.16", "6. volume": "1504871",
-        "7. dividend amount": "0.0000", "8. split coefficient": "1.0"}}}
+        "5. volume": "1504871"}}}
 
 
 @pytest.mark.parametrize("call", ["minute", "daily", "daily_series"])
