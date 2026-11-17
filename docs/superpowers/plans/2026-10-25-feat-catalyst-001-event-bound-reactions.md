@@ -3,7 +3,7 @@ feat_id: FEAT-CATALYST-001
 spec: docs/superpowers/specs/2026-10-25-feat-catalyst-001-model-trace-metadata.md
 branch: feature/feat-catalyst-001-event-bound-reactions
 pr: 1608
-status: ready
+status: done
 ---
 
 # Event-bound earnings integration implementation plan

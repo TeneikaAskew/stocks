@@ -3,7 +3,7 @@ feat_id: FEAT-OPTION-001
 spec: docs/superpowers/specs/2026-10-31-feat-option-001-source-budget-excludes-persistence.md
 branch: fix/feat-option-001-source-window
 pr: 1743
-status: ready
+status: done
 ---
 
 # Realtime options collector: one cumulative source budget that excludes persistence time

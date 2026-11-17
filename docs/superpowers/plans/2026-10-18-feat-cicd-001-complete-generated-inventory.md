@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-13-feat-cicd-001-complete-generated-inventory.md
 branch: fix/feat-cicd-001-complete-generated-inventory
 pr: 1538
-status: ready
+status: done
 ---
 
 # Complete generated inventory Implementation Plan

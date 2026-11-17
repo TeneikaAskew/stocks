@@ -3,7 +3,7 @@ feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-11-11-feat-strat-001-brief-atr-levels.md
 branch: fix/feat-strat-001-brief-atr-levels-main
 pr: 1951
-status: ready
+status: done
 ---
 
 # The brief shows ATR levels from the prior day and premarket high and low, display only: implementation plan
