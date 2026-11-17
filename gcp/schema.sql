@@ -1903,6 +1903,11 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS puts_plan_t1_price    DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_plan_t2_price    DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_plan_t3_price    DOUBLE PRECISION,
+    -- ATR mark targets (docs/superpowers/specs/2026-11-16-feat-strat-001-atr-quarter-targets-r2.md):
+    -- a plan built under the marks can hold a fourth target. NULL for a plan
+    -- with three or fewer.
+    ADD COLUMN IF NOT EXISTS calls_plan_t4_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t4_price    DOUBLE PRECISION,
 
     -- ── SHADOW: put leg re-anchored on the 9:31 open (audit §15.5) ───
     -- The brief anchors the playbook on the 8:31 price (yesterday's close).
@@ -1980,8 +1985,9 @@ ALTER TABLE premarket_analysis
     -- sum over legs of (1/legs) x (exit - fill) x sign / |fill - stop|,
     -- gross; NULL unless plan_r_status = 'ok'. plan_r_status, the first that
     -- applies: 'targets_unavailable' (no plan published), 'stop_unavailable'
-    -- (no stop beyond the fill), 'not_entered', 'ok'. plan_t1..t3_hit_ts:
-    -- touches of the plan targets by the walk of t1_hit_ts (not exits).
+    -- (no stop beyond the fill), 'not_entered', 'ok'. plan_t1..t4_hit_ts:
+    -- touches of the plan targets by the walk of t1_hit_ts (not exits);
+    -- plan_t4_hit_ts (ATR mark targets spec) is NULL for a plan of three.
     -- plan_exit: each leg's exit in order, e.g. 't1,t2,close'. A stop-less
     -- leg keeps its exits (targets or close) with plan_r NULL.
     ADD COLUMN IF NOT EXISTS calls_plan_entry_status VARCHAR(16),
@@ -1992,6 +1998,7 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS calls_plan_t1_hit_ts   TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS calls_plan_t2_hit_ts   TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS calls_plan_t3_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_t4_hit_ts   TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS calls_plan_exit        TEXT,
     ADD COLUMN IF NOT EXISTS puts_plan_entry_status VARCHAR(16),
     ADD COLUMN IF NOT EXISTS puts_plan_fill_price  DOUBLE PRECISION,
@@ -2001,6 +2008,7 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS puts_plan_t1_hit_ts   TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS puts_plan_t2_hit_ts   TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS puts_plan_t3_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_t4_hit_ts   TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS puts_plan_exit        TEXT,
 
     -- ── Resolver metadata ────────────────────────────────────────────
@@ -2168,7 +2176,10 @@ ALTER TABLE premarket_analysis_history
     ADD COLUMN IF NOT EXISTS calls_plan_t3_price   DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_plan_t1_price    DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_plan_t2_price    DOUBLE PRECISION,
-    ADD COLUMN IF NOT EXISTS puts_plan_t3_price    DOUBLE PRECISION;
+    ADD COLUMN IF NOT EXISTS puts_plan_t3_price    DOUBLE PRECISION,
+    -- ATR mark targets: the fourth plan target (see premarket_analysis).
+    ADD COLUMN IF NOT EXISTS calls_plan_t4_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t4_price    DOUBLE PRECISION;
 
 
 -- ============================================================================

@@ -1464,6 +1464,8 @@ class TestAtrRungsDisplayOnly:
             assert h.pop('rvol') == pytest.approx(relative_volume(volume, 20).iloc[-1]), t
             assert b.pop('rvol') == pytest.approx(
                 volume.iloc[-1] / volume.rolling(20).mean().iloc[-1]), t
+            # ATR marks spec: the fourth plan target column, None for a plan of three.
+            assert h.pop('calls_plan_t4_price') is None and h.pop('puts_plan_t4_price') is None, t
             assert h == b, t
             for side in ('calls', 'puts'):
                 for k in (1, 2, 3):

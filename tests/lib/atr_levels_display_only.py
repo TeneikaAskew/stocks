@@ -111,8 +111,17 @@ def project(sl: SessionLevels) -> dict:
             "regime_long": lm.regime_long, "regime_short": lm.regime_short,
             "reason_long": lm.reason_long, "reason_short": lm.reason_short,
         },
-        "columns": structured_playbook_columns(lm),
+        "columns": _base_columns(structured_playbook_columns(lm)),
     }
+
+
+def _base_columns(columns: dict) -> dict:
+    """The structured columns as the base recorded them. The ATR marks spec
+    (2026-11-16) added plan_t4: every case here is a level-rule plan of three
+    or fewer targets, so it is None, and the base was taken before it."""
+    for side in ("calls", "puts"):
+        assert columns.pop(f"{side}_plan_t4_price") is None, side
+    return columns
 
 
 def projections() -> dict:

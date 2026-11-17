@@ -1605,3 +1605,126 @@ class TestScheduledRecovery:
         for t in ('UA', 'UB', 'UC'):
             lines = [line for line in _error_lines(caplog) if line.startswith(f'{t} ')]
             assert len(lines) == 1 and 'rule_version_unreadable' in lines[0], (t, lines)
+
+
+# ─── ATR marks spec (2026-11-16), Design 5: the fourth target ───────────
+
+def _four(**kw) -> PlanInputs:
+    base = dict(trigger_price=100.0, stop_price=99.0, targets=(100.50, 101.00, 101.50, 102.00),
+                legs=4, cutoff_minutes=CUTOFF_SEEDED, target_status='ok')
+    base.update(kw)
+    return PlanInputs(**base)
+
+
+def _four_put(**kw) -> PlanInputs:
+    return _four(stop_price=101.0, targets=(99.50, 99.00, 98.50, 98.00), **kw)
+
+
+def _put_entered_at_0931(*later: dict) -> pd.DataFrame:
+    """Opens above the 100.00 trigger and crosses it in the 09:31 bar."""
+    return _bars([
+        _bar(_ts(0), 100.50, 100.60, 100.20, 100.30),
+        _bar(_ts(1), 100.30, 100.40, 99.80, 99.90),
+        *later,
+    ])
+
+
+class TestFourLegs:
+    def test_all_four_reached(self):
+        bars = _entered_at_0931(_bar(_ts(2), 100.10, 100.60, 100.00, 100.50),
+                                _bar(_ts(3), 100.50, 101.10, 100.40, 101.00),
+                                _bar(_ts(4), 101.00, 101.60, 100.90, 101.50),
+                                _bar(_ts(5), 101.50, 102.10, 101.40, 102.00))
+        out = resolve_plan('call', _four(), bars)
+        assert out.exit == 't1,t2,t3,t4' and out.r == pytest.approx(1.25)
+        assert out.t4_hit_ts == bars.iloc[5]['time']
+        assert out.t3_hit_ts == bars.iloc[4]['time']
+
+    def test_stop_after_t2(self):
+        bars = _entered_at_0931(_bar(_ts(2), 100.10, 100.60, 100.00, 100.50),
+                                _bar(_ts(3), 100.50, 101.10, 100.40, 101.00),
+                                _bar(_ts(4), 100.80, 100.90, 98.90, 99.00),
+                                _bar(_ts(5), 99.00, 103.00, 98.80, 102.50))
+        out = resolve_plan('call', _four(), bars)
+        assert out.exit == 't1,t2,stop,stop' and out.r == pytest.approx(-0.125)
+        assert out.t4_hit_ts == bars.iloc[5]['time']      # a touch, after the stop
+        bars = bars.iloc[:5].reset_index(drop=True)
+        out = resolve_plan('call', _four(), bars)
+        assert out.exit == 't1,t2,stop,stop' and out.t4_hit_ts is None
+
+    def test_put_mirror_all_four(self):
+        bars = _put_entered_at_0931(_bar(_ts(2), 99.90, 100.00, 99.40, 99.50),
+                                    _bar(_ts(3), 99.50, 99.60, 98.90, 99.00),
+                                    _bar(_ts(4), 99.00, 99.10, 98.40, 98.50),
+                                    _bar(_ts(5), 98.50, 98.60, 97.90, 98.00))
+        out = resolve_plan('put', _four_put(), bars)
+        assert out.exit == 't1,t2,t3,t4' and out.r == pytest.approx(1.25)
+        assert out.t4_hit_ts == bars.iloc[5]['time']
+
+    def test_put_mirror_stop_after_t2(self):
+        bars = _put_entered_at_0931(_bar(_ts(2), 99.90, 100.00, 99.40, 99.50),
+                                    _bar(_ts(3), 99.50, 99.60, 98.90, 99.00),
+                                    _bar(_ts(4), 99.20, 101.10, 99.10, 101.00))
+        out = resolve_plan('put', _four_put(), bars)
+        assert out.exit == 't1,t2,stop,stop' and out.r == pytest.approx(-0.125)
+        assert out.t4_hit_ts is None
+
+    def test_three_legs_leave_t4_null(self):
+        bars = _entered_at_0931(_bar(_ts(2), 100.10, 102.20, 100.00, 102.00))
+        out = resolve_plan('call', _four(targets=(100.50, 101.00, 101.50), legs=3), bars)
+        assert out.exit == 't1,t2,t3' and out.t4_hit_ts is None
+
+
+def test_resolve_one_update_sets_both_t4_columns(monkeypatch):
+    import json
+
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib.session_levels_helpers import d8_basis
+
+    row = pd.DataFrame([{
+        'calls_trigger_price': 252.10, 'calls_stop_price': 248.20,
+        'calls_t1_price': 253.00, 'calls_t2_price': 275.00, 'calls_t3_price': 280.00,
+        'puts_trigger_price': 248.20, 'puts_stop_price': 252.10,
+        'puts_t1_price': 247.50, 'puts_t2_price': 247.00, 'puts_t3_price': 225.00,
+        'level_basis': json.dumps(d8_basis()), 'outcome_resolved_at': None,
+    }])
+    bars = pd.DataFrame([
+        {'time': _ts(0), 'open': 251.00, 'high': 251.50, 'low': 250.80, 'close': 251.40},
+        {'time': _ts(1), 'open': 251.90, 'high': 252.50, 'low': 251.80, 'close': 252.40},
+    ])
+    reads = iter([row, bars])
+    monkeypatch.setattr(mod.pd, 'read_sql', lambda *a, **k: next(reads))
+    engine = _RecordingEngine()
+    mod.resolve_one(_date(2026, 5, 6), 'tst', engine)
+    set_list, bound = _plan_set_and_bound(engine)
+    for side in ('calls', 'puts'):
+        assert f'{side}_plan_t4_hit_ts = :{side}_plan_t4_hit_ts' in set_list
+        assert bound[f'{side}_plan_t4_hit_ts'] is None
+
+
+def _column_statement_table(sql: str, column: str) -> str:
+    """The table of the ALTER TABLE statement that adds `column`."""
+    import re
+    adds = [m.start() for m in re.finditer(rf'ADD COLUMN IF NOT EXISTS {column}\s', sql)]
+    assert len(adds) == 1, (column, len(adds))
+    head = sql[:adds[0]]
+    table = re.findall(r'ALTER TABLE (\w+)', head)[-1]
+    assert ';' not in head[head.rindex('ALTER TABLE'):], column
+    return table
+
+
+def test_schema_declares_the_t4_columns():
+    import re
+    from pathlib import Path
+
+    # Line comments dropped: some hold a ';' inside an ALTER statement.
+    sql = re.sub(r'--[^\n]*', '',
+                 (Path(__file__).resolve().parents[2] / 'gcp' / 'schema.sql').read_text())
+    for side in ('calls', 'puts'):
+        found = [(m.group(1), m.group(2)) for m in re.finditer(
+            rf'ALTER TABLE (\w+)\n(?:(?!;)[\s\S])*?ADD COLUMN IF NOT EXISTS {side}_plan_t4_price\s+'
+            r'(DOUBLE PRECISION)\b', sql)]
+        assert sorted(found) == [('premarket_analysis', 'DOUBLE PRECISION'),
+                                 ('premarket_analysis_history', 'DOUBLE PRECISION')], side
+        assert re.search(rf'ADD COLUMN IF NOT EXISTS {side}_plan_t4_hit_ts\s+TIMESTAMPTZ\b', sql)
+        assert _column_statement_table(sql, f'{side}_plan_t4_hit_ts') == 'premarket_analysis'

@@ -148,6 +148,8 @@ class PlanOutcome:
     t1_hit_ts: Optional[datetime] = None
     t2_hit_ts: Optional[datetime] = None
     t3_hit_ts: Optional[datetime] = None
+    # ATR mark targets spec (2026-11-16): a plan of four targets; None for three.
+    t4_hit_ts: Optional[datetime] = None
     exit: Optional[str] = None             # each leg's exit in order, e.g. 't1,t2,close'
 
 
@@ -547,14 +549,13 @@ def resolve_plan(direction: str, plan: PlanInputs, bars: pd.DataFrame) -> PlanOu
         return out
 
     targets = [float(t) for t in plan.targets[:plan.legs]]
-    # Plan hit timestamps: the existing walk (first touch from the trigger bar).
+    # Plan hit timestamps: the existing walk (first touch from the trigger bar),
+    # one per stored slot (_PLAN_HIT_FIELDS).
     if reached.any():
         first = int(reached.argmax())
-        hits = []
-        for t in targets[:3]:
+        for name, t in zip(_PLAN_HIT_FIELDS, targets):
             touched = (h[first:] >= t) if is_call else (lo[first:] <= t)
-            hits.append(times[first + int(touched.argmax())] if touched.any() else None)
-        out.t1_hit_ts, out.t2_hit_ts, out.t3_hit_ts = (hits + [None, None, None])[:3]
+            setattr(out, name, times[first + int(touched.argmax())] if touched.any() else None)
 
     stop_ok = _valid_stop(is_call, plan.stop_price, fill)
     if not stop_ok:
@@ -904,8 +905,10 @@ def resolve_one(
     return updates, 'resolved'
 
 
+# The plan's stored hit slots: four since the ATR mark targets spec.
+_PLAN_HIT_FIELDS = ('t1_hit_ts', 't2_hit_ts', 't3_hit_ts', 't4_hit_ts')
 _PLAN_FIELDS = ('entry_status', 'fill_price', 'fill_ts', 'r', 'r_status',
-                't1_hit_ts', 't2_hit_ts', 't3_hit_ts', 'exit')
+                *_PLAN_HIT_FIELDS, 'exit')
 
 
 def _plan_columns(side: str) -> list[str]:

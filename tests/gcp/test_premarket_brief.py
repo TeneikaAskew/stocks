@@ -4275,3 +4275,41 @@ def test_the_longer_playbook_splits_whole():
         assert f["name"] == "IWM Playbook" + (brief._CONTINUED if i else "")
         bodies.append(f["value"][len(brief._CODE_FENCE_OPEN):-len(brief._CODE_FENCE_CLOSE)])
     assert "\n".join(bodies).split("\n") == text.split("\n")
+
+
+# ── ATR marks spec (2026-11-16), Design 5: plan_t1 to plan_t4 are stored ──
+
+def _iwm_maps():
+    from lib.strat_levels import SessionLevels
+    from tests.lib import session_levels_helpers as slh
+    marks = SessionLevels.from_basis(slh.marks_basis(
+        slh.stored_1116("IWM"), slh.QUARTER_MARKS, 4, reach_history=slh.d7_history()))
+    level = SessionLevels.from_basis(slh.stored_1116("IWM"))
+    return marks.to_level_map(), level.to_level_map()
+
+
+def test_structured_columns_write_four_plan_targets():
+    import gcp.premarket_brief as brief
+    marks, level = _iwm_maps()
+    cols = brief.structured_playbook_columns(marks)
+    assert [cols[f"calls_plan_t{k}_price"] for k in (1, 2, 3, 4)] == [280.14, 281.36, 282.58, 283.79]
+    assert [cols[f"puts_plan_t{k}_price"] for k in (1, 2, 3, 4)] == [274.64, 273.42, 272.20, 270.99]
+    gate = [t["price"] for t in marks.calls_trigger["targets"]]
+    assert [cols[f"calls_t{k}_price"] for k in (1, 2, 3)] == gate == [279.17, 279.33, 283.79]
+    assert "calls_t4_price" not in cols and "puts_t4_price" not in cols
+    base = brief.structured_playbook_columns(level)
+    assert base["calls_plan_t4_price"] is None and base["puts_plan_t4_price"] is None
+    assert [base[f"calls_plan_t{k}_price"] for k in (1, 2, 3)] == [283.79, 285.26, None]
+
+
+def test_persisted_row_carries_plan_t4():
+    from datetime import date as _date
+
+    import gcp.premarket_brief as brief
+    marks, _ = _iwm_maps()
+    data = {"status": "OK", "price": 277.54, **brief.structured_playbook_columns(marks)}
+    built = brief.build_persist_rows({"analysis_date": _date(2026, 11, 16),
+                                      "tickers": {"IWM": data}})
+    (row,) = built.canonical
+    assert row["calls_plan_t4_price"] == 283.79 and row["puts_plan_t4_price"] == 270.99
+    assert row["calls_plan_t3_price"] == 282.58

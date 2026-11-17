@@ -1855,11 +1855,17 @@ def generate_premarket_brief(cfg=None, data_dir: str = None, *,
 
 # ── Discord Formatting (3 embeds) ───────────────────────────────────────────
 
+# The stored price slots of each target list: the gating targets in t1..t3
+# and the brief's plan targets in plan_t1..plan_t4 (a plan built under the ATR
+# marks can hold four).
+TARGET_COLUMN_SLOTS = (('t', 'targets', 3), ('plan_t', 'plan_targets', 4))
+
+
 def structured_playbook_columns(level_map) -> dict:
     """The premarket_analysis structured playbook columns for one ticker's
     LevelMap: trigger, stop, the gating targets in t1..t3 (what the signal
-    monitor and the existing outcome read) and, from the exits in thirds
-    spec, the spaced plan targets the brief prints in plan_t1..plan_t3."""
+    monitor and the existing outcome read) and the plan targets the brief
+    prints in plan_t1..plan_t4 (exits in thirds spec, ATR marks spec)."""
     d = {}
     for side, trig in (('calls', level_map.calls_trigger or {}),
                        ('puts', level_map.puts_trigger or {})):
@@ -1867,9 +1873,9 @@ def structured_playbook_columns(level_map) -> dict:
         d[f'{side}_trigger_name'] = trig.get('trigger_name')
         d[f'{side}_stop_price'] = trig.get('stop')
         d[f'{side}_stop_name'] = trig.get('stop_name')
-        for prefix, targets in (('t', trig.get('targets') or []),
-                                ('plan_t', trig.get('plan_targets') or [])):
-            for k in (1, 2, 3):
+        for prefix, key, slots in TARGET_COLUMN_SLOTS:
+            targets = trig.get(key) or []
+            for k in range(1, slots + 1):
                 d[f'{side}_{prefix}{k}_price'] = (targets[k - 1]['price']
                                                   if len(targets) >= k else None)
     return d
@@ -3977,6 +3983,9 @@ def build_persist_rows(brief: dict) -> PersistRows:
             'puts_plan_t1_price':  data.get('puts_plan_t1_price'),
             'puts_plan_t2_price':  data.get('puts_plan_t2_price'),
             'puts_plan_t3_price':  data.get('puts_plan_t3_price'),
+            # ATR mark targets: the fourth plan target (NULL for three).
+            'calls_plan_t4_price': data.get('calls_plan_t4_price'),
+            'puts_plan_t4_price':  data.get('puts_plan_t4_price'),
             # Track B audit G.P2.11 — persist LLM-generated brief
             # commentary for audit trail. The four strings are
             # non-deterministic Gemini-Flash outputs (gcp/brief_explanations.py)
