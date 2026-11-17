@@ -34,7 +34,7 @@ import os
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import pandas as pd
 
@@ -42,6 +42,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from gcp.fetchers.premarket_as_read import AS_READ_TICKERS, AsRead, snapshot_record, write_records
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from lib.eastern_time import market_today
 
@@ -183,7 +184,9 @@ def read_level_params_for_run(tickers, session_date):
 
 
 def compute_premarket_for_ticker(ticker: str, fetch_date: date,
-                                  api_key: str, *, level_params=None) -> dict | None:
+                                  api_key: str, *, level_params=None,
+                                  on_read: Callable[[str, pd.DataFrame, datetime], None] | None = None,
+                                  ) -> dict | None:
     """Fetch today's intraday bars from AV and return pre-market metrics.
 
     Returns a dict with keys ``pre_high pre_low pre_vwap pre_volume
@@ -195,14 +198,21 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
     (read once per run, read_level_params_for_run). The print filter runs
     with its calibrated thresholds only when both are ok; otherwise the
     snapshot carries pre_filter_status naming why and NULL excluded counts.
+
+    `on_read(ticker, df, fetched_at)` is called once, right after the fetch
+    and before any return, so an empty read and a read whose prior-session
+    lookup failed are seen too (FEAT-DATA-001: main() keeps the SPY, QQQ and
+    IWM reads as read).
     """
     from gcp.fetchers.fetch_market_data import fetch_minute_data
-    from lib.indicators import calculate_premarket_context
+    from lib.indicators import calculate_premarket_context, premarket_rule_record
 
     iso_date = fetch_date.strftime('%Y-%m-%d')
     df = fetch_minute_data(ticker, iso_date, api_key)
     # When the bars behind this snapshot were fetched (a UTC instant).
     fetched_at = datetime.now(timezone.utc)
+    if on_read is not None:
+        on_read(ticker, df, fetched_at)
     if df.empty:
         log.info("  %s: no AV intraday bars for %s", ticker, iso_date)
         return None
@@ -252,6 +262,8 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         'pre_vwap': pm.get('pre_vwap'),
         'pre_volume': pm.get('pre_volume'),
         'gap_pct': pm.get('gap_pct'),
+        # Follows the high and the low: None when either was rejected.
+        'pre_range_atr': pm.get('pre_range_atr'),
         'excluded_prior_close_prints': pm.get('excluded_prior_close_prints'),
         'excluded_spike_prints': pm.get('excluded_spike_prints'),
         # The provenance columns (FEAT-STRAT-001), written when the table
@@ -264,8 +276,11 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         # and which (Design 8). Not ok: the builder refuses the snapshot.
         'pre_filter_status': 'ok' if pm.get('filtered') else (
             pm_filter['status'] if pm_filter['status'] != 'ok' else 'atr_unavailable'),
-        'pre_filter_params': (json.dumps(pm_filter['params'], sort_keys=True)
-                              if pm_filter['params'] is not None else None),
+        # The threshold record with the extreme rules' record beside it
+        # (FEAT-PLAYBOOK-001 B8); the two rule blocks alone when the
+        # parameters could not be read.
+        'pre_filter_params': json.dumps(
+            {**(pm_filter['params'] or {}), **premarket_rule_record(pm)}, sort_keys=True),
     }
     # How late the vendor's newest premarket bar is at this fetch
     # (FEAT-PLAYBOOK-001: the late brief builds on what this run fetched).
@@ -310,7 +325,11 @@ def upsert_premarket(rows: list[dict]) -> int:
     underlying bad rows from being written in the first place.
 
     For rows that DO have at least one pre_* signal:
-    - If today's row exists (rare at 8:30am), UPDATE pre_* only.
+    - If today's row exists (rare at 8:30am), UPDATE pre_* only. pre_high,
+      pre_low and pre_range_atr are overwritten with the snapshot's own
+      values, NULL included: an extreme the rules rejected is cleared, not
+      kept (FEAT-PLAYBOOK-001 B8). A ticker with no snapshot is not in `rows`
+      and its row is not touched.
     - If it doesn't, INSERT pre_* fields; full OHLC fills tonight at 11pm.
 
     Returns the number of rows touched.
@@ -347,7 +366,7 @@ def upsert_premarket(rows: list[dict]) -> int:
 _PROVENANCE_COLUMNS = ('pre_fetched_at', 'pre_excluded_stale_prints', 'pre_excluded_spikes',
                        'pre_filter_status', 'pre_filter_params')
 _UPSERT_KEYS = ('ticker', 'date', 'pre_high', 'pre_low', 'pre_vwap', 'pre_volume',
-                'gap_pct') + _PROVENANCE_COLUMNS
+                'gap_pct', 'pre_range_atr') + _PROVENANCE_COLUMNS
 
 
 def _has_provenance_columns(eng) -> bool:
@@ -369,13 +388,17 @@ def _has_provenance_columns(eng) -> bool:
 
 
 def _upsert_premarket_sql(with_provenance: bool) -> str:
-    cols = ['pre_high', 'pre_low', 'pre_vwap', 'pre_volume', 'gap_pct']
+    cols = ['pre_high', 'pre_low', 'pre_vwap', 'pre_volume', 'gap_pct', 'pre_range_atr']
     if with_provenance:
         cols += list(_PROVENANCE_COLUMNS)
     # The filter status and its counts describe this snapshot only: they are
     # overwritten, never COALESCEd with an earlier run's, so an unfiltered
     # rerun cannot leave an earlier run's 'ok' beside its unfiltered prices.
-    overwrite = {'pre_excluded_stale_prints', 'pre_excluded_spikes',
+    # The high, the low and the range are overwritten too: a NULL there is an
+    # extreme this snapshot's rules rejected, and COALESCE would keep the
+    # earlier price under the new rule's label.
+    overwrite = {'pre_high', 'pre_low', 'pre_range_atr',
+                 'pre_excluded_stale_prints', 'pre_excluded_spikes',
                  'pre_filter_status', 'pre_filter_params'}
     sets = ',\n            '.join(
         f"{c} = EXCLUDED.{c}" if c in overwrite
@@ -389,6 +412,16 @@ def _upsert_premarket_sql(with_provenance: bool) -> str:
         "ON CONFLICT (ticker, date) DO UPDATE SET\n"
         f"            {sets}"
     )
+
+
+# ── The bars as read (FEAT-DATA-001) ────────────────────────────────────────
+
+def _as_read_bucket():
+    """The bucket the as-read records go to, named by ``GCS_BUCKET``. Unset
+    raises (export_intraday_bars.bucket_from_env): a run with nowhere to keep
+    its reads fails, it does not guess a bucket."""
+    from gcp.fetchers.export_intraday_bars import bucket_from_env
+    return bucket_from_env()
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
@@ -443,10 +476,21 @@ def main():
         log.error("level_params_unavailable: %s (premarket snapshots written unfiltered)", e)
         run_params, params_failed = {}, True
 
+    # FEAT-DATA-001: the SPY, QQQ and IWM reads as this run read them, with
+    # the request each sent (without the key), recorded after the upsert.
+    from gcp.fetchers.fetch_market_data import av_listed_symbol, minute_bars_request
+    reads: dict[str, AsRead] = {}
+
+    def keep_read(ticker: str, df: pd.DataFrame, fetched_at: datetime) -> None:
+        if ticker in AS_READ_TICKERS:
+            reads[ticker] = AsRead(df, fetched_at, minute_bars_request(
+                av_listed_symbol(ticker), target.isoformat()[:7]))
+
     rows = []
     for tk in universe:
         result = compute_premarket_for_ticker(tk, target, api_key,
-                                              level_params=run_params.get(tk.upper()))
+                                              level_params=run_params.get(tk.upper()),
+                                              on_read=keep_read)
         if result:
             rows.append(result)
 
@@ -454,7 +498,14 @@ def main():
 
     n = upsert_premarket(rows)
     log.info("Upserted %d rows into market_data_daily for %s", n, target)
-    if params_failed:
+
+    # After the upsert, so the brief's data never waits on it; bounded by
+    # AS_READ_DEADLINE_S. A record that fails is an ERROR line and exit 1.
+    by_ticker = {r['ticker']: r for r in rows}
+    _, as_read_failed = write_records(
+        _as_read_bucket, target, reads,
+        {t: snapshot_record(by_ticker.get(t), _UPSERT_KEYS) for t in reads})
+    if params_failed or as_read_failed:
         sys.exit(1)
 
 

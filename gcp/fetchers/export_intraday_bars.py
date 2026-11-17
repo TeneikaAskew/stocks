@@ -52,6 +52,19 @@ DAILY_SQL = """
       FROM market_data_daily
      WHERE ticker = :t AND date >= :first AND date <= :last
 """
+# One strict read per ticker for the run's months: what the bar flag pass
+# judged (gcp/fetchers/intraday_bar_flags.py), for the rule version in use.
+# The pass wrote each row in the same statement as the flags it counts.
+COVERAGE_SQL = """
+    SELECT month, rule_version, checked_at, bars_judged, flags_regular_high,
+           flags_regular_low, flags_extended_high, flags_extended_low
+      FROM intraday_bar_flag_coverage
+     WHERE ticker = :t AND interval = '1min' AND rule_version = :v
+       AND month >= :first AND month <= :last
+"""
+# What a month's entry records when the month has no coverage row: it was
+# never judged, which is not the same as judged with no flag.
+FLAGS_NOT_JUDGED = {"state": "not_judged"}
 _QUERY_TIMEOUT_S = 120
 
 MANIFEST_VERSION = 1
@@ -70,6 +83,11 @@ def object_name(ticker: str, year: int, month: int) -> str:
 def manifest_name(ticker: str) -> str:
     """The object a ticker's manifest is stored under."""
     return f"{PREFIX}/{ticker}/manifest.json"
+
+
+#: ``retry`` not given to ``GcsBucket.write``: the library's default applies.
+#: A sentinel rather than None, because ``retry=None`` (no retry) is a value.
+LIBRARY_DEFAULT = object()
 
 
 class GenerationMismatch(Exception):
@@ -118,19 +136,30 @@ class GcsBucket:
         return self._generation(blob, name)
 
     def write(self, name: str, data: bytes,
-              if_generation_match: Optional[int] = None) -> int:
+              if_generation_match: Optional[int] = None,
+              timeout: Optional[float] = None, retry=LIBRARY_DEFAULT) -> int:
         """Store *data* whole and return the new generation, the one the
         upload's own response reports.
 
         With *if_generation_match* the write happens only while the object is
         at that generation (0: only while it does not exist); otherwise
         ``GenerationMismatch`` is raised and nothing is stored.
+
+        *timeout* and *retry* reach the upload only when given; otherwise the
+        library's own defaults apply, as they do for every export write.
+        ``retry=None`` is a value: one attempt, no retry (the premarket
+        as-read record, FEAT-DATA-001).
         """
         from google.api_core.exceptions import PreconditionFailed  # noqa: PLC0415
 
+        options: dict = {}
+        if timeout is not None:
+            options["timeout"] = timeout
+        if retry is not LIBRARY_DEFAULT:
+            options["retry"] = retry
         blob = self._bucket.blob(name)
         try:
-            blob.upload_from_string(data, if_generation_match=if_generation_match)
+            blob.upload_from_string(data, if_generation_match=if_generation_match, **options)
         except PreconditionFailed as exc:
             raise GenerationMismatch(
                 f"{name}: the write expected generation {if_generation_match}") from exc
@@ -474,12 +503,46 @@ def nightly_months(today: date) -> list[tuple[int, int]]:
     return [(previous.year, previous.month), (today.year, today.month)]
 
 
+def flag_counts(coverage: pd.DataFrame, ticker: str) -> dict[tuple[int, int], dict]:
+    """(year, month) to the ``flags`` value of that month's manifest entry,
+    for each coverage row read: the rule version, when the month was last
+    judged, the bars judged and the four flag counts.
+
+    A month with no row is not in the result: the caller records it as
+    FLAGS_NOT_JUDGED, never as counts of 0. Two rows for one month, or a
+    ``checked_at`` without a zone, raise ValueError: neither is guessed at.
+    """
+    out: dict[tuple[int, int], dict] = {}
+    for row in coverage.itertuples(index=False):
+        key = (row.month.year, row.month.month)
+        label = f"{key[0]:04d}-{key[1]:02d}"
+        if key in out:
+            raise ValueError(
+                f"intraday_bar_flag_coverage holds two rows for {ticker} {label}")
+        checked_at = pd.Timestamp(row.checked_at)
+        if checked_at.tzinfo is None:
+            raise ValueError(
+                f"intraday_bar_flag_coverage.checked_at came back without a zone "
+                f"for {ticker} {label}")
+        out[key] = {
+            "rule_version": str(row.rule_version),
+            "checked_at": checked_at.isoformat(),
+            "bars_judged": int(row.bars_judged),
+            "regular_high": int(row.flags_regular_high),
+            "regular_low": int(row.flags_regular_low),
+            "extended_high": int(row.flags_extended_high),
+            "extended_low": int(row.flags_extended_low),
+        }
+    return out
+
+
 def export_window(tickers: Sequence[str], months: Sequence[tuple[int, int]], *,
                   bucket=None, now_utc: Optional[datetime] = None) -> dict:
     """Write *months* of each of *tickers* to the bucket; return
     ``{"months", "rows", "seconds"}``.
 
-    Per ticker: one daily read over the span of *months*, one manifest read,
+    Per ticker: one daily read over the span of *months*, one read of the
+    bar flag coverage rows of those months, one manifest read,
     then per month, in order: the bars read, the file's upload, one check of
     the uploaded object's generation, the manifest write with that month's
     entry, one progress line. The manifest is written after each month's file,
@@ -502,11 +565,17 @@ def export_window(tickers: Sequence[str], months: Sequence[tuple[int, int]], *,
     by default it is the clock at each read. The same instant decides which
     sessions of the month have closed.
 
+    Each month's entry gains ``flags``: the counts of the month's coverage
+    row for ``lib.bar_prints.RULE_VERSION``, or FLAGS_NOT_JUDGED when the
+    month has none. The counts are read from the table; this module judges
+    nothing.
+
     Nothing else is caught: a failed read, upload or manifest write ends the
     run with its own exception, and the manifest is untouched for the month it
     failed on. One ticker-month's rows are in memory at a time.
     """
     from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
+    from lib.bar_prints import RULE_VERSION  # noqa: PLC0415
     from lib.eastern_time import utc_now  # noqa: PLC0415
 
     started = time.monotonic()
@@ -526,6 +595,11 @@ def export_window(tickers: Sequence[str], months: Sequence[tuple[int, int]], *,
             {"t": ticker, "first": date(first_year, first_month, 1),
              "last": _month_last_day(last_year, last_month)},
             timeout_s=_QUERY_TIMEOUT_S)
+        judged = flag_counts(query_to_dataframe_strict(
+            COVERAGE_SQL,
+            {"t": ticker, "v": RULE_VERSION, "first": date(first_year, first_month, 1),
+             "last": date(last_year, last_month, 1)},
+            timeout_s=_QUERY_TIMEOUT_S), ticker)
         doc, generation = read_manifest(bucket, ticker)
         for year, month in months:
             month_key = f"{year:04d}-{month:02d}"
@@ -535,6 +609,7 @@ def export_window(tickers: Sequence[str], months: Sequence[tuple[int, int]], *,
                 read_at = utc_now() if now_utc is None else now_utc
                 entry, file_generation = _upload_month(
                     bucket, ticker, year, month, daily, read_at)
+                entry["flags"] = dict(judged.get((year, month), FLAGS_NOT_JUDGED))
                 try:
                     doc, generation = write_month_entry(
                         bucket, ticker, month_key, entry, doc, generation,

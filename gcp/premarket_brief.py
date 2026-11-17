@@ -19,16 +19,19 @@ from datetime import datetime, date, time, timedelta
 from typing import Callable, NamedTuple, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.eastern_time import ET, ET_NAME, as_eastern_time, as_utc_instant, eastern_bounds_utc, is_session, market_today
+from lib.eastern_time import (ET_NAME, as_eastern_time, as_utc_instant, eastern_bounds_utc, is_session,
+                              localize_assuming_utc, market_date, market_today, previous_session)
 from lib.earnings_reactions import earnings_not_retired_sql
+from gcp.brief_explanations import format_tf_bias
 
 from lib.data_loader import DataLoader
-from lib.indicators import add_brief_indicators
+from lib.indicators import add_brief_indicators, relative_volume
 from lib.strat import (CONTINUITY_DISPLAY_ORDER, StratClassifier, compute_strat_status,
                        timeframe_continuity_record)
 from lib.strat_levels import (
     LevelParamsUnavailable, build_session_levels,
     format_levels_for_brief, load_level_params, premarket_snapshot_from_daily,
+    premarket_snapshot_from_row, session_row_from_daily,
 )
 from lib.signals import check_call_conditions, check_put_conditions
 from lib.strategies.calibration import resolve_rsi_bands
@@ -69,25 +72,84 @@ def _safe_float(val, default=None):
         return default
 
 
+def _gamma_snapshot_instant(snapshot_ts) -> datetime:
+    """A gamma snapshot timestamp as an aware instant.
+
+    Accepts a datetime or an ISO string; a value with no zone is read
+    as UTC. Raises ValueError when a string cannot be parsed.
+    """
+    if isinstance(snapshot_ts, datetime):
+        value = snapshot_ts
+    else:
+        value = datetime.fromisoformat(str(snapshot_ts).replace("Z", "+00:00"))
+    if value.tzinfo is None:
+        value = localize_assuming_utc(value)
+    return value
+
+
+def _sessions_behind(snapshot_day: date, session_date: date) -> int:
+    """Count `previous_session` steps from session_date back to snapshot_day.
+
+    0 when the snapshot is dated the session date or later; 1 for a
+    Friday snapshot read on Monday. A holiday is not a session, so it
+    is not counted.
+    """
+    steps = 0
+    day = session_date
+    while day > snapshot_day:
+        day = previous_session(day)
+        steps += 1
+    return steps
+
+
+def format_gamma_footer(snapshot_ts, market_session: Optional[str], session_date: date) -> str:
+    """The plain text naming one gamma snapshot (FEAT-PLAYBOOK-001 B1).
+
+    market_session 'REALTIME' is a live chain; 'EOD' or None is a close.
+      same Eastern date as the session, REALTIME   'Live gamma · HH:MM ET'
+      an earlier REALTIME snapshot                 'Gamma as of Fri 11/13 15:55 ET'
+      an EOD chain, whatever its date              'Gamma as of Fri 11/13 close'
+    with ' (N sessions old)' when the snapshot is more than one
+    exchange session behind. The word Live is printed only for a
+    REALTIME snapshot of the session itself. Raises ValueError when
+    the timestamp cannot be parsed.
+    """
+    eastern = as_eastern_time(_gamma_snapshot_instant(snapshot_ts))
+    snapshot_day = market_date(eastern)
+    realtime = market_session == "REALTIME"
+    if realtime and snapshot_day == session_date:
+        return f"Live gamma · {eastern.strftime('%H:%M')} ET"
+    day = eastern.strftime("%a %m/%d")
+    when = f"{eastern.strftime('%H:%M')} ET" if realtime else "close"
+    text = f"Gamma as of {day} {when}"
+    sessions = _sessions_behind(snapshot_day, session_date)
+    if sessions > 1:
+        text += f" ({sessions} sessions old)"
+    return text
+
+
 def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
     """Lightweight freshness probe for the brief's gamma footer.
 
-    Returns the most recent etf_options_snapshots row's metadata
-    (data_source tier + snapshot timestamp) so `_build_gamma_footer`
-    can render a 'Live gamma · HH:MM ET' / 'EOD gamma' / 'Stale gamma'
-    line without paying the cost of running the full
-    `summarize_gamma_levels` GEX math three times per brief.
+    Returns the newest etf_options_snapshots row's metadata so
+    `_build_gamma_footer` can name the snapshot it describes without
+    paying the cost of running the full `summarize_gamma_levels` GEX
+    math three times per brief.
 
-    Mirrors the tiered loader in
-    `lib.agents.summarizers.summarize_gamma_levels`:
-      1. REALTIME row present (strictly before as_of) → 'realtime'
-      2. else most recent EOD ≤2 trading days behind → 'eod_fallback'
-      3. else 3-5 trading days behind → 'stale_fallback'
-      4. else (or no rows) → 'unavailable'
+    Two single-row probes, REALTIME and EOD, both strictly before
+    as_of; the row with the greater snapshot_ts is returned with:
+      market_session  'REALTIME' or 'EOD' (the probe that found it)
+      days_behind     `previous_session` steps from as_of back to the
+                      snapshot's Eastern date (Friday read on Monday: 1)
+      data_source     'realtime' for a REALTIME row, otherwise
+                      `classify_gamma_freshness(days_behind)`:
+                      'eod_fallback', 'stale_fallback' or 'unavailable'
+    No row at all, or a failed read, is 'unavailable' with no
+    market_session key.
 
     The classification helper `classify_gamma_freshness` is shared
     with the full summarizer so the two paths can never diverge on
-    threshold semantics — see Track 1 of
+    threshold semantics. See Track 1 of
     docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md.
 
     Hard-capped at `_GAMMA_PROBE_TIMEOUT_MS` Postgres statement timeout
@@ -131,13 +193,12 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
 
     logger.info("[brief:%s] _load_gamma_freshness start (as_of=%s)", ticker, as_of)
     try:
-        import numpy as np
         import sqlalchemy
         from gcp.database import get_engine
         from lib.agents.summarizers import classify_gamma_freshness
 
         # Hard-floor the scan range to one window's worth of trading
-        # days (calendar-day math is fine here — we want a generous
+        # days (calendar-day math is fine here: we want a generous
         # floor not a precise count).
         as_of_dt = as_of
         if isinstance(as_of_dt, datetime):
@@ -154,19 +215,22 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
         # One connection serves both probes inside a single transaction;
         # SET LOCAL statement_timeout scopes the cap to that transaction
         # only so we don't pollute the connection pool's session state.
+        # Both probes always run (two statements a ticker): the newest
+        # REALTIME row can be older than the newest EOD chain, as on
+        # 2026-11-16 (REALTIME 15:55 ET Friday, EOD 18:00 ET Friday), so
+        # neither kind may win before the other has been read.
         with engine.connect() as conn:
             conn.execute(sqlalchemy.text(
                 f"SET LOCAL statement_timeout = {_GAMMA_PROBE_TIMEOUT_MS}"
             ))
 
-            # Phase 1: realtime probe. ORDER BY (snapshot_date DESC,
-            # snapshot_ts DESC) plus the snapshot_date BETWEEN bound
-            # lets the planner walk the
+            # ORDER BY (snapshot_date DESC, snapshot_ts DESC) plus the
+            # snapshot_date bound lets the planner walk the
             # idx_etf_options_ticker_date (ticker, snapshot_date DESC)
             # index backwards starting from `as_of` and stop at `floor`,
             # checking market_session per row. Worst-case work is
-            # ~ (rows-per-trading-day × 10), not the full table.
-            df = pd.read_sql(
+            # ~ (rows-per-trading-day x 10), not the full table.
+            realtime_df = pd.read_sql(
                 sqlalchemy.text(
                     "SELECT snapshot_ts, snapshot_date FROM etf_options_snapshots "
                     "WHERE ticker = :ticker "
@@ -179,21 +243,7 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
                 conn,
                 params=params,
             )
-            if not df.empty:
-                ts = df["snapshot_ts"].iloc[0]
-                ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-                logger.info("[brief:%s] gamma=realtime ts=%s", ticker, ts_iso)
-                return {
-                    "data_source": "realtime",
-                    "snapshot_ts": ts_iso,
-                    "snapshot_date": df["snapshot_date"].iloc[0],
-                    "days_behind": 0,
-                }
-
-            # Phase 2: EOD probe. Same date-floor bound — if no EOD row
-            # in the last ~15 calendar days, classify_gamma_freshness
-            # would have returned 'unavailable' anyway.
-            df = pd.read_sql(
+            eod_df = pd.read_sql(
                 sqlalchemy.text(
                     "SELECT snapshot_ts, snapshot_date FROM etf_options_snapshots "
                     "WHERE ticker = :ticker "
@@ -207,30 +257,42 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
                 params=params,
             )
 
-        if df.empty:
+        # The row with the greater snapshot_ts wins, whichever probe found it.
+        winner = None
+        for market_session, df in (("REALTIME", realtime_df), ("EOD", eod_df)):
+            if df.empty:
+                continue
+            ts = df["snapshot_ts"].iloc[0]
+            instant = _gamma_snapshot_instant(ts)
+            if winner is None or instant > winner[0]:
+                winner = (instant, market_session, ts, df["snapshot_date"].iloc[0])
+
+        if winner is None:
             logger.info("[brief:%s] gamma=unavailable (no rows)", ticker)
             return {"data_source": "unavailable", "snapshot_ts": None,
                     "snapshot_date": None, "days_behind": None}
 
-        sd_raw = df["snapshot_date"].iloc[0]
+        instant, market_session, ts, sd_raw = winner
         sd = sd_raw.date() if hasattr(sd_raw, "date") else pd.to_datetime(sd_raw).date()
-        days = int(np.busday_count(sd, as_of))
-        tier = classify_gamma_freshness(days)
+        # Exchange sessions, for either kind: Friday read on Monday is 1,
+        # and a holiday between is not a missed session.
+        days = _sessions_behind(market_date(instant), as_of_dt)
+        tier = "realtime" if market_session == "REALTIME" else classify_gamma_freshness(days)
         if tier == "unavailable":
-            logger.info("[brief:%s] gamma=unavailable (%d trading days behind)",
+            logger.info("[brief:%s] gamma=unavailable (%d sessions behind)",
                         ticker, days)
             return {"data_source": "unavailable", "snapshot_ts": None,
                     "snapshot_date": sd, "days_behind": days}
 
-        ts = df["snapshot_ts"].iloc[0]
         ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-        logger.info("[brief:%s] gamma=%s ts=%s days_behind=%d",
-                    ticker, tier, ts_iso, days)
+        logger.info("[brief:%s] gamma=%s session=%s ts=%s days_behind=%d",
+                    ticker, tier, market_session, ts_iso, days)
         return {
             "data_source": tier,
             "snapshot_ts": ts_iso,
             "snapshot_date": sd,
             "days_behind": days,
+            "market_session": market_session,
         }
     except Exception as exc:
         logger.warning("[brief:%s] gamma freshness probe failed: %s: %s",
@@ -954,7 +1016,177 @@ def _level_params_query(sql: str, params: dict):
     return database.query_to_dataframe_strict(sql, params)
 
 
-def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
+def _strict_read(sql: str, params: dict):
+    """gcp.database's strict reader: a failed query raises (CLAUDE.md 3.7),
+    never an empty frame. The dry run's bars and cutoff reads go through it."""
+    from gcp import database  # noqa: PLC0415
+    return database.query_to_dataframe_strict(sql, params)
+
+
+# The nightly's own premarket bars statement
+# (gcp/fetchers/fetch_market_data.py, compute_and_upsert_daily_indicators).
+PREMARKET_BARS_SQL = (
+    "SELECT ts, open, high, low, close, volume FROM market_data_intraday "
+    "WHERE ticker = :ticker AND interval = '1min' AND ts >= :start AND ts < :end "
+    "ORDER BY ts"
+)
+
+
+def _bar_price(value) -> str:
+    """A stored or recomputed price for the dry run's line; a missing one is
+    the word, never a number."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 'unavailable'
+    return f"{number:.4f}" if number == number else 'unavailable'
+
+
+def _finite_number(value, *, zero_ok: bool) -> Optional[float]:
+    """`value` as a finite float above zero, or at zero too with `zero_ok`;
+    None for anything else (missing, a bool, text, NaN, an infinity)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number == float('inf'):
+        return None
+    return number if number > 0 or (zero_ok and number == 0) else None
+
+
+def _positive_number(value) -> Optional[float]:
+    """`value` as a positive finite float, or None."""
+    return _finite_number(value, zero_ok=False)
+
+
+def _non_negative_number(value) -> Optional[float]:
+    """`value` as a finite float at or above zero, or None: what
+    lib.indicators.premarket_print_filter accepts as a threshold. A
+    calibrated threshold of zero is a value there (its rule runs at zero
+    distance), where an ATR of zero is not."""
+    return _finite_number(value, zero_ok=True)
+
+
+def _recorded_premarket_filter(stored_params) -> Optional[dict]:
+    """The print filter the session's original premarket run recorded, read
+    from its market_data_daily.pre_filter_params (the block
+    lib.strat_levels.premarket_filter_inputs builds: `atr` at the root, each
+    threshold under its policy key as {'value', 'status', ...}).
+
+    Returns {'atr', 'stale_print_atr', 'spike_atr', 'params'} for
+    premarket_snapshot's `recorded_filter`, or None when the block is absent
+    or unreadable, the ATR is missing or not positive, either threshold's
+    value is missing, negative or not finite (zero is a value), or a
+    threshold's status is not ok. Nothing is filled in from today's
+    calibration."""
+    from lib.strat_levels import (  # noqa: PLC0415
+        PARAM_OK, PM_SPIKE_KEY, PM_STALE_PRINT_KEY, parse_level_basis,
+    )
+    record = parse_level_basis(stored_params)
+    if not record:
+        return None
+    atr = _positive_number(record.get('atr'))
+    thresholds = {}
+    for key in (PM_STALE_PRINT_KEY, PM_SPIKE_KEY):
+        entry = record.get(key)
+        if not isinstance(entry, dict) or entry.get('status') != PARAM_OK:
+            return None
+        thresholds[key] = _non_negative_number(entry.get('value'))
+    if atr is None or any(v is None for v in thresholds.values()):
+        return None
+    kept = ('atr_basis', 'atr', 'policy_effective_from', PM_STALE_PRINT_KEY, PM_SPIKE_KEY)
+    return {'atr': atr, 'stale_print_atr': thresholds[PM_STALE_PRINT_KEY],
+            'spike_atr': thresholds[PM_SPIKE_KEY],
+            'params': {k: record[k] for k in kept if k in record}}
+
+
+def _premarket_from_bars(ticker: str, session_date: date, prior: dict, level_params,
+                         query_fn, *, stored=None) -> tuple[Optional[dict], str]:
+    """The dry run's premarket snapshot for one ticker, recomputed from the
+    session's stored one-minute bars as the original brief would have seen
+    them (FEAT-PLAYBOOK-001 B10). Returns (snapshot, line): the eleven
+    PREMARKET_COLUMNS values, or None when nothing was recomputed, and the
+    line to print.
+
+    The bars stop at the cutoff the original brief recorded,
+    level_basis.premarket.fetched_at of the session's LIVE premarket_analysis
+    row, and at 09:30 Eastern if that is earlier. market_data_daily's
+    pre_fetched_at is never the cutoff: the nightly and the later refresh
+    rewrite it. The filter runs with the ATR and thresholds the session's
+    stored row recorded (`stored`, that row: pre_filter_params), not the ones
+    loaded today; `level_params` and `prior`'s ATR are only shown beside
+    them. `prior` gives the prior close and open.
+
+    No recorded cutoff, no recorded parameters, no bars, or a live basis of
+    a rule version this image does not know or cannot read: None, with the
+    line saying which, and the caller keeps the stored snapshot. Both reads
+    go through `query_fn`, which must raise on a failed query; that
+    propagates. It writes nothing.
+    """
+    from gcp.fetchers.fetch_market_data import premarket_snapshot  # noqa: PLC0415
+    from lib.strat_levels import (  # noqa: PLC0415
+        REFUSED_RULE_VERSION_STATUSES, premarket_filter_inputs, read_live_level_basis,
+        rule_version_status,
+    )
+
+    get = stored.get if stored is not None else (lambda _key, default=None: default)
+    head = f"[brief:{ticker}]"
+    was = (f"stored high={_bar_price(get('pre_high'))} "
+           f"stored low={_bar_price(get('pre_low'))}")
+
+    basis = read_live_level_basis(query_fn, ticker, session_date)
+    if isinstance(basis, dict):
+        # A basis of a rule version this image does not know, or cannot
+        # read, is not read for its cutoff either: the stored values are
+        # kept (unknown rule version spec, Design 3).
+        recorded_rule = basis.get('rule_version')
+        status = rule_version_status(recorded_rule)
+        if status in REFUSED_RULE_VERSION_STATUSES:
+            return None, (f"{head} rule version unavailable: {recorded_rule!r} is {status} "
+                          f"{was} (kept)")
+    fetched_at = ((basis or {}).get('premarket') or {}).get('fetched_at')
+    cutoff = None
+    if fetched_at is not None:
+        try:
+            cutoff = as_utc_instant(_gamma_snapshot_instant(fetched_at))
+        except (TypeError, ValueError):
+            cutoff = None
+    if cutoff is None:
+        return None, f"{head} premarket cutoff unavailable: {was} (kept)"
+
+    recorded = _recorded_premarket_filter(get('pre_filter_params'))
+    if recorded is None:
+        return None, (f"{head} premarket filter parameters unavailable: "
+                      f"cutoff={cutoff.isoformat()} {was} (kept)")
+
+    start, market_open = eastern_bounds_utc(session_date, time(4, 0), time(9, 30))
+    end = min(cutoff, market_open)
+    bars = query_fn(PREMARKET_BARS_SQL, {'ticker': ticker.upper(), 'start': start, 'end': end})
+    snapshot = None
+    if bars is not None and not bars.empty:
+        snapshot = premarket_snapshot(ticker, session_date, bars, prior, level_params, cutoff,
+                                      recorded_filter=recorded)
+    if snapshot is None:
+        return None, (f"{head} premarket bars unavailable: "
+                      f"cutoff={cutoff.isoformat()} {was} (kept)")
+
+    today_atr = None
+    if level_params is not None:
+        today_atr = premarket_filter_inputs(
+            level_params, {'atr_14': prior.get('atr_14'), 'atr_5': prior.get('atr_5')})['params']['atr']
+    return snapshot, (
+        f"{head} premarket from bars: cutoff={cutoff.isoformat()} {was} "
+        f"recomputed high={_bar_price(snapshot['pre_high'])} "
+        f"recomputed low={_bar_price(snapshot['pre_low'])} "
+        f"bars={len(bars)} recorded atr={_bar_price(recorded['atr'])} "
+        f"today atr={_bar_price(today_atr)}")
+
+
+def generate_premarket_brief(cfg=None, data_dir: str = None, *,
+                             no_persist: bool = False,
+                             premarket_from_bars: bool = False) -> dict:
     """Generate pre-market brief for all tickers.
 
     Returns a dict with per-ticker analysis and economic events.
@@ -962,7 +1194,26 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     Honours BRIEF_AS_OF (historical replay) and BRIEF_TICKERS (override
     the config ticker list) — used by the Discord /replay command and
     ad-hoc backfills.
+
+    `no_persist` (the dry run, --no-persist) skips the two writes this
+    function makes on its own, the null-close cleanup of market_data_daily
+    and the strat_levels upsert, and prints one line for each skip. It makes
+    every decision a run that writes makes: the stale-source refusal that
+    guards the upsert (lib.strat_levels.check_source_freshness, the function
+    persist_level_map calls) runs in the dry run too, and marks a ticker
+    STALE_DAILY_DATA, or PLAYBOOK_FAILED when the check itself fails, as the
+    run that writes does. What a dry run cannot reproduce is a failure of the
+    write itself (a connection or an upsert that raises), which marks the
+    ticker PLAYBOOK_FAILED only in a run that writes.
+
+    `premarket_from_bars` (BRIEF_PREMARKET_FROM_BARS=true, a dry run only)
+    recomputes each ticker's premarket snapshot from the stored one-minute
+    bars up to the original brief's cutoff (_premarket_from_bars) and uses
+    it in place of the stored pre_* values, in memory. A failed read there
+    raises out of this function.
     """
+    if premarket_from_bars and not no_persist:
+        raise ValueError("premarket_from_bars is a dry run's option: it needs no_persist")
     if cfg is None:
         cfg = load_config()
 
@@ -985,6 +1236,8 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         'date': analysis_date.strftime('%a %b %d, %Y'),
         'analysis_date': analysis_date,
         'tickers': {},
+        # The weights the TF bias was scored with, for the overview prompt.
+        'ftfc_weights': strat.ftfc_weights,
     }
 
     for ticker in tickers:
@@ -1029,7 +1282,11 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             )
             # Opportunistic cleanup so future runs don't re-encounter
             # these rows. Fire-and-forget — failure here is non-fatal.
-            _delete_null_close_rows(ticker, analysis_date)
+            if no_persist:
+                print(f"[brief:{ticker}] null-close cleanup skipped (no-persist)",
+                      file=sys.stderr, flush=True)
+            else:
+                _delete_null_close_rows(ticker, analysis_date)
         if df.empty or len(df) < 2:
             brief['tickers'][ticker] = {'status': 'NO DATA (all rows null)'}
             continue
@@ -1105,10 +1362,11 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         if prev_close and curr_close and prev_close > 0:
             change_pct = (curr_close - prev_close) / prev_close * 100
 
-        # Volume vs 20-day average
-        vol_sma20 = _safe_float(df['Volume'].rolling(20).mean().iloc[-1])
+        # Relative volume: the last session's volume over the mean of the 20
+        # sessions before it (lib.indicators.relative_volume, the one
+        # definition). No value with fewer than 20 prior sessions.
         latest_vol = _safe_float(latest.get('Volume'))
-        rvol = (latest_vol / vol_sma20) if (vol_sma20 and vol_sma20 > 0) else None
+        rvol = _safe_float(relative_volume(df['Volume'], 20).iloc[-1])
 
         # ── Key levels ──────────────────────────────────────────────────
         sma200 = _safe_float(latest.get('SMA200'))
@@ -1258,6 +1516,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         # 'stale_fallback','unavailable'}.
         gamma_meta = _load_gamma_freshness(ticker, analysis_date)
         brief['tickers'][ticker]['gamma_data_source'] = gamma_meta['data_source']
+        brief['tickers'][ticker]['gamma_market_session'] = gamma_meta.get('market_session')
         brief['tickers'][ticker]['gamma_snapshot_ts'] = gamma_meta['snapshot_ts']
         brief['tickers'][ticker]['gamma_snapshot_date'] = gamma_meta['snapshot_date']
         brief['tickers'][ticker]['gamma_days_behind'] = gamma_meta['days_behind']
@@ -1324,6 +1583,9 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     print(f"[brief] entering playbook loop with {len(brief.get('tickers', {}))} tickers: "
           f"{list(brief.get('tickers', {}).keys())}",
           file=sys.stderr, flush=True)
+    # A failed strict read of the dry run's premarket recompute: re-raised
+    # by the playbook block's handler instead of becoming PLAYBOOK_FAILED.
+    strict_read_failure = None
     for ticker, d in brief.get('tickers', {}).items():
         print(f"[brief:{ticker}] status={d.get('status')} price={d.get('price')}",
               file=sys.stderr, flush=True)
@@ -1352,6 +1614,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             # read before the frame is cut to prior sessions. The prior
             # day's pre_* is never this session's (FEAT-STRAT-001).
             session_premarket = premarket_snapshot_from_daily(df, analysis_date)
+            stored_row = session_row_from_daily(df, analysis_date) if premarket_from_bars else None
             # Same as_of cutoff applied above for the strat block — keep
             # the level map honest on historical replays so PDH/PDL/PWH
             # / etc. don't silently leak future bars (e.g. ARM 4/20
@@ -1369,6 +1632,34 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             # distance is measured in. Missing ATR gives no trigger on either
             # side (reason atr_unavailable).
             atrs = {'atr_14': d.get('atr14'), 'atr_5': d.get('atr5')}
+            if premarket_from_bars:
+                # The dry run's recompute from the stored bars, in memory. The
+                # prior close is the brief's own (d['price'], the last
+                # completed session's close); the prior open rides on the
+                # computation's report and sets no column. The two reads are
+                # strict: a failed one ends the run (re-raised below), it is
+                # never a PLAYBOOK_FAILED row of the printout.
+                with_close = df[df['Close'].notna()] if 'Close' in df.columns else df.iloc[0:0]
+                prior_open = (with_close['Open'].iloc[-1]
+                              if len(with_close) and 'Open' in with_close.columns else None)
+                prior_inputs = {
+                    'close': d.get('price'),
+                    'open': float(prior_open) if prior_open is not None and pd.notna(prior_open) else None,
+                    **atrs,
+                }
+                try:
+                    recomputed, line = _premarket_from_bars(
+                        ticker, analysis_date, prior_inputs, level_params[ticker.upper()],
+                        _strict_read, stored=stored_row)
+                except Exception as exc:
+                    strict_read_failure = exc
+                    raise
+                print(line, flush=True)
+                if recomputed is not None:
+                    replaced = stored_row.copy()
+                    for column, value in recomputed.items():
+                        replaced[column] = value
+                    session_premarket = premarket_snapshot_from_row(replaced, analysis_date)
             session_levels = build_session_levels(
                 ticker, analysis_date, df, atrs, session_premarket,
                 level_params[ticker.upper()],
@@ -1436,10 +1727,18 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             # every downstream reader trusted them. The data layer's
             # #322/#323/#325 guards catch the upstream freeze, but this
             # is defense-in-depth at the level-write boundary.
+            #
+            # The dry run (no_persist) makes the same stale-source check with
+            # the same arguments, inside this try, so a refusal or a failed
+            # check marks the ticker through the handlers below exactly as a
+            # run that writes is marked. It opens no connection.
             try:
-                from gcp.database import get_engine
-                from lib.strat_levels import persist_level_map, StaleSourceDataError
-                engine = get_engine()
+                from lib.strat_levels import (
+                    persist_level_map, StaleSourceDataError, check_source_freshness,
+                )
+                if not no_persist:
+                    from gcp.database import get_engine
+                    engine = get_engine()
                 # df was just used to build level_map immediately above
                 # (lines ~1015-1034); its index max is the latest
                 # market_data_daily.date that fed the level computation.
@@ -1466,16 +1765,24 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                         _today_ref = _today_ref.tz_localize('UTC')
                 except Exception:
                     _today_ref = None
-                with engine.connect() as conn:
-                    n = persist_level_map(
-                        level_map, conn.connection,
-                        source_data_as_of=_src_age,
-                        today=_today_ref,
+                if no_persist:
+                    # The decision without the write: no upsert, no commit.
+                    check_source_freshness(
+                        level_map, source_data_as_of=_src_age, today=_today_ref,
                     )
-                    conn.connection.commit()
-                print(f"[brief:{ticker}] persisted {n} strat_levels rows "
-                      f"(source_data_as_of={_src_age}, today_ref={_today_ref})",
-                      file=sys.stderr, flush=True)
+                    print(f"[brief:{ticker}] strat_levels persist skipped (no-persist)",
+                          file=sys.stderr, flush=True)
+                else:
+                    with engine.connect() as conn:
+                        n = persist_level_map(
+                            level_map, conn.connection,
+                            source_data_as_of=_src_age,
+                            today=_today_ref,
+                        )
+                        conn.connection.commit()
+                    print(f"[brief:{ticker}] persisted {n} strat_levels rows "
+                          f"(source_data_as_of={_src_age}, today_ref={_today_ref})",
+                          file=sys.stderr, flush=True)
             except StaleSourceDataError as exc:
                 # Stale-source refusal is loud + surfaceable, not a generic
                 # failure. Don't traceback (the message is the message).
@@ -1514,6 +1821,8 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                 d['playbook_error'] = (
                     f"strat_levels persist failed: {type(exc).__name__}: {exc}")
         except Exception as e:
+            if e is strict_read_failure:
+                raise
             import traceback
             print(f"[brief:{ticker}] playbook block FAILED: {type(e).__name__}: {e}",
                   file=sys.stderr, flush=True)
@@ -1909,91 +2218,43 @@ def _stoch_regime_tag(stoch_k, stoch_d) -> str:
     return 'neutral'
 
 
-_GAMMA_FOOTER_SEVERITY = {
-    "realtime":       0,
-    "eod_fallback":   1,
-    "stale_fallback": 2,
-    "unavailable":    3,
-}
-
-
-def _fmt_gamma_ts(ts_iso: Optional[str]) -> str:
-    """Render an ISO timestamp as 'HH:MM ET' / 'Day HH:MM' for the footer."""
-    if not ts_iso:
-        return ""
-    try:
-        dt = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return str(ts_iso)
-    # Convert to ET (America/New_York). zoneinfo is stdlib on Py 3.9+.
-    try:
-        dt = dt.astimezone(ET)
-    except Exception:
-        # Cleanup — original tz used if zoneinfo lookup fails on a minimal
-        # base image; the footer still renders, just in UTC.
-        pass
-    return dt.strftime("%a %H:%M ET") if dt.hour < 4 or dt.hour > 20 else dt.strftime("%H:%M ET")
-
-
 def _build_gamma_footer(brief: dict) -> Optional[str]:
     """Single-line gamma freshness footer for the overview embed.
 
-    Aggregates `gamma_data_source` across all tickers and renders the
-    worst-case status. The brief carries 3 ETFs (SPY/IWM/QQQ); when
-    Track 0's realtime fetcher is healthy all three are 'realtime'
-    and the footer is the green 'Live gamma · HH:MM ET' line. If the
-    fetcher missed today's session for any ticker the footer flips to
-    an amber EOD-fallback warning; if any ticker is on stale data the
-    footer goes red with the days-behind indicator.
+    Describes the oldest snapshot among the tickers that have one, so
+    one ticker on an older chain is what the reader is told about. The
+    text is `format_gamma_footer`'s; a Live line carries the green
+    mark and a line that carries an age carries the warning mark.
 
-    Returns None when no ticker has any gamma data — the embed simply
-    omits the line rather than render an unhelpful 'unavailable'
-    message that would conflict with the existing data-freshness line.
+    Returns None when no ticker has a gamma snapshot: the embed omits
+    the line, and the existing data-freshness line covers the broader
+    pipeline-health story. A snapshot timestamp that cannot be parsed
+    is logged and is not a snapshot.
 
     Per Track 1 of docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md.
     """
-    sources: list[tuple[str, str, Optional[str], Optional[int]]] = []
+    snapshots = []
     for ticker, d in brief.get('tickers', {}).items():
-        ds = d.get('gamma_data_source')
-        if not ds:
+        ts = d.get('gamma_snapshot_ts')
+        if not ts:
             continue
-        sources.append((
-            ticker, ds, d.get('gamma_snapshot_ts'), d.get('gamma_days_behind'),
-        ))
-    if not sources:
+        try:
+            instant = _gamma_snapshot_instant(ts)
+        except ValueError:
+            logger.warning("[brief:%s] gamma snapshot_ts %r cannot be parsed; "
+                           "no gamma footer from it", ticker, ts)
+            continue
+        snapshots.append((instant, d.get('gamma_market_session')))
+    if not snapshots:
         return None
 
-    # Pick the worst-case status to drive the footer wording.
-    worst = max(sources, key=lambda s: _GAMMA_FOOTER_SEVERITY.get(s[1], 99))
-    _w_ticker, worst_ds, worst_ts, worst_days = worst
-
-    if worst_ds == "realtime":
-        # All-realtime is the green-path — display the most recent ts so
-        # readers see exactly how fresh the dealer book is.
-        latest_ts = max(
-            (ts for _, ds, ts, _ in sources if ds == "realtime" and ts),
-            default=worst_ts,
-        )
-        return f"\U0001F7E2 Live gamma · {_fmt_gamma_ts(latest_ts)}"
-
-    if worst_ds == "eod_fallback":
-        return (
-            f"⚠️ EOD gamma ({_fmt_gamma_ts(worst_ts)}) "
-            f"— realtime fetcher missed today's session"
-        )
-
-    if worst_ds == "stale_fallback":
-        days = worst_days if worst_days is not None else "?"
-        return (
-            f"⚠️ Stale gamma ({_fmt_gamma_ts(worst_ts)}, "
-            f"{days} trading days old) — section may not reflect "
-            f"current dealer positioning"
-        )
-
-    # worst_ds == "unavailable" — every ticker is dark. Skip the footer
-    # rather than render a noisy line; the existing data-freshness line
-    # already covers the broader pipeline-health story.
-    return None
+    instant, market_session = min(snapshots, key=lambda s: s[0])
+    text = format_gamma_footer(instant, market_session, brief['analysis_date'])
+    if text.startswith("Live gamma"):
+        return f"\U0001F7E2 {text}"
+    if text.endswith("sessions old)"):
+        return f"⚠️ {text}"
+    return text
 
 
 def _build_overview_embed(brief: dict) -> dict:
@@ -2044,7 +2305,7 @@ def _build_overview_embed(brief: dict) -> dict:
         # skip them rather than crashing on the missing key.
         if d.get('ftfc_direction') is None:
             continue
-        ftfc_parts.append(f'{ticker}: {d["ftfc_direction"]} ({d["ftfc_score"]:+.1f})')
+        ftfc_parts.append(f'{ticker}: {d["ftfc_direction"]} ({format_tf_bias(d["ftfc_score"])})')
     if ftfc_parts:
         lines.append('')
         lines.append('**TF bias:** ' + ' | '.join(ftfc_parts))
@@ -2210,7 +2471,7 @@ def _build_ticker_fields(brief: dict) -> list:
             strat_lines.append('TF bias: unavailable')
         else:
             strat_lines.append(
-                f'TF bias: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
+                f'TF bias: {format_tf_bias(d["ftfc_score"])} ({d["ftfc_direction"]})'
             )
         tf_parts = ' '.join(
             f'{_fmt_timeframe(k)}:{v}'
@@ -3595,56 +3856,21 @@ def _resolve_run_kind_and_update(allow_update_arg: bool) -> tuple[bool, str]:
     return False, 'manual_replay'
 
 
-def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
-                         run_kind: str = 'scheduled',
-                         triggered_by: Optional[str] = None,
-                         late_slot: Optional[LateSlotWrite] = None) -> int:
-    """Write premarket analysis rows to Cloud SQL.
+class PersistRows(NamedTuple):
+    """What a brief would write (build_persist_rows). `rows` is every history
+    row before run_kind, triggered_by and notes are added; `canonical` is the
+    rows the canonical table would take, each with its run_kind."""
+    rows: list
+    canonical: list
+    playbook_failed: frozenset
+    stale_data: frozenset
 
-    Always INSERTs a row into `premarket_analysis_history` (audit
-    trail; append-only). Then, per-ticker:
-      - If a row already exists in `premarket_analysis` for
-        (analysis_date, ticker) and `allow_update` is False:
-        SKIP the current-table write; log a warning. Protects the
-        canonical morning row.
-      - Otherwise: UPSERT (INSERT, or UPDATE on conflict). Used for
-        the first run of the day and for explicit --update overrides.
 
-    With `late_slot` (a LateSlotWrite; BRIEF_RUN_SLOT=late) the function
-    is the one scheduled path that replaces a live canonical row, and only
-    when all four hold: the date is an NYSE session; every brief ticker's
-    premarket snapshot was fetched at or after 09:20:00 America/New_York
-    with its prints filtered; the write check is before 09:29:30; the rows
-    are unchanged since the run read them. The caller establishes the
-    first two (the session gate, the wait and the build check, handed in
-    as `late_slot.refusal`); this function re-reads the rows and checks
-    the clock. Then ONE upsert writes every brief ticker's row with
-    run_kind live and analysis_ts set to the instant of the check (no
-    other write moves analysis_ts), followed by the history rows with
-    notes LATE_SLOT_APPLIED. All tickers or none: a refusal writes history
-    rows only, with LATE_SLOT_NOT_APPLIED: <outcome> <reason>, and returns
-    0. What happened is on `late_slot.outcome`. `late_slot` with
-    `allow_update` or BRIEF_AS_OF raises ValueError.
-
-    See docs/plans/MORNING_RUN_PROTECTION_PLAN.md for the rationale.
-    """
-    if late_slot is not None and (allow_update or _as_of_override() is not None):
-        # The operator's overwrite and a replay have their own rules; the
-        # late slot's guarded overwrite is neither (decision G).
-        raise ValueError("late_slot cannot be combined with allow_update or BRIEF_AS_OF")
-    try:
-        from gcp.database import (
-            is_cloud_sql_configured, upsert_dataframe, bulk_insert_dataframe,
-            row_exists,
-        )
-    except ImportError:
-        logger.warning("gcp.database not available -- skipping DB persist")
-        return 0
-
-    if not is_cloud_sql_configured():
-        logger.info("Cloud SQL not configured -- skipping DB persist")
-        return 0
-
+def build_persist_rows(brief: dict) -> PersistRows:
+    """The row-building half of persist_to_cloud_sql. It makes no query, so
+    a dry run (--no-persist) can print exactly what would have been written.
+    The canonical rows carry run_kind 'replay' under BRIEF_AS_OF and 'live'
+    otherwise, and leave out PLAYBOOK_FAILED and STALE_DAILY_DATA tickers."""
     # Honour the brief's resolved analysis_date (BRIEF_AS_OF) so
     # historical replays write to the correct date row, not today's.
     # Falls back to the exchange's date when the brief carries none
@@ -3774,41 +4000,165 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'level_basis': data.get('level_basis'),
         })
 
+    # Provenance on the canonical row (audit 2026-09-14). The history
+    # table's `run_kind` is a four-value operational taxonomy
+    # ('scheduled' / 'manual_update' / 'replay_refresh' / 'manual_replay');
+    # the canonical table takes the three-value data taxonomy shared with
+    # trades and signal_alerts, because that is what readers filter on.
+    # A BRIEF_AS_OF run reconstructs a past morning, so its row is
+    # 'replay': real analysis, but not the brief that was actually
+    # published that day, and /api/dashboard must not serve it as one.
+    canonical_run_kind = 'replay' if _as_of_override() else 'live'
+    skip_canonical = playbook_failed | stale_data
+    canonical = [{**r, 'run_kind': canonical_run_kind}
+                 for r in rows if r['ticker'] not in skip_canonical]
+    return PersistRows(rows=rows, canonical=canonical,
+                       playbook_failed=frozenset(playbook_failed),
+                       stale_data=frozenset(stale_data))
+
+
+def history_row_note(brief: dict, built: PersistRows, row: dict) -> Optional[str]:
+    """The `notes` text of one premarket_analysis_history row: why a
+    STALE_DAILY_DATA or PLAYBOOK_FAILED ticker has no canonical row, None for
+    any other ticker. ONE function for persist_to_cloud_sql and the dry run."""
+    ticker = row['ticker']
+    if ticker in built.stale_data:
+        data = brief['tickers'][ticker]
+        gap = data.get('freshness_gap_days')
+        return (
+            f"STALE_DAILY_DATA: data_as_of={data.get('data_as_of')}; "
+            f"gap={gap} session(s); analysis skipped to avoid "
+            f"republishing stale signals (Track B audit G.P0.4)."
+        )
+    if ticker in built.playbook_failed:
+        return f"PLAYBOOK_FAILED: {brief['tickers'][ticker].get('playbook_error')}"
+    return None
+
+
+def build_history_rows(brief: dict, built: PersistRows, run_kind: str,
+                       triggered_by: Optional[str],
+                       late_note: Optional[str] = None) -> list:
+    """The premarket_analysis_history rows of one run: every built row with
+    its run_kind, triggered_by and notes. `late_note` is the late slot's
+    LATE_SLOT_APPLIED or LATE_SLOT_NOT_APPLIED text, put in front of the
+    ticker's own stale or failed note when it has one. It makes no query.
+    ONE function for persist_to_cloud_sql and the dry run."""
+    def _notes(row):
+        own = history_row_note(brief, built, row)
+        if late_note is None:
+            return own
+        return f"{late_note}; {own}" if own else late_note
+
+    return [
+        {**row, 'run_kind': run_kind, 'triggered_by': triggered_by,
+         'notes': _notes(row)}
+        for row in built.rows
+    ]
+
+
+def plan_canonical_writes(canonical_rows: list, allow_update: bool) -> tuple[list, list]:
+    """Which canonical rows a run writes: (rows to write, tickers skipped).
+
+    With `allow_update` every row is written and nothing is read. Without
+    it, one `row_exists` SELECT a row decides: a row already in
+    premarket_analysis for (analysis_date, ticker) is skipped, which protects
+    the canonical morning row. A live run asks only for a live row, so a
+    replay's row does not block the day's first live brief; a replay asks
+    for any row. ONE function for persist_to_cloud_sql, which then writes the
+    first list, and the dry run, which prints the decision and writes
+    nothing."""
+    if allow_update:
+        return list(canonical_rows), []
+    from gcp.database import row_exists
+    canonical_run_kind = 'replay' if _as_of_override() else 'live'
+    exists_key = {'run_kind': 'live'} if canonical_run_kind == 'live' else {}
+    rows_to_write = []
+    skipped = []
+    for row in canonical_rows:
+        if row_exists('premarket_analysis',
+                      {'analysis_date': row['analysis_date'],
+                       'ticker': row['ticker'], **exists_key}):
+            skipped.append(row['ticker'])
+        else:
+            rows_to_write.append(row)
+    return rows_to_write, skipped
+
+
+def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
+                         run_kind: str = 'scheduled',
+                         triggered_by: Optional[str] = None,
+                         late_slot: Optional[LateSlotWrite] = None) -> int:
+    """Write premarket analysis rows to Cloud SQL.
+
+    Always INSERTs a row into `premarket_analysis_history` (audit
+    trail; append-only). Then, per-ticker:
+      - If a row already exists in `premarket_analysis` for
+        (analysis_date, ticker) and `allow_update` is False:
+        SKIP the current-table write; log a warning. Protects the
+        canonical morning row.
+      - Otherwise: UPSERT (INSERT, or UPDATE on conflict). Used for
+        the first run of the day and for explicit --update overrides.
+
+    With `late_slot` (a LateSlotWrite; BRIEF_RUN_SLOT=late) the function
+    is the one scheduled path that replaces a live canonical row, and only
+    when all four hold: the date is an NYSE session; every brief ticker's
+    premarket snapshot was fetched at or after 09:20:00 America/New_York
+    with its prints filtered; the write check is before 09:29:30; the rows
+    are unchanged since the run read them. The caller establishes the
+    first two (the session gate, the wait and the build check, handed in
+    as `late_slot.refusal`); this function re-reads the rows and checks
+    the clock. Then ONE upsert writes every brief ticker's row with
+    run_kind live and analysis_ts set to the instant of the check (no
+    other write moves analysis_ts), followed by the history rows with
+    notes LATE_SLOT_APPLIED. All tickers or none: a refusal writes history
+    rows only, with LATE_SLOT_NOT_APPLIED: <outcome> <reason>, and returns
+    0. What happened is on `late_slot.outcome`. `late_slot` with
+    `allow_update` or BRIEF_AS_OF raises ValueError.
+
+    See docs/plans/MORNING_RUN_PROTECTION_PLAN.md for the rationale.
+    """
+    if late_slot is not None and (allow_update or _as_of_override() is not None):
+        # The operator's overwrite and a replay have their own rules; the
+        # late slot's guarded overwrite is neither (decision G).
+        raise ValueError("late_slot cannot be combined with allow_update or BRIEF_AS_OF")
+    try:
+        from gcp.database import (
+            is_cloud_sql_configured, upsert_dataframe, bulk_insert_dataframe,
+            row_exists,
+        )
+    except ImportError:
+        logger.warning("gcp.database not available -- skipping DB persist")
+        return 0
+
+    if not is_cloud_sql_configured():
+        logger.info("Cloud SQL not configured -- skipping DB persist")
+        return 0
+
+    # Honour the brief's resolved analysis_date (BRIEF_AS_OF) so
+    # historical replays write to the correct date row, not today's.
+    # Falls back to the exchange's date when the brief carries none
+    # (the container's UTC date is already tomorrow in the evening).
+    analysis_date = brief.get('analysis_date') or market_today()
+    # The rows, built with no query (build_persist_rows). PLAYBOOK_FAILED and
+    # STALE_DAILY_DATA tickers still go to premarket_analysis_history (the
+    # audit trail records the failure, with notes) and never to the
+    # canonical premarket_analysis row.
+    built = build_persist_rows(brief)
+    rows = built.rows
+    playbook_failed, stale_data = built.playbook_failed, built.stale_data
+
     # When a ticker is stale, populate the `notes` column with a
     # human-readable explanation so a SELECT on history rows can
     # immediately distinguish "the brief ran healthy" from "the
     # brief detected staleness and skipped". Pre-W6 rows have NULL
     # notes; future stale rows will carry the gap-in-sessions
     # descriptor.
-    def _row_notes(row):
-        ticker = row['ticker']
-        if ticker in stale_data:
-            data = brief['tickers'][ticker]
-            gap = data.get('freshness_gap_days')
-            return (
-                f"STALE_DAILY_DATA: data_as_of={data.get('data_as_of')}; "
-                f"gap={gap} session(s); analysis skipped to avoid "
-                f"republishing stale signals (Track B audit G.P0.4)."
-            )
-        if ticker in playbook_failed:
-            return f"PLAYBOOK_FAILED: {brief['tickers'][ticker].get('playbook_error')}"
-        return None
-
+    # The text is history_row_note's, through build_history_rows.
     def _insert_history(late_note: Optional[str] = None) -> int:
         """The history rows of this run (append-only). `late_note` is the
         late slot's LATE_SLOT_APPLIED or LATE_SLOT_NOT_APPLIED text, put in
         front of the ticker's own stale or failed note when it has one."""
-        def _notes(row):
-            own = _row_notes(row)
-            if late_note is None:
-                return own
-            return f"{late_note}; {own}" if own else late_note
-
-        history_rows = [
-            {**row, 'run_kind': run_kind, 'triggered_by': triggered_by,
-             'notes': _notes(row)}
-            for row in rows
-        ]
+        history_rows = build_history_rows(brief, built, run_kind, triggered_by, late_note)
         history_df = pd.DataFrame(history_rows)
         n_hist = bulk_insert_dataframe(history_df, 'premarket_analysis_history')
         logger.info("Inserted %d rows into premarket_analysis_history (run_kind=%s)",
@@ -3886,18 +4236,9 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
     # write path; both kinds of rows have NULL signal data and would
     # corrupt the canonical row by overwriting it with stale or
     # empty values.
-    skip_canonical = playbook_failed | stale_data
-    # Provenance on the canonical row (audit 2026-09-14). The history
-    # table's `run_kind` is a four-value operational taxonomy
-    # ('scheduled' / 'manual_update' / 'replay_refresh' / 'manual_replay');
-    # the canonical table takes the three-value data taxonomy shared with
-    # trades and signal_alerts, because that is what readers filter on.
-    # A BRIEF_AS_OF run reconstructs a past morning, so its row is
-    # 'replay': real analysis, but not the brief that was actually
-    # published that day, and /api/dashboard must not serve it as one.
-    canonical_run_kind = 'replay' if _as_of_override() else 'live'
-    canonical_rows = [{**r, 'run_kind': canonical_run_kind}
-                      for r in rows if r['ticker'] not in skip_canonical]
+    # The canonical rows and their run_kind ('replay' under BRIEF_AS_OF,
+    # 'live' otherwise) are build_persist_rows' own.
+    canonical_rows = built.canonical
     if playbook_failed:
         logger.warning(
             "Skipped premarket_analysis write for %d PLAYBOOK_FAILED "
@@ -3911,8 +4252,12 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             len(stale_data), ', '.join(sorted(stale_data)))
     if not canonical_rows:
         return 0
+    # Which rows this run writes is plan_canonical_writes' decision, shared
+    # with the dry run: every row under allow_update (no read), else the
+    # rows that do not exist yet (see the default path below).
+    rows_to_write, skipped = plan_canonical_writes(canonical_rows, allow_update)
     if allow_update:
-        df = pd.DataFrame(canonical_rows)
+        df = pd.DataFrame(rows_to_write)
         n = upsert_dataframe(df, 'premarket_analysis', ['analysis_date', 'ticker'])
         logger.info("UPSERTED %d rows to premarket_analysis (allow_update=True)", n)
         return n
@@ -3928,16 +4273,6 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
     # DO NOTHING, in the sibling writer (Codex on #1098 round 4). An
     # existing live row is still protected: only --update / BRIEF_UPDATE
     # overwrite one, and that is the explicit operator path.
-    exists_key = {'run_kind': 'live'} if canonical_run_kind == 'live' else {}
-    rows_to_write = []
-    skipped = []
-    for row in canonical_rows:
-        if row_exists('premarket_analysis',
-                      {'analysis_date': row['analysis_date'],
-                       'ticker': row['ticker'], **exists_key}):
-            skipped.append(row['ticker'])
-        else:
-            rows_to_write.append(row)
     if rows_to_write:
         df = pd.DataFrame(rows_to_write)
         n = upsert_dataframe(df, 'premarket_analysis',
@@ -4205,6 +4540,75 @@ def _late_slot_flow(*, cfg, data_dir: str, run_kind: str, triggered_by: str,
     return _not_applied(late.outcome, late.reason, rows=late.rows_now or rows, wait=wait)
 
 
+def _env_true(name: str) -> bool:
+    """An on/off environment variable as an operator types it: on only for
+    `true`, in any letter case and with spaces around it."""
+    return os.environ.get(name, '').strip().lower() == 'true'
+
+
+def _resolve_no_persist(args) -> bool:
+    """The dry run: --no-persist, or BRIEF_NO_PERSIST=true."""
+    return bool(getattr(args, 'no_persist', False)) or _env_true('BRIEF_NO_PERSIST')
+
+
+def _print_dry_run(brief: dict, *, allow_update: bool = False,
+                   run_kind: str = 'scheduled',
+                   triggered_by: Optional[str] = None) -> None:
+    """What a dry run would have written and posted, on stdout. Nothing is
+    written and nothing is posted.
+
+    Between the `--- rows (no-persist) ---` markers: every canonical row
+    build_persist_rows gives, each with its run_kind, as JSON. A row there is
+    a row BUILT. Whether a run that writes would write it is on the lines
+    after the end marker, one for each canonical row, as a prefix line (the
+    rows carry no added field, so they stay exactly what would be upserted):
+
+        no-persist: canonical SPY: WRITE
+        no-persist: canonical QQQ: SKIP (row already exists)
+
+    The decision is plan_canonical_writes', the function
+    persist_to_cloud_sql writes by: with `allow_update` (BRIEF_AS_OF implies
+    it) every row is WRITE and no row is read; without it, one row_exists
+    SELECT a row decides. When Cloud SQL is not configured a run that writes
+    skips the whole persist, and one line says so in place of the decisions.
+
+    Between the `--- history rows (no-persist) ---` markers: the history
+    rows build_history_rows gives, as JSON, each with the run_kind,
+    triggered_by and notes a run that writes would insert (the notes say why
+    a STALE_DAILY_DATA or PLAYBOOK_FAILED ticker has no canonical row).
+
+    Then every Discord payload."""
+    from gcp.database import is_cloud_sql_configured
+    built = build_persist_rows(brief)
+    print("\n--- rows (no-persist) ---")
+    print(json.dumps(built.canonical, indent=2, default=str))
+    print("--- end rows (no-persist) ---")
+    if not is_cloud_sql_configured():
+        print("no-persist: Cloud SQL is not configured: a run that writes "
+              "would skip the DB persist and write no row")
+    else:
+        to_write, skipped = plan_canonical_writes(built.canonical, allow_update)
+        for row in built.canonical:
+            decision = ('SKIP (row already exists)' if row['ticker'] in skipped
+                        else 'WRITE')
+            print(f"no-persist: canonical {row['ticker']}: {decision}")
+        print(f"no-persist: a run that writes would write {len(to_write)} canonical "
+              f"row(s) and skip {len(skipped)} (allow_update={allow_update})")
+    print("\n--- history rows (no-persist) ---")
+    print(json.dumps(build_history_rows(brief, built, run_kind, triggered_by),
+                     indent=2, default=str))
+    print("--- end history rows (no-persist) ---")
+    history_only = sorted(built.playbook_failed | built.stale_data)
+    print(f"no-persist: {len(built.canonical)} canonical row(s) and {len(built.rows)} "
+          f"history row(s) built, none written"
+          + (f"; history only: {', '.join(history_only)}" if history_only else ""))
+    routed = format_discord_messages_routed(brief)
+    print("\nno-persist: nothing posted -- printing payloads only")
+    for i, (kind, message) in enumerate(routed, start=1):
+        print(f"\n--- payload {i}/{len(routed)} (channel={kind}) ---")
+        print(json.dumps(message, indent=2))
+
+
 def main(argv: Optional[list[str]] = None):
     # Cloud Run Jobs pass overrides via env vars, not CLI flags. Translate
     # the env-var equivalent of --post-existing into argv when the caller
@@ -4246,7 +4650,49 @@ def main(argv: Optional[list[str]] = None):
              "(replay) — historical replays would post stale content "
              "to a real-time Discord channel.",
     )
+    parser.add_argument(
+        '--no-persist', action='store_true',
+        help="Dry run: build the whole brief and write nothing. No "
+             "premarket_analysis or premarket_analysis_history row, no "
+             "strat_levels upsert, no null-close cleanup, no Discord post "
+             "(BRIEF_POST_TO_DISCORD=true does not override it). Prints the "
+             "brief, the rows that would have been written and the "
+             "payloads. Refused with --update, BRIEF_UPDATE=true, "
+             "--post-existing and BRIEF_RUN_SLOT=late. Equivalent env var: "
+             "BRIEF_NO_PERSIST=true.",
+    )
     args = parser.parse_args(argv)
+
+    # The dry run's refusals, before the configuration is loaded and before
+    # any query: a run that asked both to write nothing and to overwrite, to
+    # post a stored row, or to take the late slot's guarded overwrite would
+    # have neither's rules.
+    no_persist = _resolve_no_persist(args)
+    if no_persist:
+        refused = None
+        if args.update or os.environ.get('BRIEF_UPDATE') == 'true':
+            refused = "--update or BRIEF_UPDATE=true"
+        elif args.post_existing:
+            refused = "--post-existing"
+        else:
+            try:
+                if _resolve_run_slot() == 'late':
+                    refused = "BRIEF_RUN_SLOT=late"
+            except ValueError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                sys.exit(2)
+        if refused:
+            print(f"ERROR: --no-persist (BRIEF_NO_PERSIST=true) cannot be combined "
+                  f"with {refused}", file=sys.stderr)
+            sys.exit(2)
+
+    # BRIEF_PREMARKET_FROM_BARS replaces the stored premarket values in
+    # memory, so it is a dry run's option only: refused before any query.
+    premarket_from_bars = _env_true('BRIEF_PREMARKET_FROM_BARS')
+    if premarket_from_bars and not no_persist:
+        print("ERROR: BRIEF_PREMARKET_FROM_BARS=true needs --no-persist "
+              "(or BRIEF_NO_PERSIST=true)", file=sys.stderr)
+        sys.exit(2)
 
     if args.post_existing:
         ticker, date_str = args.post_existing
@@ -4301,7 +4747,9 @@ def main(argv: Optional[list[str]] = None):
     # of this — premarket_analysis + premarket_analysis_history rows
     # are always written regardless of the Discord policy.
     post_to_discord_env = os.environ.get('BRIEF_POST_TO_DISCORD', '').lower()
-    if post_to_discord_env == 'true':
+    if no_persist:
+        no_discord = True   # a dry run posts nothing, force-on included
+    elif post_to_discord_env == 'true':
         no_discord = False  # explicit force-on; wins over AS_OF auto-suppress
     else:
         no_discord = (
@@ -4328,16 +4776,32 @@ def main(argv: Optional[list[str]] = None):
         sys.exit(_run_late_slot(cfg=cfg, data_dir=data_dir, run_kind=run_kind,
                                 triggered_by=triggered_by, webhook_url=webhook_url))
 
-    print(f"Generating pre-market brief... (allow_update={allow_update}, "
-          f"run_kind={run_kind}, triggered_by={triggered_by})")
+    if no_persist:
+        print(f"Generating pre-market brief... (no-persist: nothing is written "
+              f"or posted, allow_update={allow_update}, run_kind={run_kind}, "
+              f"triggered_by={triggered_by})")
+    else:
+        print(f"Generating pre-market brief... (allow_update={allow_update}, "
+              f"run_kind={run_kind}, triggered_by={triggered_by})")
     try:
-        brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
+        if no_persist:
+            brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir, no_persist=True,
+                                             premarket_from_bars=premarket_from_bars)
+        else:
+            brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
     except LevelParamsUnavailable as exc:
         # INTERNAL failure (CLAUDE.md 3.7): no premarket_analysis row is
         # written for any ticker; the job goes red.
         logger.error("premarket brief aborted: %s (%s)", exc.reason, exc)
         sys.exit(1)
     print(json.dumps(brief, indent=2, default=str))
+
+    if no_persist:
+        # The dry run: persist_to_cloud_sql is not called and nothing is
+        # posted. The rows and the payloads are printed instead.
+        _print_dry_run(brief, allow_update=allow_update, run_kind=run_kind,
+                       triggered_by=triggered_by)
+        return
 
     # Persist to Cloud SQL — always writes history; current-table
     # write is conditional on allow_update + per-ticker existence.

@@ -2,8 +2,8 @@
 feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-11-14-feat-deploy-001-premarket-late-run.md
 branch: feature/feat-deploy-001-premarket-late-run
-pr: null
-status: ready
+pr: 2020
+status: done
 ---
 
 # The late premarket run's two scheduler entries, implementation plan

@@ -12,8 +12,10 @@ numbers in the level and plan code.
   int or float literal other than 0, 1, -1, 2, -2 and 100, outside round()
   digit arguments and slice bounds, and read no module-level numeric
   constant other than the persona sizing and FTFC names that done_when 15
-  pins (plus two bar counts and the premarket clock boundaries, see
-  ALLOWED_COUNTS and ALLOWED_CLOCK).
+  pins (plus two bar counts, the premarket clock boundaries and the
+  prior-close print rule's PM_PRIOR_CLOSE_TOL_CENTS and
+  PM_PRIOR_CLOSE_MIN_DISTANCE, see ALLOWED_COUNTS, ALLOWED_CLOCK and
+  ALLOWED_PRIOR_CLOSE).
 
 On the #1753 head it fails: the constants exist and the walk finds 3.0,
 0.08, 0.5, 0.1, 0.15 and the persona tables (lib/strat_levels.py:865-866 and
@@ -44,6 +46,19 @@ ALLOWED_COUNTS = {"GAP_LEVEL_LOOKBACK_BARS", "_PARENT_BAR_LOOKBACK"}
 # The premarket window's clock boundaries (04:00 and 09:30 ET): when the
 # session is, not how far price may be.
 ALLOWED_CLOCK = {"PREMARKET_START", "REGULAR_SESSION_OPEN"}
+# The thin bar rule's share count (FEAT-PLAYBOOK-001 B7c, one round lot): how
+# many shares a premarket bar must hold to give a price to the extremes. It is
+# a volume, not a price distance, and that spec makes it a module constant
+# with a named measurement, not a calibrated per-ticker parameter.
+ALLOWED_VOLUME = {"PM_MIN_EXTREME_VOLUME"}
+# The prior-close print rule's tolerance (5 cents) and distance (0.25% of the
+# prior close), FEAT-PLAYBOOK-001 rule prior-close-print-v1. Decision 2 of
+# docs/superpowers/specs/2026-11-16-feat-playbook-001-prior-close-prints-r2.md
+# makes both module constants, not calibrated per-ticker parameters, with the
+# owner's 2026-11-08 preference for calibrated values in front of it; their
+# measurement is that spec's Problem section (2,650 sessions a ticker of SPY,
+# QQQ and IWM).
+ALLOWED_PRIOR_CLOSE = {"PM_PRIOR_CLOSE_TOL_CENTS", "PM_PRIOR_CLOSE_MIN_DISTANCE"}
 
 REMOVED = {
     "lib/strat_levels.py": ("MAX_TRIGGER_DISTANCE_ATR", "MAX_TRIGGER_DISTANCE_PCT",
@@ -130,7 +145,8 @@ def _exempt_constant_ids(fn: ast.AST) -> set[int]:
 def _violations(rel: str) -> list[str]:
     tree = _tree(rel)
     constants = _module_numeric_constants(tree)
-    allowed_names = ALLOWED_SIZING_AND_FTFC | ALLOWED_COUNTS | ALLOWED_CLOCK
+    allowed_names = (ALLOWED_SIZING_AND_FTFC | ALLOWED_COUNTS | ALLOWED_CLOCK | ALLOWED_VOLUME
+                     | ALLOWED_PRIOR_CLOSE)
     out = []
     for name, fns in sorted(_reachable(tree, ROOTS[rel]).items()):
         for fn in fns:

@@ -32,7 +32,11 @@ days), so a missed night self-heals on the next run instead of orphaning
 the date, and a same-day pre-ingestion miss is benign while a past date
 with no bars turns the run red — unless that date is a known NYSE
 holiday (see classify_date_outcome), which never gets bars and would
-otherwise alarm once a day for the rest of the lookback window.
+otherwise alarm once a day for the rest of the lookback window. A row whose
+level_basis names a rule version this image does not know, or cannot read,
+is left pending with nothing written and turns the run red until an image
+that knows the version resolves it (FEAT-STRAT-001 unknown rule version
+spec, decision 3).
 
 Environment overrides:
   - PLAYBOOK_RESOLVE_DATE=YYYY-MM-DD : resolve one specific date instead
@@ -590,15 +594,15 @@ def resolve_plan(direction: str, plan: PlanInputs, bars: pd.DataFrame) -> PlanOu
 
 def plan_inputs(side: str, row, basis: Optional[dict], policy_fn) -> PlanInputs:
     """One side's published plan (exits spec Design 6). `side` is 'calls'
-    or 'puts'. A v3 level_basis is the source (rebuilt with the values it
+    or 'puts'. A v3 or v4 level_basis is the source (rebuilt with the values it
     recorded, so the table rows are never read); a v2 basis, which has no
     plan, falls back to the row's structured trigger, stop and t1..t3
     columns with the leg count and cutoff `policy_fn()` returns (the policy
     in force on the session, a LevelParams). A row with no level_basis, or
     a basis of any other version (v1, or none recorded), has no plan."""
     from lib.strat_levels import (  # local import to keep top-level light
-        ENTRY_CUTOFF_KEY, EXIT_LEGS_KEY, LEVEL_RULE_V2, LEVEL_RULE_VERSION,
-        SessionLevels, policy_time_minutes,
+        ENTRY_CUTOFF_KEY, EXIT_LEGS_KEY, LEVEL_RULE_V2,
+        SessionLevels, is_current_pick_rule, policy_time_minutes,
     )
 
     def _f(v):
@@ -608,7 +612,7 @@ def plan_inputs(side: str, row, basis: Optional[dict], policy_fn) -> PlanInputs:
         return PlanInputs(trigger_price=_f(row.get(f'{side}_trigger_price')),
                           stop_price=_f(row.get(f'{side}_stop_price')),
                           target_status=PLAN_TARGETS_UNAVAILABLE)
-    if basis.get('rule_version') == LEVEL_RULE_VERSION:
+    if is_current_pick_rule(basis.get('rule_version')):
         sl = SessionLevels.from_basis(basis)
         s = sl.long if side == 'calls' else sl.short
         plan = s.plan or {}
@@ -651,8 +655,24 @@ def resolve_one(
 
     Returns (updates, reason): (dict, 'resolved') on success, else
     (None, reason) with reason one of 'already_resolved' (idempotent
-    no-op — not a failure), 'no_row', 'no_setup', 'no_bars'.
+    no-op — not a failure), 'no_row', 'no_setup', 'no_bars', or
+    'rule_version_newer' / 'rule_version_unreadable': the row's level_basis
+    (or, for a row with no stored triggers, the session's live basis) names
+    a rule version this image does not know or cannot read. Nothing is
+    written, so the row stays pending for an image that knows its version
+    (spec 2026-11-16-feat-strat-001-unknown-rule-version, Design 3).
     """
+    from lib.strat_levels import (  # local import to keep top-level light
+        REFUSED_RULE_VERSION_STATUSES, LevelRuleVersionUnknown, load_level_params,
+        newest_pick_rule_version, parse_level_basis, rule_version_status,
+    )
+
+    def _refused(recorded, status) -> tuple[None, str]:
+        logger.error("%s %s level_basis rule_version %r is %s; this image knows up to %s: "
+                     "not resolved, nothing written", ticker.upper(), analysis_date,
+                     recorded, status, newest_pick_rule_version())
+        return None, status
+
     # Pull the row
     row_sql = text("""
         SELECT
@@ -676,6 +696,15 @@ def resolve_one(
                     ticker, analysis_date, row['outcome_resolved_at'])
         return None, 'already_resolved'
 
+    # The row's own level_basis, classified before the derive, the bar read
+    # and plan_inputs: a version this image does not know, or cannot read,
+    # is refused here even when the row's trigger columns are populated.
+    basis = parse_level_basis(row.get('level_basis') if hasattr(row, 'get') else None)
+    if basis is not None:
+        status = rule_version_status(basis.get('rule_version'))
+        if status in REFUSED_RULE_VERSION_STATUSES:
+            return _refused(basis.get('rule_version'), status)
+
     # Self-healing fallback: if structured input columns are NULL (e.g.
     # historical row written before the structured-column persistence
     # PR), re-derive the level map from daily data using the same
@@ -688,7 +717,10 @@ def resolve_one(
     ):
         logger.info("%s %s structured inputs are NULL — deriving from daily data",
                     ticker, analysis_date)
-        structured_inputs = derive_level_map_from_daily(ticker, analysis_date, engine)
+        try:
+            structured_inputs = derive_level_map_from_daily(ticker, analysis_date, engine)
+        except LevelRuleVersionUnknown as exc:
+            return _refused(exc.recorded, exc.reason)
         if structured_inputs is None or (
             structured_inputs['calls_trigger_price'] is None
             and structured_inputs['puts_trigger_price'] is None
@@ -741,10 +773,8 @@ def resolve_one(
         notional=notional,
     )
 
-    # The brief's exit plan (FEAT-STRAT-001 exits spec, Design 6).
-    from lib.strat_levels import load_level_params, parse_level_basis
-
-    basis = parse_level_basis(row.get('level_basis') if hasattr(row, 'get') else None)
+    # The brief's exit plan (FEAT-STRAT-001 exits spec, Design 6), from the
+    # row's level_basis parsed and classified above.
     _policy = {}
 
     def _policy_fn():
@@ -1002,8 +1032,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                         lookback)
             return 0
 
+    from lib.strat_levels import REFUSED_RULE_VERSION_STATUSES
+
     n_failed_dates = 0
     n_exceptions = 0
+    # Rows whose level_basis names a rule version this image does not know
+    # or cannot read: left pending, counted apart from skips so the date's
+    # outcome keeps its meaning, and the run exits 1 for them (spec
+    # 2026-11-16-feat-strat-001-unknown-rule-version, decision 3).
+    n_refused_total = 0
     for target_date in target_dates:
         if raw_tickers:
             tickers = [t.strip().upper() for t in raw_tickers.split(',') if t.strip()]
@@ -1020,6 +1057,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         n_resolved = 0
         n_skipped = 0
         n_noop = 0
+        n_refused = 0
         for ticker in tickers:
             try:
                 result, reason = resolve_one(target_date, ticker, engine,
@@ -1030,6 +1068,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     # Idempotent retry of a resolved row — success, not a
                     # skip: it must never flip a date to 'failed'.
                     n_noop += 1
+                elif reason in REFUSED_RULE_VERSION_STATUSES:
+                    n_refused += 1
                 else:
                     n_skipped += 1
             except Exception as exc:
@@ -1038,14 +1078,22 @@ def main(argv: Optional[list[str]] = None) -> int:
                 n_exceptions += 1
 
         outcome = classify_date_outcome(target_date, n_resolved, n_skipped, now_et)
-        logger.info("done %s: %d resolved, %d already-resolved, %d skipped (%s)",
-                    target_date, n_resolved, n_noop, n_skipped, outcome)
+        logger.info("done %s: %d resolved, %d already-resolved, %d skipped, %d refused (%s)",
+                    target_date, n_resolved, n_noop, n_skipped, n_refused, outcome)
         if outcome == 'failed':
             n_failed_dates += 1
+        n_refused_total += n_refused
+
+    if n_refused_total:
+        logger.error("run left %d row(s) pending whose level_basis rule version this image "
+                     "does not know or cannot read; an image that knows their version "
+                     "resolves them: exiting non-zero", n_refused_total)
 
     if n_failed_dates or n_exceptions:
         logger.error("run had %d failed date(s) and %d exception(s) — exiting non-zero",
                      n_failed_dates, n_exceptions)
+        return 1
+    if n_refused_total:
         return 1
     return 0
 

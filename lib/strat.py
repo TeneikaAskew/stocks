@@ -149,6 +149,13 @@ class StratClassifier:
         else:
             self._default_weights = self.DEFAULT_WEIGHTS
 
+    @property
+    def ftfc_weights(self) -> Dict[str, float]:
+        """A copy of the weights this classifier scores the TF bias with:
+        the configured ones when set, else DEFAULT_WEIGHTS. Read-only; a
+        timeframe with no key carries no weight."""
+        return dict(self._default_weights)
+
     # -----------------------------------------------------------------------
     # Single-candle classification
     # -----------------------------------------------------------------------

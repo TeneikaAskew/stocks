@@ -82,6 +82,27 @@ def av_listed_symbol(ticker: str) -> str:
     return AV_SYMBOL_MAP.get(ticker, ticker).replace('.', '-')
 
 
+def minute_bars_request(av_symbol: str, month: str) -> dict:
+    """The TIME_SERIES_INTRADAY request fetch_minute_bars sends for
+    *av_symbol* and *month* (``YYYY-MM``), without the API key, which the
+    caller adds. The premarket as-read record stores this same dict, so the
+    record and the request cannot drift (FEAT-DATA-001)."""
+    return {
+        'function': 'TIME_SERIES_INTRADAY',
+        'symbol': av_symbol,
+        'interval': '1min',
+        'month': month,
+        'outputsize': 'full',
+        'adjusted': 'false',  # as traded, always: the table and every reader are as traded (#1151)
+        # Required to get current-day bars. Without it AV returns
+        # historical-only — `month=2026-04` with default entitlement
+        # gave 0 bars for 2026-04-30 even mid-session.
+        'entitlement': 'realtime',
+        'extended_hours': 'true',
+        'datatype': 'json',
+    }
+
+
 def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
                       adjusted: bool = False) -> tuple[pd.DataFrame, str]:
     """1-minute OHLCV bars from AlphaVantage TIME_SERIES_INTRADAY, with why
@@ -102,21 +123,7 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
 
     # AV TIME_SERIES_INTRADAY uses month=YYYY-MM
     month = fetch_date[:7]  # "2026-02-24" → "2026-02"
-    params = {
-        'function': 'TIME_SERIES_INTRADAY',
-        'symbol': av_symbol,
-        'interval': '1min',
-        'month': month,
-        'outputsize': 'full',
-        'adjusted': 'false',  # as traded, always: the table and every reader are as traded (#1151)
-        # Required to get current-day bars. Without it AV returns
-        # historical-only — `month=2026-04` with default entitlement
-        # gave 0 bars for 2026-04-30 even mid-session.
-        'entitlement': 'realtime',
-        'extended_hours': 'true',
-        'apikey': api_key,
-        'datatype': 'json',
-    }
+    params = {**minute_bars_request(av_symbol, month), 'apikey': api_key}
     try:
         resp = requests.get(AV_BASE_URL, params=params, timeout=60)
         resp.raise_for_status()
@@ -345,9 +352,14 @@ PREMARKET_COLUMNS = (
     'pre_fetched_at', 'pre_excluded_stale_prints', 'pre_excluded_spikes',
     'pre_filter_status', 'pre_filter_params',
 )
-# The six computed from prices. The nightly sets one only when its new value
-# is not None; the other five, the provenance of the snapshot, always.
+# The six computed from prices. Of those the nightly sets the high, the low
+# and the range from a computed snapshot always, None included: a None there
+# is an extreme the rules rejected (lib.indicators calculate_premarket_context,
+# FEAT-PLAYBOOK-001 B8), and it clears the stored price. It sets the other
+# three only when the new value is not None. The other five, the provenance of
+# the snapshot, always.
 _PREMARKET_PRICE_COLUMNS = PREMARKET_COLUMNS[:6]
+_PREMARKET_EXTREME_COLUMNS = ('pre_high', 'pre_low', 'pre_range_atr')
 _PREMARKET_PROVENANCE_COLUMNS = PREMARKET_COLUMNS[6:]
 
 
@@ -378,7 +390,8 @@ def prior_session_inputs(df: pd.DataFrame, enriched: pd.DataFrame) -> dict:
 
 
 def premarket_snapshot(ticker: str, session_date, bars: pd.DataFrame, prior: dict,
-                       level_params, read_at: datetime) -> dict | None:
+                       level_params, read_at: datetime, *,
+                       recorded_filter: dict | None = None) -> dict | None:
     """The eleven premarket columns of one session, from its premarket bars.
 
     The one place that turns a session's 04:00 to 09:30 Eastern bars, the
@@ -392,15 +405,27 @@ def premarket_snapshot(ticker: str, session_date, bars: pd.DataFrame, prior: dic
     means the run could not read the tables, and the snapshot is labelled
     level_params_unavailable. `read_at` is when the bars were read.
 
+    `recorded_filter` (the brief's dry run, FEAT-PLAYBOOK-001 B10) is the
+    filter an earlier run of this function recorded for the session:
+    {'atr', 'stale_print_atr', 'spike_atr', 'params'}, the three numbers and
+    the threshold record they were read from. When set it replaces what
+    would be derived from `level_params` and `prior`'s ATR, so a replay
+    filters as the original run did; `prior` still gives the close and open.
+
     Returns the eleven values, None where the computation gives none, or
     None when `bars` is empty or holds no bar in the premarket window. It
     makes no query, reads no clock and catches nothing.
     """
-    from lib.indicators import calculate_premarket_context
+    from lib.indicators import calculate_premarket_context, premarket_rule_record
 
     if bars.empty:
         return None
-    if level_params is None:
+    if recorded_filter is not None:
+        pm_filter = {'status': 'ok', 'atr': recorded_filter['atr'],
+                     'stale_print_atr': recorded_filter['stale_print_atr'],
+                     'spike_atr': recorded_filter['spike_atr'],
+                     'params': recorded_filter['params']}
+    elif level_params is None:
         pm_filter = {'status': 'level_params_unavailable', 'atr': None,
                      'stale_print_atr': None, 'spike_atr': None, 'params': None}
     else:
@@ -441,7 +466,11 @@ def premarket_snapshot(ticker: str, session_date, bars: pd.DataFrame, prior: dic
             int(pm['excluded_spike_prints']) if filtered else None),
         'pre_filter_status': 'ok' if filtered else (
             pm_filter['status'] if pm_filter['status'] != 'ok' else 'atr_unavailable'),
-        'pre_filter_params': pm_filter['params'],
+        # The threshold record, with the extreme rules' own record beside it
+        # (which rule set the high and the low, what each dropped, and why an
+        # extreme is None). With the parameters unreadable there is no
+        # threshold record and the two rule blocks stand alone.
+        'pre_filter_params': {**(pm_filter['params'] or {}), **premarket_rule_record(pm)},
     }
 
 
@@ -596,11 +625,14 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
                 ticker, fetch_date, intraday, prior_session_inputs(df, enriched),
                 level_params, intraday_read_at)
             if snapshot is not None:
-                # A price column is set only when its new value is not None;
+                # The high, the low and the range are set as computed, None
+                # included: a rejected extreme is cleared, never left as the
+                # earlier price under the new rule's label. The other price
+                # columns are set only when the new value is not None.
                 # upsert_dataframe drops the provenance keys while
                 # market_data_daily lacks the columns.
                 for col in _PREMARKET_PRICE_COLUMNS:
-                    if snapshot[col] is not None:
+                    if col in _PREMARKET_EXTREME_COLUMNS or snapshot[col] is not None:
                         row[col] = snapshot[col]
                 for col in _PREMARKET_PROVENANCE_COLUMNS:
                     row[col] = snapshot[col]

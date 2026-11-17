@@ -349,8 +349,13 @@ def _reach_rate_sql(side: str) -> str:
     )
 
 
-def _fetch_reach_rates(ticker: str, side: str, query_fn) -> dict:
+def _fetch_reach_rates(ticker: str, side: str, query_fn,
+                       rule_version: Optional[str] = None) -> dict:
     """Population reach-rates per playbook slot from `premarket_analysis`.
+
+    The population is the resolved rows of exactly `rule_version` (the
+    session row's own, so a v3, v4 or v5 session's rungs show the rates of
+    its own version), defaulting to the current LEVEL_RULE_VERSION.
 
     Returns `_ok(side=..., slots={slot: envelope}, ...)` where every slot is
     its own OK / UNAVAILABLE envelope with the rate, numerator, denominator and
@@ -364,8 +369,9 @@ def _fetch_reach_rates(ticker: str, side: str, query_fn) -> dict:
 
     try:
         from lib.strat_levels import LEVEL_RULE_VERSION  # noqa: PLC0415
-        df = query_fn(_reach_rate_sql(side), {"ticker": ticker.upper(),
-                                              "rule_version": LEVEL_RULE_VERSION})
+        df = query_fn(_reach_rate_sql(side), {
+            "ticker": ticker.upper(),
+            "rule_version": rule_version if rule_version is not None else LEVEL_RULE_VERSION})
     except Exception as e:  # EXTERNAL: DB round-trip — surface, don't fabricate
         if is_backend_outage(e):   # Cloud SQL down is not this source's failure
             raise
@@ -445,6 +451,25 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
         )
     row = df.iloc[0].to_dict()
 
+    from lib.strat_levels import (  # noqa: PLC0415
+        REFUSED_RULE_VERSION_STATUSES, newest_pick_rule_version, parse_level_basis,
+        rule_version_status,
+    )
+
+    stored = parse_level_basis(row.get("level_basis"))
+    if stored is not None:
+        # A version this image does not know, or cannot read, is refused by
+        # name: its rungs are not seeded the pre-v3 way and no reach rate is
+        # read for it (unknown rule version spec, Design 3).
+        recorded = stored.get("rule_version")
+        status = rule_version_status(recorded)
+        if status in REFUSED_RULE_VERSION_STATUSES:
+            return _unavailable(
+                f"{status}: premarket_analysis row for {ticker.upper()} on {session_date} has "
+                f"level_basis rule_version {recorded!r}; this image knows up to "
+                f"{newest_pick_rule_version()}",
+                rule_version=recorded, rule_version_status=status)
+
     def _side(side: str) -> list:
         # Re-derive the ordinals the de-duplicated builder would have produced:
         # keep a persisted slot only when it is a real number at least one cent
@@ -487,16 +512,19 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
         analysis_date=ad.isoformat() if hasattr(ad, "isoformat") else (str(ad) if ad is not None else None),
         calls=_side("calls"),
         puts=_side("puts"),
+        # The session row's own rule version (None for a row with no basis
+        # or none recorded): the reach population is the rows of this rule.
+        rule_version=stored.get("rule_version") if stored else None,
     )
 
 
 def _new_rule_mark(basis, side: str) -> Optional[float]:
-    """The cleared mark of a level_basis written under the current rule, or
-    None for a legacy row (no basis, or another rule_version)."""
-    from lib.strat_levels import LEVEL_RULE_VERSION, parse_level_basis  # noqa: PLC0415
+    """The cleared mark of a level_basis written under the pick rule (v3, v4
+    or v5), or None for a legacy row (no basis, or an earlier rule_version)."""
+    from lib.strat_levels import is_current_pick_rule, parse_level_basis  # noqa: PLC0415
 
     b = parse_level_basis(basis)
-    if not b or b.get("rule_version") != LEVEL_RULE_VERSION:
+    if not b or not is_current_pick_rule(b.get("rule_version")):
         return None
     v = b.get("cleared_above" if side == "calls" else "cleared_below")
     try:
@@ -536,6 +564,14 @@ def _build_levels(level_map, reach_calls: dict, reach_puts: dict, tracked: dict)
     tracked lines, or a side/slot whose population is unavailable, carries an
     explicit UNAVAILABLE envelope with the reason (Rule 3.7).
     """
+    from lib.strat_levels import REFUSED_RULE_VERSION_STATUSES  # noqa: PLC0415
+
+    # The session row's basis names a rule version this image does not know
+    # or cannot read: that is why the levels are unavailable, whether or not
+    # a level map was passed.
+    if tracked.get("rule_version_status") in REFUSED_RULE_VERSION_STATUSES:
+        return _unavailable(tracked["reason"], rule_version=tracked.get("rule_version"),
+                            rule_version_status=tracked["rule_version_status"])
     if level_map is None:
         return _unavailable("level map unavailable")
     # A side the builder could not check against its window (no prior-session
@@ -1030,9 +1066,19 @@ def assemble_movement_statement(
     continuation = _build_continuation(engine, ticker, tf, as_of_arg)
 
     # ── Piece 2: levels + reach-rates ──────────────────────────────────────
-    reach_calls = _fetch_reach_rates(ticker, "calls", query_fn)
-    reach_puts = _fetch_reach_rates(ticker, "puts", query_fn)
+    # The tracked row first: its rule version is the reach population's. A
+    # session with no row tracks no rung, and the population is then the
+    # current rule's.
     tracked = _fetch_tracked_levels(ticker, query_fn, session_date)
+    from lib.strat_levels import REFUSED_RULE_VERSION_STATUSES  # noqa: PLC0415
+
+    if tracked.get("rule_version_status") in REFUSED_RULE_VERSION_STATUSES:
+        # A version this image does not know: no population is read for it.
+        reach_calls = reach_puts = tracked
+    else:
+        session_rule = tracked.get("rule_version")
+        reach_calls = _fetch_reach_rates(ticker, "calls", query_fn, session_rule)
+        reach_puts = _fetch_reach_rates(ticker, "puts", query_fn, session_rule)
     levels = _build_levels(level_map, reach_calls, reach_puts, tracked)
 
     # ── Piece 3 + 4: CONTEXT modifiers (never touch the headline) ──────────

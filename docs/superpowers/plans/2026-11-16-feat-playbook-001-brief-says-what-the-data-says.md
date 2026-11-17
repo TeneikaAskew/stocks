@@ -2,7 +2,7 @@
 feat_id: FEAT-PLAYBOOK-001
 spec: docs/superpowers/specs/2026-11-16-feat-playbook-001-brief-says-what-the-data-says.md
 branch: feature/feat-playbook-001-brief-says-what-the-data-says
-pr: null
+pr: 2010
 status: ready
 ---
 

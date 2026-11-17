@@ -1204,3 +1204,404 @@ def test_a_half_day_close_leg_books_the_last_bar_before_the_close(monkeypatch):
                 'eod_pnl_pct', 'exit_reason', 'fill_price'):
         assert bound[f'calls_{col}'] == getattr(want, col), col
     assert bound['calls_eod_pnl_pct'] == pytest.approx(0.8)
+
+
+# ── FEAT-PLAYBOOK-001 B8b: a v3 plan resolves as before the bump ────────
+
+@pytest.mark.parametrize('version', ['feat-strat-001.v3', 'feat-strat-001.v4',
+                                     'feat-strat-001.v5'])
+def test_v3_plan_resolves_as_on_main(version):
+    """The literals are plan_inputs on d8_basis() as printed on the unchanged
+    code (head 219a4c0c3, where the fixture was v3)."""
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib.session_levels_helpers import d8_basis
+
+    basis = {**d8_basis(), 'rule_version': version}
+    no_policy = lambda: pytest.fail('no policy read')  # noqa: E731
+    calls = mod.plan_inputs('calls', {}, basis, policy_fn=no_policy)
+    assert calls == mod.PlanInputs(trigger_price=252.1, stop_price=248.2,
+                                   targets=(275.0, 280.0, 285.0), legs=3,
+                                   cutoff_minutes=960, target_status='ok')
+    puts = mod.plan_inputs('puts', {}, basis, policy_fn=no_policy)
+    assert puts == mod.PlanInputs(trigger_price=248.2, stop_price=252.1,
+                                  targets=(225.0, 220.0, 215.0), legs=3,
+                                  cutoff_minutes=960, target_status='ok')
+    assert calls.target_status != mod.PLAN_TARGETS_UNAVAILABLE
+    assert puts.target_status != mod.PLAN_TARGETS_UNAVAILABLE
+
+
+# ── Unknown rule version spec (2026-11-16), Design 3: the resolver row ──
+# A stored basis of a version this image does not know, or cannot read, is
+# refused: resolve_one writes nothing and reads no bars, so the row stays
+# pending and a compatible image resolves it inside the lookback.
+
+import logging  # noqa: E402
+
+from tests.lib.session_levels_helpers import newer_rule_versions  # noqa: E402
+
+# The v3 plan row of test_resolve_one_binds_the_plan_columns_from_a_v3_basis:
+# its calls and puts trigger, stop and t1 to t3 columns all populated, so it
+# never reaches from_basis and the resolver's own check is its only guard.
+V3_PLAN_COLUMNS = {
+    'calls_trigger_price': 252.10, 'calls_stop_price': 248.20,
+    'calls_t1_price': 253.00, 'calls_t2_price': 275.00, 'calls_t3_price': 280.00,
+    'puts_trigger_price': 248.20, 'puts_stop_price': 252.10,
+    'puts_t1_price': 247.50, 'puts_t2_price': 247.00, 'puts_t3_price': 225.00,
+}
+
+REFUSED_VERSIONS = [*((v, 'rule_version_newer') for v in newer_rule_versions()),
+                    ('', 'rule_version_unreadable'),
+                    ('feat-strat-001.vX', 'rule_version_unreadable'),
+                    (5, 'rule_version_unreadable')]
+
+
+def _v3_plan_row(rule_version, *, outcome_resolved_at=None) -> dict:
+    """The v3 plan row with a d8 basis stamped `rule_version`."""
+    import json
+
+    from tests.lib.session_levels_helpers import d8_basis
+    return {**V3_PLAN_COLUMNS,
+            'level_basis': json.dumps({**d8_basis(), 'rule_version': rule_version}),
+            'outcome_resolved_at': outcome_resolved_at}
+
+
+def _one_read(row: dict):
+    """A pd.read_sql stand-in that answers the row SELECT once and fails the
+    test on any second read (the bars, the daily frame, the parameters)."""
+    reads = []
+
+    def read_sql(sql, engine, params=None):
+        reads.append(getattr(sql, 'text', str(sql)))
+        if len(reads) > 1:
+            pytest.fail(f'a second read: {reads[-1].strip()[:80]}')
+        return pd.DataFrame([row])
+    return reads, read_sql
+
+
+def _error_lines(caplog) -> list:
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@pytest.mark.parametrize('force, outcome_resolved_at',
+                         [(False, None), (True, '2026-11-16T21:00:00Z')])
+@pytest.mark.parametrize('version, reason', REFUSED_VERSIONS)
+def test_resolve_one_refuses_a_version_it_does_not_know(monkeypatch, caplog, version, reason,
+                                                        force, outcome_resolved_at):
+    import gcp.premarket_playbook_resolver as mod
+    from lib.strat_levels import newest_pick_rule_version
+
+    reads, read_sql = _one_read(_v3_plan_row(version, outcome_resolved_at=outcome_resolved_at))
+    monkeypatch.setattr(mod.pd, 'read_sql', read_sql)
+    monkeypatch.setattr(mod, 'plan_inputs', lambda *a, **k: pytest.fail('plan_inputs called'))
+    monkeypatch.setattr(mod, 'derive_level_map_from_daily',
+                        lambda *a, **k: pytest.fail('derive_level_map_from_daily called'))
+    engine = _RecordingEngine()
+
+    with caplog.at_level(logging.ERROR, logger=mod.logger.name):
+        out = mod.resolve_one(_date(2026, 11, 16), 'tst', engine, force=force)
+
+    assert out == (None, reason)
+    assert engine.conn.calls == []
+    assert len(reads) == 1
+    [line] = _error_lines(caplog)
+    for part in ('TST', '2026-11-16', repr(version), reason, newest_pick_rule_version()):
+        assert part in line, (part, line)
+
+
+def test_resolve_one_returns_the_derive_paths_refusal(monkeypatch, caplog):
+    """A row with no stored triggers and a legacy (absent) basis of its own
+    passes the first check; the session's live basis read by the derive path
+    is newer, and that refusal is returned the same way, with no write and
+    no bar read."""
+    import gcp.premarket_playbook_resolver as mod
+    from lib.strat_levels import LevelRuleVersionUnknown
+
+    row = {**{k: None for k in V3_PLAN_COLUMNS}, 'level_basis': None,
+           'outcome_resolved_at': None}
+    reads, read_sql = _one_read(row)
+    monkeypatch.setattr(mod.pd, 'read_sql', read_sql)
+
+    def derive(*a, **k):
+        raise LevelRuleVersionUnknown('rule_version_newer', newer_rule_versions()[0])
+
+    monkeypatch.setattr(mod, 'derive_level_map_from_daily', derive)
+    monkeypatch.setattr(mod, 'plan_inputs', lambda *a, **k: pytest.fail('plan_inputs called'))
+    engine = _RecordingEngine()
+
+    with caplog.at_level(logging.ERROR, logger=mod.logger.name):
+        out = mod.resolve_one(_date(2026, 11, 16), 'tst', engine)
+
+    assert out == (None, 'rule_version_newer')
+    assert engine.conn.calls == []
+    assert len(reads) == 1
+    [line] = _error_lines(caplog)
+    for part in ('TST', '2026-11-16', repr(newer_rule_versions()[0]), 'rule_version_newer'):
+        assert part in line, (part, line)
+
+
+# ── Unknown rule version spec, decision 3: main() exits non-zero (U4) ───
+
+from datetime import time as _time  # noqa: E402
+
+PLAN_COLUMNS = tuple(f'{side}_plan_{f}' for side in ('calls', 'puts') for f in PLAN_FIELDS)
+_ROW_SELECT = tuple(V3_PLAN_COLUMNS) + ('level_basis', 'outcome_resolved_at')
+
+
+def _session_bars(d: _date) -> pd.DataFrame:
+    """The four bars of the v3 plan test at 09:30, 09:31, 09:32 and 15:59
+    Eastern on `d`: the calls side enters at 252.10 and books T1."""
+    from lib.eastern_time import eastern_bounds_utc
+    open_utc = eastern_bounds_utc(d, _time(9, 30), _time(16, 0))[0]
+    rows = [(0, 251.00, 251.50, 250.80, 251.40), (1, 251.90, 252.50, 251.80, 252.40),
+            (2, 260.00, 276.00, 259.00, 270.00), (389, 270.00, 271.00, 269.00, 270.00)]
+    return pd.DataFrame([{'time': open_utc + timedelta(minutes=m), 'open': o, 'high': h,
+                          'low': lo, 'close': c} for m, o, h, lo, c in rows])
+
+
+def _table_row(d: _date, ticker: str, rule_version, *, outcome_resolved_at=None, **cols) -> dict:
+    """A premarket_analysis row: the v3 plan row with a d8 basis stamped
+    `rule_version`, every plan column NULL unless `cols` says otherwise."""
+    row = {'analysis_date': d, 'ticker': ticker,
+           **_v3_plan_row(rule_version, outcome_resolved_at=outcome_resolved_at),
+           **{c: None for c in PLAN_COLUMNS}}
+    row.update(cols)
+    return row
+
+
+class _ResolverTable:
+    """premarket_analysis and the day's bars in memory, behind the four
+    statements main() issues. An UPDATE premarket_analysis is applied to the
+    row its d and t name; any other statement fails the test."""
+
+    def __init__(self, rows: list, bars_for):
+        self.rows = rows
+        self.bars_for = bars_for
+        self.statements = []
+        self.writes = []
+        self.pending_answers = []
+        table = self
+
+        class _Conn:
+            def execute(self, sql, params=None):
+                sql_text = getattr(sql, 'text', str(sql))
+                bound = dict(params or {})
+                table.statements.append((sql_text, bound))
+                if not sql_text.startswith('UPDATE premarket_analysis SET '):
+                    pytest.fail(f'unexpected write: {sql_text[:80]}')
+                [row] = [r for r in table.rows
+                         if str(r['analysis_date']) == bound['d'] and r['ticker'] == bound['t']]
+                row.update({k: v for k, v in bound.items() if k not in ('d', 't')})
+                table.writes.append((sql_text, bound))
+
+        class _Engine:
+            def begin(self):
+                from contextlib import contextmanager
+
+                @contextmanager
+                def _cm():
+                    yield _Conn()
+                return _cm()
+
+        self.engine = _Engine()
+
+    def read_sql(self, sql, engine, params=None):
+        sql_text = getattr(sql, 'text', str(sql))
+        p = dict(params or {})
+        self.statements.append((sql_text, p))
+        if 'SELECT DISTINCT analysis_date FROM premarket_analysis' in sql_text:
+            today, floor = _date.fromisoformat(p['today']), _date.fromisoformat(p['floor'])
+            dates = sorted({r['analysis_date'] for r in self.rows
+                            if r['outcome_resolved_at'] is None
+                            and floor <= r['analysis_date'] <= today
+                            and r['analysis_date'].weekday() < 5})
+            self.pending_answers.append(dates)
+            return pd.DataFrame({'analysis_date': pd.Series(dates, dtype=object)})
+        if 'SELECT DISTINCT ticker FROM premarket_analysis' in sql_text:
+            return pd.DataFrame({'ticker': pd.Series(
+                [r['ticker'] for r in self.rows if str(r['analysis_date']) == p['d']],
+                dtype=object)})
+        if 'level_basis, outcome_resolved_at' in sql_text and 'LIMIT 1' in sql_text:
+            hits = [r for r in self.rows
+                    if str(r['analysis_date']) == p['d'] and r['ticker'] == p['t']]
+            return pd.DataFrame([{c: r[c] for c in _ROW_SELECT} for r in hits[:1]])
+        if 'FROM market_data_intraday' in sql_text:
+            return self.bars_for(_date.fromisoformat(p['d']))
+        pytest.fail(f'unexpected read: {sql_text.strip()[:80]}')
+
+
+def _run_main(monkeypatch, table, *, pick=None, **env) -> int:
+    """main() at 2026-11-17 20:00 Eastern against `table`, with only the
+    PLAYBOOK_RESOLVE_* variables in `env` set; `pick` patches
+    lib.strat_levels.PICK_RULE_VERSIONS (a straggler image)."""
+    import os
+
+    import gcp.database
+    import gcp.premarket_playbook_resolver as mod
+    import lib.strat_levels
+
+    for key in [k for k in os.environ if k.startswith('PLAYBOOK_RESOLVE_')]:
+        monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    class _Now(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 17, 20, 0, tzinfo=tz)
+
+    monkeypatch.setattr(gcp.database, 'is_cloud_sql_configured', lambda: True)
+    monkeypatch.setattr(gcp.database, 'get_engine', lambda *a, **k: table.engine)
+    monkeypatch.setattr(mod.pd, 'read_sql', table.read_sql)
+    monkeypatch.setattr(mod, 'datetime', _Now)
+    if pick is not None:
+        monkeypatch.setattr(lib.strat_levels, 'PICK_RULE_VERSIONS', pick)
+    return mod.main([])
+
+
+@pytest.mark.parametrize('version, reason', [(newer_rule_versions()[0], 'rule_version_newer'),
+                                             ('', 'rule_version_unreadable')])
+def test_main_exits_non_zero_on_a_refused_row(monkeypatch, caplog, version, reason):
+    """Decision 3: a refused row on today's date, which classify_date_outcome
+    would call benign_pending, still turns the run red."""
+    import gcp.premarket_playbook_resolver as mod
+    from lib.strat_levels import newest_pick_rule_version
+
+    table = _ResolverTable([_table_row(_date(2026, 11, 17), 'TST', version)], _session_bars)
+    with caplog.at_level(logging.INFO, logger=mod.logger.name):
+        assert _run_main(monkeypatch, table) == 1
+    assert table.writes == []
+    assert any(all(part in line for part in ('TST', '2026-11-17', repr(version), reason,
+                                             newest_pick_rule_version()))
+               for line in _error_lines(caplog)), _error_lines(caplog)
+
+
+def test_main_exits_non_zero_on_a_refused_row_on_a_past_date(monkeypatch, caplog):
+    """A refused row alone on a past date does not read as nothing to do:
+    the date's done line counts it and the run exits 1."""
+    import gcp.premarket_playbook_resolver as mod
+
+    table = _ResolverTable([_table_row(_date(2026, 11, 16), 'TST', newer_rule_versions()[0])],
+                           _session_bars)
+    with caplog.at_level(logging.INFO, logger=mod.logger.name):
+        assert _run_main(monkeypatch, table) == 1
+    assert table.writes == []
+    done = [r.getMessage() for r in caplog.records
+            if r.levelno == logging.INFO and r.getMessage().startswith('done 2026-11-16:')]
+    assert len(done) == 1 and '1 refused' in done[0], done
+
+
+# ── Unknown rule version spec, Design 4: recovery goes through the scheduled
+# run (U7b). Today is 2026-11-17, the default lookback 14 days (floor
+# 2026-11-03), PLAYBOOK_RESOLVE_DATE unset unless a case says so. A straggler
+# image knows v3 only; a compatible one knows what this tree knows.
+
+class TestScheduledRecovery:
+    STRAGGLER = ('feat-strat-001.v3',)
+    V3 = 'feat-strat-001.v3'
+
+    @staticmethod
+    def _kept(row: dict) -> dict:
+        return {c: row[c] for c in ('outcome_resolved_at', *PLAN_COLUMNS)}
+
+    @staticmethod
+    def _v4():
+        from lib.strat_levels import LEVEL_RULE_VERSION
+        return LEVEL_RULE_VERSION
+
+    def _straggler_run(self, monkeypatch, table, **env) -> int:
+        with monkeypatch.context() as mp:
+            return _run_main(mp, table, pick=self.STRAGGLER, **env)
+
+    def test_a_straggler_resolves_the_row_it_knows_and_leaves_the_other(self, monkeypatch):
+        aaa = _table_row(_date(2026, 11, 16), 'AAA', self.V3)
+        bbb = _table_row(_date(2026, 11, 16), 'BBB', self._v4())
+        before = self._kept(bbb)
+        table = _ResolverTable([aaa, bbb], _session_bars)
+
+        rc = self._straggler_run(monkeypatch, table)
+        assert self._kept(bbb) == before
+        assert [b['t'] for _, b in table.writes] == ['AAA']
+        assert aaa['outcome_resolved_at'] is not None
+        assert aaa['calls_plan_r_status'] == 'ok'
+        assert rc == 1
+
+    def test_a_compatible_image_resolves_it_unforced(self, monkeypatch):
+        aaa = _table_row(_date(2026, 11, 16), 'AAA', self.V3)
+        bbb = _table_row(_date(2026, 11, 16), 'BBB', self._v4())
+        table = _ResolverTable([aaa, bbb], _session_bars)
+        assert self._straggler_run(monkeypatch, table) == 1
+
+        assert _run_main(monkeypatch, table) == 0
+        assert table.pending_answers[-1] == [_date(2026, 11, 16)]
+        assert bbb['outcome_resolved_at'] is not None
+        assert bbb['calls_plan_r_status'] == 'ok'
+        assert [b['t'] for _, b in table.writes] == ['AAA', 'BBB']
+
+    def test_the_lookback_boundary(self, monkeypatch):
+        inside = _table_row(_date(2026, 11, 3), 'TST', self._v4())
+        outside = _table_row(_date(2026, 11, 2), 'TST', self._v4())
+        before = self._kept(outside)
+        table = _ResolverTable([inside, outside], _session_bars)
+
+        assert _run_main(monkeypatch, table) == 0
+        assert table.pending_answers == [[_date(2026, 11, 3)]]
+        assert [b['d'] for _, b in table.writes] == ['2026-11-03']
+        assert inside['calls_plan_r_status'] == 'ok'
+        assert self._kept(outside) == before
+
+    def test_after_age_out(self, monkeypatch):
+        row = _table_row(_date(2026, 11, 2), 'TST', self._v4())
+        table = _ResolverTable([row], _session_bars)
+
+        assert self._straggler_run(monkeypatch, table) == 0
+        assert table.pending_answers == [[]]
+        assert not any('2026-11-02' in sql or '2026-11-02' in map(str, bound.values())
+                       for sql, bound in table.statements)
+        assert table.writes == []
+
+        assert _run_main(monkeypatch, table, PLAYBOOK_RESOLVE_DATE='2026-11-02') == 0
+        assert [b['d'] for _, b in table.writes] == ['2026-11-02']
+        assert row['calls_plan_r_status'] == 'ok'
+
+    def test_a_row_an_older_reader_stamped(self, monkeypatch):
+        def _stamped():
+            return _table_row(_date(2026, 11, 16), 'TST', self._v4(),
+                              outcome_resolved_at=datetime(2026, 11, 16, 21, 15),
+                              calls_plan_r_status='targets_unavailable',
+                              puts_plan_r_status='targets_unavailable', calls_plan_r=None)
+        row = _stamped()
+        table = _ResolverTable([row], _session_bars)
+
+        assert _run_main(monkeypatch, table) == 0
+        assert _run_main(monkeypatch, table, PLAYBOOK_RESOLVE_FORCE='true') == 0
+        assert table.writes == []
+        assert _run_main(monkeypatch, table, PLAYBOOK_RESOLVE_DATE='2026-11-16',
+                         PLAYBOOK_RESOLVE_FORCE='true') == 0
+        assert len(table.writes) == 1
+        assert row['calls_plan_r_status'] == 'ok'
+
+        fresh = _stamped()
+        before = self._kept(fresh)
+        table = _ResolverTable([fresh], _session_bars)
+        rc = self._straggler_run(monkeypatch, table, PLAYBOOK_RESOLVE_DATE='2026-11-16',
+                                 PLAYBOOK_RESOLVE_FORCE='true')
+        assert table.writes == []
+        assert self._kept(fresh) == before
+        assert rc == 1
+
+    def test_an_unreadable_version_is_refused_by_every_image(self, monkeypatch, caplog):
+        import gcp.premarket_playbook_resolver as mod
+
+        rows = [_table_row(_date(2026, 11, 16), t, v)
+                for t, v in (('UA', ''), ('UB', 'feat-strat-001.vX'), ('UC', 5))]
+        before = [self._kept(r) for r in rows]
+        table = _ResolverTable(rows, _session_bars)
+
+        with caplog.at_level(logging.INFO, logger=mod.logger.name):
+            rc = _run_main(monkeypatch, table)
+        assert [b['t'] for _, b in table.writes] == []
+        assert [self._kept(r) for r in rows] == before
+        assert rc == 1
+        for t in ('UA', 'UB', 'UC'):
+            lines = [line for line in _error_lines(caplog) if line.startswith(f'{t} ')]
+            assert len(lines) == 1 and 'rule_version_unreadable' in lines[0], (t, lines)
