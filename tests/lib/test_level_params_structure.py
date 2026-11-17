@@ -44,6 +44,11 @@ ALLOWED_COUNTS = {"GAP_LEVEL_LOOKBACK_BARS", "_PARENT_BAR_LOOKBACK"}
 # The premarket window's clock boundaries (04:00 and 09:30 ET): when the
 # session is, not how far price may be.
 ALLOWED_CLOCK = {"PREMARKET_START", "REGULAR_SESSION_OPEN"}
+# The thin bar rule's share count (FEAT-PLAYBOOK-001 B7c, one round lot): how
+# many shares a premarket bar must hold to give a price to the extremes. It is
+# a volume, not a price distance, and that spec makes it a module constant
+# with a named measurement, not a calibrated per-ticker parameter.
+ALLOWED_VOLUME = {"PM_MIN_EXTREME_VOLUME"}
 
 REMOVED = {
     "lib/strat_levels.py": ("MAX_TRIGGER_DISTANCE_ATR", "MAX_TRIGGER_DISTANCE_PCT",
@@ -130,7 +135,7 @@ def _exempt_constant_ids(fn: ast.AST) -> set[int]:
 def _violations(rel: str) -> list[str]:
     tree = _tree(rel)
     constants = _module_numeric_constants(tree)
-    allowed_names = ALLOWED_SIZING_AND_FTFC | ALLOWED_COUNTS | ALLOWED_CLOCK
+    allowed_names = ALLOWED_SIZING_AND_FTFC | ALLOWED_COUNTS | ALLOWED_CLOCK | ALLOWED_VOLUME
     out = []
     for name, fns in sorted(_reachable(tree, ROOTS[rel]).items()):
         for fn in fns:

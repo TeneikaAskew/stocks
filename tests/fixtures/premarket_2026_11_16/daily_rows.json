@@ -1,0 +1,261 @@
+{
+ "columns": [
+  "ticker",
+  "date",
+  "open",
+  "high",
+  "low",
+  "close",
+  "volume",
+  "atr_14",
+  "atr_5",
+  "atr_20",
+  "pre_high",
+  "pre_low",
+  "pre_vwap",
+  "pre_volume",
+  "gap_pct",
+  "pre_range_atr",
+  "pre_fetched_at",
+  "pre_excluded_stale_prints",
+  "pre_excluded_spikes",
+  "pre_filter_status",
+  "pre_filter_params"
+ ],
+ "rows": [
+  [
+   "IWM",
+   "2026-11-13",
+   278.95,
+   279.17,
+   274.665,
+   277.54,
+   17722264,
+   4.874951094061365,
+   5.3623612361634505,
+   4.616314571234593,
+   280.65,
+   277.86,
+   279.475084562367,
+   532044,
+   -0.0503,
+   0.569,
+   "2026-11-15 06:01:31.077252+00:00",
+   5,
+   0,
+   "ok",
+   {
+    "atr": 4.903408886281885,
+    "atr_basis": "atr_14",
+    "pm_spike_atr": {
+     "value": 0.5462641152456128,
+     "run_id": "73617388-0038-4dd4-9fbf-60d186473068",
+     "status": "ok",
+     "effective_from": "2026-11-12"
+    },
+    "pm_stale_print_atr": {
+     "value": 0.04035844331726609,
+     "run_id": "73617388-0038-4dd4-9fbf-60d186473068",
+     "status": "ok",
+     "effective_from": "2026-11-12"
+    },
+    "policy_effective_from": "2015-01-02"
+   }
+  ],
+  [
+   "IWM",
+   "2026-11-16",
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   278.92,
+   275.86,
+   276.37323242887334,
+   32653,
+   -0.4968,
+   null,
+   "2026-11-16 13:20:48.817736+00:00",
+   7,
+   0,
+   "ok",
+   {
+    "atr": 4.874951094061365,
+    "atr_basis": "atr_14",
+    "pm_spike_atr": {
+     "value": 0.542076067170152,
+     "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+     "status": "ok",
+     "effective_from": "2026-11-16"
+    },
+    "pm_stale_print_atr": {
+     "value": 0.03287993142806097,
+     "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+     "status": "ok",
+     "effective_from": "2026-11-16"
+    },
+    "policy_effective_from": "2015-01-02"
+   }
+  ],
+  [
+   "QQQ",
+   "2026-11-13",
+   688.54,
+   688.75,
+   671.681,
+   679.89,
+   42098628,
+   16.338327465620264,
+   18.650581197166698,
+   15.127609357961463,
+   693.13,
+   684.94,
+   689.4013350403247,
+   1951904,
+   -0.3139,
+   0.503,
+   "2026-11-15 06:02:16.839598+00:00",
+   3,
+   1,
+   "ok",
+   {
+    "atr": 16.28212191039137,
+    "atr_basis": "atr_14",
+    "pm_spike_atr": {
+     "value": 1.072507165357459,
+     "run_id": "24863580-0907-40b3-941b-ef0e1255f8ff",
+     "status": "ok",
+     "effective_from": "2026-11-12"
+    },
+    "pm_stale_print_atr": {
+     "value": 0.04346000599370179,
+     "run_id": "24863580-0907-40b3-941b-ef0e1255f8ff",
+     "status": "ok",
+     "effective_from": "2026-11-12"
+    },
+    "policy_effective_from": "2015-01-02"
+   }
+  ],
+  [
+   "QQQ",
+   "2026-11-16",
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   681.022,
+   668.3,
+   672.0842284536367,
+   533831,
+   -0.7428,
+   null,
+   "2026-11-16 13:20:55.074732+00:00",
+   16,
+   0,
+   "ok",
+   {
+    "atr": 16.338327465620264,
+    "atr_basis": "atr_14",
+    "pm_spike_atr": {
+     "value": 1.072507165357459,
+     "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+     "status": "ok",
+     "effective_from": "2026-11-16"
+    },
+    "pm_stale_print_atr": {
+     "value": 0.03712180991173313,
+     "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+     "status": "ok",
+     "effective_from": "2026-11-16"
+    },
+    "policy_effective_from": "2015-01-02"
+   }
+  ],
+  [
+   "SPY",
+   "2026-11-13",
+   760.07,
+   760.12,
+   747.88,
+   754.37,
+   38720038,
+   11.035733780082667,
+   12.758162711582399,
+   10.162889481207534,
+   762.6931,
+   755.73,
+   760.0677333541602,
+   1204378,
+   -0.0687,
+   0.6363,
+   "2026-11-15 06:02:54.103215+00:00",
+   13,
+   0,
+   "ok",
+   {
+    "atr": 10.943097952342281,
+    "atr_basis": "atr_14",
+    "pm_spike_atr": {
+     "value": 0.9423201653542802,
+     "run_id": "41a158eb-60fd-44a9-bda7-5c30cc2adb94",
+     "status": "ok",
+     "effective_from": "2026-11-12"
+    },
+    "pm_stale_print_atr": {
+     "value": 0.04214892083963373,
+     "run_id": "41a158eb-60fd-44a9-bda7-5c30cc2adb94",
+     "status": "ok",
+     "effective_from": "2026-11-12"
+    },
+    "policy_effective_from": "2015-01-02"
+   }
+  ],
+  [
+   "SPY",
+   "2026-11-16",
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   null,
+   754.3772,
+   747.95,
+   750.2446547951109,
+   297421,
+   -0.2558,
+   null,
+   "2026-11-16 13:20:58.074056+00:00",
+   9,
+   0,
+   "ok",
+   {
+    "atr": 11.035733780082667,
+    "atr_basis": "atr_14",
+    "pm_spike_atr": {
+     "value": 0.9423201653542802,
+     "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+     "status": "ok",
+     "effective_from": "2026-11-16"
+    },
+    "pm_stale_print_atr": {
+     "value": 0.035928084025308005,
+     "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+     "status": "ok",
+     "effective_from": "2026-11-16"
+    },
+    "policy_effective_from": "2015-01-02"
+   }
+  ]
+ ]
+}
