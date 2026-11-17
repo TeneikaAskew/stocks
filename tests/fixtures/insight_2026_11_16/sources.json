@@ -1,0 +1,106 @@
+{
+ "commit": false,
+ "db_query_execution": "db-query-8hvwg",
+ "files": {
+  "IWM_brief_row.json": {
+   "bytes": 41429,
+   "sha256": "c5952e9a092986cb7f2f6818c867aabc01fb7fcc1ab73856826c94708020c1be",
+   "source": "statement 2, ticker IWM: premarket_analysis row (analysis_date 2026-11-16, run_kind live)"
+  },
+  "IWM_level_basis.json": {
+   "bytes": 29245,
+   "sha256": "e7d56fa33507435b41b911f6f4cd3a2ed2063a3427931ca0ad9ff588d703b606",
+   "source": "statement 1, ticker IWM: insight_reports.report['level_basis']"
+  },
+  "IWM_stored_report.json": {
+   "bytes": 41130,
+   "sha256": "af5225ec2d1382679c76f29dfe59e64ba64c27bd56a8ed428485bbee166f74a5",
+   "source": "statement 1, ticker IWM: insight_reports.report (as_of 2026-11-16 13:46:30.685817+00:00, run_kind live)"
+  },
+  "QQQ_brief_row.json": {
+   "bytes": 42498,
+   "sha256": "7c13243af4caa0c1731fefbab439c12c492c4ffdbea1750eeb72744b0bb1aa1c",
+   "source": "statement 2, ticker QQQ: premarket_analysis row (analysis_date 2026-11-16, run_kind live)"
+  },
+  "QQQ_level_basis.json": {
+   "bytes": 30193,
+   "sha256": "23e0d1a15775ce7789a21b96f609e4dd72acb9535e1e409571b2dcf9c3be640b",
+   "source": "statement 1, ticker QQQ: insight_reports.report['level_basis']"
+  },
+  "QQQ_stored_report.json": {
+   "bytes": 41811,
+   "sha256": "011449782a108078b60e9e5363023c45b1eb40985cbb216b9364d84ccf3142c0",
+   "source": "statement 1, ticker QQQ: insight_reports.report (as_of 2026-11-16 13:46:34.696459+00:00, run_kind live)"
+  },
+  "SPY_brief_row.json": {
+   "bytes": 41445,
+   "sha256": "bab84956ffc704c430b8655869e2b15138328497ae113b725518f445149440f4",
+   "source": "statement 2, ticker SPY: premarket_analysis row (analysis_date 2026-11-16, run_kind live)"
+  },
+  "SPY_level_basis.json": {
+   "bytes": 29299,
+   "sha256": "5d88890e4814eea973f7a10a097acda2a55c1633b4d0895ad37803a785025386",
+   "source": "statement 1, ticker SPY: insight_reports.report['level_basis']"
+  },
+  "SPY_stored_report.json": {
+   "bytes": 40920,
+   "sha256": "c0ab240bd48381cc91190cf89de2541aec3a001822c84f4d1803758853578f45",
+   "source": "statement 1, ticker SPY: insight_reports.report (as_of 2026-11-16 13:46:39.628923+00:00, run_kind live)"
+  }
+ },
+ "level_basis_equal": {
+  "IWM": {
+   "differing_side_record_fields": {
+    "short": [
+     "targets"
+    ]
+   },
+   "differing_top_level_keys": [
+    "atr_rung_anchors",
+    "atr_rung_params",
+    "atr_rung_status",
+    "atr_rungs",
+    "atr_rungs_dropped",
+    "plan_target_level_types",
+    "plan_target_level_types_status",
+    "short"
+   ],
+   "equal": false
+  },
+  "QQQ": {
+   "differing_side_record_fields": {
+    "long": [
+     "skipped"
+    ]
+   },
+   "differing_top_level_keys": [
+    "atr_rung_anchors",
+    "atr_rung_params",
+    "atr_rung_status",
+    "atr_rungs",
+    "atr_rungs_dropped",
+    "long",
+    "plan_target_level_types",
+    "plan_target_level_types_status"
+   ],
+   "equal": false
+  },
+  "SPY": {
+   "differing_side_record_fields": {},
+   "differing_top_level_keys": [
+    "atr_rung_anchors",
+    "atr_rung_params",
+    "atr_rung_status",
+    "atr_rungs",
+    "atr_rungs_dropped",
+    "plan_target_level_types",
+    "plan_target_level_types_status"
+   ],
+   "equal": false
+  }
+ },
+ "sql": {
+  "statement_1": "SELECT ticker, as_of, run_kind, report FROM insight_reports WHERE ticker IN ('IWM','QQQ','SPY') AND run_kind = 'live' AND as_of >= '2026-11-16 13:40:00+00' AND as_of < '2026-11-16 14:00:00+00' ORDER BY ticker",
+  "statement_2": "SELECT analysis_date, analysis_ts, run_kind, ticker, price, rsi, sma200, ema9, ema20, atr14, bb_upper, bb_lower, rvol, volatility_20d, vol_regime, macd_cross, above_sma200, strat_candle, strat_combo, strat_setup, ftfc_score, ftfc_direction, ftfc_labels, tf_continuity, tf_continuity_frames, prev_day_high, prev_day_low, level_basis FROM premarket_analysis WHERE analysis_date = '2026-11-16' AND ticker IN ('IWM','QQQ','SPY') AND run_kind = 'live' ORDER BY ticker"
+ }
+}

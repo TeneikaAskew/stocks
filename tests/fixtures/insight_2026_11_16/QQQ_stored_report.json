@@ -1,0 +1,1715 @@
+{
+ "analog_universe": {
+  "attempted": false,
+  "reason": "enough same-ticker analogs; expansion not needed",
+  "universe": null,
+  "used": false
+ },
+ "as_of": "2026-11-16T13:46:34.696459Z",
+ "bear_case": "The asset is trapped in a structural downtrend with dealer hedging flows actively amplifying downside pressure, as the failure to reclaim critical moving averages suggests any rally attempts will be met with immediate liquidation.",
+ "bull_case": "The asset is positioned for a potential mean-reversion rally if it can clear the premarket high, as the current oversold conditions and upcoming economic volatility could catalyze a breakout above key resistance.",
+ "catalysts": [
+  {
+   "date": "2026-11-16",
+   "impact": "medium",
+   "kind": "economic",
+   "name": "Chicago Fed Advance Retail Trade Summary",
+   "sentiment_score": null
+  },
+  {
+   "date": "2026-11-16",
+   "impact": "high",
+   "kind": "economic",
+   "name": "Fed Chairman Warsh Speaks",
+   "sentiment_score": null
+  },
+  {
+   "date": "2026-11-17",
+   "impact": "medium",
+   "kind": "economic",
+   "name": "Advance Monthly Sales for Retail and Food Services",
+   "sentiment_score": null
+  },
+  {
+   "date": "2026-11-17",
+   "impact": "medium",
+   "kind": "economic",
+   "name": "G.17 Industrial Production and Capacity Utilization",
+   "sentiment_score": null
+  },
+  {
+   "date": "2026-11-17",
+   "impact": "medium",
+   "kind": "economic",
+   "name": "Monthly Retail Trade and Food Services",
+   "sentiment_score": null
+  },
+  {
+   "date": "2026-11-17",
+   "impact": "high",
+   "kind": "economic",
+   "name": "Core Retail Sales m/m",
+   "sentiment_score": null
+  },
+  {
+   "date": "2026-11-17",
+   "impact": "high",
+   "kind": "economic",
+   "name": "Retail Sales m/m",
+   "sentiment_score": null
+  },
+  {
+   "date": "2026-11-18",
+   "impact": "high",
+   "kind": "economic",
+   "name": "FOMC Meeting Minutes",
+   "sentiment_score": null
+  }
+ ],
+ "confidence_score": 0.65,
+ "conviction": "medium",
+ "direction": "short",
+ "entry_zone": {
+  "high": 668.3,
+  "low": 666.62
+ },
+ "failed_section_reasons": {},
+ "failed_sections": [],
+ "invalidation": "Price closes above the trigger_high of 694.56, indicating a failure of the bearish continuation structure and a potential reclamation of the 20-day EMA.",
+ "key_levels": {
+  "EMA 20": 693.94,
+  "Gamma Balance": 680.0,
+  "Gamma Gate Above": 690.0,
+  "Gamma Gate Below": 675.0,
+  "Gamma King Above": 685.0,
+  "Gamma King Below": 680.0,
+  "Max Pain": 700.0,
+  "Parent bar high": 688.75,
+  "Parent bar low": 671.681,
+  "Prev Day High": 688.75,
+  "Prev Day Low": 671.681,
+  "Prev Month High": 762.86,
+  "Prev Month Low": 683.45,
+  "Prev Quarter High": 748.3489999999999,
+  "Prev Quarter Low": 661.14,
+  "Prev Week High": 695.57,
+  "Prev Week Low": 662.02,
+  "Prev Year High": 637.01,
+  "Prev Year Low": 402.39,
+  "SMA 200": 682.24
+ },
+ "level_basis": {
+  "atr": 16.338327465620264,
+  "atr_14": 16.338327465620264,
+  "atr_5": 18.650581197166698,
+  "atr_basis": "atr_14",
+  "built_at": "2026-11-16T08:31:19.536117-05:00",
+  "cleared_above": 681.022,
+  "cleared_below": 668.3,
+  "last_bar_date": "2026-11-13",
+  "levels": [
+   {
+    "is_current": false,
+    "level_type": "high",
+    "name": "PDH",
+    "period_label": "2026-11-13",
+    "price": 688.75,
+    "strat_class": "2D",
+    "timeframe": "day"
+   },
+   {
+    "is_current": false,
+    "level_type": "low",
+    "name": "PDL",
+    "period_label": "2026-11-13",
+    "price": 671.681,
+    "strat_class": "2D",
+    "timeframe": "day"
+   },
+   {
+    "is_current": false,
+    "level_type": "close",
+    "name": "PDC",
+    "period_label": "2026-11-13",
+    "price": 679.89,
+    "strat_class": "2D",
+    "timeframe": "day"
+   },
+   {
+    "is_current": false,
+    "level_type": "high",
+    "name": "PWH",
+    "period_label": "2026-11-09/2026-11-15",
+    "price": 695.57,
+    "strat_class": "1",
+    "timeframe": "week"
+   },
+   {
+    "is_current": false,
+    "level_type": "low",
+    "name": "PWL",
+    "period_label": "2026-11-09/2026-11-15",
+    "price": 662.02,
+    "strat_class": "1",
+    "timeframe": "week"
+   },
+   {
+    "is_current": false,
+    "level_type": "close",
+    "name": "PWC",
+    "period_label": "2026-11-09/2026-11-15",
+    "price": 679.89,
+    "strat_class": "1",
+    "timeframe": "week"
+   },
+   {
+    "is_current": false,
+    "level_type": "high",
+    "name": "PMH",
+    "period_label": "2026-10",
+    "price": 762.86,
+    "strat_class": "3",
+    "timeframe": "month"
+   },
+   {
+    "is_current": false,
+    "level_type": "low",
+    "name": "PML",
+    "period_label": "2026-10",
+    "price": 683.45,
+    "strat_class": "3",
+    "timeframe": "month"
+   },
+   {
+    "is_current": false,
+    "level_type": "close",
+    "name": "PMC",
+    "period_label": "2026-10",
+    "price": 690.49,
+    "strat_class": "3",
+    "timeframe": "month"
+   },
+   {
+    "is_current": false,
+    "level_type": "high",
+    "name": "PQH",
+    "period_label": "2026Q3",
+    "price": 748.3489999999999,
+    "strat_class": "1",
+    "timeframe": "quarter"
+   },
+   {
+    "is_current": false,
+    "level_type": "low",
+    "name": "PQL",
+    "period_label": "2026Q3",
+    "price": 661.14,
+    "strat_class": "1",
+    "timeframe": "quarter"
+   },
+   {
+    "is_current": false,
+    "level_type": "close",
+    "name": "PQC",
+    "period_label": "2026Q3",
+    "price": 739.77,
+    "strat_class": "1",
+    "timeframe": "quarter"
+   },
+   {
+    "is_current": false,
+    "level_type": "high",
+    "name": "PYH",
+    "period_label": "2025",
+    "price": 637.01,
+    "strat_class": "2U",
+    "timeframe": "year"
+   },
+   {
+    "is_current": false,
+    "level_type": "low",
+    "name": "PYL",
+    "period_label": "2025",
+    "price": 402.39,
+    "strat_class": "2U",
+    "timeframe": "year"
+   },
+   {
+    "is_current": false,
+    "level_type": "close",
+    "name": "PYC",
+    "period_label": "2025",
+    "price": 614.31,
+    "strat_class": "2U",
+    "timeframe": "year"
+   },
+   {
+    "is_current": false,
+    "level_type": "open",
+    "name": "PDO",
+    "period_label": "2026-11-13",
+    "price": 688.54,
+    "strat_class": "2D",
+    "timeframe": "day"
+   },
+   {
+    "is_current": false,
+    "level_type": "open",
+    "name": "PWO",
+    "period_label": "2026-11-09/2026-11-15",
+    "price": 662.64,
+    "strat_class": "1",
+    "timeframe": "week"
+   },
+   {
+    "is_current": true,
+    "level_type": "open",
+    "name": "CMO",
+    "period_label": "2026-11",
+    "price": 695.315,
+    "strat_class": "2D",
+    "timeframe": "month"
+   },
+   {
+    "is_current": false,
+    "level_type": "gap_high",
+    "name": "GAP_H_2026-10-29",
+    "period_label": "2026-10-29",
+    "price": 720.3,
+    "strat_class": "gap_down",
+    "timeframe": "day"
+   },
+   {
+    "is_current": false,
+    "level_type": "gap_low",
+    "name": "GAP_L_2026-10-29",
+    "period_label": "2026-10-29",
+    "price": 718.07,
+    "strat_class": "gap_down",
+    "timeframe": "day"
+   },
+   {
+    "is_current": false,
+    "level_type": "gap_high",
+    "name": "GAP_H_2026-10-30",
+    "period_label": "2026-10-30",
+    "price": 711.62,
+    "strat_class": "gap_down",
+    "timeframe": "day"
+   },
+   {
+    "is_current": false,
+    "level_type": "gap_low",
+    "name": "GAP_L_2026-10-30",
+    "period_label": "2026-10-30",
+    "price": 698.63,
+    "strat_class": "gap_down",
+    "timeframe": "day"
+   },
+   {
+    "is_current": false,
+    "level_type": "high",
+    "name": "parent_bar_high",
+    "period_label": "2026-11-13",
+    "price": 688.75,
+    "strat_class": "",
+    "timeframe": "day"
+   },
+   {
+    "is_current": false,
+    "level_type": "low",
+    "name": "parent_bar_low",
+    "period_label": "2026-11-13",
+    "price": 671.681,
+    "strat_class": "",
+    "timeframe": "day"
+   },
+   {
+    "is_current": true,
+    "level_type": "high",
+    "name": "PMK_H",
+    "period_label": "premarket",
+    "price": 681.022,
+    "strat_class": "",
+    "timeframe": "intraday"
+   },
+   {
+    "is_current": true,
+    "level_type": "low",
+    "name": "PMK_L",
+    "period_label": "premarket",
+    "price": 668.3,
+    "strat_class": "",
+    "timeframe": "intraday"
+   }
+  ],
+  "long": {
+   "candidates": [
+    {
+     "aliases": [
+      "PWC"
+     ],
+     "broken": true,
+     "cents": 67989,
+     "distance_atr": 0.478,
+     "in_window": true,
+     "level_type": "close",
+     "name": "PDC",
+     "period": "2026-11-13",
+     "price": 679.89,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 68102,
+     "distance_atr": 0.547,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "premarket",
+     "price": 681.022,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 68345,
+     "distance_atr": 0.696,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PML",
+     "period": "2026-10",
+     "price": 683.45,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [
+      "parent_bar_high"
+     ],
+     "broken": false,
+     "cents": 68875,
+     "distance_atr": 1.02,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PDH",
+     "period": "2026-11-13",
+     "price": 688.75,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 69049,
+     "distance_atr": 1.127,
+     "in_window": true,
+     "level_type": "close",
+     "name": "PMC",
+     "period": "2026-10",
+     "price": 690.49,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 69557,
+     "distance_atr": 1.437,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PWH",
+     "period": "2026-11-09/2026-11-15",
+     "price": 695.57,
+     "timeframe": "week"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 73977,
+     "distance_atr": 4.143,
+     "in_window": false,
+     "level_type": "close",
+     "name": "PQC",
+     "period": "2026Q3",
+     "price": 739.77,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 74835,
+     "distance_atr": 4.668,
+     "in_window": false,
+     "level_type": "high",
+     "name": "PQH",
+     "period": "2026Q3",
+     "price": 748.3489999999999,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 76286,
+     "distance_atr": 5.556,
+     "in_window": false,
+     "level_type": "high",
+     "name": "PMH",
+     "period": "2026-10",
+     "price": 762.86,
+     "timeframe": "month"
+    }
+   ],
+   "distance_atr": 0.547,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PML",
+     "period": "2026-10",
+     "price": 683.45,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [
+      "parent_bar_high"
+     ],
+     "level_type": "high",
+     "name": "PDH",
+     "period": "2026-11-13",
+     "price": 688.75,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "close",
+     "name": "PMC",
+     "period": "2026-10",
+     "price": 690.49,
+     "timeframe": "month"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": 1.33,
+     "level_type": "high",
+     "name": "PMK_H",
+     "period": "intraday",
+     "price": 681.02
+    },
+    {
+     "distance_pct": 1.69,
+     "level_type": "low",
+     "name": "PML",
+     "period": "month",
+     "price": 683.45
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "16:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 4.08
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 1.33,
+   "side": "long",
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.149,
+     "level_type": "low",
+     "name": "PML",
+     "period": "2026-10",
+     "price": 683.45,
+     "timeframe": "month"
+    },
+    {
+     "aliases": [],
+     "distance_atr": 0.106,
+     "level_type": "close",
+     "name": "PMC",
+     "period": "2026-10",
+     "price": 690.49,
+     "timeframe": "month"
+    }
+   ],
+   "stop": {
+    "aliases": [
+     "parent_bar_low"
+    ],
+    "level_type": "low",
+    "name": "PDL",
+    "period": "2026-11-13",
+    "price": 671.681,
+    "timeframe": "day"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [
+      "parent_bar_high"
+     ],
+     "level_type": "high",
+     "name": "PDH",
+     "period": "2026-11-13",
+     "price": 688.75,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PWH",
+     "period": "2026-11-09/2026-11-15",
+     "price": 695.57,
+     "timeframe": "week"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMK_H",
+    "period": "premarket",
+    "price": 681.022,
+    "timeframe": "intraday"
+   },
+   "window": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "key": "trigger_window_long_atr",
+    "lookback_sessions": 750,
+    "method_id": "daily_excursion_quantile",
+    "min_sample": 250,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 750,
+    "source": "history",
+    "statistic_q": 0.99,
+    "status": "ok",
+    "ticker": "QQQ",
+    "value": 1.887211516070131
+   }
+  },
+  "params": {
+   "atr_rung_anchors": {
+    "atr_basis": "atr_14",
+    "effective_from": "2015-01-02",
+    "extra": {
+     "anchors": [
+      "PDH",
+      "PDL",
+      "PMK_H",
+      "PMK_L"
+     ]
+    },
+    "input_from": null,
+    "input_to": null,
+    "lookback_sessions": null,
+    "method_id": "policy",
+    "min_sample": null,
+    "policy_effective_from": "2015-01-02",
+    "run_id": null,
+    "sample_n": null,
+    "source": "policy",
+    "statistic_q": null,
+    "status": "ok",
+    "value": 4.0
+   },
+   "atr_rung_max_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": null,
+    "input_to": null,
+    "lookback_sessions": null,
+    "method_id": "policy_seed",
+    "min_sample": null,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 0,
+    "source": "history",
+    "statistic_q": null,
+    "status": "ok",
+    "value": 2.0
+   },
+   "atr_rung_step_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": null,
+    "input_to": null,
+    "lookback_sessions": null,
+    "method_id": "policy_seed",
+    "min_sample": null,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 0,
+    "source": "history",
+    "statistic_q": null,
+    "status": "ok",
+    "value": 0.5
+   },
+   "atr_rung_stretch_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": null,
+    "input_to": null,
+    "lookback_sessions": null,
+    "method_id": "policy_seed",
+    "min_sample": null,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 0,
+    "source": "history",
+    "statistic_q": null,
+    "status": "ok",
+    "value": 1.5
+   },
+   "entry_buffer_aggressive_hi_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "follow_through_quantile",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 865,
+    "source": "history",
+    "statistic_q": 0.75,
+    "status": "ok",
+    "value": 0.37218006719998104
+   },
+   "entry_buffer_aggressive_lo_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "at_trigger",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 865,
+    "source": "history",
+    "statistic_q": null,
+    "status": "ok",
+    "value": 0.0
+   },
+   "entry_buffer_conservative_hi_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "follow_through_quantile",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 865,
+    "source": "history",
+    "statistic_q": 0.65,
+    "status": "ok",
+    "value": 0.24674603643003123
+   },
+   "entry_buffer_conservative_lo_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "follow_through_quantile",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 865,
+    "source": "history",
+    "statistic_q": 0.2,
+    "status": "ok",
+    "value": 0.014111068823917631
+   },
+   "entry_buffer_neutral_hi_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "follow_through_quantile",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 865,
+    "source": "history",
+    "statistic_q": 0.5,
+    "status": "ok",
+    "value": 0.102981506234984
+   },
+   "entry_buffer_neutral_lo_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "at_trigger",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 865,
+    "source": "history",
+    "statistic_q": null,
+    "status": "ok",
+    "value": 0.0
+   },
+   "entry_cutoff_et": {
+    "atr_basis": "atr_14",
+    "effective_from": "2015-01-02",
+    "extra": {
+     "time_et": "16:00"
+    },
+    "input_from": null,
+    "input_to": null,
+    "lookback_sessions": null,
+    "method_id": "policy",
+    "min_sample": null,
+    "policy_effective_from": "2015-01-02",
+    "run_id": null,
+    "sample_n": null,
+    "source": "policy",
+    "statistic_q": null,
+    "status": "ok",
+    "value": 960.0
+   },
+   "exit_legs": {
+    "atr_basis": "atr_14",
+    "effective_from": "2015-01-02",
+    "extra": {
+     "legs": 3
+    },
+    "input_from": null,
+    "input_to": null,
+    "lookback_sessions": null,
+    "method_id": "policy",
+    "min_sample": null,
+    "policy_effective_from": "2015-01-02",
+    "run_id": null,
+    "sample_n": null,
+    "source": "policy",
+    "statistic_q": null,
+    "status": "ok",
+    "value": 3.0
+   },
+   "gap_fill_flag_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": null,
+    "input_to": null,
+    "lookback_sessions": null,
+    "method_id": "policy_seed",
+    "min_sample": null,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 0,
+    "source": "history",
+    "statistic_q": null,
+    "status": "ok",
+    "value": 0.5
+   },
+   "level_cluster_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2026-08-21",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 60,
+    "method_id": "rth_interval_change_quantile",
+    "min_sample": 40,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 60,
+    "source": "history",
+    "statistic_q": 0.5,
+    "status": "ok",
+    "value": 0.05072557608866945
+   },
+   "min_stop_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-20",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "filled_held_mae_quantile",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 386,
+    "source": "history",
+    "statistic_q": 0.5,
+    "status": "ok",
+    "value": 0.1768941897838584
+   },
+   "plan_target_level_types": {
+    "atr_basis": "atr_14",
+    "effective_from": "2015-01-02",
+    "extra": {
+     "level_types": [
+      "gap_high",
+      "gap_low"
+     ]
+    },
+    "input_from": null,
+    "input_to": null,
+    "lookback_sessions": null,
+    "method_id": "policy",
+    "min_sample": null,
+    "policy_effective_from": "2015-01-02",
+    "run_id": null,
+    "sample_n": null,
+    "source": "policy",
+    "statistic_q": null,
+    "status": "ok",
+    "value": 2.0
+   },
+   "pm_spike_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2026-08-21",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 60,
+    "method_id": "premarket_wick_excess_quantile",
+    "min_sample": 40,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 60,
+    "source": "history",
+    "statistic_q": 0.999,
+    "status": "ok",
+    "value": 1.072507165357459
+   },
+   "pm_stale_print_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2026-08-21",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 60,
+    "method_id": "premarket_bar_spread_quantile",
+    "min_sample": 40,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 60,
+    "source": "history",
+    "statistic_q": 0.95,
+    "status": "ok",
+    "value": 0.03712180991173313
+   },
+   "stop_aggressive_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-20",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "filled_held_mae_quantile",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 407,
+    "source": "history",
+    "statistic_q": 0.9,
+    "status": "ok",
+    "value": 0.5174364829346509
+   },
+   "stop_conservative_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-20",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "filled_held_mae_quantile",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 407,
+    "source": "history",
+    "statistic_q": 0.6,
+    "status": "ok",
+    "value": 0.23625212764015807
+   },
+   "stop_neutral_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-20",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "filled_held_mae_quantile",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 386,
+    "source": "history",
+    "statistic_q": 0.75,
+    "status": "ok",
+    "value": 0.31183693291165704
+   },
+   "target_aggressive_1_r": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-20",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "filled_reach_share",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 595,
+    "source": "history",
+    "statistic_q": 0.4,
+    "status": "ok",
+    "value": 0.6164530732603762
+   },
+   "target_aggressive_2_r": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-20",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "filled_reach_share",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 595,
+    "source": "history",
+    "statistic_q": 0.25,
+    "status": "ok",
+    "value": 0.955835736865826
+   },
+   "target_aggressive_3_r": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-20",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "filled_reach_share",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 595,
+    "source": "history",
+    "statistic_q": 0.15,
+    "status": "ok",
+    "value": 1.2890424481208882
+   },
+   "target_conservative_1_r": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "filled_reach_share",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 644,
+    "source": "history",
+    "statistic_q": 0.65,
+    "status": "ok",
+    "value": 0.4454596518681976
+   },
+   "target_conservative_2_r": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "filled_reach_share",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 644,
+    "source": "history",
+    "statistic_q": 0.5,
+    "status": "ok",
+    "value": 0.7273331840984542
+   },
+   "target_min_spacing_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": null,
+    "input_to": null,
+    "lookback_sessions": null,
+    "method_id": "policy_seed",
+    "min_sample": null,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 0,
+    "source": "history",
+    "statistic_q": null,
+    "status": "ok",
+    "value": 0.25
+   },
+   "target_neutral_1_r": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "filled_reach_share",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 686,
+    "source": "history",
+    "statistic_q": 0.6,
+    "status": "ok",
+    "value": 0.5063396726618952
+   },
+   "target_neutral_2_r": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "filled_reach_share",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 686,
+    "source": "history",
+    "statistic_q": 0.45,
+    "status": "ok",
+    "value": 0.7849896656818667
+   },
+   "target_neutral_3_r": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "filled_reach_share",
+    "min_sample": 150,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 686,
+    "source": "history",
+    "statistic_q": 0.3,
+    "status": "ok",
+    "value": 1.1924490238432188
+   },
+   "trigger_window_long_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "daily_excursion_quantile",
+    "min_sample": 250,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 750,
+    "source": "history",
+    "statistic_q": 0.99,
+    "status": "ok",
+    "value": 1.887211516070131
+   },
+   "trigger_window_short_atr": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "lookback_sessions": 750,
+    "method_id": "daily_excursion_quantile",
+    "min_sample": 250,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 750,
+    "source": "history",
+    "statistic_q": 0.99,
+    "status": "ok",
+    "value": 2.471954787514459
+   }
+  },
+  "pmg_status": "ok",
+  "pmg_zones": [
+   {
+    "center_price": 679.89,
+    "count": 2,
+    "level_names": [
+     "PDC",
+     "PWC"
+    ],
+    "strength": 2.5,
+    "timeframes": [
+     "day",
+     "week"
+    ]
+   },
+   {
+    "center_price": 695.44,
+    "count": 2,
+    "level_names": [
+     "CMO",
+     "PWH"
+    ],
+    "strength": 2.5,
+    "timeframes": [
+     "month",
+     "week"
+    ]
+   },
+   {
+    "center_price": 662.33,
+    "count": 2,
+    "level_names": [
+     "PWL",
+     "PWO"
+    ],
+    "strength": 2.0,
+    "timeframes": [
+     "week"
+    ]
+   },
+   {
+    "center_price": 688.64,
+    "count": 2,
+    "level_names": [
+     "PDO",
+     "PDH"
+    ],
+    "strength": 2.0,
+    "timeframes": [
+     "day"
+    ]
+   }
+  ],
+  "policy_effective_from": "2015-01-02",
+  "premarket": {
+   "date": "2026-11-16",
+   "excluded_bars": 16,
+   "excluded_spikes": 0,
+   "excluded_stale_prints": 16,
+   "fetched_at": "2026-11-16T13:20:55.074732+00:00",
+   "gap_pct": -0.7428,
+   "pre_filter_params": {
+    "atr": 16.338327465620264,
+    "atr_basis": "atr_14",
+    "pm_spike_atr": {
+     "effective_from": "2026-11-16",
+     "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+     "status": "ok",
+     "value": 1.072507165357459
+    },
+    "pm_stale_print_atr": {
+     "effective_from": "2026-11-16",
+     "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+     "status": "ok",
+     "value": 0.03712180991173313
+    },
+    "policy_effective_from": "2015-01-02"
+   },
+   "pre_filter_status": "ok",
+   "pre_high": 681.022,
+   "pre_low": 668.3,
+   "pre_vwap": 672.0842284536367
+  },
+  "premarket_status": "ok",
+  "prior_close": 679.89,
+  "reference": 672.0842284536367,
+  "reference_source": "pre_vwap",
+  "rule_version": "feat-strat-001.v3",
+  "session_date": "2026-11-16",
+  "short": {
+   "candidates": [
+    {
+     "aliases": [
+      "parent_bar_low"
+     ],
+     "broken": true,
+     "cents": 67168,
+     "distance_atr": 0.025,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PDL",
+     "period": "2026-11-13",
+     "price": 671.681,
+     "timeframe": "day"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 66830,
+     "distance_atr": 0.232,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "premarket",
+     "price": 668.3,
+     "timeframe": "intraday"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 66202,
+     "distance_atr": 0.616,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PWL",
+     "period": "2026-11-09/2026-11-15",
+     "price": 662.02,
+     "timeframe": "week"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 66114,
+     "distance_atr": 0.67,
+     "in_window": true,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "2026Q3",
+     "price": 661.14,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 63701,
+     "distance_atr": 2.147,
+     "in_window": true,
+     "level_type": "high",
+     "name": "PYH",
+     "period": "2025",
+     "price": 637.01,
+     "timeframe": "year"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 61431,
+     "distance_atr": 3.536,
+     "in_window": false,
+     "level_type": "close",
+     "name": "PYC",
+     "period": "2025",
+     "price": 614.31,
+     "timeframe": "year"
+    },
+    {
+     "aliases": [],
+     "broken": false,
+     "cents": 40239,
+     "distance_atr": 16.507,
+     "in_window": false,
+     "level_type": "low",
+     "name": "PYL",
+     "period": "2025",
+     "price": 402.39,
+     "timeframe": "year"
+    }
+   ],
+   "distance_atr": 0.232,
+   "gate_targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PWL",
+     "period": "2026-11-09/2026-11-15",
+     "price": 662.02,
+     "timeframe": "week"
+    },
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PQL",
+     "period": "2026Q3",
+     "price": 661.14,
+     "timeframe": "quarter"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PYH",
+     "period": "2025",
+     "price": 637.01,
+     "timeframe": "year"
+    }
+   ],
+   "ladder": [
+    {
+     "distance_pct": -0.56,
+     "level_type": "low",
+     "name": "PMK_L",
+     "period": "intraday",
+     "price": 668.3
+    },
+    {
+     "distance_pct": -1.5,
+     "level_type": "low",
+     "name": "PWL",
+     "period": "week",
+     "price": 662.02
+    }
+   ],
+   "plan": {
+    "atr_basis": "atr_14",
+    "entry_cutoff_et": "16:00",
+    "entry_cutoff_status": "ok",
+    "gap_fill_flag_atr": 0.5,
+    "gap_fill_flag_status": "ok",
+    "legs": 3,
+    "spacing_atr": 0.25,
+    "spacing_price": 4.08
+   },
+   "reason": null,
+   "regime": "normal",
+   "room_pct": 0.563,
+   "side": "short",
+   "skipped": [
+    {
+     "aliases": [],
+     "distance_atr": 0.054,
+     "level_type": "low",
+     "name": "PQL",
+     "period": "2026Q3",
+     "price": 661.14,
+     "timeframe": "quarter"
+    }
+   ],
+   "stop": {
+    "aliases": [
+     "PWC"
+    ],
+    "level_type": "close",
+    "name": "PDC",
+    "period": "2026-11-13",
+    "price": 679.89,
+    "timeframe": "day"
+   },
+   "target_status": "ok",
+   "targets": [
+    {
+     "aliases": [],
+     "level_type": "low",
+     "name": "PWL",
+     "period": "2026-11-09/2026-11-15",
+     "price": 662.02,
+     "timeframe": "week"
+    },
+    {
+     "aliases": [],
+     "level_type": "high",
+     "name": "PYH",
+     "period": "2025",
+     "price": 637.01,
+     "timeframe": "year"
+    }
+   ],
+   "trigger": {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PMK_L",
+    "period": "premarket",
+    "price": 668.3,
+    "timeframe": "intraday"
+   },
+   "window": {
+    "atr_basis": "atr_14",
+    "effective_from": "2026-11-16",
+    "input_from": "2023-11-17",
+    "input_to": "2026-11-13",
+    "key": "trigger_window_short_atr",
+    "lookback_sessions": 750,
+    "method_id": "daily_excursion_quantile",
+    "min_sample": 250,
+    "policy_effective_from": "2015-01-02",
+    "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+    "sample_n": 750,
+    "source": "history",
+    "statistic_q": 0.99,
+    "status": "ok",
+    "ticker": "QQQ",
+    "value": 2.471954787514459
+   }
+  },
+  "status": "ok",
+  "strat_class": "2D",
+  "ticker": "QQQ"
+ },
+ "model_versions": {
+  "analyst": "vertex:gemini-3.1-flash-lite",
+  "bear": "vertex:gemini-3.1-flash-lite",
+  "bull": "vertex:gemini-3.1-flash-lite",
+  "judge": "vertex:gemini-3.1-flash-lite",
+  "portfolio_manager": "vertex:gemini-3.1-flash-lite",
+  "risk": "vertex:gemini-3.1-flash-lite",
+  "trader": "vertex:gemini-3.1-flash-lite"
+ },
+ "per_role_cost": {
+  "analyst:catalyst": 0.000517,
+  "analyst:gamma": 0.000712,
+  "analyst:market": 0.000539,
+  "analyst:options": 0.00048,
+  "analyst:sentiment": 0.000327,
+  "analyst:strat": 0.000655,
+  "bear": 0.005003,
+  "bull": 0.00518,
+  "judge": 0.000619,
+  "portfolio_manager": 0.000969,
+  "risk:aggressive": 0.000797,
+  "risk:conservative": 0.00075,
+  "risk:neutral": 0.00066,
+  "trader": 0.00104
+ },
+ "persona_plans": [
+  {
+   "entry_zone": {
+    "high": 668.3,
+    "low": 662.22
+   },
+   "persona": "aggressive",
+   "position_size_pct": 1.2,
+   "rationale": "entry at the trigger to 0.37x ATR past the trigger, reached by 25% of past breaks; 0.52x ATR stop ($16.34 ATR), R = $8.45, targets at 0.62R/0.96R/1.29R; 1.20\u00d7 size on medium conviction.",
+   "regime": "normal",
+   "risk_metrics": {
+    "entry_vs_sma200_atr": -1.039,
+    "entry_vs_sma200_pct": -2.489,
+    "ftfc_aligned": true,
+    "invalidation_distance_atr": null,
+    "stop_distance_atr": 0.517,
+    "stop_distance_pct": 1.27,
+    "target_r_multiples": [
+     0.617,
+     0.956,
+     1.29
+    ]
+   },
+   "stop": 673.71,
+   "targets": [
+    660.05,
+    657.18,
+    654.36
+   ]
+  },
+  {
+   "entry_zone": {
+    "high": 668.3,
+    "low": 666.62
+   },
+   "persona": "neutral",
+   "position_size_pct": 1.0,
+   "rationale": "entry at the trigger to 0.10x ATR past the trigger, reached by 50% of past breaks; 0.31x ATR stop ($16.34 ATR), R = $5.09, targets at 0.51R/0.78R/1.19R; 1.00\u00d7 size on medium conviction.",
+   "regime": "normal",
+   "risk_metrics": {
+    "entry_vs_sma200_atr": -0.905,
+    "entry_vs_sma200_pct": -2.166,
+    "ftfc_aligned": true,
+    "invalidation_distance_atr": null,
+    "stop_distance_atr": 0.312,
+    "stop_distance_pct": 0.763,
+    "target_r_multiples": [
+     0.507,
+     0.786,
+     1.194
+    ]
+   },
+   "stop": 672.55,
+   "targets": [
+    664.88,
+    663.46,
+    661.38
+   ]
+  },
+  {
+   "entry_zone": {
+    "high": 668.07,
+    "low": 664.27
+   },
+   "persona": "conservative",
+   "position_size_pct": 0.3,
+   "rationale": "entry 0.01x ATR past the trigger, reached by 80% of past breaks to 0.25x ATR past the trigger, reached by 35% of past breaks; 0.24x ATR stop anchored at structure ($16.34 ATR), R = $3.86, targets at 0.45R/0.73R; 0.30\u00d7 size on medium conviction (catalyst damper applied).",
+   "regime": "normal",
+   "risk_metrics": {
+    "entry_vs_sma200_atr": -0.984,
+    "entry_vs_sma200_pct": -2.355,
+    "ftfc_aligned": true,
+    "invalidation_distance_atr": null,
+    "stop_distance_atr": 0.236,
+    "stop_distance_pct": 0.579,
+    "target_r_multiples": [
+     0.446,
+     0.728
+    ]
+   },
+   "stop": 670.03,
+   "targets": [
+    664.45,
+    663.36
+   ]
+  }
+ ],
+ "regime": "normal",
+ "risk_flags": [
+  {
+   "message": "Targets are too conservative. Given the bearish regime and FTFC score, capping the trade at 640.0 leaves significant meat on the bone; consider trailing the position to capture a larger move.",
+   "persona": "aggressive",
+   "severity": "warn"
+  },
+  {
+   "message": "Stop loss is well-placed above the 20-day EMA, but ensure sizing is aggressive enough to capitalize on the momentum if the breakdown accelerates.",
+   "persona": "aggressive",
+   "severity": "info"
+  },
+  {
+   "message": "High-impact catalysts detected (Fed Chairman Warsh, Core Retail Sales, FOMC Minutes) within the holding period.",
+   "persona": "conservative",
+   "severity": "info"
+  }
+ ],
+ "run_cost_usd": 0.018248,
+ "run_latency_ms": 40457,
+ "similar_past_trades": [],
+ "stop": 672.55,
+ "strat_status": {
+  "aggregation_policy": "observed_v2",
+  "available": true,
+  "bar_validity": {
+   "reasons": [],
+   "valid": true
+  },
+  "clock_policy": "observation_instant",
+  "confirmed_setups": {
+   "confirmed": [
+    "1w"
+   ],
+   "observation_ts": "2026-11-16T08:45:55.328770-05:00",
+   "rule_version": "closed-candle-v1",
+   "timeframes": {
+    "15m": {
+     "candle": null,
+     "combo": null,
+     "developing": null,
+     "period_end": null,
+     "reasons": [
+      "source_not_supplied"
+     ],
+     "setup": false,
+     "state": "unavailable"
+    },
+    "1h": {
+     "candle": null,
+     "combo": null,
+     "developing": null,
+     "period_end": null,
+     "reasons": [
+      "source_not_supplied"
+     ],
+     "setup": false,
+     "state": "unavailable"
+    },
+    "1w": {
+     "candle": "1",
+     "combo": "none",
+     "developing": null,
+     "period_end": "2026-11-13T16:00:00-05:00",
+     "reasons": [],
+     "setup": true,
+     "state": "confirmed"
+    },
+    "30m": {
+     "candle": null,
+     "combo": null,
+     "developing": null,
+     "period_end": null,
+     "reasons": [
+      "source_not_supplied"
+     ],
+     "setup": false,
+     "state": "unavailable"
+    },
+    "4h": {
+     "candle": null,
+     "combo": null,
+     "developing": null,
+     "period_end": null,
+     "reasons": [
+      "source_not_supplied"
+     ],
+     "setup": false,
+     "state": "unavailable"
+    },
+    "5m": {
+     "candle": null,
+     "combo": null,
+     "developing": null,
+     "period_end": null,
+     "reasons": [
+      "source_not_supplied"
+     ],
+     "setup": false,
+     "state": "unavailable"
+    }
+   }
+  },
+  "coverage": {
+   "1d": {
+    "available": false,
+    "completed": false,
+    "coverage_complete": false,
+    "partial": true,
+    "period_end": "2026-11-16T16:00:00-05:00",
+    "period_start": "2026-11-16T09:30:00-05:00",
+    "reasons": [
+     "missing_period_open",
+     "no_observations"
+    ],
+    "source_cutoff": null
+   },
+   "1mo": {
+    "available": true,
+    "completed": false,
+    "coverage_complete": true,
+    "partial": true,
+    "period_end": "2026-11-30T16:00:00-05:00",
+    "period_start": "2026-11-02T09:30:00-05:00",
+    "reasons": [],
+    "source_cutoff": "2026-11-13T16:00:00-05:00"
+   },
+   "1w": {
+    "available": false,
+    "completed": false,
+    "coverage_complete": false,
+    "partial": true,
+    "period_end": "2026-11-20T16:00:00-05:00",
+    "period_start": "2026-11-16T09:30:00-05:00",
+    "reasons": [
+     "missing_period_open",
+     "no_observations"
+    ],
+    "source_cutoff": null
+   }
+  },
+  "data_as_of": "2026-11-13T16:00:00-05:00",
+  "ftfc_direction": "bearish",
+  "ftfc_score": -0.75,
+  "in_force_combo": "22_bear_continuation",
+  "last_candle": "2D",
+  "observation_ts": "2026-11-16T08:45:55.328770-05:00",
+  "price_adjustment": "unknown",
+  "reason": null,
+  "rule_version": "strat-state-v2",
+  "session": "2026-11-16",
+  "source_acquired_at": null,
+  "source_acquisition_status": "unknown",
+  "trigger_high": 694.56,
+  "trigger_low": 679.83
+ },
+ "supporting_signals": [],
+ "targets": [
+  664.88,
+  663.46,
+  661.38
+ ],
+ "thesis": "The asset is currently trapped in a structural downtrend with spot price pinned to a critical negative gamma level, creating a high-probability environment for continued liquidation. While the technical setup favors a breakdown, the presence of multiple high-impact economic catalysts within the holding period introduces significant event risk that warrants a cautious approach despite the bearish structural alignment.",
+ "ticker": "QQQ",
+ "time_horizon": "swing"
+}
