@@ -414,6 +414,12 @@ REPLAY_PATH: dict[str, tuple[str, ...]] = {
     "scripts/calibrate_thresholds.py": ("*",),
     "lib/exec_backtest/cli.py": ("*",),
     "gcp/premarket_playbook_resolver.py": ("*",),
+    # The ATR marks experiment (FEAT-STRAT-001 ATR mark targets spec r2,
+    # "Experiment"): it replays the brief with BRIEF_AS_OF into a local
+    # database and scores the stored bases; the bars it reads are the local
+    # table's. Its `load` (the operator's bucket download into the local
+    # template) is not a replay entry.
+    "scripts/analysis/atr_marks_experiment.py": ("replay", "score", "baseline"),
 }
 
 # (file, function) -> why a DataLoader use inside it is allowed for now.
@@ -2365,6 +2371,10 @@ def test_the_entry_point_checks_read_relative_imports_and_importlib():
 VARIABLE_TABLE_WRITERS = {
     "gcp/database.py",                 # the write helpers; the name is the key of the UTC check
     "scripts/archive_yahoo_data.py",   # the Yahoo archive: copy, then delete with --delete
+    # The ATR marks experiment's `load`: psql \copy of the daily export and the
+    # bucket bars into the LOCAL template database only (require_local_db
+    # refuses any DB_HOST but 127.0.0.1 or localhost), never production.
+    "scripts/analysis/atr_marks_experiment.py",
 }
 
 
