@@ -3,7 +3,7 @@ feat_id: FEAT-SIGNAL-001
 spec: docs/superpowers/specs/2026-11-11-feat-signal-001-brief-rsi-bands-r2.md
 branch: fix/feat-signal-001-brief-rsi-bands
 pr: 1808
-status: ready
+status: done
 ---
 
 # The brief scores RSI against the ticker's calibrated band: implementation plan

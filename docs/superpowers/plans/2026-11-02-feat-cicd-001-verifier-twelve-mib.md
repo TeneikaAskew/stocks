@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md
 branch: feature/feat-cicd-001-verifier-twelve-mib
 pr: 1699
-status: ready
+status: done
 ---
 
 # SITE source verifier twelve-MiB ceiling implementation plan

@@ -3,7 +3,7 @@ feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-11-11-feat-strat-001-brief-exits-in-thirds.md
 branch: fix/feat-strat-001-brief-exits-in-thirds
 pr: 1832
-status: ready
+status: done
 ---
 
 # The brief's targets are spaced by the ticker's ATR and its exit is planned in thirds: implementation plan
