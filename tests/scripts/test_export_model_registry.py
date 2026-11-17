@@ -376,7 +376,8 @@ def test_ci_checks_the_pr_head_commit(repo):
     # The exporter the PR ships judges the JSON it ships, so this runs in its own
     # unprivileged pull_request workflow checked out at the head, not in the gate job.
     assert list(workflow.get("on", workflow.get(True))) == ["pull_request"]
-    assert list(jobs) == ["registry"]
+    # FEAT-CICD-001: the base suites may run here too, in their own job base-suite after the registry job
+    assert list(jobs) in (["registry"], ["registry", "base-suite"])
     checkout = next(s for s in jobs["registry"]["steps"] if s.get("uses", "").startswith("actions/checkout"))
     assert "ref" not in checkout.get("with", {})
     steps = jobs["registry"]["steps"]
