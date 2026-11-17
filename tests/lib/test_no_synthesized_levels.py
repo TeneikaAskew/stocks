@@ -141,6 +141,8 @@ def test_risk_reviewer_input_takes_a_null_plan():
         assert p["entry_zone"] is None and p["stop"] is None and p["risk_metrics"] is None
 
 
+_ATR_HEADER = re.compile(r"ATR levels, ATR\(\d+\) \d+\.\d{2}:")
+
 # ── every published price is a level or a plan offset from one ──────────
 
 def _expected_plan(params, persona, trigger, atr, direction, stop_anchor):
@@ -186,6 +188,10 @@ def test_every_brief_price_is_a_level(monkeypatch, ticker):
     # PMG ZONES print cluster centers (an average of the named levels, a
     # context block that names no trigger); every other price is a level.
     text = text.split("PMG ZONES:")[0]
+    # The ATR levels line states the ATR it steps in (ATR levels spec,
+    # Design 5), a unit and not a level; every rung it prints is checked.
+    assert sl.atr_rung_status == "ok" and "    ATR levels, ATR(14) " in text
+    text = _ATR_HEADER.sub("ATR levels:", text)
     known = sl.published_prices()
     printed = [float(m) for m in re.findall(r"(?<![\d.])(\d{2,5}\.\d{2})(?![\d%])", text)]
     assert printed
@@ -196,4 +202,7 @@ def test_every_brief_price_is_a_level(monkeypatch, ticker):
 def test_orb_only_brief_block_prints_no_price():
     b = basis({"PWH": 120.0, "PWL": 80.0}, prior_close=100.0, atr=1.0)
     text = format_levels_for_brief(SessionLevels.from_basis(b).to_level_map(), "neutral")
+    # The ATR levels line's ATR is a unit, not a price (ATR levels spec).
+    assert "    ATR levels, ATR(14) 1.00: up none; down none" in text
+    text = _ATR_HEADER.sub("ATR levels:", text)
     assert not re.search(r"\d+\.\d{2}(?!%)", text.replace("3x", "")), text

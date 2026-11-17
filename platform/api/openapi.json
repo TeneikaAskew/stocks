@@ -2014,6 +2014,21 @@
         "title": "EquitySummary",
         "type": "object"
       },
+      "ErrorDetail": {
+        "additionalProperties": true,
+        "description": "The body of a 404 or 503 from the bar and replay routes: one string.\n\nThe frontend tells the cases apart by how `detail` starts (`No 1-min\nbars for `, `No daily bar for `, `Invalid date `, `Could not read `),\nnever by the status alone.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorDetail",
+        "type": "object"
+      },
       "ExpectedMove": {
         "additionalProperties": true,
         "properties": {
@@ -5021,6 +5036,163 @@
           "is_dev"
         ],
         "title": "MeResponse",
+        "type": "object"
+      },
+      "MeWatchlistAddRequest": {
+        "additionalProperties": true,
+        "properties": {
+          "source": {
+            "enum": [
+              "ui",
+              "combobox-auto-add"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "source"
+        ],
+        "title": "MeWatchlistAddRequest",
+        "type": "object"
+      },
+      "MeWatchlistRemoveResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "owner_email": {
+            "title": "Owner Email",
+            "type": "string"
+          },
+          "removed": {
+            "const": true,
+            "title": "Removed",
+            "type": "boolean"
+          },
+          "tickers": {
+            "items": {
+              "$ref": "#/components/schemas/MeWatchlistRow"
+            },
+            "title": "Tickers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "owner_email",
+          "as_of",
+          "tickers",
+          "removed"
+        ],
+        "title": "MeWatchlistRemoveResponse",
+        "type": "object"
+      },
+      "MeWatchlistResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "owner_email": {
+            "title": "Owner Email",
+            "type": "string"
+          },
+          "tickers": {
+            "items": {
+              "$ref": "#/components/schemas/MeWatchlistRow"
+            },
+            "title": "Tickers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "owner_email",
+          "as_of",
+          "tickers"
+        ],
+        "title": "MeWatchlistResponse",
+        "type": "object"
+      },
+      "MeWatchlistRow": {
+        "additionalProperties": true,
+        "properties": {
+          "added_at": {
+            "title": "Added At",
+            "type": "string"
+          },
+          "asset_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Type"
+          },
+          "exchange": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exchange"
+          },
+          "last_daily_bar": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Daily Bar"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "added_at"
+        ],
+        "title": "MeWatchlistRow",
         "type": "object"
       },
       "MineAndValidateRequest": {
@@ -10363,6 +10535,81 @@
         "title": "WatchlistAddResponse",
         "type": "object"
       },
+      "WatchlistDefaultResponse": {
+        "additionalProperties": true,
+        "description": "GET /api/insights/watchlist/default (FEAT-INSIGHT-001 stage A).\n\nRead-only: the owner is the literal 'default' for every caller, and the\nrows are ordered by added_at, then ticker. An empty default list is a\n200 with ``rows: []``; a failed Cloud SQL read is a 503, never an empty\nlist (CLAUDE.md 3.7).",
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "owner": {
+            "const": "default",
+            "title": "Owner",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/WatchlistDefaultRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "as_of",
+          "owner",
+          "rows"
+        ],
+        "title": "WatchlistDefaultResponse",
+        "type": "object"
+      },
+      "WatchlistDefaultRow": {
+        "additionalProperties": true,
+        "description": "One active row of the default watchlist with its surface flags.\n\n``added_at`` is the ISO instant of the TIMESTAMPTZ column, never a pandas\nTimestamp repr (solyra types it as a string). ``source`` is nullable in\ngcp/schema.sql; the three flags are NOT NULL there.",
+        "properties": {
+          "added_at": {
+            "title": "Added At",
+            "type": "string"
+          },
+          "in_brief": {
+            "title": "In Brief",
+            "type": "boolean"
+          },
+          "in_insight": {
+            "title": "In Insight",
+            "type": "boolean"
+          },
+          "signals": {
+            "title": "Signals",
+            "type": "boolean"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "in_brief",
+          "in_insight",
+          "signals",
+          "added_at"
+        ],
+        "title": "WatchlistDefaultRow",
+        "type": "object"
+      },
       "WatchlistRemoveResponse": {
         "additionalProperties": true,
         "properties": {
@@ -11725,7 +11972,7 @@
     },
     "/api/backtest/replay-trades": {
       "post": {
-        "description": "Score the signed-in user's labeled journal trades against actual bars\nand benchmark them against the system (Task 3.2). 422 if neither\n`trade_ids` nor `session_id` is given; 404 if nothing matches; strict\nfail-loud (uncaught exception -> 500) on any Cloud SQL error loading the\njournal rows or the bars — never a silent empty/zero-filled result\n(CLAUDE.md Rule 3.7).",
+        "description": "Score the signed-in user's labeled journal trades against actual bars\nand benchmark them against the system (Task 3.2). 422 if neither\n`trade_ids` nor `session_id` is given; 404 if nothing matches. A failed\nread of the journal rows or of the bars is never a silent\nempty/zero-filled result (CLAUDE.md Rule 3.7): a database outage is a\n503 (`Could not read ...`) and a defect is a 500. A date the table holds\nno bars for is not a failure: its trades come back `unavailable`.",
         "operationId": "replay_trades_api_backtest_replay_trades_post",
         "requestBody": {
           "content": {
@@ -11757,6 +12004,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Replay Trades"
@@ -13223,6 +13480,25 @@
         "summary": "Add To Watchlist"
       }
     },
+    "/api/insights/watchlist/default": {
+      "get": {
+        "description": "Return the active default watchlist with its surface flags, read-only.\n\nIdentical for an open-mode caller and a signed-in caller: the web reads\nthe default list, it cannot change it (Discord and the CLI can). Reads\nthrough ``query_to_dataframe_strict`` so a Cloud SQL outage is a 503\nwith the exception text (a defect stays a 500), never an empty list; zero rows is a 200 with\n``rows: []`` (an empty default list is a true state).",
+        "operationId": "get_default_watchlist_api_insights_watchlist_default_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchlistDefaultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Default Watchlist"
+      }
+    },
     "/api/insights/watchlist/{ticker}": {
       "delete": {
         "description": "Soft-delete a ticker from the watchlist (sets removed_at=NOW()).\n\nPersists to the `watchlists` Cloud SQL table; the alert_config.json\nfile is no longer touched at runtime — it's a seed-only artefact.",
@@ -14121,6 +14397,16 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -14130,6 +14416,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Get Market Data"
@@ -14196,7 +14492,7 @@
     },
     "/api/market/reference/{ticker}/{date}": {
       "get": {
-        "description": "Get previous day OHLC reference levels for support/resistance.\n\nStrategy:\n  1. AlphaVantage TIME_SERIES_DAILY when requested date is within the last ~30 days\n     (AV is always real-time; avoids stale Cloud SQL issues)\n  2. Cloud SQL market_data_daily for historical requests (fast, has indicators)\n  3. Local parquet fallback (minute bars aggregated)\n\nReturns the OHLC of the trading day immediately before the requested date,\nplus a `week` block containing the high/low across the previous 5 trading days.",
+        "description": "Get previous day OHLC reference levels for support/resistance.\n\ndate format: YYYYMMDD (e.g., 20260220) or YYYY-MM-DD.\n\nOne read: the five newest `market_data_daily` rows dated before the\nrequested date that hold a close. A row the premarket refresh has\ninserted and the nightly fetch has not yet filled has no prices and is\nnever the reference day. The newest is the reference day; `week` is the\nhigh/low across those rows (null under two rows). `source` is always\n`cloud_sql`.\n`stale_days` is the calendar days from the reference day to the requested\ndate when the request is under 30 days old and that gap is over 3, else 0.\n\n404 when the table holds no daily bar before the date (`No daily bar for\n...`) or the date is malformed (`Invalid date ...`). 503 when the database\ncannot be read (`Could not read ...`). No vendor is called.",
         "operationId": "get_reference_levels_api_market_reference__ticker___date__get",
         "parameters": [
           {
@@ -14229,6 +14525,16 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -14238,6 +14544,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Get Reference Levels"
@@ -14389,6 +14705,102 @@
           }
         },
         "summary": "Put Profile"
+      }
+    },
+    "/api/me/watchlist": {
+      "get": {
+        "description": "List the caller's active watchlist (401 without a signed-in identity,\n503 on a Cloud SQL outage; a defect stays a 500).",
+        "operationId": "get_me_watchlist_api_me_watchlist_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeWatchlistResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Me Watchlist"
+      },
+      "post": {
+        "description": "Add a ticker to the caller's watchlist and answer the updated list.\n\nOne transaction: the per-owner advisory lock first (adds for one owner\nserialize, so the cap cannot be raced), then the count (409 at the cap),\nthe shared ticker row, and the membership upsert. A re-add clears\nremoved_at and never rewrites added_at. 401 without an identity, 422 for a\nbad ticker, 503 on a Cloud SQL outage; a defect stays a 500.\n\nThe write is committed before the list is read back, so a 503 from that\nread does not undo it. A client should refresh with GET rather than retry\nthe write (a retried add at the cap would answer 409 for a ticker already\non the list).",
+        "operationId": "add_me_watchlist_api_me_watchlist_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MeWatchlistAddRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeWatchlistResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Me Watchlist"
+      }
+    },
+    "/api/me/watchlist/{ticker}": {
+      "delete": {
+        "description": "Soft-remove a ticker from the caller's watchlist and answer the list.\n\n404 when the caller has no active row for it, 422 for a bad ticker, 401\nwithout an identity, 503 on a Cloud SQL outage; a defect stays a 500.\n\nThe write is committed before the list is read back, so a 503 from that\nread does not undo it. A client should refresh with GET rather than retry\nthe write (a retried remove would answer 404 for a ticker already removed).",
+        "operationId": "remove_me_watchlist_api_me_watchlist__ticker__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker",
+            "required": true,
+            "schema": {
+              "title": "Ticker",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeWatchlistRemoveResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Me Watchlist"
       }
     },
     "/api/movement-statement": {
@@ -15477,7 +15889,7 @@
     },
     "/api/style/mine-and-validate": {
       "post": {
-        "description": "Mine the caller's closed journal trades into a condition profile,\nwalk-forward validate the top one, and stage the result (Task 4.3).\n\n200 `{\"status\": \"unavailable\", \"reason\": ...}` (never a 4xx/5xx) for\nevery \"not enough signal yet\" case — too few closed trades, or mining\nproduced no profile for either direction — since these are expected,\nrecoverable states for a user early in their journal history, not\nerrors. A genuine Cloud SQL failure still propagates as a 5xx (Rule\n3.7 — INTERNAL failures fail loud, never a fabricated empty result).",
+        "description": "Mine the caller's closed journal trades into a condition profile,\nwalk-forward validate the top one, and stage the result (Task 4.3).\n\n200 `{\"status\": \"unavailable\", \"reason\": ...}` (never a 4xx/5xx) for\nevery \"not enough signal yet\" case — too few closed trades, or mining\nproduced no profile for either direction — since these are expected,\nrecoverable states for a user early in their journal history, not\nerrors. A failed read of the journal rows or of the per-trade bars is\nnot one of them (Rule 3.7): a database outage is a 503 (`Could not\nread ...`) and a defect is a 500, never a fabricated empty result.",
         "operationId": "mine_and_validate_api_style_mine_and_validate_post",
         "requestBody": {
           "content": {
@@ -15517,6 +15929,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Mine And Validate"

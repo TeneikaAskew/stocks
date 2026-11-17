@@ -1,7 +1,6 @@
 {
  "gcp/audit_job_runner.py": {
   "host-today": [
-   "main::date.today()",
    "main::datetime.now()"
   ]
  },
@@ -13,11 +12,6 @@
  "gcp/backfill_ticker.py": {
   "host-today": [
    "_parse_dates::date.today()"
-  ]
- },
- "gcp/backtest_job.py": {
-  "host-today": [
-   "_resolve_window::date.today()"
   ]
  },
  "gcp/build_intraday_flow.py": {
@@ -37,55 +31,19 @@
    "_load_intraday_spots::pd.to_datetime(df['ts'], utc=True)"
   ]
  },
- "gcp/build_options_daily_greeks.py": {
-  "host-today": [
-   "main::date.today()",
-   "main::date.today()"
-  ]
- },
  "gcp/build_realtime_gex.py": {
   "host-today": [
    "compute_realtime_frame::pd.Timestamp.utcnow()",
-   "compute_realtime_frame::pd.Timestamp.utcnow()",
-   "main::date.today()",
-   "main::date.today()"
+   "compute_realtime_frame::pd.Timestamp.utcnow()"
   ],
   "utc-parse": [
    "_load_intraday_spots::pd.to_datetime(df['ts'], utc=True)",
    "_load_realtime_chain::pd.to_datetime(df['ts'], utc=True)"
   ]
  },
- "gcp/discord_interactions/main.py": {
-  "host-today": [
-   "parse_date_arg::date.today()"
-  ]
- },
- "gcp/earnings_long_watchlist.py": {
-  "host-today": [
-   "main::date.today()"
-  ],
-  "sql-utc-date": [
-   "_query_watchlist::fstr#3c17358f2881"
-  ]
- },
  "gcp/fetchers/backfill_daily_indicators.py": {
-  "host-today": [
-   "_filter_recent_rows::_date.today()"
-  ],
   "sql-utc-date": [
-   "<module>::str#60fba3841c30",
-   "_tickers_with_gaps::fstr#b950f2df4227"
-  ]
- },
- "gcp/fetchers/build_options_daily_features.py": {
-  "host-today": [
-   "main::date.today()",
-   "main::date.today()"
-  ]
- },
- "gcp/fetchers/compute_earnings_reactions.py": {
-  "host-today": [
-   "_resolve_scope::_dt.now()"
+   "<module>::str#60fba3841c30"
   ]
  },
  "gcp/fetchers/evaluate_ew_strikes.py": {
@@ -100,80 +58,22 @@
    "main::date.today()"
   ]
  },
- "gcp/fetchers/fetch_av_historical_options.py": {
-  "host-today": [
-   "_resolve_start_from_latest::date.today()",
-   "_resolve_start_from_latest::date.today()",
-   "main::date.today()",
-   "main::date.today()",
-   "main::date.today()"
-  ]
- },
  "gcp/fetchers/fetch_av_indicators.py": {
   "utc-parse": [
    "fetch_indicator::pd.to_datetime(df['ts'], utc=True)"
   ]
  },
- "gcp/fetchers/fetch_earnings_history.py": {
-  "host-today": [
-   "_resolve_scope::_dt.now()"
-  ],
-  "sql-utc-date": [
-   "_earnings_calendar_tickers::str#abf8af94b4ed"
-  ]
- },
- "gcp/fetchers/fetch_economic_events.py": {
-  "host-today": [
-   "fetch_fred_releases::date.today()"
-  ]
- },
- "gcp/fetchers/fetch_fred_rates.py": {
-  "host-today": [
-   "main::date.today()"
-  ]
- },
- "gcp/fetchers/fetch_insider_transactions.py": {
-  "host-today": [
-   "fetch_for_ticker::pd.Timestamp.utcnow()"
-  ],
-  "sql-utc-date": [
-   "_earnings_calendar_tickers::str#6c7f6bf52128"
-  ]
- },
  "gcp/fetchers/fetch_market_data.py": {
   "sql-utc-date": [
-   "_earnings_tickers_in_window::str#2af0a28b3cb3"
+   "_earnings_tickers_in_window::fstr#1fa2471ddfa5"
   ]
  },
  "gcp/fetchers/fetch_news_sentiment.py": {
   "sql-utc-date": [
-   "_earnings_calendar_tickers::str#6c7f6bf52128"
+   "_earnings_calendar_tickers::fstr#591204bc497c"
   ],
   "utc-parse": [
    "_last_published_ts::pd.to_datetime(val, utc=True)"
-  ]
- },
- "gcp/fetchers/fetch_premarket_refresh.py": {
-  "host-today": [
-   "main::date.today()"
-  ]
- },
- "gcp/fetchers/fetch_sec_filings.py": {
-  "host-today": [
-   "main::date.today()"
-  ],
-  "sql-utc-date": [
-   "_earnings_calendar_tickers::str#6c7f6bf52128"
-  ]
- },
- "gcp/fetchers/fetch_top_movers.py": {
-  "host-today": [
-   "fetch_top_movers::date.today()"
-  ]
- },
- "gcp/indicator_correlation_job.py": {
-  "host-today": [
-   "main::date.today()"
   ]
  },
  "gcp/migrate_to_gcp.py": {
@@ -187,11 +87,6 @@
   ]
  },
  "gcp/premarket_brief.py": {
-  "host-today": [
-   "_resolve_analysis_date::date.today()",
-   "_resolve_analysis_date::date.today()",
-   "persist_to_cloud_sql::date.today()"
-  ],
   "tz-localize-none": [
    "generate_premarket_brief::df.index.tz_localize(None)",
    "generate_premarket_brief::df.index.tz_localize(None)"
@@ -236,19 +131,6 @@
  "gcp/queries/verify_brief_bias_distribution.sql": {
   "sql-utc-date": [
    "<sql>::sql#ef4e1de8379d"
-  ]
- },
- "gcp/refresh_earnings_views.py": {
-  "host-today": [
-   "refresh_daily::date.today()"
-  ],
-  "sql-utc-date": [
-   "refresh_daily::fstr#e2ebe6247dcf"
-  ]
- },
- "gcp/regime_combo_job.py": {
-  "host-today": [
-   "main::date.today()"
   ]
  },
  "gcp/research/direction_program/phase2_ablation.py": {
@@ -402,9 +284,6 @@
   ]
  },
  "gcp/research/strat_engine/strat_pred_serve.py": {
-  "host-today": [
-   "predict_one::pd.Timestamp.utcnow()"
-  ],
   "utc-parse": [
    "predict_one::pd.to_datetime(as_of, utc=True)",
    "predict_one::pd.to_datetime(df['ts'], utc=True)",
@@ -440,7 +319,6 @@
   "host-today": [
    "SignalMonitor._check_exits::datetime.now()",
    "SignalMonitor._evaluate_strategies_for_bar::datetime.now()",
-   "SignalMonitor.fetch_latest_bar::datetime.now()",
    "SignalMonitor.fire_alert::datetime.utcnow()"
   ],
   "tz-localize-none": [
@@ -462,20 +340,6 @@
    "EODResolver.resolve_one::alert_ts.tz_localize(None)"
   ]
  },
- "gcp/trade_logger.py": {
-  "host-today": [
-   "TradeLogger._daily_file::datetime.now()",
-   "TradeLogger.get_daily_trades::datetime.now()",
-   "TradeLogger.get_weekly_trades::datetime.now()",
-   "TradeLogger.get_weekly_trades::datetime.now()",
-   "TradeLogger.log_trade::datetime.now()"
-  ]
- },
- "gcp/weekend_review.py": {
-  "host-today": [
-   "generate_weekly_review::datetime.now()"
-  ]
- },
  "lib/agents/ranker/candidates.py": {
   "sql-utc-date": [
    "_candidates_from_8k::str#9217b328cc62",
@@ -494,16 +358,7 @@
    "signal_recent_8k::str#d76536fd1833"
   ]
  },
- "lib/agents/summarizers.py": {
-  "host-today": [
-   "_check_chain_freshness::date_type.today()",
-   "summarize_gamma_levels::date_type.today()"
-  ]
- },
  "lib/data_loader.py": {
-  "host-today": [
-   "_check_staleness::date.today()"
-  ],
   "tz-localize-none": [
    "DataLoader._strip_timezone::df.index.tz_localize(None)",
    "DataLoader._strip_timezone::df['Time'].dt.tz_localize(None)"
@@ -563,11 +418,6 @@
    "reconstruct_day::pd.to_datetime(out['ts'], utc=True)"
   ]
  },
- "lib/indicators.py": {
-  "host-today": [
-   "calculate_orb::datetime.today()"
-  ]
- },
  "lib/options_exec_backtest/iv_lookup.py": {
   "utc-parse": [
    "IVLookup.preload::pd.to_datetime(df['snapshot_ts'], utc=True)"
@@ -588,29 +438,15 @@
    "_compute_current_levels::ad_ts.tz_convert('UTC').tz_localize(None)"
   ]
  },
- "lib/strategies/calibration.py": {
-  "host-today": [
-   "_latest_calibration::date.today()"
-  ]
- },
- "lib/strategies/exit_config_overrides.py": {
-  "host-today": [
-   "_latest_overrides::date.today()"
-  ]
- },
  "lib/trading_analysis.py": {
   "host-today": [
-   "MarketAnalyzer._archive_file::datetime.now()",
-   "MarketAnalyzer._calculate_orb::datetime.today()"
+   "MarketAnalyzer._archive_file::datetime.now()"
   ]
  },
  "platform/api/main.py": {
-  "host-today": [
-   "get_reference_levels::datetime.now()"
-  ],
   "tz-localize-none": [
-   "get_market_data::df.index.tz_localize(None)",
-   "get_reference_levels::df.index.tz_localize(None)"
+   "_reference_from_gcs_local_dev::df.index.tz_localize(None)",
+   "get_market_data::df.index.tz_localize(None)"
   ]
  },
  "platform/api/routers/backtest.py": {
@@ -619,19 +455,11 @@
   ]
  },
  "platform/api/routers/catalysts.py": {
-  "host-today": [
-   "get_catalyst_events::datetime.now()",
-   "get_catalyst_snapshot::_date.today()",
-   "get_catalysts_for_ticker::datetime.now()"
-  ],
   "sql-utc-date": [
    "_news_sql::str#b68870b10be5"
   ]
  },
  "platform/api/routers/dashboard.py": {
-  "host-today": [
-   "_apply_live_overlay::datetime.now()"
-  ],
   "tz-localize-none": [
    "_build_movement_level_map::ts_col.dt.tz_localize(None)"
   ]
@@ -639,12 +467,6 @@
  "platform/api/routers/earnings.py": {
   "sql-utc-date": [
    "upcoming::fstr#9dbb3d5e81df"
-  ]
- },
- "platform/api/routers/grid.py": {
-  "host-today": [
-   "_load_chain_for_live::date_type.today()",
-   "get_grid_timeseries::date_type.today()"
   ]
  },
  "platform/api/routers/options.py": {
@@ -754,21 +576,9 @@
    "needs_sec_filings::str#e3e4d3464037"
   ]
  },
- "scripts/backtest_playability.py": {
-  "host-today": [
-   "compute_options_insights::datetime.now()"
-  ]
- },
  "scripts/calibrate_earnings.py": {
   "sql-utc-date": [
    "apply_winner::str#c9a485322b9a"
-  ]
- },
- "scripts/calibrate_thresholds.py": {
-  "host-today": [
-   "_parse_as_of::date.today()",
-   "calibrate_ticker::date.today()",
-   "fetch_bars::date.today()"
   ]
  },
  "scripts/check_event_window_concentration.py": {
@@ -798,26 +608,16 @@
  },
  "scripts/fetch_catalyst_calendar.py": {
   "host-today": [
-   "_save_catalysts_locked::datetime.now()",
-   "main::datetime.now()"
+   "_save_catalysts_locked::datetime.now()"
   ]
  },
  "scripts/fetch_earnings_calendar.py": {
   "host-today": [
    "EarningsCalendarFetcher.fetch_unusual_whales_earnings::datetime.now()",
-   "EarningsCalendarFetcher.fetch_unusual_whales_earnings::datetime.now()",
-   "EarningsCalendarFetcher.print_summary::datetime.now()",
    "_fetch_yahoo_bulk::datetime.now()",
    "_fetch_yahoo_one::datetime.now()",
    "_fetch_yahoo_one::datetime.now()",
-   "_resolve_scope::datetime.now()",
-   "_resolve_target_dates_for_av_options::datetime.now()",
-   "fetch_alphavantage_earnings::datetime.now()",
-   "main::datetime.now()",
-   "main::datetime.now()",
-   "main::datetime.now()",
-   "main::datetime.now()",
-   "main::datetime.now()"
+   "fetch_alphavantage_earnings::datetime.now()"
   ]
  },
  "scripts/fetch_market_data.py": {
@@ -903,14 +703,6 @@
   "utc-parse": [
    "_process_ticker::pd.to_datetime(signals_df['entry_time'], utc=True)",
    "map_signals_to_table::pd.to_datetime(out['entry_time'], utc=True)"
-  ]
- },
- "scripts/run_param_sweep.py": {
-  "host-today": [
-   "main::date.today()"
-  ],
-  "sql-utc-date": [
-   "apply_winner::str#f9f26d5f0493"
   ]
  },
  "scripts/run_timeframe_sweep.py": {

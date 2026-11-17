@@ -15,7 +15,7 @@ done_when:
   - "After the first scheduled run, a read-only scripts/db_query_cr.sh run of SELECT job_name, status, items_total, items_processed, items_failed, rows_written, note FROM job_runs WHERE job_name = 'fetch-watched-tickers' ORDER BY started_at DESC LIMIT 1 shows status ok, and SELECT ticker, MAX(date) FROM market_data_daily WHERE ticker = ANY(the watched set) GROUP BY ticker shows that session's date for every processed ticker; both outputs are pasted on the PR with their execution ids"
   - "scripts/audit_data_freshness.py gains a heartbeat check for fetch-watched-tickers: a finding when job_runs holds no status ok row for that job dated within the last two sessions (lib.eastern_time), and an informational row when the latest row's note carries overflow or its items_failed is above zero; tests/audits/test_audit_freshness_job_observability.py covers an absent heartbeat, an overdue one, a healthy one and an overflow note"
   - "The FEAT-DATA-001 catalog record and the PR traceability entry are updated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: approved
+status: superseded
 supersedes: null
 ---
 

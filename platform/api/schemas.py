@@ -46,6 +46,17 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
 
+class ErrorDetail(ApiModel):
+    """The body of a 404 or 503 from the bar and replay routes: one string.
+
+    The frontend tells the cases apart by how `detail` starts (`No 1-min
+    bars for `, `No daily bar for `, `Invalid date `, `Could not read `),
+    never by the status alone.
+    """
+
+    detail: str
+
+
 # ── live.py ──────────────────────────────────────────────────────────────
 
 
@@ -373,9 +384,9 @@ class ReferenceResponse(ApiModel):
     high: float
     low: float
     close: float
-    # Absent on the GCS branch; present on AlphaVantage and Cloud SQL.
+    # Always "cloud_sql" from the table; absent on the local-dev bucket branch.
     source: Optional[str] = None
-    # Present on the Cloud SQL branch only.
+    # Present from the table only; absent on the local-dev bucket branch.
     stale_days: Optional[int] = None
     week: Optional[WeekRange] = None
 
@@ -1469,6 +1480,59 @@ class WatchlistRemoveResponse(ApiModel):
     ticker: str
     removed: bool
     watchlist: list[str]
+
+
+class WatchlistDefaultRow(ApiModel):
+    """One active row of the default watchlist with its surface flags.
+
+    ``added_at`` is the ISO instant of the TIMESTAMPTZ column, never a pandas
+    Timestamp repr (solyra types it as a string). ``source`` is nullable in
+    gcp/schema.sql; the three flags are NOT NULL there."""
+
+    ticker: str
+    in_brief: bool
+    in_insight: bool
+    signals: bool
+    source: Optional[str] = None
+    added_at: str
+
+
+class WatchlistDefaultResponse(ApiModel):
+    """GET /api/insights/watchlist/default (FEAT-INSIGHT-001 stage A).
+
+    Read-only: the owner is the literal 'default' for every caller, and the
+    rows are ordered by added_at, then ticker. An empty default list is a
+    200 with ``rows: []``; a failed Cloud SQL read is a 503, never an empty
+    list (CLAUDE.md 3.7)."""
+
+    as_of: str
+    owner: Literal["default"]
+    rows: list[WatchlistDefaultRow]
+
+
+class MeWatchlistAddRequest(ApiModel):
+    ticker: str
+    source: Literal["ui", "combobox-auto-add"]
+
+
+class MeWatchlistRow(ApiModel):
+    ticker: str
+    added_at: str
+    source: Optional[str] = None
+    name: Optional[str] = None
+    exchange: Optional[str] = None
+    asset_type: Optional[str] = None
+    last_daily_bar: Optional[str] = None
+
+
+class MeWatchlistResponse(ApiModel):
+    owner_email: str
+    as_of: str
+    tickers: list[MeWatchlistRow]
+
+
+class MeWatchlistRemoveResponse(MeWatchlistResponse):
+    removed: Literal[True]
 
 
 class InsightHistoryRow(ApiModel):

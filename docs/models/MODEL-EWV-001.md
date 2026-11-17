@@ -3,10 +3,10 @@
 **Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 **Code:** `gcp/fetchers/evaluate_ew_strikes.py` ·
-**Writes:** `earnings_calendar.ew_*` columns ·
-**Job:** `evaluate-ew-strikes` (`0 23 * * 1-5`, after the close) ·
+**Writes:** no scheduled scorer writes; historical `earnings_calendar.ew_*` columns retained ·
+**Job:** retired `evaluate-ew-strikes`; scorer source removal remains pending P-I ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
-**Status:** Production but needs remediation · **Rec:** KEEP
+**Status:** Retired (operationally, 2026-11-13) · **Rec:** REMOVE
 **Doc health:** CURRENT · **Last verified:** 2026-09-26
 
 > Registered 2026-09-18 by the round-10 sweep. It was invisible to the sweep's own first pass
@@ -15,6 +15,23 @@
 > "no write, no Discord, no lib/ import found" — evidence that would have justified excluding
 > a job whose output a person reads every morning. The regex was fixed in the same change
 > (`scripts/audit_scheduler_coverage.py`).
+
+## Operational retirement — 2026-11-13
+
+The evaluator Cloud Run job and Scheduler are removed. The separately deployed
+premarket brief no longer consumes or renders EW picks or verdicts. Its verified
+execution `premarket-brief-s7kz6` completed at 15:32:06 UTC on November 13, retaining
+non-EW earnings, prior-AMC reactions, market analysis and economic-calendar output.
+Historical rows and verdict columns remain intact.
+
+This records operational retirement, not completed source removal. The scorer
+implementation still exists in `gcp/fetchers/evaluate_ew_strikes.py` on main;
+P-I removes it only after its normal source review and checks. The existing
+`nyse_sessions` helper and its AV collector and earnings-session consumers remain
+required. No calendar, schema, secret or historical data is removed here.
+
+The scorer behavior and incident measurements below are retained historical
+context; they do not assert that the retired scheduled scorer is still running.
 
 ## What it decides
 

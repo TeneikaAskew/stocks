@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pre-market refresh fetcher — runs at 8:20 AM ET (premarket-refresh-daily), before the 8:30 brief.
+Pre-market refresh fetcher — runs at 8:20 AM ET (premarket-refresh-daily), before the 8:30 brief, and at 9:20 AM ET before the late brief once the FEAT-DEPLOY-001 schedule is applied.
 
 Targets a small set of tickers (today's earnings reporters + watchlist),
 fetches today's pre-market bars from AlphaVantage, and UPSERTs the
@@ -42,6 +42,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+from lib.eastern_time import market_today
+
 log = logging.getLogger(__name__)
 
 
@@ -81,11 +84,11 @@ def resolve_universe(target_date: date, max_tickers: int = 50) -> list[str]:
 
     # Today's earnings tickers with options flow (priority 1)
     try:
-        sql = """
+        sql = f"""
             SELECT ticker, MAX(options_volume) AS opt_vol,
                    MAX(market_cap)            AS mcap
               FROM earnings_calendar
-             WHERE earnings_date = :d
+             WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date = :d
                AND COALESCE(options_volume, 0) > 0
              GROUP BY ticker
              ORDER BY (COALESCE(MAX(options_volume), 0) + 1)
@@ -108,9 +111,9 @@ def resolve_universe(target_date: date, max_tickers: int = 50) -> list[str]:
         # Walk back over weekends/holidays — find most recent weekday
         while prior.weekday() >= 5:
             prior -= timedelta(days=1)
-        sql_amc = """
+        sql_amc = f"""
             SELECT DISTINCT ticker FROM earnings_calendar
-             WHERE earnings_date = :d
+             WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date = :d
                AND earnings_time = 'postmarket'
                AND COALESCE(options_volume, 0) > 0
         """
@@ -241,7 +244,7 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
                  ticker, iso_date)
         return None
 
-    return {
+    snapshot = {
         'ticker': ticker,
         'date': fetch_date,
         'pre_high': pm.get('pre_high'),
@@ -264,6 +267,34 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         'pre_filter_params': (json.dumps(pm_filter['params'], sort_keys=True)
                               if pm_filter['params'] is not None else None),
     }
+    # How late the vendor's newest premarket bar is at this fetch
+    # (FEAT-PLAYBOOK-001: the late brief builds on what this run fetched).
+    # A log record only; nothing is stored.
+    from lib.eastern_time import as_eastern_time
+    newest = _newest_premarket_bar(df.index)
+    log.info("  %s: premarket bars=%d newest_bar=%s ET fetched_at=%s ET",
+             ticker, pm['bar_count'],
+             newest.strftime('%H:%M') if newest is not None else 'unavailable',
+             as_eastern_time(fetched_at).strftime('%H:%M:%S'))
+    return snapshot
+
+
+def _newest_premarket_bar(index) -> pd.Timestamp | None:
+    """The last bar at or after lib.indicators.PREMARKET_START and before
+    REGULAR_SESSION_OPEN, in the vendor's own Eastern wall time; None when
+    there is none. The vendor's index is naive Eastern and is read as it is;
+    a zone-aware index is converted to Eastern first, the way
+    calculate_premarket_context reads it."""
+    from lib.eastern_time import ET_NAME
+    from lib.indicators import PREMARKET_START, REGULAR_SESSION_OPEN
+
+    idx = pd.DatetimeIndex(index)
+    if len(idx) == 0:
+        return None
+    if idx.tz is not None:
+        idx = idx.tz_convert(ET_NAME)
+    premarket = [ts for ts in idx if PREMARKET_START <= ts.time() < REGULAR_SESSION_OPEN]
+    return max(premarket) if premarket else None
 
 
 # ── Persist (UPSERT only the pre_* columns) ─────────────────────────────────
@@ -382,7 +413,7 @@ def main():
     args = parser.parse_args()
 
     target = (datetime.strptime(args.date, '%Y-%m-%d').date()
-              if args.date else date.today())
+              if args.date else market_today())
 
     api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     if not api_key:

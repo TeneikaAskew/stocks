@@ -11,8 +11,10 @@ from unittest.mock import patch
 
 import pytest
 
+from lib.eastern_time import market_today
 from lib.strategies import calibration
 from lib.strategies.config import CALL_RSI_RANGE, PUT_RSI_RANGE
+from tests.fixtures.market_clock import freeze_market_clock
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +37,7 @@ def test_no_row_returns_tier_b_call():
 
 def test_fresh_row_returns_tier_a_put():
     fresh = {
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p10": 35.0,
         "rsi_p25": 43.0,
         "rsi_p50": 50.5,
@@ -48,7 +50,7 @@ def test_fresh_row_returns_tier_a_put():
 
 def test_fresh_row_returns_tier_a_call():
     fresh = {
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p10": 35.0,
         "rsi_p50": 50.5,
         "rsi_p90": 65.0,
@@ -60,7 +62,7 @@ def test_fresh_row_returns_tier_a_call():
 def test_null_p50_falls_back_put():
     """Tier-A requires both p50 and p90 to be non-NULL for PUT."""
     row = {
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p50": None,
         "rsi_p90": 65.0,
     }
@@ -77,7 +79,7 @@ def test_nan_p50_falls_back_put():
     """
     import math
     row = {
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p50": math.nan,
         "rsi_p90": 65.0,
     }
@@ -88,7 +90,7 @@ def test_nan_p50_falls_back_put():
 def test_nan_p90_falls_back_put():
     import math
     row = {
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p50": 50.5,
         "rsi_p90": math.nan,
     }
@@ -99,7 +101,7 @@ def test_nan_p90_falls_back_put():
 def test_nan_p10_falls_back_call():
     import math
     row = {
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p10": math.nan,
         "rsi_p50": 50.5,
     }
@@ -112,7 +114,7 @@ def test_resolution_tier_b_when_columns_nan():
     Tier-A audit when the calibration is effectively NULL."""
     import math
     row = {
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p10": 35.0, "rsi_p50": math.nan, "rsi_p90": 65.0,
     }
     with patch.object(calibration, "_latest_calibration", return_value=row):
@@ -124,7 +126,7 @@ def test_inf_falls_back():
     """Inf should also be rejected — math.isfinite catches it."""
     import math
     row = {
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p50": math.inf,
         "rsi_p90": 65.0,
     }
@@ -134,7 +136,7 @@ def test_inf_falls_back():
 
 def test_null_p90_falls_back_put():
     row = {
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p50": 50.5,
         "rsi_p90": None,
     }
@@ -144,7 +146,7 @@ def test_null_p90_falls_back_put():
 
 def test_null_p10_falls_back_call():
     row = {
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p10": None,
         "rsi_p50": 50.5,
     }
@@ -154,7 +156,7 @@ def test_null_p10_falls_back_call():
 
 def test_resolution_tier_returns_a_when_populated():
     fresh = {
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p10": 35.0, "rsi_p50": 50.5, "rsi_p90": 65.0,
     }
     with patch.object(calibration, "_latest_calibration", return_value=fresh):
@@ -169,7 +171,7 @@ def test_resolution_tier_returns_b_when_no_row():
 
 
 def test_resolution_tier_b_when_columns_null():
-    row = {"calibration_date": date.today(), "rsi_p50": None, "rsi_p90": 65.0}
+    row = {"calibration_date": market_today(), "rsi_p50": None, "rsi_p90": 65.0}
     with patch.object(calibration, "_latest_calibration", return_value=row):
         assert calibration.get_resolution_tier("X", "PUT") == "B"
 
@@ -233,7 +235,7 @@ def test_resolver_falls_back_to_tier_b_when_drift_flagged():
     import pandas as pd
     calibration._latest_calibration.cache_clear()
     flagged_row = pd.DataFrame([{
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p10": 25.0, "rsi_p25": 35.0, "rsi_p50": 50.0,
         "rsi_p75": 65.0, "rsi_p90": 75.0,
         "lookback_days": 60, "n_bars_used": 30000,
@@ -253,7 +255,7 @@ def test_resolver_returns_row_when_drift_flagged_false():
     import pandas as pd
     calibration._latest_calibration.cache_clear()
     clean_row = pd.DataFrame([{
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p10": 25.0, "rsi_p25": 35.0, "rsi_p50": 50.0,
         "rsi_p75": 65.0, "rsi_p90": 75.0,
         "lookback_days": 60, "n_bars_used": 30000,
@@ -274,7 +276,7 @@ def test_resolver_legacy_query_when_drift_column_missing():
     import pandas as pd
     calibration._latest_calibration.cache_clear()
     legacy_row = pd.DataFrame([{
-        "calibration_date": date.today(),
+        "calibration_date": market_today(),
         "rsi_p10": 25.0, "rsi_p25": 35.0, "rsi_p50": 50.0,
         "rsi_p75": 65.0, "rsi_p90": 75.0,
         "lookback_days": 60, "n_bars_used": 30000,
@@ -339,27 +341,25 @@ def test_as_of_reads_the_row_in_force_on_that_date(legacy_first):
     assert all("calibration_date <= :as_of" in s and p["as_of"] == date(2026, 5, 4) for s, p in seen)
 
 
-def test_as_of_staleness_is_measured_from_as_of():
+def test_as_of_staleness_is_measured_from_as_of(monkeypatch):
     """2026-04-01 is over 180 days before the day this was written, but
     33 days before the replayed session, so a replay of 2026-05-04 uses it."""
     seen = []
+    freeze_market_clock(monkeypatch, "2026-11-11T16:00:00Z", calibration)  # 2026-11-11 11:00 EST
     with patch("gcp.database.is_cloud_sql_configured", return_value=True), \
          patch("gcp.database.get_engine", return_value=None), \
-         patch("pandas.read_sql", side_effect=_fake_table(seen)), \
-         patch.object(calibration, "date") as fake_date:
-        fake_date.today.return_value = date(2026, 11, 11)
+         patch("pandas.read_sql", side_effect=_fake_table(seen)):
         assert calibration._latest_calibration("SPY", date(2026, 5, 4)) is not None
         calibration._latest_calibration.cache_clear()
         assert calibration._latest_calibration("SPY", date(2027, 1, 15)) is None  # 198 days after 07-01
 
 
-def test_without_as_of_the_query_is_unchanged():
+def test_without_as_of_the_query_is_unchanged(monkeypatch):
     seen = []
+    freeze_market_clock(monkeypatch, "2026-07-02T16:00:00Z", calibration)  # 2026-07-02 12:00 EDT
     with patch("gcp.database.is_cloud_sql_configured", return_value=True), \
          patch("gcp.database.get_engine", return_value=None), \
-         patch("pandas.read_sql", side_effect=_fake_table(seen)), \
-         patch.object(calibration, "date") as fake_date:
-        fake_date.today.return_value = date(2026, 7, 2)
+         patch("pandas.read_sql", side_effect=_fake_table(seen)):
         row = calibration._latest_calibration("SPY")
     assert row["calibration_date"] == date(2026, 7, 1)
     assert len(seen) == 1 and ":as_of" not in seen[0][0] and seen[0][1] == {"ticker": "SPY"}

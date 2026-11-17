@@ -33,13 +33,15 @@ import logging
 import os
 import sys
 from contextlib import redirect_stdout
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+from lib.eastern_time import market_today  # noqa: E402
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s - %(message)s")
@@ -78,7 +80,7 @@ def _resolve_window() -> tuple[str, str]:
     """Resolve BACKTEST_START / BACKTEST_END, defaulting to a 5y window
     ending today. Per the plan doc §12 user decision, /backtest defaults
     to 5y with --use-strat — matches the strategy actually being traded."""
-    today = date.today()
+    today = market_today()
     end = (os.environ.get("BACKTEST_END") or "").strip() or today.isoformat()
     if (s := (os.environ.get("BACKTEST_START") or "").strip()):
         start = s

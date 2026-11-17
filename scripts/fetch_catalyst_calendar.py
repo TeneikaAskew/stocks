@@ -24,7 +24,7 @@ import tempfile
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -591,6 +591,21 @@ def _save_catalysts_locked(events, output_path):
     return merged
 
 
+def _market_today() -> date:
+    """Today's date on the exchange's clock.
+
+    Run by hand this file is started by path
+    (``python scripts/fetch_catalyst_calendar.py``), where the repo root is not
+    on ``sys.path`` and a module-level ``from lib.eastern_time import ...``
+    fails. The import is made here, after putting the root on the path.
+    """
+    _root = str(Path(__file__).resolve().parent.parent)
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
+    from lib.eastern_time import market_today
+    return market_today()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fetch catalyst calendar from Benzinga")
     parser.add_argument("--days", type=int, default=14,
@@ -615,7 +630,7 @@ def main():
     if not api_key:
         sys.exit(1)
 
-    today = datetime.now()
+    today = _market_today()
     date_from = (today - timedelta(days=args.days_back)).strftime("%Y-%m-%d")
     date_to = (today + timedelta(days=args.days)).strftime("%Y-%m-%d")
 

@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from gcp.trade_logger import TradeLogger
+from lib.eastern_time import market_today
 
 
 def _capture(method, *args, **kwargs):
@@ -217,7 +218,7 @@ def test_fallback_handles_the_real_nine_column_file_and_a_mixed_file_row_by_row(
     tl = TradeLogger(output_dir=str(tmp_path))
     # log_trade appends to TODAY's file (the live monitor logs today's
     # trades), so the mixed file is today's; the test must not pin a date.
-    d2 = date.today()
+    d2 = market_today()
     d1 = d2 - timedelta(days=1)
     _write_parquet(tl._daily_file(d1), [_real_row('SPY'), _real_row('IWM')])
     pd.DataFrame([_real_row('QQQ')]).to_parquet(tl._daily_file(d2), index=False)
@@ -296,7 +297,7 @@ def test_a_failed_cloud_sql_read_reaches_the_parquet_backup(tmp_path, monkeypatc
     from gcp import trade_logger as tl
 
     logger = tl.TradeLogger(output_dir=str(tmp_path))
-    d = date.today()
+    d = market_today()
     backup = pd.DataFrame([{
         "ticker": "IWM", "direction": "CALL", "entry_time": "09:35",
         "trade_date": str(d), "run_kind": "live",

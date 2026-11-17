@@ -13,11 +13,12 @@ import os
 import sys
 import logging
 from pathlib import Path
-from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pandas as pd
+
+from lib.eastern_time import market_today
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ class TradeLogger:
 
     def _daily_file(self, date=None) -> Path:
         if date is None:
-            date = datetime.now().date()
+            date = market_today()
         return self.output_dir / f'{date}.parquet'
 
     def log_trade(self, trade_data: dict):
@@ -84,7 +85,7 @@ class TradeLogger:
         serialized = dict(trade_data)
 
         if 'trade_date' not in serialized:
-            serialized['trade_date'] = str(datetime.now().date())
+            serialized['trade_date'] = str(market_today())
 
         # ── Cloud SQL write ──────────────────────────────────────────────────
         if _cloud_sql_active():
@@ -170,7 +171,7 @@ class TradeLogger:
         if _cloud_sql_active():
             try:
                 from gcp.database import query_to_dataframe_strict
-                date_str = str(date or datetime.now().date())
+                date_str = str(date or market_today())
                 params = {'d': date_str}
                 df = query_to_dataframe_strict(
                     "SELECT * FROM trades WHERE trade_date = :d"
@@ -205,7 +206,7 @@ class TradeLogger:
             try:
                 from gcp.database import query_to_dataframe_strict
                 if week_end_date is None:
-                    week_end_date = datetime.now().date()
+                    week_end_date = market_today()
                 start = week_end_date - pd.Timedelta(days=6)
                 params = {'start': str(start), 'end': str(week_end_date)}
                 df = query_to_dataframe_strict(
@@ -221,7 +222,7 @@ class TradeLogger:
 
         # Parquet fallback
         if week_end_date is None:
-            week_end_date = datetime.now().date()
+            week_end_date = market_today()
 
         frames = []
         for i in range(7):
