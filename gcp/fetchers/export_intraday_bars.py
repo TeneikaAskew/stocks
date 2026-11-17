@@ -85,6 +85,11 @@ def manifest_name(ticker: str) -> str:
     return f"{PREFIX}/{ticker}/manifest.json"
 
 
+#: ``retry`` not given to ``GcsBucket.write``: the library's default applies.
+#: A sentinel rather than None, because ``retry=None`` (no retry) is a value.
+LIBRARY_DEFAULT = object()
+
+
 class GenerationMismatch(Exception):
     """A write named the generation it expected and the object has another."""
 
@@ -131,19 +136,30 @@ class GcsBucket:
         return self._generation(blob, name)
 
     def write(self, name: str, data: bytes,
-              if_generation_match: Optional[int] = None) -> int:
+              if_generation_match: Optional[int] = None,
+              timeout: Optional[float] = None, retry=LIBRARY_DEFAULT) -> int:
         """Store *data* whole and return the new generation, the one the
         upload's own response reports.
 
         With *if_generation_match* the write happens only while the object is
         at that generation (0: only while it does not exist); otherwise
         ``GenerationMismatch`` is raised and nothing is stored.
+
+        *timeout* and *retry* reach the upload only when given; otherwise the
+        library's own defaults apply, as they do for every export write.
+        ``retry=None`` is a value: one attempt, no retry (the premarket
+        as-read record, FEAT-DATA-001).
         """
         from google.api_core.exceptions import PreconditionFailed  # noqa: PLC0415
 
+        options: dict = {}
+        if timeout is not None:
+            options["timeout"] = timeout
+        if retry is not LIBRARY_DEFAULT:
+            options["retry"] = retry
         blob = self._bucket.blob(name)
         try:
-            blob.upload_from_string(data, if_generation_match=if_generation_match)
+            blob.upload_from_string(data, if_generation_match=if_generation_match, **options)
         except PreconditionFailed as exc:
             raise GenerationMismatch(
                 f"{name}: the write expected generation {if_generation_match}") from exc
