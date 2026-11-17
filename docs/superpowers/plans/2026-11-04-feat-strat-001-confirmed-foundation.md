@@ -3,7 +3,7 @@ feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-11-05-feat-strat-001-foundation-tracked-docs-audit.md
 branch: feature/feat-strat-001-confirmed-foundation
 pr: 1714
-status: ready
+status: done
 ---
 
 # FEAT-STRAT-001 confirmed foundation release

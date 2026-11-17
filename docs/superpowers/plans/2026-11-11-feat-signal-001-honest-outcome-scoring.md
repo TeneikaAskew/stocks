@@ -3,7 +3,7 @@ feat_id: FEAT-SIGNAL-001
 spec: docs/superpowers/specs/2026-11-11-feat-signal-001-honest-outcome-scoring.md
 branch: fix/feat-signal-001-honest-outcome-scoring
 pr: 1833
-status: ready
+status: done
 ---
 
 # Honest outcome scoring implementation plan

@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-04-feat-cicd-001-done-and-autonomy.md
 branch: feature/feat-cicd-001-done-and-autonomy
 pr: 1726
-status: ready
+status: done
 ---
 
 # Owner directive in CLAUDE.md: definition of done and autonomy
