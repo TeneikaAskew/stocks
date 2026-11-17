@@ -93,11 +93,11 @@ def _nov5_daily(ticker):
 
 
 @pytest.mark.parametrize('ticker, ftfc_line, tf_bias_line, labels_line, state', [
-    ('QQQ', 'FTFC: bearish (Q red, M red, W red)', 'TF bias: +0.5 (bullish)',
+    ('QQQ', 'FTFC: bearish (Q red, M red, W red)', 'TF bias: +0.50 (bullish)',
      '1D:2U 1W:2D 1M:2D', 'bearish'),
-    ('IWM', 'FTFC: bullish (Q green, M green, W green)', 'TF bias: +1.0 (bullish)',
+    ('IWM', 'FTFC: bullish (Q green, M green, W green)', 'TF bias: +1.00 (bullish)',
      '1D:2U 1W:2U 1M:2U', 'bullish'),
-    ('SPY', 'FTFC: bullish (Q green, M green, W green)', 'TF bias: +1.0 (bullish)',
+    ('SPY', 'FTFC: bullish (Q green, M green, W green)', 'TF bias: +1.00 (bullish)',
      '1D:2U 1W:2U 1M:1', 'bullish'),
 ])
 def test_nov5_brief_strat_box_shows_tf_bias_and_ftfc(monkeypatch, no_network, ticker,
