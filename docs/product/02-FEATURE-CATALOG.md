@@ -306,11 +306,11 @@ EW brief retirement Draft [#1837](https://github.com/TeneikaAskew/stocks/pull/18
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation; finite EPS normalization and EW retirement verified locally, external review and rollout pending |
+| Status | Production but needs remediation; finite EPS normalization and EW retirement verified locally, external review and rollout pending; the daily upcoming refresh write is broken on the deployed job since 2026-11-16 (#1983), fix [#1985](https://github.com/TeneikaAskew/stocks/pull/1985) in review |
 | Priority | P1 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-11 |
+| Last reviewed | 2026-11-17 |
 | Evidence status | Finite EPS source/local tests verified; event-bound reaction repairs ([#1608](https://github.com/TeneikaAskew/stocks/pull/1608)) locally validated; current-head external review, hosted checks and rollout pending; other catalyst work remains open |
 | UI surface | `/catalysts` |
 | Backend | `/api/catalysts`, `/api/earnings` |
@@ -325,6 +325,8 @@ EW brief retirement Draft [#1837](https://github.com/TeneikaAskew/stocks/pull/18
 Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) is MAIN. Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) preserves actual producer/API normalization,185focused checks including independent-session local PostgreSQL commit/read and the real routed response, and31API preservation checks (overlapping suite). Final hermetic unit verification at2ad639e1:7719passed,51skipped,112warnings; integration was excluded from that full unit command and the real local PG proof is separately retained. No deployment/source-equivalence, current-source freshness or complete catalyst remediation is certified. Touches #1269 and only #1301's numeric-title behavior; cross-source dedup/selection remains unchanged and unresolved.
 
 EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), fresh implementation bound to the approved own-scope specification merged in #1703. Six reader predicates, ingestion removal and five NULL score-dependent outputs are locally tested; historical rows and #1608 behavior remain intact. Source identity, external review/CI and production release are separate; no deployment or complete catalyst-remediation claim.
+
+Upcoming refresh INTEGER bind: [#1985](https://github.com/TeneikaAskew/stocks/pull/1985), bound to the approved model-trace spec, fixes #1983. #1608's one-transaction replacement of `earnings_upcoming_with_history` bypassed `_coerce_int_columns`, so the first daily run on the 2026-11-15 image (`refresh-earnings-views-kjjd9`, 2026-11-16) bound `43.0` for `total_quarters` and Postgres refused it (22P02); the 2026-11-13 snapshot stays the newest rows until the fix is merged and the job redeployed. Hermetic test on the bound records; no Cloud SQL run, deployment or data verification is claimed.
 
 ### FEAT-REPORT-001
 

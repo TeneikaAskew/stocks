@@ -140,7 +140,7 @@ argument. So the two production consumers behave differently:
 | Consumer | Passes `long_only`? | What it publishes |
 |---|---|---|
 | The premarket brief | no — falls through to the env var | long straddle / call / put, and `SKIP` above a 15% implied move. Never `IC` |
-| `gcp/refresh_earnings_views.py:259-264` | **no longer calls it** (EarningsWhispers retirement) | both `recommended_structure_long_only` and `recommended_structure_ic_mode` as NULL for every row: their score input came only from the retired EW source |
+| `gcp/refresh_earnings_views.py:265-266` | **no longer calls it** (EarningsWhispers retirement) | both `recommended_structure_long_only` and `recommended_structure_ic_mode` as NULL for every row: their score input came only from the retired EW source |
 
 `/api/earnings/upcoming` serves the whole row (`SELECT *`, `platform/api/routers/earnings.py:120-130`).
 Before the retirement the refresh published both modes, so the watchlist could show `IC` where the brief

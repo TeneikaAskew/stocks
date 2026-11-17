@@ -757,6 +757,7 @@ Current-session ORB specification lineage: Stocks #1638 and Solyra #305. Backend
 ### FEAT-CATALYST-001 — Earnings / catalysts (19 open)
 
 - EW-only retirement implementation: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), fresh plan bound after approved own-scope spec [#1703](https://github.com/TeneikaAskew/stocks/pull/1703). Local source/tests and bounded identity are verified; current-head external review/CI and separately authorized release remain pending. Original consolidated51 obligations are unchanged and unclaimed; #1681 remains untouched.
+- Upcoming refresh INTEGER bind fix: [#1985](https://github.com/TeneikaAskew/stocks/pull/1985) (fixes #1983), plan bound to the approved model-trace spec; `_replace_upcoming_rows` runs `_coerce_int_columns` before binding, hermetic test on the bound records, no deployment claim.
 
 | Issue | Sev | Title |
 |---|---|---|
