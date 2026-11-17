@@ -21,7 +21,11 @@ These tests parse deploy.sh statically (comment lines stripped) and pin:
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -358,3 +362,154 @@ def test_targets_that_read_no_secret_are_exempt_from_the_eager_probe():
         if label not in exempt and label != "help" and not _reaches_a_secret_read(body))
     assert not offenders, (
         f"these targets resolve no Secret Manager value yet gate on one: {offenders}")
+
+
+# The late premarket run (FEAT-DEPLOY-001, 2026-11-14 premarket-late-run).
+
+# A gcloud that records every argv as one JSON line and keeps scheduler
+# entries as state, so a create or update is followed by a truthful read back.
+# STUB_EXISTING (comma list) makes describe succeed before any write;
+# STUB_PAUSED makes such an entry read back PAUSED after its update;
+# STUB_DRIFT_CRON=NAME makes that entry read back another cron.
+_STATEFUL_GCLOUD = r"""#!/usr/bin/env python3
+import base64, json, os, pathlib, sys
+a = sys.argv[1:]
+out = pathlib.Path(os.environ["OUT"])
+with (out / "argv.jsonl").open("a") as f:
+    f.write(json.dumps(a) + "\n")
+if a[:2] != ["scheduler", "jobs"]:
+    sys.exit(0)
+store = out / "sched"
+store.mkdir(exist_ok=True)
+def flag(name):
+    for i, x in enumerate(a):
+        if x == name:
+            return a[i + 1]
+        if x.startswith(name + "="):
+            return x.split("=", 1)[1]
+    return None
+verb = a[2]
+name = a[4] if verb in ("create", "update") else a[3]
+path = store / (name + ".json")
+seeded = name in os.environ.get("STUB_EXISTING", "").split(",")
+if verb in ("create", "update"):
+    old = json.loads(path.read_text()) if path.exists() else {}
+    headers = flag("--headers") or flag("--update-headers") or ""
+    paused = seeded and name in os.environ.get("STUB_PAUSED", "").split(",")
+    path.write_text(json.dumps({
+        "schedule": flag("--schedule"), "time_zone": flag("--time-zone"),
+        "uri": flag("--uri"), "body": flag("--message-body") or "",
+        "override": dict(h.split("=", 1) for h in headers.split(",") if h).get("X-HTTP-Method-Override", ""),
+        "state": old.get("state", "PAUSED" if paused else "ENABLED"),
+    }))
+    sys.exit(0)
+if verb == "describe":
+    if not path.exists():
+        if not seeded:
+            sys.stderr.write("ERROR: NOT_FOUND: job not found\n")
+            sys.exit(1)
+        sys.exit(0)
+    row = json.loads(path.read_text())
+    if os.environ.get("STUB_DRIFT_CRON") == name:
+        row["schedule"] = "0 0 * * *"
+    fmt = flag("--format") or ""
+    fields = {"schedule": row["schedule"], "httpTarget.uri": row["uri"], "state": row["state"],
+              "httpTarget.headers.X-HTTP-Method-Override": row["override"],
+              "httpTarget.body": base64.b64encode(row["body"].encode()).decode()}
+    if fmt.startswith("value(") and fmt.endswith(")"):
+        print("\t".join(fields.get(k, "") for k in fmt[6:-1].split(",")))
+sys.exit(0)
+"""
+
+_URI = "https://us-east1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/proj/jobs/{}:run"
+_LATE = {"premarket-refresh-late": "fetch-premarket-refresh", "premarket-brief-late": "premarket-brief"}
+_LATE_BODY = {"overrides": {"containerOverrides": [{"env": [
+    {"name": "BRIEF_TRIGGERED_BY", "value": "cloud-scheduler:premarket-brief-late"},
+    {"name": "BRIEF_RUN_SLOT", "value": "late"}]}]}}
+_UNCHANGED = {
+    "premarket-refresh-daily": ("20 8 * * 1-5", "fetch-premarket-refresh"),
+    "premarket-brief-daily": ("30 8 * * 1-5", "premarket-brief"),
+    "premarket-brief-sunday": ("0 21 * * 0", "premarket-brief"),
+    "earnings-reactions-brief-daily": ("35 8 * * 1-5", "earnings-reactions-brief"),
+    "insight-pipeline-daily": ("45 8 * * 1-5", "insight-pipeline"),
+    "insight-discord-push-daily": ("15 9 * * 1-5", "insight-discord-push"),
+    "signal-monitor-daily": ("25 9 * * 1-5", "signal-monitor"),
+}
+
+
+def _run_schedulers(tmp_path, call="deploy_schedulers", **stub_env):
+    """Run `call` with every function deploy_schedulers reaches, against the stateful stub.
+
+    Returns (completed process, argv lists, scheduler state by entry name)."""
+    binder = tmp_path / "bin"
+    binder.mkdir(parents=True)
+    g = binder / "gcloud"
+    g.write_text(_STATEFUL_GCLOUD)
+    g.chmod(g.stat().st_mode | stat.S_IEXEC)
+    env = dict(os.environ, PATH=f"{binder}:{os.environ['PATH']}", OUT=str(tmp_path), **stub_env)
+    defs = "\n".join(f"{n}() {{{FNS[n]}}}" for n in sorted(_closure({"deploy_schedulers"})))
+    script = ("set -uo pipefail\n"
+              "PROJECT_ID=proj; REGION=us-east1; SA_EMAIL=sa@proj.iam.gserviceaccount.com\n"
+              f"{defs}\n{call}\necho \"rc=$?\"\n")
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       env=env, cwd=str(REPO), timeout=300)
+    log = tmp_path / "argv.jsonl"
+    argv = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    sched = {p.stem: json.loads(p.read_text()) for p in (tmp_path / "sched").glob("*.json")}
+    return r, argv, sched
+
+
+def _writes(argv, name):
+    return [a for a in argv if a[:2] == ["scheduler", "jobs"] and a[2] in ("create", "update") and a[4] == name]
+
+
+def test_late_premarket_schedulers_are_declared_and_converge(tmp_path):
+    # a project without the entries: both are created, read back and reported verified
+    r, argv, sched = _run_schedulers(tmp_path / "fresh")
+    assert r.stdout.endswith("All schedulers configured.\nrc=0\n"), r.stdout[-800:] + r.stderr[-800:]
+    for name, job in _LATE.items():
+        assert (sched[name]["schedule"], sched[name]["time_zone"], sched[name]["uri"], sched[name]["state"]) == \
+            ("20 9 * * 1-5", "America/New_York", _URI.format(job), "ENABLED"), name
+        assert [a[2] for a in _writes(argv, name)] == ["create"], name
+        assert f"  {name}: verified 20 9 * * 1-5" in r.stdout, name
+    body = sched["premarket-brief-late"]["body"]
+    assert json.loads(body) == _LATE_BODY
+    assert body.index("BRIEF_TRIGGERED_BY") < body.index("BRIEF_RUN_SLOT")
+    assert sched["premarket-refresh-late"]["body"] == ""
+    for name, (cron, job) in _UNCHANGED.items():
+        assert (sched[name]["schedule"], sched[name]["time_zone"], sched[name]["uri"]) == \
+            (cron, "America/New_York", _URI.format(job)), name
+
+    # entries that already exist: one update each, carrying the same cron, zone, uri and body
+    r, argv, sched = _run_schedulers(tmp_path / "existing", STUB_EXISTING=",".join(_LATE))
+    assert r.stdout.endswith("rc=0\n"), r.stderr[-800:]
+    for name, job in _LATE.items():
+        assert [a[2] for a in _writes(argv, name)] == ["update"], name
+        assert (sched[name]["schedule"], sched[name]["time_zone"], sched[name]["uri"]) == \
+            ("20 9 * * 1-5", "America/New_York", _URI.format(job)), name
+    assert json.loads(sched["premarket-brief-late"]["body"]) == _LATE_BODY
+
+    # a read back that differs: the helper returns nonzero and deploy_schedulers counts it
+    for name in _LATE:
+        r, _, _ = _run_schedulers(tmp_path / f"drift-{name}", STUB_DRIFT_CRON=name)
+        assert r.stdout.endswith("rc=1\n") and "All schedulers configured." not in r.stdout, name
+        assert f"ERROR: {name} read back as [0 0 * * *" in r.stderr, r.stderr[-800:]
+
+    # a paused entry is reported, not passed over as configured
+    r, _, sched = _run_schedulers(tmp_path / "paused", STUB_EXISTING="premarket-brief-late",
+                                  STUB_PAUSED="premarket-brief-late")
+    assert sched["premarket-brief-late"]["state"] == "PAUSED"
+    assert r.stdout.endswith("rc=1\n") and "ERROR: premarket-brief-late read back as" in r.stderr, r.stderr[-800:]
+
+
+def test_schedule_brief_slot_refuses_a_fourth_argument_that_is_not_key_value(tmp_path):
+    for i, bad in enumerate(("BRIEF_RUN_SLOT", "=late", "")):
+        r, argv, sched = _run_schedulers(
+            tmp_path / str(i), call=f"_schedule_brief_slot n '20 9 * * 1-5' premarket-brief '{bad}'")
+        assert r.stdout.endswith("rc=1\n") and argv == [] and sched == {}, (bad, r.stdout, r.stderr)
+        assert "must be KEY=VALUE" in r.stderr, bad
+
+
+def test_late_brief_scheduler_needs_the_late_slot_in_the_image():
+    from gcp import premarket_brief
+    assert "late" in premarket_brief.RUN_SLOTS
