@@ -1,7 +1,7 @@
 """FEAT-PLAYBOOK-001 B8b: one helper reads the pick rule's version.
 
-v3 and v4 share the pick rule and differ only in how the premarket high and
-low were taken, so a reader that asks "is this the pick rule" goes through
+v3, v4 and v5 share the pick rule and differ only in how the premarket high
+and low were taken, so a reader that asks "is this the pick rule" goes through
 lib.strat_levels.is_current_pick_rule. Only the movement statement's reach
 population filters on one exact version. Any other comparison with the
 version constants, or any other statement parameter built from them, fails
@@ -12,7 +12,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SCANNED = ('lib', 'gcp', 'platform')
-WATCHED = {'LEVEL_RULE_VERSION', 'LEVEL_RULE_V3', 'PICK_RULE_VERSIONS'}
+WATCHED = {'LEVEL_RULE_VERSION', 'LEVEL_RULE_V3', 'LEVEL_RULE_V4', 'PICK_RULE_VERSIONS'}
 
 # (file, enclosing function) -> why the site may hold the name.
 ALLOWED = {

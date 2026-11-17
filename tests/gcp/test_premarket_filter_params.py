@@ -461,10 +461,69 @@ def test_written_row_holds_the_rule_blocks(monkeypatch, writer):
     assert rec["confirmed"]["raw_high"] == pytest.approx(row["pre_high"]) or (
         rec["confirmed"]["high_bars_above"] >= 1)
     assert rec["thin"] == {"rule": "thin-bar-v1", "min_volume": 100, "bars_excluded": 0}
+    # prior-close-print-v1 (FEAT-PLAYBOOK-001, PC3): rule (a) has already
+    # dropped the 2026-11-06 prints at 647.05, so this rule drops none.
+    assert rec["confirmed"]["prior_close_prints"] == {
+        "rule": "prior-close-print-v1", "tol_cents": 5, "min_distance_pct": 0.25,
+        "open": 0, "high": 0, "low": 0, "close": 0, "bars": 0, "prior_close": 647.05}
     # Beside the existing threshold records.
     assert rec["pm_spike_atr"]["value"] == 0.7 and rec["pm_spike_atr"]["status"] == "ok"
     assert rec["pm_stale_print_atr"]["value"] == 0.13
     assert rec["atr_basis"] == "atr_14"
+
+    # A bar that opens and closes at the prior close with its high 8.65
+    # above it: rule (a) keeps it (its midpoint is the prior close), the
+    # stale rule keeps it (it opens there), and prior-close-print-v1 drops
+    # its open, low and close. Each writer records that in the row it writes.
+    bars = _session_bars([
+        ("08:00", 655.10, 655.40, 655.00, 655.30, 5000),
+        ("08:01", 655.30, 655.60, 655.20, 655.50, 5000),
+        ("08:02", 647.05, 655.70, 647.05, 647.05, 5000),   # opens and closes at the prior close
+        ("08:03", 655.50, 655.70, 655.30, 655.40, 5000),
+    ])
+    row = writer(monkeypatch, "QQQ", lp, bars=bars)
+    rec = _record(row)
+    assert row["pre_filter_status"] == "ok"
+    assert row["pre_low"] == pytest.approx(655.10)          # 647.05 on the merge base
+    assert rec["confirmed"]["prior_close_prints"] == {
+        "rule": "prior-close-print-v1", "tol_cents": 5, "min_distance_pct": 0.25,
+        "open": 1, "high": 0, "low": 1, "close": 1, "bars": 1, "prior_close": 647.05}
+    assert rec["confirmed"]["stale_close_reports"] == {
+        "rule": "stale-close-report-v1", "high": 0, "low": 0, "prior_close": 647.05}
+
+
+def test_snapshot_drops_a_prior_close_print():
+    """FEAT-PLAYBOOK-001 prior-close-print-v1, PC1b, through
+    gcp.fetchers.fetch_market_data.premarket_snapshot, the path the nightly
+    and the 08:20 refresh take: the QQQ bars of 2026-11-16 written in
+    tests/lib/test_premarket_print_filter.py, with the 07:40 ET bar whose
+    open-close midpoint is at the prior close, under thresholds that are ok.
+    On the merge base 6243496db pre_high is 679.89 there."""
+    from datetime import datetime, time, timezone
+
+    from gcp.fetchers import fetch_market_data as fmd
+    from lib.eastern_time import eastern_bounds_utc
+    from tests.lib.test_premarket_print_filter import QQQ_0740, QQQ_ROWS
+
+    day = date(2026, 11, 16)
+
+    def utc(hhmm):
+        at = time(*map(int, hhmm.split(":")))
+        return eastern_bounds_utc(day, at, at)[0]
+
+    bars = pd.DataFrame([
+        {"ts": utc(t), "open": o, "high": h, "low": lo, "close": c, "volume": v}
+        for (t, o, h, lo, c, v) in sorted(QQQ_ROWS + [QQQ_0740])])
+    lp = legacy_db(["QQQ"], overrides={"pm_stale_print_atr": 0.0371, "pm_spike_atr": 1.0725}).load(
+        ["QQQ"], day)["QQQ"]
+    snapshot = fmd.premarket_snapshot(
+        "QQQ", day, bars, {"close": 679.89, "open": 679.89, "atr_14": 16.34, "atr_5": 16.34}, lp,
+        datetime(2026, 11, 16, 13, 20, tzinfo=timezone.utc))
+    assert snapshot["pre_filter_status"] == "ok"
+    assert snapshot["pre_high"] == pytest.approx(675.30)
+    rec = snapshot["pre_filter_params"]
+    rec = json.loads(rec) if isinstance(rec, str) else rec
+    assert rec["confirmed"]["prior_close_prints"]["bars"] == 1
 
 
 @pytest.mark.parametrize("writer", WRITERS)
