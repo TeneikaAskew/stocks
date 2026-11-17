@@ -153,10 +153,35 @@ def _writer_backfill_ticker(monkeypatch):
     assert row["volume"] == 81234567
 
 
+def _writer_migrate_to_gcp(monkeypatch):
+    import gcp.migrate_to_gcp as mod
+    get, sent = _recording_get({"TIME_SERIES_DAILY": DAILY_REPLY})
+    upsert, calls = _recording_upsert()
+    monkeypatch.setattr(mod, "AV_DAILY_SYMBOLS", {"spy": "SPY"})
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "k")
+    monkeypatch.setattr(mod.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(mod.requests, "get", get)
+    monkeypatch.setattr("gcp.database.upsert_dataframe", upsert)
+
+    mod.migrate_market_data_daily_av(Path("."), dry_run=False)
+
+    assert [p["function"] for p in sent] == ["TIME_SERIES_DAILY"]
+    # The function logs and goes on after any exception, so a missing frame
+    # is how a writer still reading the adjusted endpoint's fields fails.
+    frames = _daily_frames(calls)
+    assert len(frames) == 1
+    frame = frames[0]
+    assert not (set(frame.columns) & ADJ), sorted(frame.columns)
+    assert set(frame["data_source"]) == {"alphavantage_daily"}
+    row = frame[frame["date"] == dt.date(2026, 11, 13)].iloc[0]
+    assert row["volume"] == 81234567
+
+
 WRITERS = {
     "fetch_daily_from_av": _writer_fetch_daily_from_av,
     "_av_get_full_daily_series": _writer_av_get_full_daily_series,
     "backfill_ticker": _writer_backfill_ticker,
+    "migrate_to_gcp": _writer_migrate_to_gcp,
 }
 
 
