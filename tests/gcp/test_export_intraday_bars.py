@@ -30,6 +30,7 @@ import pytest
 
 from gcp.fetchers import export_intraday_bars as xb
 from gcp.fetchers import fetch_alphavantage_intraday as fai
+from lib.bar_prints import RULE_VERSION
 from lib.eastern_time import (
     ET,
     eastern_index_to_utc,
@@ -52,6 +53,15 @@ BARS_COLUMNS = ["ts", "open", "high", "low", "close", "volume", "data_source",
                 "inserted_at"]
 FILE_COLUMNS = ["ts", "open", "high", "low", "close", "volume", "data_source"]
 DAILY_COLUMNS = ["date", "high", "low", "data_source"]
+# B3, the coverage read of the flag counts, as the spec gives it (Design 8).
+B3 = ("SELECT month, rule_version, checked_at, bars_judged, flags_regular_high, "
+      "flags_regular_low, flags_extended_high, flags_extended_low "
+      "FROM intraday_bar_flag_coverage WHERE ticker = :t AND interval = '1min' "
+      "AND rule_version = :v AND month >= :first AND month <= :last")
+COVERAGE_COLUMNS = ["month", "rule_version", "checked_at", "bars_judged",
+                    "flags_regular_high", "flags_regular_low", "flags_extended_high",
+                    "flags_extended_low"]
+NOT_JUDGED = {"state": "not_judged"}
 
 
 def _last_day(year: int, month: int) -> date:
@@ -109,23 +119,29 @@ def assert_rows_equal(got: pd.DataFrame, want: pd.DataFrame) -> None:
             check_dtype=False, check_exact=True, check_names=False)
 
 
-def fake_query(monkeypatch, bars: dict, daily: dict | None = None) -> list[dict]:
+def fake_query(monkeypatch, bars: dict, daily: dict | None = None,
+               coverage: dict | None = None) -> list[dict]:
     """Stand in for the strict reader; returns the list its calls land in.
 
     SQL that names market_data_daily answers ``daily[ticker]`` (no daily row
-    at all for a ticker that is not in it); any other SQL
+    at all for a ticker that is not in it); SQL that names
+    intraday_bar_flag_coverage answers ``coverage[ticker]`` (no coverage row
+    at all for a ticker that is not in it, the default); any other SQL
     answers ``bars[(ticker, year, month)]`` from the window's start. An
     exception in place of a frame is raised.
     """
     import gcp.database as database
 
     daily = daily or {}
+    coverage = coverage or {}
     calls: list[dict] = []
 
     def strict(sql, params=None, timeout_s=None):
         calls.append({"sql": sql, "params": params, "timeout_s": timeout_s})
         if "market_data_daily" in sql:
             answer = daily.get(params["t"], EMPTY_DAILY)
+        elif "intraday_bar_flag_coverage" in sql:
+            answer = coverage.get(params["t"], EMPTY_COVERAGE)
         else:
             answer = bars[(params["t"], params["start"].year, params["start"].month)]
         if isinstance(answer, BaseException):
@@ -141,6 +157,7 @@ def squash(sql: str) -> str:
 
 
 EMPTY_DAILY = pd.DataFrame(columns=DAILY_COLUMNS)
+EMPTY_COVERAGE = pd.DataFrame(columns=COVERAGE_COLUMNS)
 
 
 # -- Task 2: the month file -----------------------------------------------------
@@ -617,9 +634,9 @@ def small_bars(tickers, months, **kw) -> dict:
     return {(t, y, m): first_session_rows(y, m, **kw) for t in tickers for y, m in months}
 
 
-def run(monkeypatch, tickers, months, bars, bucket, daily=None, now=NOW):
+def run(monkeypatch, tickers, months, bars, bucket, daily=None, now=NOW, coverage=None):
     """export_window against the stubbed reader: (its result, the reader's calls)."""
-    calls = fake_query(monkeypatch, bars, daily)
+    calls = fake_query(monkeypatch, bars, daily, coverage)
     result = xb.export_window(tickers, months, bucket=bucket, now_utc=now)
     return result, calls
 
@@ -645,7 +662,8 @@ def test_first_export_creates_the_manifest(monkeypatch):
 
     assert bucket.preconditions == [(MAY, None), (SPY_MANIFEST, 0)]
     _, want = xb.build_month(rows, EMPTY_DAILY, "SPY", 2025, 5, NOW)
-    assert manifest_doc(bucket) == {"version": 1, "ticker": "SPY", "months": {"2025-05": want}}
+    assert manifest_doc(bucket) == {"version": 1, "ticker": "SPY", "months": {
+        "2025-05": {**want, "flags": {"state": "not_judged"}}}}
     assert bucket.generations[SPY_MANIFEST] == 1
     assert want["sha256"] == sha(bucket.objects[MAY])
 
@@ -810,7 +828,7 @@ def test_manifest_write_failure_after_an_upload(monkeypatch):
 
 def test_io_shape(monkeypatch):
     # Rule 0: the round-trips of a run, pinned. Nightly: 6 bars reads, 3 daily
-    # reads, 3 manifest reads, 6 uploads, 6 manifest writes.
+    # reads, 3 coverage reads, 3 manifest reads, 6 uploads, 6 manifest writes.
     months = [(2026, 9), (2026, 10)]
     bucket = MemoryBucket()
     result, calls = run(monkeypatch, xb.EXPORT_TICKERS, months,
@@ -818,7 +836,20 @@ def test_io_shape(monkeypatch):
 
     b1 = [c for c in calls if "market_data_intraday" in c["sql"]]
     b2 = [c for c in calls if "market_data_daily" in c["sql"]]
-    assert (len(b1), len(b2), len(calls)) == (6, 3, 9)
+    b3 = [c for c in calls if "intraday_bar_flag_coverage" in c["sql"]]
+    assert (len(b1), len(b2), len(calls)) == (6, 3, 12)
+    # The coverage reads: one per ticker, in the tickers' order, each over the
+    # run's first and last month for the rule version.
+    assert len(b3) == 3
+    assert all(squash(c["sql"]) == B3 for c in b3)
+    assert [c["params"] for c in b3] == [
+        {"t": ticker, "v": "isolated-print-v1", "first": date(2026, 9, 1),
+         "last": date(2026, 10, 1)} for ticker in ("SPY", "QQQ", "IWM")]
+    assert all(c["params"]["v"] == RULE_VERSION for c in b3)
+    assert all(c["timeout_s"] == 120 for c in b3)
+    # Each right after its ticker's daily read.
+    assert [i for i, c in enumerate(calls) if c in b2] == [0, 4, 8]
+    assert [i for i, c in enumerate(calls) if c in b3] == [1, 5, 9]
     assert all(c["timeout_s"] == 120 for c in calls)
     assert all(squash(c["sql"]) == B1 for c in b1)
     assert all(squash(c["sql"]) == B2 for c in b2)
@@ -834,9 +865,10 @@ def test_io_shape(monkeypatch):
     assert result["rows"] == 6 * 961 == sum(
         e["rows"] for n in manifests for e in manifest_doc(bucket, n)["months"].values())
     assert isinstance(result["seconds"], float) and result["seconds"] >= 0
-    # Per ticker: the daily read, then the manifest read, then the months.
+    # Per ticker: the daily read, the coverage read, then the manifest read,
+    # then the months.
     assert [c["params"]["t"] for c in calls] == [
-        "SPY", "SPY", "SPY", "QQQ", "QQQ", "QQQ", "IWM", "IWM", "IWM"]
+        "SPY", "SPY", "SPY", "SPY", "QQQ", "QQQ", "QQQ", "QQQ", "IWM", "IWM", "IWM", "IWM"]
     assert "market_data_daily" in calls[0]["sql"]
     assert calls[0]["params"] == {
         "t": "SPY", "first": date(2026, 9, 1), "last": date(2026, 10, 31)}
@@ -847,9 +879,15 @@ def test_io_shape(monkeypatch):
     result, calls = run(monkeypatch, ["SPY"], year, small_bars(["SPY"], year), bucket)
     b1 = [c for c in calls if "market_data_intraday" in c["sql"]]
     b2 = [c for c in calls if "market_data_daily" in c["sql"]]
+    b3 = [c for c in calls if "intraday_bar_flag_coverage" in c["sql"]]
     assert (len(b1), len(b2)) == (12, 1)
     assert b2[0]["params"] == {
         "t": "SPY", "first": date(2025, 1, 1), "last": date(2025, 12, 31)}
+    # The history's one coverage read, after the daily read.
+    assert (len(b3), len(calls)) == (1, 14) and calls.index(b3[0]) == 1
+    assert squash(b3[0]["sql"]) == B3 and b3[0]["timeout_s"] == 120
+    assert b3[0]["params"] == {"t": "SPY", "v": "isolated-print-v1",
+                               "first": date(2025, 1, 1), "last": date(2025, 12, 1)}
     assert bucket.reads == [SPY_MANIFEST]
     assert len(bucket.writes) == 24
     assert bucket.writes[0::2] == [xb.object_name("SPY", y, m) for y, m in year]
@@ -874,6 +912,8 @@ def test_one_month_in_memory_at_a_time(monkeypatch):
     def strict(sql, params=None, timeout_s=None):
         if "market_data_daily" in sql:
             return EMPTY_DAILY
+        if "intraday_bar_flag_coverage" in sql:
+            return EMPTY_COVERAGE
         gc.collect()
         live_at_each_read.append(sum(1 for ref in handed_out if ref() is not None))
         frame = source[(params["t"], params["start"].year, params["start"].month)].copy()
@@ -1298,6 +1338,15 @@ def nightly(monkeypatch, argv, *, configured=True, export=None, process=None, en
     monkeypatch.setattr(fai, "market_today", lambda: date(2026, 10, 31))
     if not real_export:
         monkeypatch.setattr(xb, "export_window", recorder)
+    # The nightly bar flag pass runs before the export and has its own suite
+    # (tests/gcp/test_intraday_bar_flags.py). Here it is a stand-in that
+    # succeeds, so these tests keep exercising the export alone and never
+    # reach for a database.
+    from gcp.fetchers import intraday_bar_flags
+    monkeypatch.setattr(
+        intraday_bar_flags, "flag_months",
+        lambda tickers, months, commit: {"months": len(months) * len(tickers), "flags": 0,
+                                         "changed": 0, "seconds": 0.0})
     for name in ("CLOUD_RUN_TASK_COUNT", "CLOUD_RUN_TASK_INDEX", "INTRADAY_BARS_EXPORT"):
         monkeypatch.delenv(name, raising=False)
     for name, value in (env or {}).items():
@@ -1577,10 +1626,16 @@ bars = stored(session_bars("2026-10-01"), inserted=NEW).assign(
     open=595.0, close=595.0, data_source="alphavantage")
 daily = pd.DataFrame([{"date": date(2026, 10, 1), "high": 600.0, "low": 590.0,
                        "data_source": "alphavantage_daily"}])
+coverage = pd.DataFrame(columns=["month", "rule_version", "checked_at", "bars_judged",
+                                 "flags_regular_high", "flags_regular_low",
+                                 "flags_extended_high", "flags_extended_low"])
 asked = []
 
 
 def strict(sql, params=None, timeout_s=None):
+    if "intraday_bar_flag_coverage" in sql:
+        asked.append("coverage")
+        return coverage
     asked.append("daily" if "market_data_daily" in sql else "bars")
     return daily if "market_data_daily" in sql else bars
 
@@ -1615,7 +1670,7 @@ def test_the_module_run_as_main_exports_end_to_end(tmp_path):
     result = [line for line in done.stdout.splitlines() if line.startswith("RESULT")]
     assert result == [
         "RESULT 0 ['intraday-bars/v1/1min/SPY/2026-10.parquet', "
-        "'intraday-bars/v1/1min/SPY/manifest.json'] ['daily', 'bars']"]
+        "'intraday-bars/v1/1min/SPY/manifest.json'] ['daily', 'coverage', 'bars']"]
     assert "bars export: 1 months, 961 rows" in done.stdout + done.stderr
 
 
@@ -1782,6 +1837,8 @@ def test_exported_at_is_when_the_months_rows_were_read(monkeypatch):
     def strict(sql, params=None, timeout_s=None):
         if "market_data_daily" in sql:
             return EMPTY_DAILY
+        if "intraday_bar_flag_coverage" in sql:
+            return EMPTY_COVERAGE
         key = f"{params['start'].year}-{params['start'].month:02d}"
         read_at.setdefault(key, []).append(next(ticks))       # the clock at this read
         return bars[("SPY", params["start"].year, params["start"].month)]
@@ -1904,3 +1961,156 @@ def test_the_missing_spill_cuts_the_other_way_for_a_label_session():
 
     _, got = xb.build_month(window, EMPTY_DAILY, "SPY", 2025, 5, NOW)
     assert got["inferred_rows"] == 390
+
+
+# -- the flag counts in the manifest (FEAT-DATA-001, bar flags, Design 8) --------
+
+
+def coverage_row(month: date, **values) -> dict:
+    row = {"month": month, "rule_version": "isolated-print-v1",
+           "checked_at": pd.Timestamp("2026-11-13 02:00:07", tz="UTC"), "bars_judged": 20412,
+           "flags_regular_high": 0, "flags_regular_low": 1, "flags_extended_high": 7,
+           "flags_extended_low": 12}
+    return {**row, **values}
+
+
+def coverage_frame(*rows: dict) -> pd.DataFrame:
+    return pd.DataFrame(list(rows), columns=COVERAGE_COLUMNS)
+
+
+def test_flags_from_a_coverage_row(monkeypatch):
+    bucket = MemoryBucket()
+    months = [(2025, 5), (2025, 6)]
+    coverage = {"SPY": coverage_frame(coverage_row(date(2025, 6, 1)))}
+    run(monkeypatch, ["SPY"], months, small_bars(["SPY"], months), bucket, coverage=coverage)
+
+    entries = manifest_doc(bucket)["months"]
+    assert entries["2025-06"]["flags"] == {
+        "rule_version": "isolated-print-v1", "checked_at": "2026-11-13T02:00:07+00:00",
+        "bars_judged": 20412, "regular_high": 0, "regular_low": 1, "extended_high": 7,
+        "extended_low": 12}
+    assert set(entries["2025-06"]["flags"]) == {
+        "rule_version", "checked_at", "bars_judged", "regular_high", "regular_low",
+        "extended_high", "extended_low"}
+    # The month with no coverage row was not judged: never a count of 0.
+    assert entries["2025-05"]["flags"] == {"state": "not_judged"} == NOT_JUDGED
+    assert not {"regular_high", "regular_low", "extended_high", "extended_low",
+                "bars_judged"} & set(entries["2025-05"]["flags"])
+    # The rest of each entry is what the month file's builder gave.
+    for (year, month), key in zip(months, ("2025-05", "2025-06")):
+        _, want = xb.build_month(first_session_rows(year, month), EMPTY_DAILY, "SPY",
+                                 year, month, NOW)
+        assert {k: v for k, v in entries[key].items() if k != "flags"} == want
+    assert manifest_doc(bucket)["version"] == 1
+
+
+def test_a_judged_month_with_no_flag_records_zeros_not_not_judged(monkeypatch):
+    bucket = MemoryBucket()
+    clean = coverage_row(date(2025, 5, 1), bars_judged=961, flags_regular_low=0,
+                         flags_extended_high=0, flags_extended_low=0)
+    run(monkeypatch, ["SPY"], [(2025, 5)], small_bars(["SPY"], [(2025, 5)]), bucket,
+        coverage={"SPY": coverage_frame(clean)})
+
+    assert manifest_doc(bucket)["months"]["2025-05"]["flags"] == {
+        "rule_version": "isolated-print-v1", "checked_at": "2026-11-13T02:00:07+00:00",
+        "bars_judged": 961, "regular_high": 0, "regular_low": 0, "extended_high": 0,
+        "extended_low": 0}
+
+
+def test_each_ticker_reads_its_own_coverage(monkeypatch):
+    bucket = MemoryBucket()
+    months = [(2025, 5)]
+    coverage = {"QQQ": coverage_frame(coverage_row(date(2025, 5, 1), flags_regular_low=3))}
+    run(monkeypatch, ["SPY", "QQQ"], months, small_bars(["SPY", "QQQ"], months), bucket,
+        coverage=coverage)
+
+    assert manifest_doc(bucket)["months"]["2025-05"]["flags"] == NOT_JUDGED
+    qqq = manifest_doc(bucket, xb.manifest_name("QQQ"))["months"]["2025-05"]["flags"]
+    assert qqq["regular_low"] == 3 and qqq["bars_judged"] == 20412
+
+
+def test_a_coverage_row_outside_the_runs_months_is_not_used(monkeypatch):
+    # The read is bounded by the run's first and last month; a run of two
+    # months that are not neighbours still reads the month between them.
+    bucket = MemoryBucket()
+    months = [(2025, 4), (2025, 6)]
+    coverage = {"SPY": coverage_frame(coverage_row(date(2025, 5, 1)),
+                                      coverage_row(date(2025, 6, 1), flags_regular_low=2))}
+    run(monkeypatch, ["SPY"], months, small_bars(["SPY"], months), bucket, coverage=coverage)
+
+    entries = manifest_doc(bucket)["months"]
+    assert set(entries) == {"2025-04", "2025-06"}
+    assert entries["2025-04"]["flags"] == NOT_JUDGED
+    assert entries["2025-06"]["flags"]["regular_low"] == 2
+
+
+@pytest.mark.parametrize("failure", [ConnectionError("connection refused"), KeyError("month")])
+def test_coverage_read_failure_leaves_the_manifest(monkeypatch, failure):
+    bucket = _exported_may_and_june(monkeypatch)
+    manifest_before = bucket.objects[SPY_MANIFEST]
+    may_before = bucket.objects[MAY]
+    writes_before = list(bucket.writes)
+    bars = small_bars(["SPY"], [(2025, 5)], day_high=700.0, day_low=690.0)
+
+    with pytest.raises(type(failure)) as raised:
+        _, calls = run(monkeypatch, ["SPY"], [(2025, 5)], bars, bucket,
+                       coverage={"SPY": failure})
+    assert raised.value is failure
+    assert bucket.objects[SPY_MANIFEST] == manifest_before
+    assert bucket.objects[MAY] == may_before
+    assert bucket.writes == writes_before
+
+
+def test_two_coverage_rows_for_one_month_raise(monkeypatch):
+    bucket = MemoryBucket()
+    twice = coverage_frame(coverage_row(date(2025, 5, 1)), coverage_row(date(2025, 5, 1)))
+    with pytest.raises(ValueError, match="2025-05"):
+        run(monkeypatch, ["SPY"], [(2025, 5)], small_bars(["SPY"], [(2025, 5)]), bucket,
+            coverage={"SPY": twice})
+    assert SPY_MANIFEST not in bucket.objects
+
+
+def test_read_bars_returns_the_key_as_stored(monkeypatch, tmp_path):
+    bucket = MemoryBucket()
+    months = [(2025, 5), (2025, 6)]
+    coverage = {"SPY": coverage_frame(coverage_row(date(2025, 6, 1)))}
+    run(monkeypatch, ["SPY"], months, small_bars(["SPY"], months), bucket, coverage=coverage)
+    stored_entries = manifest_doc(bucket)["months"]
+    assert manifest_doc(bucket)["version"] == 1
+
+    _, entries = xb.read_bars(to_disk(bucket, tmp_path), "SPY", "2025-05", "2025-06")
+
+    assert [e["month"] for e in entries] == ["2025-05", "2025-06"]
+    assert entries[0]["flags"] == stored_entries["2025-05"]["flags"] == NOT_JUDGED
+    assert entries[1]["flags"] == stored_entries["2025-06"]["flags"] == {
+        "rule_version": "isolated-print-v1", "checked_at": "2026-11-13T02:00:07+00:00",
+        "bars_judged": 20412, "regular_high": 0, "regular_low": 1, "extended_high": 7,
+        "extended_low": 12}
+
+
+def test_an_entry_written_before_the_flags_reads_back_without_the_key(monkeypatch, tmp_path):
+    # Months not exported again since the change keep no flags key.
+    bucket = MemoryBucket()
+    run(monkeypatch, ["SPY"], [(2025, 5)], small_bars(["SPY"], [(2025, 5)]), bucket)
+    doc = manifest_doc(bucket)
+    del doc["months"]["2025-05"]["flags"]
+    bucket.objects[SPY_MANIFEST] = json.dumps(doc).encode()
+
+    _, entries = xb.read_bars(to_disk(bucket, tmp_path), "SPY", "2025-05", "2025-05")
+    assert "flags" not in entries[0]
+
+
+def test_top_level_imports_are_the_standard_library_and_pandas():
+    import ast as _ast
+
+    tree = _ast.parse(Path(xb.__file__).read_text())
+    roots = set()
+    for node in tree.body:
+        if isinstance(node, _ast.Import):
+            roots |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, _ast.ImportFrom):
+            assert node.level == 0
+            roots.add((node.module or "").split(".")[0])
+    assert "pandas" in roots
+    assert roots - {"pandas", "__future__"} <= set(sys.stdlib_module_names)
+    assert not roots & {"lib", "gcp", "sqlalchemy", "numpy"}
