@@ -1,6 +1,7 @@
-"""The plan excursions history job (FEAT-STRAT-001 target hit rates spec,
-docs/superpowers/specs/2026-11-16-feat-strat-001-target-hit-rates.md,
-Design 4 "History, once"): resume, reprocess, delete only its own rows,
+"""The plan excursions history job (FEAT-STRAT-001 target hit rates r2 spec,
+docs/superpowers/specs/2026-11-17-feat-strat-001-target-hit-rates-r2.md,
+Design 4 "History, once per entry version"): rows keyed by the entry rule
+version with the basis's ATR, resume, reprocess, delete only its own rows,
 never replace a resolver row, one bar read per ticker-month, writes only to
 plan_excursions, and the replay never reaches the model client.
 
@@ -53,10 +54,10 @@ def _engine():
     return engine, statements
 
 
-def _basis(trigger=100.0, stop=99.0):
+def _basis(trigger=100.0, stop=99.0, atr=2.0):
     """A current-rule basis whose calls side triggers at `trigger` with
-    `stop`, and whose puts side has no trigger."""
-    return {'rule_version': LEVEL_RULE_VERSION, '_calls': (trigger, stop)}
+    `stop`, whose puts side has no trigger, and whose ATR is `atr`."""
+    return {'rule_version': LEVEL_RULE_VERSION, '_calls': (trigger, stop), '_atr': atr}
 
 
 def _bars(session: date, path):
@@ -90,6 +91,7 @@ def patched(monkeypatch):
             columns=['time', 'open', 'high', 'low', 'close'])
 
     monkeypatch.setattr(job, 'plan_inputs', plan_inputs)
+    monkeypatch.setattr(job, 'basis_atr', lambda basis: basis.get('_atr'))
     monkeypatch.setattr(job, 'read_month_bars', read_month_bars)
     return state
 
@@ -122,6 +124,30 @@ def test_writes_one_history_row_per_traded_session(patched):
     assert rows[0][3] == pytest.approx(2.51)
     assert (stats.sessions, stats.written, stats.deleted) == (4, 4, 0)
     assert lines[0].startswith('IWM: 4 sessions read, 4 rows written, 0 rows deleted')
+
+
+def test_a_row_is_keyed_by_the_entry_rule_version_and_carries_the_basis_atr(patched):
+    from lib.strat_levels import entry_rule_version
+    engine, _ = _engine()
+    patched['bars'] = {s: UP for s in SESSIONS[:1]}
+    job.run(engine, ['IWM'], SESSIONS[0], SESSIONS[0], resume=False,
+            basis_fn=lambda t, s: _basis(atr=2.0), log=lambda _l: None)
+    with engine.connect() as conn:
+        (row,) = conn.execute(sa.text(
+            "SELECT rule_version, atr, excursion_r, excursion_atr FROM plan_excursions"))
+    assert row[0] == entry_rule_version(LEVEL_RULE_VERSION)
+    assert row[1] == pytest.approx(2.0)
+    assert row[3] == pytest.approx(row[2] * 1.0 / 2.0)       # stop distance 1.00, ATR 2.00
+
+
+def test_a_basis_with_no_atr_writes_none_in_atr(patched):
+    engine, _ = _engine()
+    patched['bars'] = {s: UP for s in SESSIONS[:1]}
+    job.run(engine, ['IWM'], SESSIONS[0], SESSIONS[0], resume=False,
+            basis_fn=lambda t, s: _basis(atr=None), log=lambda _l: None)
+    with engine.connect() as conn:
+        (row,) = conn.execute(sa.text("SELECT atr, excursion_r, excursion_atr FROM plan_excursions"))
+    assert row[0] is None and row[2] is None and row[1] == pytest.approx(2.51)
 
 
 def test_with_no_range_it_resumes_after_the_last_written_session(patched):

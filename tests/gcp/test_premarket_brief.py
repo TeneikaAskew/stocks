@@ -4222,31 +4222,36 @@ class TestLiveDateIsTheExchangeDate:
 
 
 class TestTargetHitRatesInTheBrief:
-    """Target hit rates spec (docs/superpowers/specs/2026-11-16-feat-strat-
-    001-target-hit-rates.md), Design 5: generate_premarket_brief reads the
-    hit rates ONCE for every ticker of the run, from plan_excursions on the
-    same database as the level parameters, and prints each plan's ladder;
-    a failed read prints the unavailable line and the brief still writes.
-    Driven on the committed 2026-11-06 fixture (SPY, QQQ, IWM)."""
+    """Target hit rates r2 spec (docs/superpowers/specs/2026-11-17-feat-strat-
+    001-target-hit-rates-r2.md), done_when 'Wired into the brief':
+    generate_premarket_brief reads the reach tables ONCE for every ticker of
+    the run, from plan_excursions on the same database as the level
+    parameters, keyed by the entry rule version of the basis it builds, and
+    passes each ticker's table to format_levels_for_brief, which prints
+    nothing from it on a level-rule basis; a failed read marks every table
+    unavailable and the brief still writes. Driven on the committed
+    2026-11-06 fixture (SPY, QQQ, IWM)."""
 
     TICKERS = ('SPY', 'QQQ', 'IWM')
-    # 40 past trades per ticker, the 2026-11-06 rule version, sessions before
-    # the brief's own: excursions 0.0, 0.1, ... 3.9 stop distances.
+    # 40 past trades per ticker, the entry rule version of the 2026-11-06
+    # basis, sessions before the brief's own: excursions 0.0, 0.1, ... 3.9
+    # stop distances, half that in ATR.
     VALUES = [round(0.1 * i, 1) for i in range(40)]
 
     def _db(self):
         from datetime import timedelta
-        from lib.strat_levels import LEVEL_RULE_VERSION
+        from lib.strat_levels import LEVEL_RULE_VERSION, entry_rule_version
         from tests.lib.level_params_fixtures import legacy_db
         db = legacy_db(list(self.TICKERS))
         for t in self.TICKERS:
             for i, x in enumerate(self.VALUES):
                 db.conn.execute(
                     "INSERT INTO plan_excursions (ticker, session_date, rule_version, side, "
-                    "trigger_price, stop_price, fill_price, fill_ts, excursion_r, source, "
-                    "resolver_version) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (t, (date(2026, 8, 3) + timedelta(days=i)).isoformat(), LEVEL_RULE_VERSION,
-                     'calls', 100.0, 99.0, 100.0, '2026-08-03T13:31:00Z', x, 'history', 'test'))
+                    "trigger_price, stop_price, fill_price, fill_ts, atr, excursion_r, "
+                    "excursion_atr, source, resolver_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (t, (date(2026, 8, 3) + timedelta(days=i)).isoformat(),
+                     entry_rule_version(LEVEL_RULE_VERSION), 'calls', 100.0, 99.0, 100.0,
+                     '2026-08-03T13:31:00Z', 2.0, x, x / 2, 'history', 'test'))
         db.conn.commit()
         return db
 
@@ -4255,27 +4260,57 @@ class TestTargetHitRatesInTheBrief:
         from tests.lib import strat_2026_11_06 as fx
         return {t: fx.loader_frame(t) for t in TestTargetHitRatesInTheBrief.TICKERS}
 
-    def test_one_read_for_the_run_and_every_plan_prints_its_ladder(self, monkeypatch):
-        from lib.strat_levels import hit_rate_lines
-        from lib.target_reach import ReachTable
-        from tests.lib import strat_2026_11_06 as fx
-        db = self._db()
-        out = fx.run_briefs(monkeypatch, self._frames(), params_db=db)
-        assert sum('FROM plan_excursions' in q for q in db.queries) == 1
-        table = dict(n=40, first='2026-08-03', last='2026-09-11', values=tuple(self.VALUES))
-        for t in self.TICKERS:
-            playbook = out[t]['playbook']
-            assert out[t].get('status') != 'PLAYBOOK_FAILED', t
-            (level_map,) = out[t]['_persisted_level_maps']
-            reach = ReachTable(ticker=t, **table)
-            for side, trig in (('long', level_map.calls_trigger), ('short', level_map.puts_trigger)):
-                lines = hit_rate_lines(side, trig, reach, 30)
-                assert lines[0] == (f'    Hit rates, {t} trades 2026-08-03 to 2026-09-11 that '
-                                    'reached each price before the stop (40 trades):'), (t, side)
-                assert len(lines) > 1 and '\n'.join(lines) in playbook, (t, side)
+    @staticmethod
+    def _record_reach(monkeypatch):
+        """Wrap format_levels_for_brief to record the reach each call gets."""
+        from gcp import premarket_brief as pb
+        seen = []
+        real = pb.format_levels_for_brief
 
-    def test_a_failed_read_still_writes_every_brief_with_the_unavailable_line(self, monkeypatch):
+        def wrapped(*a, **k):
+            seen.append((k.get('reach'), k.get('reach_min_sample')))
+            return real(*a, **k)
+
+        monkeypatch.setattr(pb, 'format_levels_for_brief', wrapped)
+        return seen
+
+    def _playbooks(self, monkeypatch, db):
         from tests.lib import strat_2026_11_06 as fx
+        out = fx.run_briefs(monkeypatch, self._frames(), params_db=db)
+        for t in self.TICKERS:
+            assert out[t].get('status') != 'PLAYBOOK_FAILED', t
+        return {t: out[t]['playbook'] for t in self.TICKERS}
+
+    def test_one_read_for_the_run_and_each_ticker_gets_its_table(self, monkeypatch):
+        from lib.strat_levels import LEVEL_RULE_VERSION, entry_rule_version
+        from lib.target_reach import ReachTable
+        db = self._db()
+        bound, real = [], db.query
+
+        def query(sql, params=None):
+            if 'FROM plan_excursions' in sql:
+                bound.append(dict(params or {}))
+            return real(sql, params)
+
+        db.query = query
+        seen = self._record_reach(monkeypatch)
+        self._playbooks(monkeypatch, db)
+        reads = [(q, p) for q, p in zip([q for q in db.queries if 'FROM plan_excursions' in q], bound)]
+        assert len(reads) == 1
+        assert 'excursion_atr' in reads[0][0]                    # the seeded measure, touch_atr
+        assert reads[0][1]['rule_version'] == entry_rule_version(LEVEL_RULE_VERSION)
+        tables = {r.ticker: r for r, _ in seen if isinstance(r, ReachTable)}
+        assert sorted(tables) == sorted(self.TICKERS)
+        for t in self.TICKERS:
+            assert (tables[t].n, tables[t].first, tables[t].last) == (40, '2026-08-03', '2026-09-11')
+            assert tables[t].values == tuple(x / 2 for x in self.VALUES)
+        assert {m for _, m in seen} == {30}
+
+    def test_the_playbook_is_the_same_with_a_table_without_one_and_after_a_failed_read(
+            self, monkeypatch):
+        from tests.lib.level_params_fixtures import legacy_db
+        with_rows = self._playbooks(monkeypatch, self._db())
+        empty = self._playbooks(monkeypatch, legacy_db(list(self.TICKERS)))
         db = self._db()
         real = db.query
 
@@ -4285,14 +4320,29 @@ class TestTargetHitRatesInTheBrief:
             return real(sql, params)
 
         db.query = query
-        out = fx.run_briefs(monkeypatch, self._frames(), params_db=db)
+        failed = self._playbooks(monkeypatch, db)
+        assert with_rows == empty == failed
         for t in self.TICKERS:
-            playbook = out[t]['playbook']
-            assert out[t].get('status') != 'PLAYBOOK_FAILED', t
-            assert playbook.count('    Hit rates unavailable (input_unavailable).') == 2, t
-            assert ' stop distances' not in playbook, t
-            assert not any('%' in ln for ln in playbook.split('\n')
-                           if ln.startswith('    Hit rates')), t
+            assert 'Reached before the stop' not in with_rows[t], t
+            assert 'reached ' not in with_rows[t] and 'Hit rates' not in with_rows[t], t
+
+    def test_a_failed_read_still_writes_every_brief_with_the_table_unavailable(self, monkeypatch):
+        from lib.strat_levels import REACH_UNAVAILABLE
+        db = self._db()
+        real = db.query
+
+        def query(sql, params=None):
+            if 'FROM plan_excursions' in sql:
+                raise RuntimeError('relation "plan_excursions" does not exist')
+            return real(sql, params)
+
+        db.query = query
+        seen = self._record_reach(monkeypatch)
+        self._playbooks(monkeypatch, db)
+        reaches = [r for r, _ in seen if r is not None]
+        assert len(reaches) >= len(self.TICKERS)
+        assert all(r == REACH_UNAVAILABLE for r in reaches)
+        assert {m for _, m in seen} == {None}
 
 
 def _volume_frame(rows):

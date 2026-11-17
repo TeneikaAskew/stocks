@@ -29,7 +29,8 @@ from lib.indicators import add_brief_indicators, relative_volume
 from lib.strat import (CONTINUITY_DISPLAY_ORDER, StratClassifier, compute_strat_status,
                        timeframe_continuity_record)
 from lib.strat_levels import (
-    REACH_UNAVAILABLE, TARGET_REACH_RATE_KEY, LevelParamsUnavailable, build_session_levels,
+    LEVEL_RULE_VERSION, REACH_UNAVAILABLE, TARGET_REACH_RATE_KEY, LevelParamsUnavailable,
+    build_session_levels, entry_rule_version,
     format_levels_for_brief, load_level_params, premarket_snapshot_from_daily,
     premarket_snapshot_from_row, session_row_from_daily,
 )
@@ -1018,22 +1019,24 @@ def _level_params_query(sql: str, params: dict):
 
 
 def _target_reach_query(sql: str, params: dict):
-    """The strict reader load_target_reach runs on (target hit rates spec,
-    Design 5): the same database and the same strictness as the parameter
-    read, so a failed query raises and the brief prints the unavailable
-    line, never a rate (CLAUDE.md 3.7)."""
+    """The strict reader load_target_reach runs on (target hit rates r2
+    spec, Design 5): the same database and the same strictness as the
+    parameter read, so a failed query raises and the ticker's table is
+    marked unavailable, never a count (CLAUDE.md 3.7)."""
     return _level_params_query(sql, params)
 
 
 def _load_reach_for_brief(level_params: dict, tickers, analysis_date):
-    """Every ticker's hit-rate table, read once for the run, and the
-    policy's min_sample. On an unusable policy row or a failed read, every
-    ticker gets REACH_UNAVAILABLE and min_sample None, so each plan prints
-    the unavailable line and the brief still writes."""
+    """Every ticker's reach table, read once for the run, of the entry rule
+    version of the basis the brief builds (target hit rates r2, Design 5),
+    and the policy's min_sample. On an unusable policy row or a failed read,
+    every ticker gets REACH_UNAVAILABLE and min_sample None, and the brief
+    still writes."""
     first = next((level_params[t.upper()] for t in tickers if t and t.upper() in level_params), None)
     param = first.param(TARGET_REACH_RATE_KEY) if first is not None else None
     try:
-        tables = load_target_reach(_target_reach_query, tickers, analysis_date, param)
+        tables = load_target_reach(_target_reach_query, tickers, analysis_date, param,
+                                   entry_rule_version(LEVEL_RULE_VERSION))
     except TargetReachUnavailable as exc:
         logger.warning("target hit rates unavailable: %s", exc)
         return {}, None
@@ -1253,9 +1256,10 @@ def generate_premarket_brief(cfg=None, data_dir: str = None, *,
     # query raises LevelParamsUnavailable here, before any ticker is built,
     # so the brief exits non-zero without writing a row.
     level_params = load_level_params(_level_params_query, tickers, analysis_date)
-    # Each target's hit rate, read once for every ticker of the run (target
-    # hit rates spec, Design 5). Display only; a failed read prints the
-    # unavailable line under each plan and changes nothing else.
+    # Each ticker's reach table, read once for every ticker of the run
+    # (target hit rates r2 spec, Design 5). Display only and printed nowhere
+    # on a level-rule basis; a failed read marks every table unavailable and
+    # changes nothing else.
     reach_tables, reach_min_sample = _load_reach_for_brief(level_params, tickers, analysis_date)
 
     loader = DataLoader(data_dir=data_dir)

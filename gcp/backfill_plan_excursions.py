@@ -1,6 +1,6 @@
-"""The plan excursions history job (FEAT-STRAT-001 target hit rates spec,
-docs/superpowers/specs/2026-11-16-feat-strat-001-target-hit-rates.md,
-Design 4 "History, once", and Design 6).
+"""The plan excursions history job (FEAT-STRAT-001 target hit rates r2 spec,
+docs/superpowers/specs/2026-11-17-feat-strat-001-target-hit-rates-r2.md,
+Design 4 "History, once per entry version", and Design 6).
 
 For each session and ticker it rebuilds the level basis the way the brief
 builds it under BRIEF_AS_OF (generate_premarket_brief with
@@ -9,7 +9,9 @@ session writes strat_levels or premarket rows and no session makes a model
 call), scores both sides with the resolver's own plan_inputs and
 plan_excursion on the session's as-traded 1-minute bars from
 market_data_intraday (cut at the exchange's close), picks the day's trade
-with trade_of_day, and writes plan_excursions rows with source 'history'.
+with trade_of_day, and writes plan_excursions rows with source 'history',
+keyed by the entry rule version of the rebuilt basis's version and carrying
+the basis's own ATR (basis_atr) with the excursions in ATR.
 
 It never writes premarket_analysis, premarket_analysis_history or
 strat_levels, and a history write never replaces a resolver row. A session
@@ -39,7 +41,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from gcp.premarket_playbook_resolver import (
-    excursion_statement, plan_excursion, plan_inputs, trade_of_day,
+    basis_atr, excursion_statement, plan_excursion, plan_inputs, trade_of_day,
 )
 from lib.eastern_time import ET, previous_session, session_close, sessions_between
 
@@ -151,12 +153,15 @@ def _no_v2_policy():
 
 def score_session(ticker: str, session: date, basis: dict, bars: pd.DataFrame):
     """The day's plan_excursions statement (or None for a basis with no
-    rule_version): both sides scored, the first to fill kept."""
+    entry rule version): both sides scored with the basis's ATR, the first
+    to fill kept, keyed by entry_rule_version of the basis's version."""
+    from lib.strat_levels import entry_rule_version  # noqa: PLC0415
     calls_in = plan_inputs('calls', {}, basis, _no_v2_policy)
     puts_in = plan_inputs('puts', {}, basis, _no_v2_policy)
-    trade = trade_of_day(plan_excursion('call', calls_in, bars),
-                         plan_excursion('put', puts_in, bars))
-    stmt = excursion_statement(ticker, session, basis.get('rule_version'), trade,
+    atr = basis_atr(basis)
+    trade = trade_of_day(plan_excursion('call', calls_in, bars, atr),
+                         plan_excursion('put', puts_in, bars, atr))
+    stmt = excursion_statement(ticker, session, entry_rule_version(basis.get('rule_version')), trade,
                                {'calls': calls_in, 'puts': puts_in}, SOURCE)
     return trade, stmt
 
@@ -176,14 +181,14 @@ def run(engine, tickers: Iterable[str], start: date, end: date, *, resume: bool,
     """Write the history rows for every ticker over [start, end]. With
     `resume`, each ticker starts after the last session it has a history
     row for. Returns per-ticker stats (also printed through `log`)."""
-    from lib.strat_levels import LEVEL_RULE_VERSION  # noqa: PLC0415
+    from lib.strat_levels import LEVEL_RULE_VERSION, entry_rule_version  # noqa: PLC0415
     out = []
     for ticker in [t.strip().upper() for t in tickers if t and t.strip()]:
         t0 = time.monotonic()
         stats = TickerStats(ticker)
         first = start
         if resume:
-            done = last_written(engine, ticker, LEVEL_RULE_VERSION)
+            done = last_written(engine, ticker, entry_rule_version(LEVEL_RULE_VERSION))
             if done is not None and done >= first:
                 first = done + timedelta(days=1)
         for _, sessions in sorted(_month_spans(sessions_between(first, end)).items()):
