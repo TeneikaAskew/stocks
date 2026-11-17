@@ -269,10 +269,12 @@ def test_reconcile_against_snapshot_reports_the_known_deltas():
     # 2026-11-01 (FEAT-DEPLOY-001, EarningsWhispers retirement); the 2026-09-07
     # snapshot still carries both, so they read live-only until the separately
     # authorized deletion runs and a fresher snapshot is taken.
+    # Both late premarket entries are repo-only until the owner's deploy and a
+    # fresher snapshot (FEAT-DEPLOY-001, late premarket run).
     assert rec["schedulers_paused"] == []
     assert rec["schedulers_live_only"] == ["evaluate-ew-strikes-daily"]
     assert "evaluate-ew-strikes" in rec["jobs_live_only"]
-    assert rec["schedulers_repo_only"] == ["earnings-sweep-sunday"]
+    assert rec["schedulers_repo_only"] == ["earnings-sweep-sunday", "premarket-brief-late", "premarket-refresh-late"]
     assert rec["schedulers_cron_drift"] == []
     assert rec["counts"]["jobs_live"] == live["counts"]["jobs"]
 
