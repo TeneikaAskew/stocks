@@ -347,6 +347,7 @@ ADJUSTED_NAME = re.compile(
     r"adj(?:usted)?[\s_.\-]*close|adjclose|adjusted[\s_.\-]*daily|daily[\s_.\-]*adjusted",
     re.IGNORECASE)
 REQUEST_FLAGS = ("adjusted", "auto_adjust")
+YF_PRICE_CALLS = ("download", "history")
 MINUTE_HELPERS = ("fetch_minute_bars", "fetch_minute_data")
 ALLOWANCE = ("lib/data_loader.py", "ADJUSTED_CLOSE_COLUMNS")
 SQL_ALLOWANCE = ("gcp/schema.sql", (
@@ -476,6 +477,12 @@ def adjusted_sites(src: str, rel: str) -> list[tuple[int, str]]:
                 _request_pairs(list(zip(keys, node.values)), out, node.lineno)
         elif isinstance(node, ast.Call) and _is_request_call(node, requests_mod, requests_fns, yf):
             _request_pairs([(kw.arg, kw.value) for kw in node.keywords], out, node.lineno)
+            # yfinance's download and history adjust unless told not to, so a
+            # price call that leaves auto_adjust out asks for adjusted prices.
+            if (_root_name(node.func) in yf and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in YF_PRICE_CALLS
+                    and not any(kw.arg in ("auto_adjust", None) for kw in node.keywords)):
+                out.append((node.lineno, "yfinance_default_adjusts"))
     return sorted(out)
 
 
@@ -562,6 +569,11 @@ _YF = "import yfinance as yf\n"
     ("fetch_minute_bars('SPY', d, k, adjusted=False)", "gcp/x.py", 0),
     (_YF + "t = yf.Ticker('SPY')\nt.history(period='1y', auto_adjust=True)", "scripts/x.py", 1),
     (_YF + "yf.download('SPY', auto_adjust=False)", "scripts/x.py", 0),
+    # yfinance adjusts unless told not to: a price call must name auto_adjust
+    (_YF + "yf.download('SPY', period='1y')", "scripts/x.py", 1),
+    (_YF + "t = yf.Ticker('SPY')\nt.history(period='1y')", "scripts/x.py", 1),
+    (_YF + "t = yf.Ticker('SPY')\nt.history(period='1y', auto_adjust=False)", "scripts/x.py", 0),
+    (_YF + "info = yf.Ticker('SPY').info", "scripts/x.py", 0),
     ("f\"{d}/{t}_daily_adjusted.csv\"", "scripts/x.py", 1),
 ])
 def test_the_guard_tells_adjusted_from_everything_else(src, rel, n):

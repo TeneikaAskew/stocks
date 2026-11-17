@@ -28,9 +28,9 @@ but not on missing data:
 
 | Input state | `classify_archetype` (`lib/earnings_reactions.py`) | `_derive_archetype` (`gcp/refresh_earnings_views.py`) |
 |---|---|---|
-| `dir_consistency` missing, `reversal_rate >= 0.40` | `quiet` (`:481-482`) | **`reversal_play`** — `(dir_cons or 0) < 50` is true for `None` (`:334-335`) |
-| `reversal_rate` missing, `dir_consistency >= 0.65`, bias beyond ±0.5 | `quiet` (`:481-482`) | **`bullish_trend` / `bearish_trend`** (`:329-333`) |
-| `directional_bias` missing | trend branch skipped (`:489`) | `bias = ... or 0.0` (`:328`) — a Rule 3.7 `or 0` on a financial field; same result today, by accident |
+| `dir_consistency` missing, `reversal_rate >= 0.40` | `quiet` (`:484-485`) | **`reversal_play`** — `(dir_cons or 0) < 50` is true for `None` (`:334-335`) |
+| `reversal_rate` missing, `dir_consistency >= 0.65`, bias beyond ±0.5 | `quiet` (`:484-485`) | **`bullish_trend` / `bearish_trend`** (`:329-333`) |
+| `directional_bias` missing | trend branch skipped (`:492`) | `bias = ... or 0.0` (`:328`) — a Rule 3.7 `or 0` on a financial field; same result today, by accident |
 | no lean row at all | `quiet` | `None` (`:322-323`) |
 
 So a watchlist row can carry `reversal_play` for a name whose canonical archetype is
@@ -67,8 +67,8 @@ and therefore across the sizing guidance. The default is what production runs:
 `:905`) and `gcp/premarket_brief.py:603-604` calls it with no argument.
 
 The `+ 5` carries no comment. The function's own docstring says *"over the last `window_days`
-trading days"* (`:576`), while the docstring of the consumer hedges with a tilde — *"median
-|daily_return_pct| over last ~60 trading days"* (`:175`). The tilde is the closest thing to an
+trading days"* (`:579`), while the docstring of the consumer hedges with a tilde — *"median
+|daily_return_pct| over last ~60 trading days"* (`:178`). The tilde is the closest thing to an
 acknowledgement in the source. **Whether the `+ 5` was a deliberate buffer for a data gap or an
 off-by-five is not recorded anywhere**, which is why it is filed rather than silently
 documented as intended.

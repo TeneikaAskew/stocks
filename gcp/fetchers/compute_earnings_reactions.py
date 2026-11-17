@@ -1005,9 +1005,10 @@ def _resolve_tickers(args) -> list[str]:
     the brief showed "no historical analog" for major reporters like
     AMZN/MSFT/META despite us having their data.
 
-    The broad scope is cheap — it's a pure DB join with no external API
-    calls, so populating 320 tickers takes the same ~5 min as
-    populating 30. Coverage matches earnings_history automatically.
+    The prices come from the database, but each ticker with events also
+    costs one AlphaVantage SPLITS call per run (fetch_splits, paced), so
+    the run time grows with the number of tickers. Coverage matches
+    earnings_history automatically.
     """
     if args.tickers:
         return [t.strip().upper() for t in args.tickers.split(',') if t.strip()]

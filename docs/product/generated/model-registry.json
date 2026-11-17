@@ -1094,7 +1094,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "`_derive_archetype` (`:312-336`) reimplements `classify_archetype`'s thresholds for the daily `earnings_upcoming_with_history` rebuild the watchlist reads (`platform/api/routers/earnings.py:122`) instead of calling it, and diverges on missing inputs: `dir_consistency` missing with `reversal_rate >= 0.40` → `reversal_play` where the canonical function returns `quiet` (`lib/earnings_reactions.py:481-482`); `reversal_rate` missing → a trend tag where canonical returns `quiet`; `bias = ... or 0.0` (`:328`). The reference doc claimed every consumer read one implementation",
+   "claim_actual": "`_derive_archetype` (`:312-336`) reimplements `classify_archetype`'s thresholds for the daily `earnings_upcoming_with_history` rebuild the watchlist reads (`platform/api/routers/earnings.py:122`) instead of calling it, and diverges on missing inputs: `dir_consistency` missing with `reversal_rate >= 0.40` → `reversal_play` where the canonical function returns `quiet` (`lib/earnings_reactions.py:484-485`); `reversal_rate` missing → a trend tag where canonical returns `quiet`; `bias = ... or 0.0` (`:328`). The reference doc claimed every consumer read one implementation",
    "doc": "`gcp/refresh_earnings_views.py`",
    "id": "DOC-24",
    "kind": "contradiction",
@@ -2628,7 +2628,7 @@
  ],
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "9752340744b8580d57910eadb6df84c536081b42",
-  "docs/product/07-MODEL-REGISTRY.md": "edc3b79536dcf968150bd113dc4ba95ef6c31695",
+  "docs/product/07-MODEL-REGISTRY.md": "62cae652a662b5460d073c1077f6610090e173f7",
   "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
  },
  "tables": [
