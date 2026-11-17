@@ -1204,3 +1204,26 @@ def test_a_half_day_close_leg_books_the_last_bar_before_the_close(monkeypatch):
                 'eod_pnl_pct', 'exit_reason', 'fill_price'):
         assert bound[f'calls_{col}'] == getattr(want, col), col
     assert bound['calls_eod_pnl_pct'] == pytest.approx(0.8)
+
+
+# ── FEAT-PLAYBOOK-001 B8b: a v3 plan resolves as before the bump ────────
+
+@pytest.mark.parametrize('version', ['feat-strat-001.v3', 'feat-strat-001.v4'])
+def test_v3_plan_resolves_as_on_main(version):
+    """The literals are plan_inputs on d8_basis() as printed on the unchanged
+    code (head 219a4c0c3, where the fixture was v3)."""
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib.session_levels_helpers import d8_basis
+
+    basis = {**d8_basis(), 'rule_version': version}
+    no_policy = lambda: pytest.fail('no policy read')  # noqa: E731
+    calls = mod.plan_inputs('calls', {}, basis, policy_fn=no_policy)
+    assert calls == mod.PlanInputs(trigger_price=252.1, stop_price=248.2,
+                                   targets=(275.0, 280.0, 285.0), legs=3,
+                                   cutoff_minutes=960, target_status='ok')
+    puts = mod.plan_inputs('puts', {}, basis, policy_fn=no_policy)
+    assert puts == mod.PlanInputs(trigger_price=248.2, stop_price=252.1,
+                                  targets=(225.0, 220.0, 215.0), legs=3,
+                                  cutoff_minutes=960, target_status='ok')
+    assert calls.target_status != mod.PLAN_TARGETS_UNAVAILABLE
+    assert puts.target_status != mod.PLAN_TARGETS_UNAVAILABLE

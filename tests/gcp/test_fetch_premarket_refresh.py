@@ -189,9 +189,11 @@ def test_compute_returns_metrics_when_premarket_bars_present(monkeypatch):
     assert result is not None
     assert result['ticker'] == 'AAPL'
     assert result['date'] == date(2026, 4, 30)
-    # Highest of the pre-market highs
-    assert result['pre_high'] == 184.0
-    assert result['pre_low']  == 179.5
+    # FEAT-PLAYBOOK-001 B7: 184.0 and 179.5 are one bar's lone wick each, so
+    # the extremes are the highest and lowest open or close (the 08:15 close
+    # and the 04:00 open), which lie beyond the second bar high and low.
+    assert result['pre_high'] == 183.5
+    assert result['pre_low'] == 180.0
     # gap_pct = (180.0 - 175.0) / 175.0 * 100 ≈ +2.86%
     assert result['gap_pct'] is not None
     assert abs(result['gap_pct'] - 2.857) < 0.01

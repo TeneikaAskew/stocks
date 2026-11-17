@@ -15,6 +15,10 @@ exclusion counts and keeps every print (QQQ pre_low 647.05, pre_high
 """
 from __future__ import annotations
 
+import gzip
+import hashlib
+import json
+
 import pandas as pd
 import pytest
 
@@ -24,38 +28,73 @@ from tests.lib import strat_2026_11_06 as fx
 # Values computed from the committed bars (the spec's figures, except the
 # QQQ spike count: QQQ drops the 08:05 high 683.50 AND the 08:32 low
 # 647.535, two spikes, which is what gives the spec's own pre_low 649.62).
-FILTERED = {
-    #        pre_high  pre_low  prior-close prints  spikes
+# FILTER_ONLY is what rules (a) and (b) alone give: the extremes until
+# FEAT-PLAYBOOK-001, and confirmed.raw_high and raw_low since.
+FILTER_ONLY = {
+    #        raw_high  raw_low  prior-close prints  spikes
     "QQQ": (660.398, 649.62, 15, 2),
     "IWM": (272.50, 269.13, 3, 1),
     "SPY": (738.04, 730.64, 15, 1),
+}
+# pre_high and pre_low under the confirmed rule (FEAT-PLAYBOOK-001 B7). Each
+# FILTER_ONLY extreme was one bar's lone wick, with no open or close there:
+#   QQQ 04:36 high 660.398 (next high 660.29 at 04:37; highest body 660.24);
+#       04:04 low 649.62 (next low 649.65 at 04:01; lowest body 652.53).
+#   IWM 08:29 high 272.50 (next 272.41 at 08:28; body 272.37);
+#       04:01 low 269.13 (next 269.36 at 04:04; body 270.29).
+#   SPY 04:36 high 738.04 (next 737.9285 at 04:40; body 737.8785);
+#       04:04 low 730.64 (next 730.70 at 04:01 and 04:05; body 731.28).
+# None of those bars is thin (each is over 1,000 shares).
+FILTERED = {
+    "QQQ": (660.29, 649.65),
+    "IWM": (272.41, 269.36),
+    "SPY": (737.9285, 730.70),
 }
 RAW = {
     "QQQ": (683.50, 647.05),
     "IWM": (283.745, 269.13),
     "SPY": (765.5267, 730.64),
 }
+# pre_high and pre_low with no ATR (rules (a) and (b) off). The 08:05 highs of
+# RAW are lone wicks, so the high is the next bar high. The lows: QQQ's 647.05
+# is the prior close, which bars also open and close at (a body, kept by the
+# stale rule and by the confirmed rule); IWM's and SPY's are the lone wicks
+# above.
+RAW_CONFIRMED = {
+    "QQQ": (660.398, 647.05),
+    "IWM": (272.50, 269.36),
+    "SPY": (738.04, 730.70),
+}
 
 
 @pytest.mark.parametrize("ticker", sorted(FILTERED))
 def test_filtered_extremes_and_counts(ticker):
-    hi, lo, n_echo, n_spike = FILTERED[ticker]
+    raw_hi, raw_lo, n_echo, n_spike = FILTER_ONLY[ticker]
+    hi, lo = FILTERED[ticker]
     pm = fx.premarket_context(ticker)
+    assert pm["confirmed"]["raw_high"] == pytest.approx(raw_hi)
+    assert pm["confirmed"]["raw_low"] == pytest.approx(raw_lo)
     assert pm["pre_high"] == pytest.approx(hi)
     assert pm["pre_low"] == pytest.approx(lo)
+    assert pm["confirmed"]["high_bars_above"] == 1
+    assert pm["confirmed"]["low_bars_below"] == 1
     assert pm["excluded_prior_close_prints"] == n_echo
     assert pm["excluded_spike_prints"] == n_spike
 
 
 @pytest.mark.parametrize("ticker", sorted(RAW))
 def test_raw_extremes_without_an_atr(ticker):
-    """With no ATR and no thresholds nothing is dropped: the raw extremes
-    come back, and the counts are None (the filter did not run), never a 0
-    that reads as "nothing dropped" (per-ticker parameters, 2026-11-08)."""
+    """With no ATR and no thresholds rules (a) and (b) drop nothing: the raw
+    extremes are what the filter gives (confirmed.raw_high and raw_low), and
+    the counts are None (the filter did not run), never a 0 that reads as
+    "nothing dropped" (per-ticker parameters, 2026-11-08). pre_high and
+    pre_low still pass the extreme rules, which need no ATR."""
     hi, lo = RAW[ticker]
     pm = fx.premarket_context(ticker, raw=True)
-    assert pm["pre_high"] == pytest.approx(hi)
-    assert pm["pre_low"] == pytest.approx(lo)
+    assert pm["confirmed"]["raw_high"] == pytest.approx(hi)
+    assert pm["confirmed"]["raw_low"] == pytest.approx(lo)
+    assert pm["pre_high"] == pytest.approx(RAW_CONFIRMED[ticker][0])
+    assert pm["pre_low"] == pytest.approx(RAW_CONFIRMED[ticker][1])
     assert pm["filtered"] is False
     assert pm["excluded_prior_close_prints"] is None
     assert pm["excluded_spike_prints"] is None
@@ -68,14 +107,20 @@ def test_one_0805_high_spike_per_ticker(ticker):
     at_0805 = bars[bars["timestamp"].dt.strftime("%H:%M") == "08:05"].iloc[0]
     pm = fx.premarket_context(ticker)
     assert pm["pre_high"] < at_0805["high"]
+    assert pm["confirmed"]["raw_high"] < at_0805["high"]
     assert pm["pre_high"] == pytest.approx(FILTERED[ticker][0])
 
 
 def test_iwm_real_low_is_kept():
-    """IWM's 04:00 low 269.13 is a real trade (not the prior close 270.98,
-    not isolated), so it stays the premarket low."""
+    """IWM's 04:01 low 269.13 is a real trade (not the prior close 270.98,
+    not isolated), so rules (a) and (b) keep it: it is the filter's low
+    (confirmed.raw_low). Under the confirmed rule (FEAT-PLAYBOOK-001 B7) one
+    bar's lone wick sets no extreme, so pre_low is the next low, 269.36 at
+    04:04; the spec's Risks name this understatement."""
     pm = fx.premarket_context("IWM")
-    assert pm["pre_low"] == pytest.approx(269.13)
+    assert pm["confirmed"]["raw_low"] == pytest.approx(269.13)
+    assert pm["pre_low"] == pytest.approx(269.36)
+    assert pm["confirmed"]["low_bars_below"] == 1
     assert pm["excluded_prior_close_prints"] == 3
 
 
@@ -84,20 +129,25 @@ def test_avgo_prior_close_prints_are_never_an_extreme():
     near 305; none of them is the premarket low."""
     pm = fx.premarket_context("AVGO")
     assert pm["pre_low"] != pytest.approx(291.53, abs=0.005)
-    assert pm["pre_low"] == pytest.approx(299.00)
+    assert pm["confirmed"]["raw_low"] == pytest.approx(299.00)
+    # FEAT-PLAYBOOK-001 B7: 299.00 is the 04:01 bar's lone low; 04:04 and
+    # 04:05 both reach 299.03.
+    assert pm["pre_low"] == pytest.approx(299.03)
     assert pm["excluded_prior_close_prints"] == 14
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Data disagreement with the spec: AVGO's 08:05 high 312.00 sits 7.097 "
-    "above its own body (304.50 to 304.9029) and the neighbours' bodies, "
-    "under 0.5 x Wilder ATR(14) through 2026-11-05 = 7.143 (and under "
-    "0.5 x SMA ATR 14.401 = 7.20), so the spec's own rule keeps it. It "
-    "would be dropped only with an ATR below 14.19 (ATR through "
-    "2026-11-04 is 12.666). Owner decision; not fudged."))
 def test_avgo_0805_high_is_not_an_extreme():
+    """AVGO's 08:05 high 312.00 sits 7.097 above its own body (304.50 to
+    304.9029) and the neighbours' bodies, under 0.5 x Wilder ATR(14) through
+    2026-11-05 = 7.143, so rule (b) keeps it: it is still the filter's high
+    (confirmed.raw_high). This test was a strict xfail on that disagreement
+    with the earlier spec until FEAT-PLAYBOOK-001 B7: 312.00 is one bar's
+    lone wick, so the confirmed rule does not take it, and pre_high is the
+    next high, 311.45 at 09:28."""
     pm = fx.premarket_context("AVGO")
+    assert pm["confirmed"]["raw_high"] == pytest.approx(312.00)
     assert pm["pre_high"] != pytest.approx(312.00)
+    assert pm["pre_high"] == pytest.approx(311.45)
 
 
 def test_pre_vwap_drops_a_bar_with_no_surviving_price():
@@ -154,3 +204,607 @@ def test_zero_calibrated_thresholds_still_filter():
     off = premarket_print_filter(o, h, lo, c, prev_close=95.0, atr=0.0,
                                  stale_print_atr=0.0, spike_atr=0.0)
     assert off["filtered"] is False
+
+
+# ---------------------------------------------------------------------------
+# FEAT-PLAYBOOK-001 B7, B7a, B7c: the stale closing-price report rule, the
+# thin bar rule and the confirmed rule (spec 2026-11-16, Problem 4, Design 4).
+# Bars are written here. Every case runs for the high and for the low: the low
+# side is the high side's bars reflected about a level, high and low swapped.
+# Values under PINNED_* were printed by the unchanged calculate_premarket_context
+# and premarket_print_filter on these same bars before the rules were added
+# (hermetic pin of "as on origin/main").
+# ---------------------------------------------------------------------------
+
+PRIOR_CLOSE = 277.54  # IWM's official close of Friday 2026-11-13.
+
+
+def bars(rows):
+    """Aligned series from (HH:MM, open, high, low, close, volume) on one
+    Eastern morning."""
+    frame = pd.DataFrame(rows, columns=["time", "open", "high", "low", "close", "volume"])
+    frame["time"] = pd.to_datetime("2026-11-16 " + frame["time"])
+    return frame
+
+
+def mirror(rows, about):
+    """The rows reflected about a price level, each bar's high and low swapped."""
+    def flip(price):
+        return round(2 * about - price, 4)
+    return [(t, flip(o), flip(lo), flip(h), flip(c), v) for (t, o, h, lo, c, v) in rows]
+
+
+def context(rows, *, prev_close, atr=None, stale_print_atr=None, spike_atr=None):
+    b = bars(rows)
+    return calculate_premarket_context(
+        b["time"], b["open"], b["high"], b["low"], b["close"], b["volume"],
+        prev_close=prev_close, atr=atr, stale_print_atr=stale_print_atr, spike_atr=spike_atr)
+
+
+class _Side:
+    """One side of a mirrored case: the keys it reads and how it maps the
+    high side's rows and prices."""
+
+    def __init__(self, name, about):
+        self.name, self.about = name, about
+        high = name == "high"
+        self.extreme, self.other = ("pre_high", "pre_low") if high else ("pre_low", "pre_high")
+        self.raw = "raw_high" if high else "raw_low"
+        self.count = "high_bars_above" if high else "low_bars_below"
+        self.stale, self.other_stale = ("high", "low") if high else ("low", "high")
+
+    def rows(self, rows):
+        return rows if self.name == "high" else mirror(rows, self.about)
+
+    def px(self, price):
+        return price if self.name == "high" else round(2 * self.about - price, 4)
+
+
+SIDES = ("high", "low")
+
+
+def _replace(rows, at, **fields):
+    """The rows with the bar at HH:MM `at` changed in the named fields."""
+    names = ("time", "open", "high", "low", "close", "volume")
+    out = []
+    for row in rows:
+        bar = dict(zip(names, row))
+        if bar["time"] == at:
+            bar.update(fields)
+        out.append(tuple(bar[n] for n in names))
+    return out
+
+
+# A morning trading 276.2 to 276.6 under Friday's close, with one report at
+# that close in the 07:35 bar's high (the bar as the spec describes it).
+STALE_HIGH_ROWS = [
+    ("07:30", 276.30, 276.40, 276.20, 276.35, 5000),
+    ("07:31", 276.35, 276.50, 276.30, 276.45, 5000),
+    ("07:35", 276.50, 277.54, 276.45, 276.60, 464),
+    ("07:36", 276.60, 276.60, 276.40, 276.50, 5000),
+    ("07:37", 276.50, 276.55, 276.25, 276.30, 5000),
+]
+# The gap-up morning of the spec: the same report sits below the market.
+STALE_LOW_ROWS = [
+    ("07:30", 279.30, 279.40, 279.20, 279.25, 5000),
+    ("07:31", 279.25, 279.30, 279.10, 279.15, 5000),
+    ("07:35", 279.10, 279.15, 277.54, 279.00, 464),
+    ("07:36", 279.00, 279.20, 279.00, 279.10, 5000),
+    ("07:37", 279.10, 279.35, 279.05, 279.30, 5000),
+]
+STALE_ROWS = {"high": STALE_HIGH_ROWS, "low": STALE_LOW_ROWS}
+# The extreme each side takes once the report is dropped: the 07:35 bar's own
+# close, which is the highest (lowest) body of the morning.
+STALE_EXPECTED = {"high": 276.60, "low": 279.00}
+PINNED_STALE = {
+    "high": {"pre_vwap": 276.41050560333593, "pre_volume": 20464, "gap_pct": -0.4468},
+    "low": {"pre_vwap": 279.1855642428981, "pre_volume": 20464, "gap_pct": 0.6341},
+}
+
+
+class TestStaleCloseReport:
+    """B7a. The ATR and both thresholds are None, so rules (a) and (b) do not
+    run and the rule is shown to stand on its own."""
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_a_report_at_the_prior_close_sets_no_extreme(self, side):
+        s = _Side(side, PRIOR_CLOSE)
+        pm = context(STALE_ROWS[side], prev_close=PRIOR_CLOSE)
+        assert pm["filtered"] is False
+        assert pm[s.extreme] != pytest.approx(PRIOR_CLOSE)
+        # The bar still counts through its body: its close is the extreme.
+        assert pm[s.extreme] == pytest.approx(STALE_EXPECTED[side])
+        assert pm["confirmed"][s.raw] == pytest.approx(PRIOR_CLOSE)
+        assert pm["confirmed"]["stale_close_reports"] == {
+            "rule": "stale-close-report-v1", s.stale: 1, s.other_stale: 0,
+            "prior_close": 277.54}
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_two_bars_reporting_it_are_both_dropped(self, side):
+        """Two bars at the same price would pass the confirmed rule; the
+        stale rule is what stops them."""
+        s = _Side(side, PRIOR_CLOSE)
+        rows = _replace(STALE_ROWS[side], "07:31", **{s.stale: PRIOR_CLOSE})
+        pm = context(rows, prev_close=PRIOR_CLOSE)
+        assert pm[s.extreme] == pytest.approx(STALE_EXPECTED[side])
+        assert pm["confirmed"]["stale_close_reports"][s.stale] == 2
+        assert pm["confirmed"]["stale_close_reports"][s.other_stale] == 0
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize("field", ["open", "close"])
+    def test_a_bar_that_opens_or_closes_there_keeps_it(self, side, field):
+        s = _Side(side, PRIOR_CLOSE)
+        rows = _replace(STALE_ROWS[side], "07:35", **{field: PRIOR_CLOSE})
+        pm = context(rows, prev_close=PRIOR_CLOSE)
+        assert pm[s.extreme] == pytest.approx(PRIOR_CLOSE)
+        assert pm["confirmed"]["stale_close_reports"] == {
+            "rule": "stale-close-report-v1", "high": 0, "low": 0, "prior_close": 277.54}
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize("cents", [0.01, -0.01])
+    def test_a_cent_away_is_kept(self, side, cents):
+        """277.55 and 277.53 are not the prior close. Two bars reach the
+        price, so the confirmed rule accepts it."""
+        s = _Side(side, PRIOR_CLOSE)
+        price = round(PRIOR_CLOSE + cents, 2)
+        rows = _replace(STALE_ROWS[side], "07:35", **{s.stale: price})
+        rows = _replace(rows, "07:31", **{s.stale: price})
+        pm = context(rows, prev_close=PRIOR_CLOSE)
+        assert pm[s.extreme] == pytest.approx(price)
+        assert pm["confirmed"]["stale_close_reports"] == {
+            "rule": "stale-close-report-v1", "high": 0, "low": 0, "prior_close": 277.54}
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_no_prior_close_runs_nothing(self, side):
+        s = _Side(side, PRIOR_CLOSE)
+        rows = _replace(STALE_ROWS[side], "07:31", **{s.stale: PRIOR_CLOSE})
+        pm = context(rows, prev_close=None)
+        assert pm["confirmed"]["stale_close_reports"] is None
+        assert pm[s.extreme] == pytest.approx(PRIOR_CLOSE)
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_vwap_volume_and_gap_are_unchanged(self, side):
+        pm = context(STALE_ROWS[side], prev_close=PRIOR_CLOSE)
+        assert {k: pm[k] for k in ("pre_vwap", "pre_volume", "gap_pct")} == PINNED_STALE[side]
+
+
+# The 2026-11-16 IWM 08:05 ET bar as Alpha Vantage returned it (volume 1),
+# among bars trading 276.26 to 276.35.
+THIN_ROWS = [
+    ("08:03", 276.30, 276.33, 276.27, 276.31, 5000),
+    ("08:04", 276.31, 276.34, 276.26, 276.30, 5000),
+    ("08:05", 276.4801, 278.92, 276.4801, 278.92, 1),
+    ("08:06", 276.30, 276.35, 276.28, 276.33, 5000),
+    ("08:07", 276.33, 276.35, 276.29, 276.32, 5000),
+]
+THIN_ATR = 4.875
+PINNED_THIN = {
+    "high": {"pre_vwap": 276.31092312217714, "gap_pct": -0.4468},
+    "low": {"pre_vwap": 278.7690768778227, "gap_pct": 0.4468},
+}
+
+
+class TestThinBar:
+    """B7c. A bar under 100 shares gives no price to the extremes."""
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_the_one_share_bar_sets_no_extreme(self, side):
+        s = _Side(side, PRIOR_CLOSE)
+        pm = context(s.rows(THIN_ROWS), prev_close=PRIOR_CLOSE)
+        assert pm[s.extreme] != pytest.approx(s.px(278.92))
+        if side == "high":
+            assert pm["pre_high"] <= 276.35
+        else:
+            assert pm["pre_low"] >= s.px(276.35)
+        # Two bars reached 276.35.
+        assert pm[s.extreme] == pytest.approx(s.px(276.35))
+        assert pm["confirmed"][s.raw] == pytest.approx(s.px(278.92))
+        assert pm["confirmed"]["reason"] is None
+        assert pm["thin"] == {"rule": "thin-bar-v1", "min_volume": 100, "bars_excluded": 1}
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_a_zero_volume_bar_at_the_prior_close_sets_no_extreme(self, side):
+        """The 07:40 ET bar of the same morning: 277.54 on all four prices,
+        volume 0. It opens and closes at the price, so the stale rule keeps
+        it and the confirmed rule alone would take its body."""
+        s = _Side(side, PRIOR_CLOSE)
+        rows = [("07:40", 277.54, 277.54, 277.54, 277.54, 0)] + _replace(
+            THIN_ROWS, "08:05", volume=5000, open=276.31, high=276.34, low=276.29, close=276.30)
+        pm = context(s.rows(rows), prev_close=PRIOR_CLOSE)
+        assert pm[s.extreme] == pytest.approx(s.px(276.35))
+        assert pm["confirmed"]["stale_close_reports"] == {
+            "rule": "stale-close-report-v1", "high": 0, "low": 0, "prior_close": 277.54}
+        assert pm["thin"] == {"rule": "thin-bar-v1", "min_volume": 100, "bars_excluded": 1}
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize("volume, sets_it, excluded", [(100, True, 0), (99, False, 1)])
+    def test_one_round_lot_is_not_thin(self, side, volume, sets_it, excluded):
+        s = _Side(side, PRIOR_CLOSE)
+        pm = context(s.rows(_replace(THIN_ROWS, "08:05", volume=volume)), prev_close=PRIOR_CLOSE)
+        expected = 278.92 if sets_it else 276.35
+        assert pm[s.extreme] == pytest.approx(s.px(expected))
+        assert pm["thin"] == {"rule": "thin-bar-v1", "min_volume": 100, "bars_excluded": excluded}
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_every_bar_thin_gives_no_extreme_and_says_why(self, side):
+        s = _Side(side, PRIOR_CLOSE)
+        rows = [(t, o, h, lo, c, 50) for (t, o, h, lo, c, _v) in THIN_ROWS]
+        pm = context(s.rows(rows), prev_close=PRIOR_CLOSE, atr=THIN_ATR)
+        assert pm["pre_high"] is None
+        assert pm["pre_low"] is None
+        assert pm["pre_range_atr"] is None
+        assert pm["confirmed"]["reason"] == "all_bars_thin"
+        assert pm["confirmed"]["rule"] == "two-bars-or-body-v1"
+        assert pm["thin"] == {"rule": "thin-bar-v1", "min_volume": 100, "bars_excluded": 5}
+        # The same bars at a round lot each do give a range.
+        full = context(s.rows(THIN_ROWS[:2] + THIN_ROWS[3:]), prev_close=PRIOR_CLOSE, atr=THIN_ATR)
+        assert full["pre_range_atr"] is not None
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_a_bar_with_no_volume_reading_stays_a_candidate(self, side):
+        """NaN volume is not 'below 100'."""
+        s = _Side(side, PRIOR_CLOSE)
+        pm = context(s.rows(_replace(THIN_ROWS, "08:05", volume=float("nan"))),
+                     prev_close=PRIOR_CLOSE)
+        assert pm[s.extreme] == pytest.approx(s.px(278.92))
+        assert pm["thin"] == {"rule": "thin-bar-v1", "min_volume": 100, "bars_excluded": 0}
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_no_prior_close_still_records_the_thin_block(self, side):
+        s = _Side(side, PRIOR_CLOSE)
+        pm = context(s.rows(THIN_ROWS), prev_close=None)
+        assert pm["thin"] == {"rule": "thin-bar-v1", "min_volume": 100, "bars_excluded": 1}
+        assert pm["confirmed"]["stale_close_reports"] is None
+        assert pm[s.extreme] == pytest.approx(s.px(276.35))
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_vwap_and_gap_are_unchanged(self, side):
+        s = _Side(side, PRIOR_CLOSE)
+        pm = context(s.rows(THIN_ROWS), prev_close=PRIOR_CLOSE)
+        assert {k: pm[k] for k in ("pre_vwap", "gap_pct")} == PINNED_THIN[side]
+
+
+# One bar (08:02) whose high stands alone above every other high and every
+# open and close. The low side reflects these about 276.00.
+CONFIRMED_ABOUT = 276.00
+CONFIRMED_PRIOR_CLOSE = 275.00
+LONE_ROWS = [
+    ("08:00", 276.30, 276.40, 276.20, 276.35, 5000),
+    ("08:01", 276.35, 276.50, 276.30, 276.45, 5000),
+    ("08:02", 276.45, 277.90, 276.40, 276.55, 5000),
+    ("08:03", 276.55, 276.70, 276.45, 276.50, 5000),
+    ("08:04", 276.50, 276.60, 276.25, 276.30, 5000),
+]
+# With rules (a) and (b) running (ATR 4.0, pm_stale_print_atr 0.1, pm_spike_atr
+# 0.25, so k is 1.00): the 08:01 low echoes the prior close (rule (a)), the
+# 08:02 high is an isolated spike (rule (b)), and the 08:03 high is a lone wick
+# 0.65 above its body, which rule (b) keeps.
+FILTERED_ROWS = [
+    ("08:00", 276.30, 276.40, 276.20, 276.35, 5000),
+    ("08:01", 276.35, 276.50, 275.00, 276.45, 5000),
+    ("08:02", 276.45, 279.00, 276.40, 276.55, 5000),
+    ("08:03", 276.55, 277.20, 276.45, 276.50, 5000),
+    ("08:04", 276.50, 276.60, 276.25, 276.30, 5000),
+    ("08:05", 276.30, 276.45, 276.22, 276.40, 5000),
+]
+FILTER_KW = {"atr": 4.0, "stale_print_atr": 0.1, "spike_atr": 0.25}
+PINNED_FILTERED = {
+    "high": {
+        "pre_vwap": 276.45388888888886, "gap_pct": 0.4727,
+        "stale": {"open": [0] * 6, "high": [0] * 6, "low": [0, 1, 0, 0, 0, 0], "close": [0] * 6},
+        "spike": {"high": [0, 0, 1, 0, 0, 0], "low": [0] * 6},
+    },
+    "low": {
+        "pre_vwap": 275.54611111111114, "gap_pct": -0.4693,
+        "stale": {"open": [0] * 6, "high": [0, 1, 0, 0, 0, 0], "low": [0] * 6, "close": [0] * 6},
+        "spike": {"high": [0] * 6, "low": [0, 0, 1, 0, 0, 0]},
+    },
+}
+
+
+class TestConfirmedExtremes:
+    """B7. After rules (a) and (b), the stale rule and the thin rule."""
+
+    @staticmethod
+    def _side(side):
+        s = _Side(side, CONFIRMED_ABOUT)
+        return s, s.px(CONFIRMED_PRIOR_CLOSE)
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_a_lone_wick_sets_no_extreme(self, side):
+        s, prev = self._side(side)
+        pm = context(s.rows(LONE_ROWS), prev_close=prev)
+        highs = sorted((row[2] for row in LONE_ROWS), reverse=True)
+        bodies = [p for row in LONE_ROWS for p in (row[1], row[4])]
+        assert highs[0] == 277.90 and highs[1] == 276.70 and max(bodies) == 276.55
+        # The greater of the second-highest high and the highest open or close.
+        assert pm[s.extreme] == pytest.approx(s.px(max(highs[1], max(bodies))))
+        assert pm[s.extreme] == pytest.approx(s.px(276.70))
+        confirmed = pm["confirmed"]
+        assert confirmed["rule"] == "two-bars-or-body-v1"
+        assert confirmed[s.raw] == pytest.approx(s.px(277.90))
+        assert confirmed[s.count] == 1
+        assert confirmed["reason"] is None
+        assert set(confirmed) == {"rule", "raw_high", "raw_low", "high_bars_above",
+                                  "low_bars_below", "stale_close_reports", "reason"}
+        # The other side of the same bars: second-lowest low 276.25, lowest body 276.30.
+        assert pm[s.other] == pytest.approx(s.px(276.25))
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_two_bars_at_the_same_price_set_it(self, side):
+        s, prev = self._side(side)
+        pm = context(s.rows(_replace(LONE_ROWS, "08:03", high=277.90)), prev_close=prev)
+        assert pm[s.extreme] == pytest.approx(s.px(277.90))
+        assert pm["confirmed"][s.count] == 0
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize("field", ["open", "close"])
+    def test_a_bar_that_opens_or_closes_at_its_extreme_sets_it(self, side, field):
+        s, prev = self._side(side)
+        rows = _replace(LONE_ROWS, "08:02", volume=100, **{field: 277.90})
+        pm = context(s.rows(rows), prev_close=prev)
+        assert pm[s.extreme] == pytest.approx(s.px(277.90))
+        assert pm["confirmed"][s.count] == 0
+        # The same bar under one round lot is thin and sets nothing (B7c): of
+        # the other four bars the second-highest high is 276.60 and the
+        # highest open or close 276.55.
+        thin = context(s.rows(_replace(rows, "08:02", volume=99)), prev_close=prev)
+        assert thin[s.extreme] == pytest.approx(s.px(276.60))
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_one_surviving_bar_gives_its_open_and_close(self, side):
+        s, prev = self._side(side)
+        pm = context(s.rows(LONE_ROWS[2:3]), prev_close=prev)
+        assert pm[s.extreme] == pytest.approx(s.px(276.55))
+        assert pm[s.other] == pytest.approx(s.px(276.45))
+        assert pm["confirmed"][s.raw] == pytest.approx(s.px(277.90))
+        assert pm["confirmed"]["reason"] is None
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_one_bar_with_no_open_or_close_is_unconfirmed(self, side):
+        """Rule (a) drops the bar's open and close (both the prior close to
+        the cent, at a calibrated distance of zero); a lone high and low
+        confirm nothing."""
+        s = _Side(side, 100.0)
+        rows = [("08:00", 100.004, 100.50, 99.60, 100.004, 5000)]
+        pm = context(s.rows(rows), prev_close=100.0, atr=4.0, stale_print_atr=0.0, spike_atr=0.5)
+        assert pm["filtered"] is True
+        assert pm["excluded_prior_close_prints"] == 2
+        assert pm["pre_high"] is None
+        assert pm["pre_low"] is None
+        assert pm["pre_range_atr"] is None
+        assert pm["confirmed"]["reason"] == "unconfirmed"
+        assert pm["confirmed"][s.raw] == pytest.approx(s.px(100.50))
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_rules_a_and_b_masks_vwap_and_gap_are_unchanged(self, side):
+        s, prev = self._side(side)
+        rows = s.rows(FILTERED_ROWS)
+        pinned = PINNED_FILTERED[side]
+        b = bars(rows)
+        filt = premarket_print_filter(b["open"], b["high"], b["low"], b["close"],
+                                      prev_close=prev, **FILTER_KW)
+        assert {f: [int(x) for x in m] for f, m in filt["stale"].items()} == pinned["stale"]
+        assert {f: [int(x) for x in m] for f, m in filt["spike"].items()} == pinned["spike"]
+        pm = context(rows, prev_close=prev, **FILTER_KW)
+        assert pm["excluded_prior_close_prints"] == 1
+        assert pm["excluded_spike_prints"] == 1
+        assert {k: pm[k] for k in ("pre_vwap", "gap_pct")} == {
+            k: pinned[k] for k in ("pre_vwap", "gap_pct")}
+        # Surviving highs: 276.40, 276.50, none (spike), 277.20, 276.60, 276.45.
+        # Second-highest 276.60; highest open or close 276.55.
+        assert pm[s.extreme] == pytest.approx(s.px(276.60))
+        assert pm["confirmed"][s.raw] == pytest.approx(s.px(277.20))
+        assert pm["confirmed"][s.count] == 1
+        # Surviving lows: 276.20, none (echo), 276.40, 276.45, 276.25, 276.22.
+        # Second-lowest 276.22; lowest open or close 276.30.
+        assert pm[s.other] == pytest.approx(s.px(276.22))
+
+    def test_no_premarket_bars_run_no_rule(self):
+        b = bars([("10:00", 276.30, 276.40, 276.20, 276.35, 5000)])
+        pm = calculate_premarket_context(b["time"], b["open"], b["high"], b["low"], b["close"],
+                                         b["volume"], prev_close=275.0, atr=None,
+                                         stale_print_atr=None, spike_atr=None)
+        assert pm["bar_count"] == 0
+        assert pm["confirmed"] is None
+        assert pm["thin"] is None
+
+    def test_rule_record_is_the_two_blocks(self):
+        from lib.indicators import (CONFIRMED_RULE, PM_MIN_EXTREME_VOLUME, STALE_CLOSE_RULE,
+                                    THIN_BAR_RULE, premarket_rule_record)
+        assert (PM_MIN_EXTREME_VOLUME, CONFIRMED_RULE, STALE_CLOSE_RULE, THIN_BAR_RULE) == (
+            100, "two-bars-or-body-v1", "stale-close-report-v1", "thin-bar-v1")
+        pm = context(LONE_ROWS, prev_close=CONFIRMED_PRIOR_CLOSE)
+        assert premarket_rule_record(pm) == {"confirmed": pm["confirmed"], "thin": pm["thin"]}
+
+
+# ── FEAT-PLAYBOOK-001 B8: the 2026-11-16 session on the stored bars ──────────
+#
+# tests/fixtures/premarket_2026_11_16/ holds read-only exports of production
+# (sources.json names the db-query execution, the statement and the sha256 of
+# every file): the one-minute bars of SPY, QQQ and IWM from 04:00 to 09:30 ET
+# as market_data_intraday stored them on 2026-11-16 22:27Z, the session's live
+# premarket_analysis rows, and the market_data_daily rows of 2026-11-13 and
+# 2026-11-16.
+SESSION_1116_DIR = fx.FIXTURES / "premarket_2026_11_16"
+
+
+def _table_1116(name: str) -> list[dict]:
+    raw = json.loads((SESSION_1116_DIR / name).read_text())
+    return [dict(zip(raw["columns"], row)) for row in raw["rows"]]
+
+
+def load_premarket_2026_11_16(ticker: str) -> tuple[pd.DataFrame, dict]:
+    """The session's stored one-minute bars of `ticker` (`ts` aware UTC) and
+    what its live brief row and its 2026-11-13 daily row recorded: the cutoff
+    (level_basis.premarket.fetched_at), the stored extremes, the prior close
+    and open, and the ATR and thresholds the 08:20 ET fetch filtered with."""
+    bars = pd.read_csv(SESSION_1116_DIR / f"{ticker}_bars.csv")
+    bars["ts"] = pd.to_datetime(bars["ts"], utc=True)
+    brief = next(r for r in _table_1116("brief_rows.json") if r["ticker"] == ticker)
+    prior = next(r for r in _table_1116("daily_rows.json")
+                 if r["ticker"] == ticker and r["date"] == "2026-11-13")
+    premarket = brief["level_basis"]["premarket"]
+    recorded = premarket["pre_filter_params"]
+    return bars, {
+        "cutoff": pd.Timestamp(premarket["fetched_at"]),
+        "stored_high": premarket["pre_high"],
+        "stored_low": premarket["pre_low"],
+        "stored_stale_prints": premarket["excluded_stale_prints"],
+        "prior_close": prior["close"],
+        "prior_open": prior["open"],
+        "atr": recorded["atr"],
+        "stale_print_atr": recorded["pm_stale_print_atr"]["value"],
+        "spike_atr": recorded["pm_spike_atr"]["value"],
+    }
+
+
+def _context_1116(ticker: str, *, drop_et: str | None = None) -> dict:
+    """calculate_premarket_context on the bars before the brief row's
+    recorded cutoff, with that row's prior close, ATR and thresholds.
+    `drop_et` leaves out the bar of that Eastern minute."""
+    bars, entry = load_premarket_2026_11_16(ticker)
+    bars = bars[bars["ts"] < entry["cutoff"]]
+    if drop_et is not None:
+        bars = bars[_et_minute(bars) != drop_et]
+    return calculate_premarket_context(
+        times=bars["ts"], open_=bars["open"], high=bars["high"], low=bars["low"],
+        close=bars["close"], volume=bars["volume"],
+        prev_close=entry["prior_close"], atr=entry["atr"], prev_open=entry["prior_open"],
+        stale_print_atr=entry["stale_print_atr"], spike_atr=entry["spike_atr"])
+
+
+def _et_minute(bars: pd.DataFrame) -> pd.Series:
+    from lib.eastern_time import as_eastern_time
+    return bars["ts"].map(lambda ts: as_eastern_time(ts).strftime("%H:%M"))
+
+
+# The stored raw premarket highs (premarket_analysis.level_basis.premarket
+# .pre_high of the live rows). The spec writes SPY's as 754.377: the stored
+# value is 754.3772.
+STORED_RAW_HIGH_1116 = {"IWM": 278.92, "SPY": 754.3772, "QQQ": 681.022}
+
+# pre_high and pre_low the code on this branch gives, each READ BY HAND from
+# the fixture bars before the cutoff (the last bar is 08:20 ET for all three)
+# before the code was run on them. Times are Eastern.
+#
+# IWM (prior close 277.54; rule (a) distance 0.0329 x 4.875 = 0.16):
+#   rule (a) drops the nine 277.54 prints of 07:35 (high, close), 07:36 (open,
+#   high), 07:39 (open, high), 07:40 (high, close) and 07:43 (high): every one
+#   of those bars has its midpoint 0.75 or more from 277.54.
+#   The 08:05 bar (high 278.92, volume 81) is thin and gives nothing; so are
+#   86 other bars under 100 shares.
+#   Highs left: 276.97 (04:03), 276.90 (04:01), 276.86 (06:54): second-highest
+#   276.90. Highest open or close left: the 04:03 close, 276.97 (28,705
+#   shares). pre_high = max(276.90, 276.97) = 276.97.
+#   Lows left: 275.74 (07:29) and 275.74 (07:30): second-lowest 275.74. Lowest
+#   open or close: the 07:29 and 07:30 closes, 275.74. pre_low = 275.74.
+#
+# QQQ (prior close 679.89; rule (a) distance 0.0371 x 16.338 = 0.61):
+#   rule (a) drops the sixteen 679.89 prints (twelve highs from 07:01 to
+#   08:07, the 07:39 open, the 07:37, 07:38 and 07:40 closes); no bar that
+#   carries one has its midpoint within 4.8 of 679.89.
+#   Highs left: 681.022 (08:05, 3,253 shares, the stored raw high), 679.8507
+#   (07:00), 675.49 (04:03): second-highest 679.8507. Highest open or close
+#   left: the 04:00 open, 675.29. pre_high = max(679.8507, 675.29) = 679.8507.
+#   Lows left: 668.28 (07:30), 668.33 (07:29): second-lowest 668.33. Lowest
+#   open or close: the 07:29 close, 668.34. pre_low = min(668.33, 668.34).
+#
+# SPY (prior close 754.37; rule (a) distance 0.0359 x 11.036 = 0.40):
+#   rule (a) drops the twelve prints at 754.37 to the cent (ten highs from
+#   07:01 to 08:07, the 07:36 and 07:38 closes). The 07:00 high 754.3772 is
+#   754.38 to the cent, so it is not one of them.
+#   Highs left: 754.3772 (07:00, the stored raw high), 753.01 (04:00), 752.90
+#   (04:01): second-highest 753.01. Highest open or close left: the 04:26
+#   open, 752.75. pre_high = max(753.01, 752.75) = 753.01.
+#   Lows left: 747.94 (07:30), 747.96 (07:29): second-lowest 747.96. Lowest
+#   open or close: the 07:29 close, 747.9791. pre_low = 747.96.
+#
+# NOT TO BE READ AS CORRECT for QQQ and SPY. QQQ's 679.8507 is one bar's wick
+# four cents under the prior close 679.89, kept because the 08:05 print stands
+# above it: the confirmed high is still a prior-close print, not the market's
+# premarket high (the owner's tape check gave 674.92). SPY's 753.01 holds only
+# on these stored bars: on the vendor's bars as read during the session the
+# 07:00 bar closed at 754.3759 and this rule returned that, the prior close
+# again (tape check 752.44). Prints at or beside the prior close are the
+# subject of docs/superpowers/specs/2026-11-16-feat-playbook-001-prior-close-prints.md
+# and are not handled here. IWM's 276.97 is the corrected value (tape 276.90).
+CONFIRMED_1116 = {
+    #        pre_high   pre_low
+    "IWM": (276.97, 275.74),
+    "QQQ": (679.8507, 668.33),   # see the note above: a prior-close print
+    "SPY": (753.01, 747.96),     # see the note above: stored bars only
+}
+# What each rule dropped, counted by hand in the same reading:
+#   (a) prior-close prints, (b) spikes, thin bars, candidate highs above
+#   pre_high (the two 08:05 and 07:00 raw highs), candidate lows below pre_low
+#   (the two 07:30 lows)
+RULE_COUNTS_1116 = {
+    "IWM": (9, 0, 87, 0, 0),
+    "QQQ": (16, 0, 7, 1, 1),
+    "SPY": (12, 0, 34, 1, 1),
+}
+
+
+class TestSession20261116:
+    """B8, second part: the rules on the session's stored bars."""
+
+    def test_sources_json_matches_the_files(self):
+        sources = json.loads((SESSION_1116_DIR / "sources.json").read_text())["files"]
+        on_disk = sorted(p.name for p in SESSION_1116_DIR.iterdir())
+        assert on_disk == sorted([*sources, "sources.json"])
+        for name, entry in sources.items():
+            data = (SESSION_1116_DIR / name).read_bytes()
+            assert hashlib.sha256(data).hexdigest() == entry["sha256"], name
+            if name.endswith(".csv"):
+                rows = len(pd.read_csv(SESSION_1116_DIR / name))
+            else:
+                text = gzip.decompress(data) if name.endswith(".gz") else data
+                rows = len(json.loads(text)["rows"])
+            assert rows == entry["rows"], name
+            assert entry["execution"].startswith("db-query-") and entry["sql"].startswith("SELECT")
+
+    @pytest.mark.parametrize("ticker", sorted(STORED_RAW_HIGH_1116))
+    def test_raw_highs_are_the_stored_ones(self, ticker):
+        _bars, entry = load_premarket_2026_11_16(ticker)
+        assert entry["stored_high"] == STORED_RAW_HIGH_1116[ticker]
+        pm = _context_1116(ticker)
+        assert pm["filtered"] is True
+        assert pm["confirmed"]["raw_high"] == STORED_RAW_HIGH_1116[ticker]
+
+    @pytest.mark.parametrize("ticker", sorted(CONFIRMED_1116))
+    def test_confirmed_extremes(self, ticker):
+        pm = _context_1116(ticker)
+        high, low = CONFIRMED_1116[ticker]
+        assert (pm["pre_high"], pm["pre_low"]) == (high, low)
+        stale, spikes, thin, above, below = RULE_COUNTS_1116[ticker]
+        assert pm["excluded_prior_close_prints"] == stale
+        assert pm["excluded_spike_prints"] == spikes
+        assert pm["thin"] == {"rule": "thin-bar-v1", "min_volume": 100, "bars_excluded": thin}
+        confirmed = pm["confirmed"]
+        assert confirmed["rule"] == "two-bars-or-body-v1" and confirmed["reason"] is None
+        assert (confirmed["high_bars_above"], confirmed["low_bars_below"]) == (above, below)
+        # Rule (a) had already dropped every print at the prior close, so the
+        # closing-price report rule found none of its own.
+        _bars, entry = load_premarket_2026_11_16(ticker)
+        assert confirmed["stale_close_reports"] == {
+            "rule": "stale-close-report-v1", "high": 0, "low": 0,
+            "prior_close": entry["prior_close"]}
+
+    def test_the_0805_iwm_bar_is_thin(self):
+        bars, entry = load_premarket_2026_11_16("IWM")
+        bar = bars[_et_minute(bars) == "08:05"]
+        assert len(bar) == 1 and bar["ts"].iloc[0] < entry["cutoff"]
+        # What is stored. The vendor's read in the spec was open 276.4801, high
+        # 278.92, low 276.4801, close 278.92, volume 1: the stored bar has the
+        # same open and high, a low and close of 276.24 and 81 shares. Under
+        # 100 either way.
+        assert bar[["open", "high", "low", "close", "volume"]].iloc[0].tolist() == [
+            276.4801, 278.92, 276.24, 276.24, 81]
+        with_bar, without = _context_1116("IWM"), _context_1116("IWM", drop_et="08:05")
+        assert with_bar["thin"]["bars_excluded"] == without["thin"]["bars_excluded"] + 1
+        # It is the raw high and it sets nothing.
+        assert with_bar["confirmed"]["raw_high"] == 278.92
+        assert without["confirmed"]["raw_high"] == 276.97
+        assert (with_bar["pre_high"], with_bar["pre_low"]) == (
+            without["pre_high"], without["pre_low"]) == CONFIRMED_1116["IWM"]
