@@ -5591,3 +5591,65 @@ CREATE TABLE IF NOT EXISTS bar_recompute_ledger (
 ALTER TABLE signal_alerts     ADD COLUMN IF NOT EXISTS exit_recompute_run TEXT;
 ALTER TABLE trades            ADD COLUMN IF NOT EXISTS exit_recompute_run TEXT;
 ALTER TABLE market_data_daily ADD COLUMN IF NOT EXISTS pre_recompute_run  TEXT;
+
+-- Bar misprint flags (FEAT-DATA-001)
+-- Spec: docs/superpowers/specs/2026-11-16-feat-data-001-bar-misprint-flags-r2.md
+-- (Design 2). A print that sits far outside its own minute is flagged here,
+-- per bar and side, by gcp/fetchers/intraday_bar_flags.py under the rule of
+-- lib/bar_prints.py. No row of market_data_intraday is changed and none is
+-- read by a foreign key.
+--
+-- A coverage row for (ticker, month, rule version) says the month was judged
+-- at checked_at over the bars its bars_basis hashes. A bar of that month from
+-- first_judged_ts to last_judged_ts with no flag row was judged and not
+-- flagged. No coverage row means not judged, never clean.
+CREATE TABLE IF NOT EXISTS intraday_bar_flags (
+    ticker        VARCHAR(10)      NOT NULL,
+    interval      VARCHAR(5)       NOT NULL DEFAULT '1min',
+    ts            TIMESTAMPTZ      NOT NULL,   -- the bar's key in market_data_intraday
+    side          VARCHAR(4)       NOT NULL CHECK (side IN ('high', 'low')),
+    rule_version  VARCHAR(32)      NOT NULL,
+    print_kind    VARCHAR(14)      NOT NULL
+        CHECK (print_kind IN ('wick', 'open', 'close', 'open_and_close')),
+    session_part  VARCHAR(8)       NOT NULL CHECK (session_part IN ('regular', 'extended')),
+    observed      DOUBLE PRECISION NOT NULL,   -- the stored high or low
+    reference     DOUBLE PRECISION NOT NULL,
+    bound         DOUBLE PRECISION NOT NULL,
+    scale         DOUBLE PRECISION NOT NULL,
+    excess_bp     DOUBLE PRECISION NOT NULL,
+    read_start    TIMESTAMPTZ      NOT NULL,   -- the window the pass read for the month
+    read_end      TIMESTAMPTZ      NOT NULL,   -- (Design 3, step 1); a replace overlapping it clears the row
+    detected_at   TIMESTAMPTZ      NOT NULL,   -- the first pass that flagged it
+    checked_at    TIMESTAMPTZ      NOT NULL,   -- the last pass that flagged it
+    run_id        TEXT             NOT NULL,
+    CHECK (read_start < read_end),
+    PRIMARY KEY (ticker, interval, ts, side, rule_version)
+);
+
+CREATE TABLE IF NOT EXISTS intraday_bar_flag_coverage (
+    ticker              VARCHAR(10)  NOT NULL,
+    interval            VARCHAR(5)   NOT NULL DEFAULT '1min',
+    -- The month window's first instant (lib.eastern_time.intraday_month_window).
+    ts                  TIMESTAMPTZ  NOT NULL,
+    rule_version        VARCHAR(32)  NOT NULL,
+    month               DATE         NOT NULL,   -- the first of the Eastern month
+    read_start          TIMESTAMPTZ  NOT NULL,   -- the window the pass read, margins included;
+    read_end            TIMESTAMPTZ  NOT NULL,   -- a replace overlapping it clears the row (Design 7)
+    params              JSONB        NOT NULL,
+    bars_in_month       INTEGER      NOT NULL,
+    bars_judged         INTEGER      NOT NULL,
+    first_judged_ts     TIMESTAMPTZ,
+    last_judged_ts      TIMESTAMPTZ,
+    flags_regular_high  INTEGER      NOT NULL,
+    flags_regular_low   INTEGER      NOT NULL,
+    flags_extended_high INTEGER      NOT NULL,
+    flags_extended_low  INTEGER      NOT NULL,
+    bars_basis          JSONB        NOT NULL,   -- gcp.bar_recompute.bars_basis of the rows read
+    session_sha256      JSONB        NOT NULL,   -- Eastern date -> sha256 of that date's rows read
+    code_version        JSONB        NOT NULL,   -- gcp.bar_recompute.code_version()
+    run_id              TEXT         NOT NULL,
+    checked_at          TIMESTAMPTZ  NOT NULL,
+    CHECK ((bars_judged = 0) = (first_judged_ts IS NULL)),
+    CHECK (read_start < read_end),
+    PRIMARY KEY (ticker, interval, ts, rule_version)
+);
