@@ -174,19 +174,21 @@ def test_qqq_pdl_is_unbroken_behind_the_premarket_low_in_the_brief(monkeypatch):
     out = fx.run_brief(monkeypatch, "QQQ", fx.loader_frame("QQQ"))
     short = out["level_basis"]["short"]
     assert short["trigger"]["name"] == "PMK_L"
-    assert price_cents(short["trigger"]["price"]) == 64962
+    # FEAT-PLAYBOOK-001 B7: PMK_L is the confirmed low 649.65 (649.62 until
+    # then, the 04:04 bar's lone wick).
+    assert price_cents(short["trigger"]["price"]) == 64965
     rungs = [(c["name"], c["cents"]) for c in short["candidates"]
              if not c["broken"] and c["in_window"]]
-    assert rungs[:2] == [("PMK_L", 64962), ("PDL", 64705)]
+    assert rungs[:2] == [("PMK_L", 64965), ("PDL", 64705)]
     assert short["targets"][0]["name"] == "PDL"
     ladder = [lv["price"] for lv in out["level_basis"]["short"]["ladder"]]
-    assert ladder == [649.62, 647.05]
+    assert ladder == [649.65, 647.05]
 
 
 def test_qqq_pdl_is_unbroken_behind_the_premarket_low_in_the_planner(monkeypatch):
     _section, ctx, plans, _ = fx.run_planner(monkeypatch, "QQQ", fx.loader_frame("QQQ"), "short")
     rungs = [(c["name"], c["cents"]) for c in ctx.levels.short.rungs]
-    assert rungs[:2] == [("PMK_L", 64962), ("PDL", 64705)]
+    assert rungs[:2] == [("PMK_L", 64965), ("PDL", 64705)]
     pdl = next(c for c in ctx.levels.short.candidates if c["name"] == "PDL")
     assert pdl["broken"] is False
     assert all(p.entry_zone is not None for p in plans)
@@ -316,8 +318,10 @@ def _resolver_engine(ticker, *, atr_missing=False):
 def test_playbook_resolver_window_and_atr_unavailable():
     from gcp.premarket_playbook_resolver import derive_level_map_from_daily
     got = derive_level_map_from_daily("SPY", fx.SESSION, _resolver_engine("SPY"))
-    assert got["calls_trigger_price"] == pytest.approx(738.04)
-    assert got["puts_trigger_price"] == pytest.approx(730.64)
+    # FEAT-PLAYBOOK-001 B7: the confirmed extremes (738.04 and 730.64 until
+    # then, each one bar's lone wick).
+    assert got["calls_trigger_price"] == pytest.approx(737.9285)
+    assert got["puts_trigger_price"] == pytest.approx(730.70)
     ref = fx.session_premarket("SPY")["pre_vwap"]
     prices = [got[k] for k in ("calls_trigger_price", "calls_t1_price", "calls_t2_price",
                                "calls_t3_price", "puts_trigger_price", "puts_t1_price",

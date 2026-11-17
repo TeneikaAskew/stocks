@@ -57,6 +57,10 @@ def _build(ticker, frame):
                                 fixture_params(ticker, SESSION))
 
 
+# QQQ's premarket low computed from the committed bars is 649.65 under the
+# confirmed rule (FEAT-PLAYBOOK-001 B7); it was 649.62, the 04:04 bar's lone
+# wick, until then. Rows written by hand below keep the values they hold.
+
 # ── the counts and fetch time reach level_basis ─────────────────────────
 
 def test_daily_frame_snapshot_carries_provenance_into_level_basis():
@@ -65,7 +69,7 @@ def test_daily_frame_snapshot_carries_provenance_into_level_basis():
     assert pm["excluded_stale_prints"] == 3
     assert pm["excluded_spikes"] == 1
     assert pm["excluded_bars"] == 4
-    assert pm["pre_low"] == pytest.approx(649.62)
+    assert pm["pre_low"] == pytest.approx(649.65)
 
 
 def test_naive_fetch_time_is_read_as_utc():
@@ -252,7 +256,7 @@ def test_nightly_row_to_a_table_without_the_columns_drops_them(monkeypatch):
 
 def test_frame_without_the_columns_builds_with_null_provenance():
     pm = _build("QQQ", fx.loader_frame("QQQ")).to_basis()["premarket"]
-    assert pm["pre_low"] == pytest.approx(649.62)
+    assert pm["pre_low"] == pytest.approx(649.65)
     assert pm["fetched_at"] is None
     assert pm["excluded_stale_prints"] is None and pm["excluded_spikes"] is None
     assert pm["excluded_bars"] is None
@@ -275,7 +279,7 @@ def test_read_session_premarket_falls_back_without_the_columns():
 
     snap = read_session_premarket(q, "QQQ", SESSION)
     assert len(calls) == 2 and "pre_fetched_at" in calls[0] and "pre_fetched_at" not in calls[1]
-    assert snap["pre_low"] == pytest.approx(649.62)
+    assert snap["pre_low"] == pytest.approx(649.65)
     assert snap["fetched_at"] is None and snap["excluded_spikes"] is None
     assert snap.get("pre_filter_status") is None
     sl = build_session_levels("QQQ", SESSION, fx.daily("QQQ"), {"atr_14": fx.prior_atr("QQQ")},
@@ -290,7 +294,7 @@ def test_read_session_premarket_falls_back_when_the_query_swallows_errors():
     snap_row = pd.DataFrame([{**fx.session_premarket("QQQ"), "date": SESSION}])
     snap = read_session_premarket(
         lambda sql, p: pd.DataFrame() if "pre_fetched_at" in sql else snap_row, "QQQ", SESSION)
-    assert snap is not None and snap["pre_low"] == pytest.approx(649.62)
+    assert snap is not None and snap["pre_low"] == pytest.approx(649.65)
 
 
 def test_resolver_builds_from_a_table_without_the_columns():
@@ -301,7 +305,7 @@ def test_resolver_builds_from_a_table_without_the_columns():
     out = _resolver_inputs(_AnalysisDb())
     assert out is not None
     assert out["puts_trigger_name"] == "PMK_L"
-    assert out["puts_trigger_price"] == pytest.approx(649.62)
+    assert out["puts_trigger_price"] == pytest.approx(649.65)
     bare = _resolver_inputs(_AnalysisDb(), with_provenance=False)
     assert bare is not None
     assert bare["puts_trigger_name"] != "PMK_L" and bare["calls_trigger_name"] != "PMK_H"
