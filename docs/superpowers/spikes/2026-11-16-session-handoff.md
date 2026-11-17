@@ -1,4 +1,7 @@
-# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-16 23:45Z
+# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 00:10Z
+
+Keep this note current: whoever finishes a task updates its row in section 2 and its part of
+section 3 in the same PR or a docs PR right after (owner, 2026-11-16).
 
 Written for whoever continues this work (another model session or a person). Everything below was
 true when written. Before acting on any line, re-read the PR or branch it names: several things were
@@ -33,8 +36,8 @@ Rules the owner set for this work. They are not optional:
 | PR | What | State | Next action |
 |---|---|---|---|
 | #2010 | Brief build (FEAT-PLAYBOOK-001) | Ready, auto-merge on. Tasks 1 to 12 pushed, head 8250bff75, every review clean. | Task 13 (close) was running. Finish it, push, replace the PR body. See 3.1. |
-| #2001 | Bad-print flags build (FEAT-DATA-001) | Draft. Code complete, head 7b578659e, gate and integration tests green; Run Tests was running. | When Run Tests passes: tick the three open boxes in the body, mark ready. Merge needs the owner's yes (schema). See 3.2. |
-| #2020 | 09:20 schedule build (FEAT-DEPLOY-001) | Draft. Tasks 1 to 3 pushed, head 511f3bd5f. | Tasks 4 and 5 (close) were running. Finish, push, replace the body, mark ready, enable auto-merge. See 3.3. |
+| #2001 | Bad-print flags build (FEAT-DATA-001) | Draft. Code complete, head 7b578659e, gate, integration and research tests green; Run Tests had not reported at 00:10Z. | When Run Tests passes: tick the three open boxes in the body, mark ready. Merge needs the owner's yes (schema). See 3.2. |
+| #2020 | 09:20 schedule build (FEAT-DEPLOY-001) | Ready, auto-merge on. All 5 tasks pushed, head d843cc6c7, body complete with every box ticked; local gate, verify and audit clean. | Wait for CI and Codex; record first reviews; fix findings in place. If main moves first, the site-source snapshot goes stale: merge main, re-run produce and verify, push. After merge: the owner's three deploys. See 3.3. |
 | #2019 | Targets spec r2 (FEAT-STRAT-001) | Ready, auto-merge on, both reviews clean. | Wait for CI and the merge. Then re-point #2018. See 3.4. |
 | #2018 | Targets plan | Ready, auto-merge OFF on purpose. Two open review threads. | After #2019 merges: re-point its `spec:` at the r2 file, add the baseline-only mode, answer and resolve the two threads, turn auto-merge on. See 3.4. |
 | #2021 | Prior-close spec r2 (FEAT-PLAYBOOK-001) | Ready, auto-merge on, both reviews clean. | Wait for CI and the merge. Then put the prior-close plan up. See 3.5. |
@@ -172,7 +175,11 @@ the insight build (3.7).
 
 ## 4. Things found today that are not yet in any spec
 
-1. **The vendor revises the day's bars after the close.** Compared bar by bar on 2026-11-16, a read
+1. **The vendor revises the day's bars after the close.** The owner asked for an issue (opened
+   2026-11-17 with a Webull comparison; see the issue list for "Premarket one-minute bars differ by
+   source") and said saving the bars each premarket run reads is likely needed. A draft spec for that
+   is on branch `docs/spec-feat-data-001-premarket-reads-as-read` (draft, not yet a PR, not approved).
+   Details as first found: Compared bar by bar on 2026-11-16, a read
    at about 15:00 ET against the stored bars: 322 of 327 SPY premarket bars differ in a price or the
    volume, 330 of 330 QQQ, 183 of 199 IWM. Volumes during the session are several times smaller. So
    the 08:20 brief reads thinner data than anything stored, every measurement made today describes
@@ -180,7 +187,8 @@ the insight build (3.7).
    save the bars exactly as the 08:20 and 09:20 runs read them, then re-check the 100 share thin-bar
    line and the prior-close numbers against a few weeks of saved reads. The owner has not yet said
    yes to this.
-2. **An unknown newer rule version is rebuilt under an old rule with no error** (3.5, step 4). A
+2. **An unknown newer rule version is rebuilt under an old rule with no error** (a draft spec is on
+   branch `docs/spec-feat-strat-001-unknown-rule-version`, not yet a PR, not approved) (3.5, step 4). A
    guard that refuses, or marks unavailable, a version newer than the code knows would make deploy
    order safe by construction. Recommended as its own small item. The owner has not yet said yes.
 3. **One-bar junk prints not near the prior close** (QQQ 2026-11-16 08:35, high 680.40 with the
@@ -206,6 +214,9 @@ the insight build (3.7).
   the research set or leave it to CI.
 - The local `spec_gate.py --commit` refuses a second edit of an approved spec or a ready plan on its
   own docs branch; `--pr origin/main` is what CI runs and what gates the merge.
+- Merging main into a build branch after its close-out makes the site-source snapshot stale
+  ("historical record does not equal complete current MAIN source/body"). Re-run produce, commit, and
+  verify with `--max-input-bytes 16777216`. Expect this whenever several PRs land close together.
 - The nightly intraday job needs the scheduler's arguments (`--symbol=ALL --force`). Without them it
   skips every ticker.
 
