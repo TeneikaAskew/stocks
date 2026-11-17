@@ -287,7 +287,7 @@ EW brief retirement Draft [#1837](https://github.com/TeneikaAskew/stocks/pull/18
 | Priority | P2 |
 | Target phase | Phase 4 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-14 |
+| Last reviewed | 2026-11-17 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/insights` |
 | Backend | `/api/insights` (13) |
