@@ -572,13 +572,23 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
 # ──────────────────── Context joining ────────────────────
 
 
+# Oldest prior snapshot a bar may still take its context from, in calendar
+# days. Six covers a long weekend plus a holiday with D-1 missing (Tue after a
+# Monday holiday reaches Thu, five days back), and equals the `_lag > 6`
+# FRESHNESS guard in `_process_ticker`: once that guard fires, the context is
+# NaN as its message says, so a stalled gamma_levels_eod writer (2026-05-22 to
+# 2026-06-19) shows up as NULL features instead of the last snapshot repeated.
+PRIOR_SNAPSHOT_MAX_AGE = pd.Timedelta(days=6)
+
+
 def prior_snapshot_context(levels: pd.DataFrame, bar_dates: pd.Series) -> pd.DataFrame:
     """Per bar date, the `levels` row of the latest snapshot_date STRICTLY before it.
 
     `levels` is indexed by snapshot_date (one row per date). The result has the
     index of `bar_dates` and `levels`' columns; NaN everywhere when no earlier
-    snapshot exists. A marker row (date present, columns NaN) is selected like
-    any other row, so the lookup never reaches past it.
+    snapshot exists within PRIOR_SNAPSHOT_MAX_AGE. A marker row (date present,
+    columns NaN) is selected like any other row, so the lookup never reaches
+    past it.
     """
     if levels.empty:
         return pd.DataFrame(np.nan, index=bar_dates.index, columns=levels.columns)
@@ -589,9 +599,11 @@ def prior_snapshot_context(levels: pd.DataFrame, bar_dates: pd.Series) -> pd.Dat
     left = pd.DataFrame({"_bar_key": pd.to_datetime(bar_dates).astype("datetime64[ns]").to_numpy()},
                         index=bar_dates.index)
     left["_pos"] = np.arange(len(left))
+    # Both keys are datetime64[ns], so the Timedelta tolerance applies directly.
     merged = pd.merge_asof(left.sort_values("_bar_key"), right,
                            left_on="_bar_key", right_on="_snapshot_key",
-                           direction="backward", allow_exact_matches=False)
+                           direction="backward", allow_exact_matches=False,
+                           tolerance=PRIOR_SNAPSHOT_MAX_AGE)
     merged = merged.sort_values("_pos")
     res = merged[list(levels.columns)].copy()
     res.index = bar_dates.index
