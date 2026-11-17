@@ -1,4 +1,4 @@
-# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 00:20Z
+# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 00:30Z
 
 Keep this note current: whoever finishes a task updates its row in section 2 and its part of
 section 3 in the same PR or a docs PR right after (owner, 2026-11-16).
@@ -35,13 +35,15 @@ Rules the owner set for this work. They are not optional:
 
 | PR | What | State | Next action |
 |---|---|---|---|
-| #2010 | Brief build (FEAT-PLAYBOOK-001) | Ready, auto-merge on. All 13 tasks pushed, head 1d92570d2 (main merged in at 4c49671aa, no conflict). Full body with all 17 boxes ticked posted 2026-11-17 about 00:15Z. The gate failed once at 00:07Z only because the old body was still up. | Wait for the gate to re-run on the new body, CI and Codex's code review of 1d92570d2; fix findings in place. If main moves first, the site-source snapshot may go stale: merge main, re-run produce and verify, push. After merge: the owner's steps in the body. See 3.1. |
+| #2010 | Brief build (FEAT-PLAYBOOK-001) | Ready, auto-merge on. All 13 tasks pushed, head 1d92570d2 (main merged in at 4c49671aa, no conflict). Full body with all 17 boxes ticked posted 2026-11-17 00:10Z; gate re-ran on it. Codex's code review of 1d92570d2 raised one P2 (the from-bars dry run reads the daily row's `pre_filter_params`, not the brief's frozen copy): below the P1 threshold, replied, resolved, tracked in issue #2024. | Wait for CI and the merge. After merge: the owner's steps in the body. Issue #2024 is a later small fix. See 3.1. |
 | #2001 | Bad-print flags build (FEAT-DATA-001) | Ready since 2026-11-17 00:05Z, auto-merge OFF on purpose. Head 7b578659e, CI green, every box ticked with run links. Codex code and security reviews started 00:05Z. | Record both first reviews, fix findings in place. Merge needs the owner's yes (it changes `gcp/schema.sql`). See 3.2. |
-| #2020 | 09:20 schedule build (FEAT-DEPLOY-001) | Ready, auto-merge on. All 5 tasks pushed, head d843cc6c7, body complete with every box ticked; local gate, verify and audit clean. First security review recorded (no findings). `registry` failed once on a sub-second timing test in the gate suite the PR does not touch; explained on the PR and re-run once (a second failure counts as real). | Wait for CI and Codex; record first reviews; fix findings in place. If main moves first, the site-source snapshot goes stale: merge main, re-run produce and verify, push. After merge: the owner's three deploys. See 3.3. |
-| #2019 | Targets spec r2 (FEAT-STRAT-001) | Ready, auto-merge on, both reviews clean. | Wait for CI and the merge. Then re-point #2018. See 3.4. |
-| #2018 | Targets plan | Ready, auto-merge OFF on purpose. Two open review threads. | After #2019 merges: re-point its `spec:` at the r2 file, add the baseline-only mode, answer and resolve the two threads, turn auto-merge on. See 3.4. |
-| #2021 | Prior-close spec r2 (FEAT-PLAYBOOK-001) | Ready, auto-merge on, both reviews clean. | Wait for CI and the merge. Then put the prior-close plan up. See 3.5. |
+| #2020 | 09:20 schedule build (FEAT-DEPLOY-001) | Ready, auto-merge on. Head d843cc6c7, body complete with every box ticked. First code and security reviews recorded, no findings. `registry` failed once on a sub-second timing test in the gate suite the PR does not touch; explained on the PR and re-run once (a second failure counts as real). | Wait for the re-run and the merge. If main moves first, the site-source snapshot may go stale: merge main, re-run produce and verify, push. After merge: the owner's three deploys. See 3.3. |
+| #2019 | Targets spec r2 (FEAT-STRAT-001) | Merged (f8f6c6996). | Done. |
+| #2018 | Targets plan | Ready, auto-merge on again. Re-pointed at r2 in cd7bdf779 (main merged at 5e99e6f57): baseline-only driver mode in Task 13, r2's two checks in Task 14 Step 4, the six pinned string counts in Tasks 1 and 12. Both threads answered and resolved; Codex's review of cd7bdf779 found nothing. | Wait for CI and the merge. See 3.4. |
+| #2021 | Prior-close spec r2 (FEAT-PLAYBOOK-001) | Ready, auto-merge on, both reviews clean, CI green at 00:13Z; merging. | After the merge, put the prior-close plan up (re-pointed at r2 locally, not pushed yet). See 3.5. |
 | #2009 | Conviction spec (FEAT-INSIGHT-001) | Draft, head 2801e3f45: main merged in, and the measurement's outcome named as the first-target surrogate `cross-fill-t1-v1`, never plan performance (no decision or done_when outcome moved). | Needs the owner's word on one decision. Decision 1's line still says "R earned by the brief's own plan"; rewording it needs the owner. See 3.6. |
+| #2025 | Unknown rule version spec (FEAT-STRAT-001) | Draft, opened 2026-11-17. Every reader refuses, visibly and writing nothing, a level rule version newer than it knows; caller-by-caller tests U1 to U10. | Needs the owner's approval and six decisions (in the PR body). Must be built and deployed to every reader before the first v5 writer (the prior-close build). |
+| #2026 | Premarket reads as read spec (FEAT-DATA-001) | Draft, opened 2026-11-17. `fetch-premarket-refresh` keeps the bars it read, one gzip object a ticker a run in the existing bucket, plus a compare tool; R1 to R9. | Needs the owner's approval and seven decisions (in the PR body). Build after #2010 merges. |
 
 Merged today, for reference: #1990, #1992, #1993, #1994, #1995, #1998, #1999 (specs); #2002, #2003,
 #2004 (plans); #2013 (targets spec r1, now superseded by r2 once #2019 merges); #2016 (prior-close
@@ -118,12 +120,8 @@ under `docs/superpowers/spikes/2026-11-16-atr-quarter-targets/`.
 
 Sequence:
 
-1. #2019 (spec r2) merges.
-2. On #2018's branch: set the plan's `spec:` to
-   `docs/superpowers/specs/2026-11-16-feat-strat-001-atr-quarter-targets-r2.md`; remove the two
-   requests for a spec edit (Task 1 and Task 14 Step 4); add the baseline-only mode to Task 13 and
-   the way to run it against commit 97190ef41 to Task 14, as r2's Experiment item words it; answer
-   and resolve the two review threads; enable auto-merge.
+1. #2019 (spec r2) merged as f8f6c6996.
+2. Done 2026-11-17: #2018's plan re-pointed at r2 (cd7bdf779), threads resolved, auto-merge on.
 3. Build on `feature/feat-strat-001-atr-quarter-targets`, 15 tasks, only after 3.1 and 3.5 are on
    main (the plan's first task checks this). The marks rule takes version `feat-strat-001.v6`.
 4. The build PR changes `gcp/schema.sql`. Never auto-merge it. Its merge changes no target: the
@@ -145,10 +143,10 @@ prices are all more than 0.25 percent away. It always takes rule version `feat-s
 Sequence:
 
 1. #2021 (spec r2) merges.
-2. The plan is written and pushed with no PR yet: branch
-   `docs/plan-feat-playbook-001-prior-close-prints`, commit 8daac04cc. Set its `spec:` to the r2
-   file, re-read it against r2's corrected items (PC1 (ii), PC1b, PC2, PC4), push, open the PR,
-   enable auto-merge.
+2. The plan is on branch `docs/plan-feat-playbook-001-prior-close-prints` (8daac04cc pushed, no PR
+   yet). A re-point to r2, checked against r2's corrected items (PC1 (ii), PC1b, PC2, PC4), was being
+   made locally on 2026-11-17. After #2021 merges: push it, open the PR, enable auto-merge. If the
+   local commit is lost, redo it from r2's "What changed from r1" section.
 3. Build on `feature/feat-playbook-001-prior-close-prints` after #2010 is on main.
 4. Deploy order: anything that reads the rule version deploys before or with the brief job. Code
    that knows only v3 and v4 rebuilds a v5 row under the v2 rule, silently.
