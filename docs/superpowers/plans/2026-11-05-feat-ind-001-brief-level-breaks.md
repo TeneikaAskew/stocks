@@ -3,7 +3,7 @@ feat_id: FEAT-IND-001
 spec: docs/superpowers/specs/2026-11-05-feat-ind-001-brief-level-breaks.md
 branch: fix/feat-ind-001-brief-level-breaks
 pr: 1734
-status: ready
+status: done
 ---
 
 # The brief's level-break flags implementation plan

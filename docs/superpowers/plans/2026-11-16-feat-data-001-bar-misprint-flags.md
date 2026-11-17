@@ -3,7 +3,7 @@ feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-16-feat-data-001-bar-misprint-flags-r2.md
 branch: feature/feat-data-001-bar-misprint-flags
 pr: 2001
-status: ready
+status: done
 ---
 
 # Flags for the vendor's misprints in the 1-minute bars of SPY, QQQ and IWM: implementation plan
