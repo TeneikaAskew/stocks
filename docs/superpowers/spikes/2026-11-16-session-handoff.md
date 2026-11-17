@@ -41,6 +41,7 @@ Rules the owner set for this work. They are not optional:
 | #2019 | Targets spec r2 (FEAT-STRAT-001) | Merged (f8f6c6996). | Done. |
 | #2018 | Targets plan | Ready, auto-merge on again. Re-pointed at r2 in cd7bdf779 (main merged at 5e99e6f57): baseline-only driver mode in Task 13, r2's two checks in Task 14 Step 4, the six pinned string counts in Tasks 1 and 12. Both threads answered and resolved; Codex's review of cd7bdf779 found nothing. | Wait for CI and the merge. See 3.4. |
 | #2021 | Prior-close spec r2 (FEAT-PLAYBOOK-001) | Merged 2026-11-17 00:14Z. | Done. Next: the prior-close plan PR. See 3.5. |
+| #2028 | Prior-close plan (FEAT-PLAYBOOK-001) | Ready, auto-merge on, opened 2026-11-17, bound to r2 (2a077ff85). 8 tasks. | Wait for reviews and CI; fix findings in place. Build after #2010 is on main. See 3.5. |
 | #2009 | Conviction spec (FEAT-INSIGHT-001) | Draft, head 2801e3f45: main merged in, and the measurement's outcome named as the first-target surrogate `cross-fill-t1-v1`, never plan performance (no decision or done_when outcome moved). | Needs the owner's word on one decision. Decision 1's line still says "R earned by the brief's own plan"; rewording it needs the owner. See 3.6. |
 | #2025 | Unknown rule version spec (FEAT-STRAT-001) | Draft, opened 2026-11-17. Every reader refuses, visibly and writing nothing, a level rule version newer than it knows; caller-by-caller tests U1 to U10. | Needs the owner's approval and six decisions (in the PR body). Must be built and deployed to every reader before the first v5 writer (the prior-close build). |
 | #2026 | Premarket reads as read spec (FEAT-DATA-001) | Draft, opened 2026-11-17. `fetch-premarket-refresh` keeps the bars it read, one gzip object a ticker a run in the existing bucket, plus a compare tool; R1 to R9. | Needs the owner's approval and seven decisions (in the PR body). Build after #2010 merges. |
@@ -143,10 +144,8 @@ prices are all more than 0.25 percent away. It always takes rule version `feat-s
 Sequence:
 
 1. #2021 (spec r2) merges.
-2. The plan is on branch `docs/plan-feat-playbook-001-prior-close-prints` (8daac04cc pushed, no PR
-   yet). A re-point to r2, checked against r2's corrected items (PC1 (ii), PC1b, PC2, PC4), was being
-   made locally on 2026-11-17. After #2021 merges: push it, open the PR, enable auto-merge. If the
-   local commit is lost, redo it from r2's "What changed from r1" section.
+2. Done 2026-11-17: the plan is bound to r2 (2a077ff85, checked against PC1 (ii), PC1b, PC2, PC4
+   and the deploy order) and is PR #2028, ready, auto-merge on.
 3. Build on `feature/feat-playbook-001-prior-close-prints` after #2010 is on main.
 4. Deploy order: anything that reads the rule version deploys before or with the brief job. Code
    that knows only v3 and v4 rebuilds a v5 row under the v2 rule, silently.
@@ -230,10 +229,8 @@ the insight build (3.7).
 
 ## 6. Where the work that has no PR yet is
 
-Both of these are pushed to origin, with no PR open:
+Pushed to origin, with no PR open:
 
-- Branch `docs/plan-feat-playbook-001-prior-close-prints`, commit 8daac04cc: the prior-close plan
-  (a re-point to r2 was being committed locally on 2026-11-17; push it and open the PR).
   Eight tasks: preconditions; the constants, the rule and its record; the calibrated filter on and
   through `premarket_snapshot`; the three writers' rows; the 2026-11-16 session; rule version v5;
   the measurement and the whole suite; the close. Its `spec:` still names r1 and must be re-pointed
