@@ -53,18 +53,18 @@ typical_daily_return = median(|daily_return_pct|) over last 64 returns   <- not 
 
 **The normalizing window is 64 returns, not the 60 the parameter is named for.**
 `query_typical_daily_return(tickers, window_days=60)` binds `window_size = window_days + 5`
-(`lib/earnings_reactions.py:619`), keeps the **65** most recent daily bars per ticker
-(`:599`), and computes returns with `LAG(close)` (`:606`). The oldest bar has no predecessor
-inside the window, so `WHERE prev_close IS NOT NULL` (`:616`) drops exactly one: **65 bars in,
+(`lib/earnings_reactions.py:622`), keeps the **65** most recent daily bars per ticker
+(`:602`), and computes returns with `LAG(close)` (`:609`). The oldest bar has no predecessor
+inside the window, so `WHERE prev_close IS NOT NULL` (`:619`) drops exactly one: **65 bars in,
 64 returns out**, with no trim back to 60 anywhere in the function. The median is taken over
-all 64 (`:612-614`).
+all 64 (`:615-617`).
 
-This is not cosmetic. The median is the divisor in `move_magnitude_norm` (`:199`), so the score
+This is not cosmetic. The median is the divisor in `move_magnitude_norm` (`:202`), so the score
 is linear in `1 / typical_daily_return`, and the score is bucketed by the **fixed** cut-points
 `(15.7, 21.2, 28.2, 41.9)` below — four extra bars can move a name across a quintile boundary
 and therefore across the sizing guidance. The default is what production runs:
-`enrich_with_playability` passes `daily_return_window = 60` straight through (`:879-883`,
-`:902`) and `gcp/premarket_brief.py:603-604` calls it with no argument.
+`enrich_with_playability` passes `daily_return_window = 60` straight through (`:882-886`,
+`:905`) and `gcp/premarket_brief.py:603-604` calls it with no argument.
 
 The `+ 5` carries no comment. The function's own docstring says *"over the last `window_days`
 trading days"* (`:576`), while the docstring of the consumer hedges with a tilde — *"median
@@ -75,7 +75,7 @@ documented as intended.
 
 ## Quintiles — and their measured hit rates
 
-`_QUINTILE_BOUNDARIES = (15.7, 21.2, 28.2, 41.9)` at `lib/earnings_reactions.py:227`.
+`_QUINTILE_BOUNDARIES = (15.7, 21.2, 28.2, 41.9)` at `lib/earnings_reactions.py:230`.
 
 | Quintile | Score | Hit rate | Confidence label | Action |
 |---|---|---|---|---|
@@ -98,7 +98,7 @@ giving a below-baseline name a playability row.
 
 ## Archetypes
 
-Evaluated in order by `classify_archetype` (`lib/earnings_reactions.py:479-496`); the first
+Evaluated in order by `classify_archetype` (`lib/earnings_reactions.py:482-499`); the first
 match wins.
 
 | Archetype | Condition (numeric) | Action hint |
@@ -128,7 +128,7 @@ All environment variables; defaults are the Phase 0.5 locked values.
 
 **`RECOMMEND_LONG_ONLY` sets a default, and which surface it reaches matters.**
 `gcp/deploy.sh:1061-1066` sets it `true`, read by `_env_long_only()`
-(`lib/earnings_reactions.py:403-411`). The deploy comment scopes it in as many words — *"so
+(`lib/earnings_reactions.py:406-414`). The deploy comment scopes it in as many words — *"so
 the morning brief recommends LONG STRADDLE / LONG CALL / LONG PUT / SKIP instead of IC"* —
 and records the reason as an owner preference (*"I would always buy them sell"*, 2026-05-22),
 not a measured result.
@@ -173,13 +173,13 @@ Q1 routing and Q5 size-up. DOC-55.
 ```
 scripts/backtest_playability.py:1253   TYPICAL_DAILY_RETURN_PCT = 1.0
 scripts/backtest_playability.py:1294   options_volume=10000.0
-lib/earnings_reactions.py:907-922      production varies BOTH, per ticker and per row
+lib/earnings_reactions.py:910-925      production varies BOTH, per ticker and per row
 ```
 
-Both enter multiplicatively (`lib/earnings_reactions.py:199-201`:
+Both enter multiplicatively (`lib/earnings_reactions.py:202-204`:
 `move / typical × confidence × log(volume + 1)`), so freezing them does not scale rows
 equally — it deletes the per-ticker dispersion the normalizer exists to capture. The
-function's own docstring (`:176-178`) makes that the feature's stated purpose: quiet
+function's own docstring (`:179-181`) makes that the feature's stated purpose: quiet
 stocks that erupt on earnings should outrank already-active ones. Worked rank flips:
 
 | Flip driver | A | B | Proxy order | Production order |
@@ -190,7 +190,7 @@ stocks that erupt on earnings should outrank already-active ones. Worked rank fl
 **And the backtest never produced these numbers at all.** Every bucket it forms is a
 relative `pd.qcut` over its own proxy-scored distribution (`:162`, `:294`, `:594`,
 `:761`, `:1057`); `compute_quintile_spread` returns a rank statistic. The absolute
-`15.7 / 21.2 / 28.2 / 41.9` exist only at `lib/earnings_reactions.py:227`, as midpoints
+`15.7 / 21.2 / 28.2 / 41.9` exist only at `lib/earnings_reactions.py:230`, as midpoints
 between proxy-scored quintile averages, then applied as fixed thresholds to scores on a
 different scale. A single fixed event (move 8.0%, typ 1.0%) lands **Q4 at 400 volume and
 Q5 at 10,000** — the proxy's own value — purely on the frozen input.
@@ -222,7 +222,7 @@ Two caveats a reader should carry:
 
 **The archetype cut-points are also recorded, and an earlier revision of this document
 wrongly called them `UNKNOWN`.** `classify_archetype`'s docstring
-(`lib/earnings_reactions.py:466-476`) gives both the numeric boundaries — reproduced in the
+(`lib/earnings_reactions.py:469-479`) gives both the numeric boundaries — reproduced in the
 table above — and their provenance: *"Thresholds tuned against the 9-ticker case-study set"*,
 listing the worked cases:
 
