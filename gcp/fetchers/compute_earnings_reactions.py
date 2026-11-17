@@ -25,19 +25,24 @@ Usage:
 
 import argparse
 import logging
+import math
 import os
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+from lib.config import AlphaVantageConfig
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL, Splits, SplitsUnavailable
 from lib.eastern_time import market_today
 from gcp.database import upsert_dataframe, query_to_dataframe, is_cloud_sql_configured
+from gcp.fetchers.fetch_market_data import AV_BASE_URL, av_listed_symbol
 from lib.logging_config import setup_logging
 
 setup_logging()
@@ -599,6 +604,66 @@ def fetch_calendar_timing_map(tickers: list[str]) -> dict[tuple[str, date], Opti
     return out
 
 
+def _request_failure(exc: Exception) -> str:
+    """A failed request's reason with no part of the request in it: the HTTP
+    status when there was a reply, else the exception's class name."""
+    status = getattr(getattr(exc, 'response', None), 'status_code', None)
+    if status is not None:
+        return f'request_failed: HTTP {status}'
+    return f'request_failed: {type(exc).__name__}'
+
+
+def fetch_splits(ticker: str, api_key: str) -> Splits:
+    """The ticker's split history from AlphaVantage SPLITS, for one run.
+
+    One request, the listed share class as its symbol; the caller paces
+    successive calls. The reply is {"symbol": ..., "data": [{"effective_date":
+    "2024-06-10", "split_factor": "10.0000"}, ...]}, and an empty data list
+    means no split on record. Held in memory only: the run stores the
+    reaction and nothing else (FEAT-DATA-001, no adjusted prices, Design 6).
+
+    Raises SplitsUnavailable for a vendor refusal (Information, Note, Error
+    Message), an HTTP or transport error, a reply without a data list, or a
+    row whose date or factor does not parse: an EXTERNAL failure the caller
+    names per event, never "no split". An empty api_key is this job's own
+    misconfiguration and raises ValueError before any request.
+    """
+    if not api_key:
+        raise ValueError('fetch_splits: ALPHA_VANTAGE_API_KEY is required')
+    params = {'function': 'SPLITS', 'symbol': av_listed_symbol(ticker), 'apikey': api_key}
+    try:
+        resp = requests.get(AV_BASE_URL, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as exc:
+        # The text of an HTTP or transport error carries the request URL,
+        # apikey included, and the reason is logged: name the failure by its
+        # HTTP status or exception class only, and chain nothing, so no
+        # printed traceback carries the key (Codex on #2047).
+        raise SplitsUnavailable(_request_failure(exc)) from None
+    except ValueError as exc:
+        raise SplitsUnavailable(f'reply_not_json: {exc}'[:160]) from exc
+    if not isinstance(data, dict):
+        raise SplitsUnavailable('reply_not_an_object')
+    for key in ('Error Message', 'Information', 'Note'):
+        if key in data:
+            raise SplitsUnavailable(f'{key}: {data[key]}'[:160])
+    rows = data.get('data')
+    if not isinstance(rows, list):
+        raise SplitsUnavailable('reply_without_data_list')
+    events = []
+    for row in rows:
+        try:
+            effective = date.fromisoformat(str(row['effective_date']))
+            factor = float(row['split_factor'])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SplitsUnavailable(f'unparseable_split_row: {row!r}'[:160]) from exc
+        if not math.isfinite(factor) or factor <= 0:
+            raise SplitsUnavailable(f'unparseable_split_row: {row!r}'[:160])
+        events.append((effective, factor))
+    return Splits.of(ticker, events)
+
+
 def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
     """Return ~30 trading days centered on reported_date for this ticker.
 
@@ -616,7 +681,7 @@ def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
     see issue #452 and the post-fix benchmarks in the PR description.
     """
     sql = """
-        SELECT date, open, high, low, close, volume, atr_14, adjusted_close, data_source
+        SELECT date, open, high, low, close, volume, atr_14, data_source
           FROM market_data_daily
          WHERE ticker = :t AND date BETWEEN :start AND :end
          ORDER BY date
@@ -675,7 +740,7 @@ def fetch_daily_windows_for_ticker_dates(
     min_date = min(reported_dates) - timedelta(days=90)
     max_date = max(reported_dates) + timedelta(days=25)
     sql = """
-        SELECT date, open, high, low, close, volume, atr_14, adjusted_close, data_source
+        SELECT date, open, high, low, close, volume, atr_14, data_source
           FROM market_data_daily
          WHERE ticker = :t AND date BETWEEN :start AND :end
          ORDER BY date
@@ -704,11 +769,27 @@ def fetch_daily_windows_for_ticker_dates(
     return out
 
 
-def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observation_ts=None, receipt_sink=None) -> int:
+def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observation_ts=None,
+                         receipt_sink=None, api_key=None, counts: dict | None = None) -> int:
     """Build earnings_reactions rows for the given tickers, upsert.
+
+    Each ticker's splits are read once from AlphaVantage SPLITS (`api_key`,
+    default ALPHA_VANTAGE_API_KEY) and held for the run (FEAT-DATA-001, no
+    adjusted prices). An event whose loaded window holds a split, or whose
+    ticker's split evidence could not be read, is skipped by name and its
+    stored row left as it is; the price gate checks every other window.
+
+    `counts`, when given, is filled with `split_tickers` (tickers whose
+    SPLITS was requested) and `splits_unavailable` (those whose request
+    failed), which the job's entry point turns into its exit code.
 
     Returns the number of rows produced.
     """
+    if api_key is None:
+        api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
+    if counts is None:
+        counts = {}
+    counts.update(split_tickers=0, splits_unavailable=0)
     eps_df = fetch_earnings_history_for_tickers(tickers)
     if eps_df.empty:
         log.warning("No earnings_history rows for %s", tickers)
@@ -749,7 +830,29 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
     log.info("processing %d tickers × ~%d earnings rows each",
              n_tickers, len(eps_df) // max(n_tickers, 1))
 
+    split_delay = AlphaVantageConfig().delay_between_calls
     for ti, (ticker, ticker_eps) in enumerate(ticker_groups, start=1):
+        # The ticker's split evidence, one SPLITS call per ticker per run,
+        # paced like every other AlphaVantage consumer. An outage is named
+        # per event below, never read as "no split" (CLAUDE.md 3.7).
+        if ti > 1:
+            time.sleep(split_delay)
+        counts['split_tickers'] += 1
+        try:
+            splits = fetch_splits(ticker, api_key)
+        except SplitsUnavailable as exc:
+            # Every event of this ticker is refused by name; nothing is
+            # written, a stored row stays as it is, and no daily window is
+            # read for it. The other tickers go on.
+            counts['splits_unavailable'] += 1
+            skipped += len(ticker_eps)
+            _emit_event_receipts([_event_receipt(eps.to_dict(), 'price_inputs',
+                'split_status_unavailable', 'write_skipped')
+                for _, eps in ticker_eps.iterrows()], receipt_sink)
+            log.warning("ticker=%s splits=unavailable processed=%d/%d skipped=%d (%s)",
+                        ticker, ti, n_tickers, len(ticker_eps), exc.reason)
+            continue
+
         # Collect every reported_date this ticker has, then bulk-fetch
         # the daily bars in one query covering the full date span.
         dates_for_ticker = ticker_eps['reported_date'].tolist()
@@ -790,6 +893,17 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
                     continue
                 daily = daily[daily['date'].map(lambda day: session_closes[day] <= clock)].copy()
                 daily = daily.reset_index(drop=True)
+            if not daily.empty and any(daily['date'].min() < effective <= daily['date'].max()
+                                       for effective, _ in splits.events):
+                # A split inside the loaded window: the bars before it are on
+                # another share basis. The whole window counts, not only the
+                # required sessions, because the ATR fallback and the
+                # pre-report fields read as far back as it goes. Never
+                # adjusted, never written; a stored row stays as it is.
+                ticker_skipped += 1
+                _emit_event_receipts([_event_receipt(eps.to_dict(), 'price_inputs',
+                    'split_in_window', 'write_skipped')], receipt_sink)
+                continue
             result = compute_reaction(eps.to_dict(), daily, basis)
             if result is None:
                 ticker_skipped += 1
@@ -803,14 +917,15 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
             declared = daily.attrs.get('earnings_price_evidence')
             price = ({'available': True, 'receipt': declared} if declared else
                      database_daily_price_evidence(event, daily, schedule=schedule,
-                                                   observed_at=pd.Timestamp.now(tz='UTC')))
+                                                   observed_at=pd.Timestamp.now(tz='UTC'),
+                                                   splits=splits))
             path = compute_daily_path_v1(event, daily, observation_ts=clock,
                         price_evidence=price['receipt'], schedule=schedule)
             if not price['available']:
                 path['payload']['reason'] = price['reason']
             native_price = ({'available':True,'receipt':declared} if declared else
                 database_daily_price_evidence(event,daily,schedule=schedule,
-                    observed_at=pd.Timestamp.now(tz='UTC'),native=True))
+                    observed_at=pd.Timestamp.now(tz='UTC'),splits=splits,native=True))
             native = qualify_native_classifier_inputs(event,daily,observation_ts=clock,
                     price_evidence=native_price['receipt'],schedule=schedule)
             if not native_price['available'] and native['reason'] not in ('missing_native_prefix_session','duplicate_native_prefix_session','native_features_not_mature'):
@@ -835,14 +950,16 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
             ticker_kept += 1
 
         skipped += ticker_skipped
-        # Per-ticker progress log — every 25 tickers + the final one.
-        # CLAUDE.md Rule 0.4: "Observable progress — log per-group counts
-        # so a 30-minute job is debuggable, not a black box."
-        if ti % 25 == 0 or ti == n_tickers:
-            log.info("ticker=%s [%d/%d] kept=%d skipped=%d  (cum rows=%d)",
-                     ticker, ti, n_tickers,
-                     ticker_kept, ticker_skipped, len(rows))
+        # Per-ticker progress log, every ticker. CLAUDE.md Rule 0.4:
+        # "Observable progress: log per-group counts so a 30-minute job is
+        # debuggable, not a black box."
+        log.info("ticker=%s splits=%d processed=%d/%d kept=%d skipped=%d (cum rows=%d)",
+                 ticker, len(splits.events), ti, n_tickers,
+                 ticker_kept, ticker_skipped, len(rows))
 
+    (log.warning if counts['splits_unavailable'] else log.info)(
+        "splits_unavailable=%d of %d tickers", counts['splits_unavailable'],
+        counts['split_tickers'])
     log.info("Computed %d reaction rows (skipped=%d, unknown event timing=%d)",
              len(rows), skipped, unknown_timing)
 
@@ -888,9 +1005,10 @@ def _resolve_tickers(args) -> list[str]:
     the brief showed "no historical analog" for major reporters like
     AMZN/MSFT/META despite us having their data.
 
-    The broad scope is cheap — it's a pure DB join with no external API
-    calls, so populating 320 tickers takes the same ~5 min as
-    populating 30. Coverage matches earnings_history automatically.
+    The prices come from the database, but each ticker with events also
+    costs one AlphaVantage SPLITS call per run (fetch_splits, paced), so
+    the run time grows with the number of tickers. Coverage matches
+    earnings_history automatically.
     """
     if args.tickers:
         return [t.strip().upper() for t in args.tickers.split(',') if t.strip()]
@@ -975,7 +1093,13 @@ def _filter_already_have_reactions(
     return remaining, n_skipped
 
 
-def main():
+def main() -> int:
+    """The job's entry point; returns its exit code.
+
+    1 when ALPHA_VANTAGE_API_KEY is missing (before anything is read), or
+    when every ticker's SPLITS request failed, so no reaction could be
+    checked; else 0. A partial outage exits 0 with each refused event named.
+    """
     parser = argparse.ArgumentParser(
         description="Populate earnings_reactions from earnings_history × market_data_daily"
     )
@@ -996,10 +1120,16 @@ def main():
                              "in the next 7 days.")
     args = parser.parse_args()
 
+    api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
+    if not api_key:
+        log.error("ALPHA_VANTAGE_API_KEY is required: the run reads each reporter's "
+                  "splits from AlphaVantage SPLITS")
+        return 1
+
     tickers = _resolve_tickers(args)
     if not tickers:
         log.warning("No tickers to process — exiting")
-        return
+        return 0
 
     if not args.force:
         scope = _resolve_scope(args.scope)
@@ -1014,12 +1144,18 @@ def main():
         )
         if not tickers:
             log.info("All resolved tickers already processed — exiting")
-            return
+            return 0
 
     log.info("compute_earnings_reactions: %d tickers (after window-aware skip)",
              len(tickers))
-    n = populate_for_tickers(tickers, dry_run=args.dry_run)
+    counts: dict = {}
+    n = populate_for_tickers(tickers, dry_run=args.dry_run, api_key=api_key, counts=counts)
     print(f"compute_earnings_reactions: {n} rows {'computed' if args.dry_run else 'upserted'}")
+    if counts['split_tickers'] and counts['splits_unavailable'] == counts['split_tickers']:
+        log.error("SPLITS unavailable for all %d tickers: no reaction could be split-checked",
+                  counts['split_tickers'])
+        return 1
+    return 0
 
 
 
@@ -1287,4 +1423,4 @@ def compute_local_reaction(*, event, daily, price_receipts, observation_ts, mode
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

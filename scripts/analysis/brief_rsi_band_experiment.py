@@ -9,8 +9,9 @@ Usage:
     --out /tmp/rsi_exp
 
 Inputs:
-  <daily-dir>/{T}_daily_adjusted.csv   Alpha Vantage TIME_SERIES_DAILY_ADJUSTED
-                                        (the unadjusted OHLCV columns are used)
+  <daily-dir>/{T}_daily.csv            Alpha Vantage TIME_SERIES_DAILY, as traded
+                                        (a file holding an adjusted column is
+                                        refused, FEAT-DATA-001)
   <minute-dir>/{T}_1min_YYYY-MM.csv    Alpha Vantage 1-minute bars, extended hours
 
 The brief on session D reads the daily frame strictly before D, runs
@@ -47,13 +48,14 @@ if REPO not in sys.path:
 
 from gcp.premarket_brief import _resolve_signal_status  # noqa: E402
 from lib.config import load_config  # noqa: E402
+from lib.data_loader import ADJUSTED_CLOSE_COLUMNS  # noqa: E402
 from lib.indicators import add_brief_indicators  # noqa: E402
 from lib.signals import check_call_conditions, check_put_conditions  # noqa: E402
 from lib.strat import compute_strat_status  # noqa: E402
 from lib.strategies.calibration import _STALE_DAYS  # noqa: E402
 from scripts.calibrate_thresholds import compute_rsi  # noqa: E402
 
-DAILY = "{d}/{t}_daily_adjusted.csv"
+DAILY = "{d}/{t}_daily.csv"
 MINUTE = "{d}/{t}_1min_*.csv"
 LOOKBACK_DAYS = 60     # calibrate_thresholds.py --lookback-days default
 DAILY_LOOKBACK = 252   # variant D: sessions of daily RSI before D
@@ -69,7 +71,12 @@ QUARTER_RUNS = [date(y, m, 1) for y in (2025, 2026) for m in (1, 4, 7, 10)]
 
 
 def load_daily(d: str, t: str) -> pd.DataFrame:
-    df = pd.read_csv(DAILY.format(d=d, t=t), parse_dates=["timestamp"])
+    path = DAILY.format(d=d, t=t)
+    df = pd.read_csv(path, parse_dates=["timestamp"])
+    shaded = [c for c in df.columns if c in ADJUSTED_CLOSE_COLUMNS]
+    if shaded:
+        raise ValueError(f"{path}: column {shaded[0]} is not as traded; export "
+                         f"TIME_SERIES_DAILY instead (FEAT-DATA-001)")
     df = df.sort_values("timestamp").set_index("timestamp")
     df.index.name = None
     out = df.rename(columns={"open": "Open", "high": "High", "low": "Low",

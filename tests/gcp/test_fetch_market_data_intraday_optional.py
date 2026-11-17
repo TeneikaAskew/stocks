@@ -41,7 +41,7 @@ def _minute_df():
 
 _AV_OHLCV = {
     'open': 100.0, 'high': 102.0, 'low': 99.0,
-    'close': 101.5, 'adjusted_close': 101.5, 'volume': 5_000_000,
+    'close': 101.5, 'volume': 5_000_000,
 }
 
 
@@ -80,7 +80,7 @@ class TestBuildDailyRow:
 
 
 def _av_response(time_series: dict):
-    """Build a fake requests.Response for TIME_SERIES_DAILY_ADJUSTED."""
+    """Build a fake requests.Response for TIME_SERIES_DAILY."""
     resp = MagicMock()
     resp.raise_for_status = MagicMock()
     resp.json.return_value = {'Time Series (Daily)': time_series}
@@ -90,7 +90,7 @@ def _av_response(time_series: dict):
 def _av_bar():
     return {
         '1. open': '100.0', '2. high': '102.0', '3. low': '99.0',
-        '4. close': '101.5', '5. adjusted close': '101.5', '6. volume': '5000000',
+        '4. close': '101.5', '5. volume': '5000000',
     }
 
 

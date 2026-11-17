@@ -33,7 +33,6 @@ def _stub_av_df():
     return pd.DataFrame([{
         'ticker': 'X', 'date': pd.Timestamp('2026-05-29').date(),
         'open': 1.0, 'high': 1.0, 'low': 1.0, 'close': 1.0, 'volume': 100,
-        'adjusted_close': 1.0,
     }])
 
 

@@ -1116,6 +1116,7 @@ class TestProductionEventTimingContract:
         monkeypatch.setattr(mod, 'fetch_calendar_timing_map', lambda _: {})
         monkeypatch.setattr(mod, 'fetch_daily_windows_for_ticker_dates', lambda *args: {
             eps['reported_date']: TestComputeReactionAMC()._build_bars()})
+        monkeypatch.setattr(mod, 'fetch_splits', lambda t, k: mod.Splits.of(t, ()))
         monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
         def persist(frame, *args, **kwargs):
             writes.append(frame.to_dict('records'))
@@ -1138,6 +1139,7 @@ class TestProductionEventTimingContract:
         monkeypatch.setattr(mod, 'query_to_dataframe', lambda *args: rows)
         monkeypatch.setattr(mod, 'fetch_daily_windows_for_ticker_dates', lambda *args: {
             eps['reported_date']: TestComputeReactionAMC()._build_bars()})
+        monkeypatch.setattr(mod, 'fetch_splits', lambda t, k: mod.Splits.of(t, ()))
         monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
         monkeypatch.setattr(mod, '_upsert_reaction_frame', lambda df, *args, **kwargs: (writes.extend(df.to_dict('records')) or len(df)))
         assert mod.populate_for_tickers(['TEST']) == 1
@@ -1155,12 +1157,13 @@ def test_native_pre10_prefix_is_qualified_by_actual_producer_not_short_path(monk
     rows=[]
     for i,day in enumerate(days[d-12:d+6]):
         rows.append(dict(date=day,open=100.+i,high=102.+i,low=99.+i,close=101.+i,
-                         adjusted_close=101.+i,data_source='alphavantage_daily'))
+                         data_source='alphavantage_daily'))
     frame=pd.DataFrame(rows)
     frame.loc[frame['date']==date(2026,2,2),['open','high']]=[114.,115.]
     eps=dict(ticker='SYNTH',fiscal_date_ending=date(2025,11,30),reported_date=date(2026,2,2),report_time='BMO')
     monkeypatch.setattr(module,'fetch_earnings_history_for_tickers',lambda *a:pd.DataFrame([eps]))
     monkeypatch.setattr(module,'fetch_calendar_timing_map',lambda *a:{})
+    monkeypatch.setattr(module,'fetch_splits',lambda t,k:module.Splits.of(t,()))
     monkeypatch.setattr(module,'is_cloud_sql_configured',lambda:True)
     captured=[]
     monkeypatch.setattr(module,'_upsert_reaction_frame',lambda f,*a,**k:(captured.extend(f.to_dict('records')) or len(f)))
@@ -1177,14 +1180,14 @@ def test_native_pre10_prefix_is_qualified_by_actual_producer_not_short_path(monk
     assert full['daily_path_v1']['status']==missing['daily_path_v1']['status']=='complete'
     changed=frame.copy()
     start=date.fromisoformat(native['prefix_start_session'])
-    changed.loc[changed['date']==start,['close','adjusted_close','high']]=[104.,104.,105.]
+    changed.loc[changed['date']==start,['close','high']]=[104.,105.]
     monkeypatch.setattr(module,'fetch_daily_windows_for_ticker_dates',lambda *a:{eps['reported_date']:changed})
     module.populate_for_tickers(['SYNTH'])
     corrected=captured[-1]
     assert corrected['daily_path_v1']['per_metric']['native_classifier_inputs']['input_identity']!=native['input_identity']
     assert corrected['daily_path_v1']['input_identity']==full['daily_path_v1']['input_identity']
     # Future malformed non-session bars are removed before validation.
-    future=pd.concat([frame,pd.DataFrame([dict(date=date(2026,2,14),open=float('nan'),high=0,low=0,close=0,adjusted_close=0,data_source='unknown')])],ignore_index=True)
+    future=pd.concat([frame,pd.DataFrame([dict(date=date(2026,2,14),open=float('nan'),high=0,low=0,close=0,data_source='unknown')])],ignore_index=True)
     for sample in (frame,future):
         monkeypatch.setattr(module,'fetch_daily_windows_for_ticker_dates',lambda *a:{eps['reported_date']:sample})
         assert module.populate_for_tickers(['SYNTH'],observation_ts='2026-02-09T21:01:00Z')==1
@@ -1206,6 +1209,7 @@ def test_refusal_receipt_pages_are_bounded_and_unknown_timing_is_event_keyed(mon
     monkeypatch.setattr(module,'fetch_earnings_history_for_tickers',lambda *a:pd.DataFrame([eps]))
     monkeypatch.setattr(module,'fetch_calendar_timing_map',lambda *a:{})
     monkeypatch.setattr(module,'fetch_daily_windows_for_ticker_dates',lambda *a:{})
+    monkeypatch.setattr(module,'fetch_splits',lambda t,k:module.Splits.of(t,()))
     pages=[]
     assert module.populate_for_tickers(['TEST'],receipt_sink=pages.append)==0
     item=pages[0]['events'][0]
@@ -1254,3 +1258,328 @@ def test_generated_inventory_does_not_read_bind_names_as_tables(table):
         assert producer not in {hit['file'] for hit in refs['reads'] + refs['writes']}
     calendar = inventory.table_refs(root, ['earnings_calendar'])['earnings_calendar']
     assert producer in {hit['file'] for hit in calendar['reads']}
+
+
+# ── FEAT-DATA-001 no-adjusted: split evidence from AlphaVantage SPLITS ──────
+
+
+class _SplitsReply:
+    def __init__(self, payload, http_error=False):
+        self._payload = payload
+        self._http_error = http_error
+
+    def raise_for_status(self):
+        if self._http_error:
+            import requests
+            raise requests.HTTPError('503 Service Unavailable')
+
+    def json(self):
+        return self._payload
+
+
+def test_fetch_splits_request_and_reply(monkeypatch):
+    """One SPLITS request per call, the listed share class as its symbol; the
+    reply's dated factors with a digest that names the evidence. A vendor
+    refusal, an HTTP error, a reply without a data list or an unparseable
+    row is SplitsUnavailable (EXTERNAL, CLAUDE.md 3.7), never "no split"."""
+    from gcp.fetchers import compute_earnings_reactions as module
+    from gcp.fetchers.compute_earnings_reactions import Splits, SplitsUnavailable, fetch_splits
+
+    sent = []
+    answer = {}
+
+    def get(url, params=None, timeout=None):
+        sent.append(dict(params))
+        return answer['reply']
+
+    monkeypatch.setattr(module.requests, 'get', get)
+
+    answer['reply'] = _SplitsReply({'symbol': 'BF-B', 'data': []})
+    fetch_splits('BF.B', 'k')
+    assert sent == [{'function': 'SPLITS', 'symbol': 'BF-B', 'apikey': 'k'}]
+
+    nvda = [{'effective_date': '2024-06-10', 'split_factor': '10.0000'},
+            {'effective_date': '2021-07-20', 'split_factor': '4.0000'}]
+    answer['reply'] = _SplitsReply({'symbol': 'NVDA', 'data': nvda})
+    splits = fetch_splits('NVDA', 'k')
+    assert isinstance(splits, Splits)
+    assert splits.events == ((date(2021, 7, 20), 4.0), (date(2024, 6, 10), 10.0))
+    assert len(splits.digest) == 64 and int(splits.digest, 16) >= 0
+    answer['reply'] = _SplitsReply({'symbol': 'NVDA', 'data': list(reversed(nvda))})
+    assert fetch_splits('NVDA', 'k').digest == splits.digest
+    answer['reply'] = _SplitsReply({'symbol': 'NVDA', 'data': [
+        {'effective_date': '2024-06-10', 'split_factor': '2.0000'}, nvda[1]]})
+    assert fetch_splits('NVDA', 'k').digest != splits.digest
+
+    answer['reply'] = _SplitsReply({'symbol': 'SPY', 'data': []})
+    assert fetch_splits('SPY', 'k').events == ()
+
+    for reply in (_SplitsReply({'Information': 'x'}), _SplitsReply({'Note': 'x'}),
+                  _SplitsReply({'Error Message': 'x'}), _SplitsReply({'symbol': 'X'}),
+                  _SplitsReply({'symbol': 'X', 'data': []}, http_error=True),
+                  _SplitsReply({'data': [{'effective_date': '2024-13-40', 'split_factor': '10'}]}),
+                  _SplitsReply({'data': [{'effective_date': '2024-06-10', 'split_factor': 'ten'}]})):
+        answer['reply'] = reply
+        with pytest.raises(SplitsUnavailable):
+            fetch_splits('X', 'k')
+
+    # No key is a misconfiguration of this job (INTERNAL), not a vendor answer.
+    sent.clear()
+    with pytest.raises(ValueError) as excinfo:
+        fetch_splits('SPY', '')
+    assert not isinstance(excinfo.value, SplitsUnavailable)
+    assert sent == []
+
+
+def test_a_splits_failure_never_carries_the_api_key(monkeypatch):
+    """requests puts the request URL, apikey included, in the text of an
+    HTTPError and of a transport error, and populate_for_tickers logs the
+    reason (Codex on #2047). The reason names the failure by HTTP status or
+    exception class only, and the original exception is not chained, so a
+    printed traceback carries no key either."""
+    import requests
+    from gcp.fetchers import compute_earnings_reactions as module
+    from gcp.fetchers.compute_earnings_reactions import SplitsUnavailable, fetch_splits
+
+    key = 'SECRETKEY1234567'
+    url = f'https://www.alphavantage.co/query?function=SPLITS&symbol=SPY&apikey={key}'
+
+    def http_503(u, params=None, timeout=None):
+        resp = requests.Response()
+        resp.status_code = 503
+        resp.reason = 'Service Unavailable'
+        resp.url = url
+        return resp
+
+    def refused(u, params=None, timeout=None):
+        raise requests.ConnectionError(
+            "HTTPSConnectionPool(host='www.alphavantage.co', port=443): Max retries "
+            f"exceeded with url: /query?function=SPLITS&symbol=SPY&apikey={key}")
+
+    for get, reason in ((http_503, 'request_failed: HTTP 503'),
+                        (refused, 'request_failed: ConnectionError')):
+        monkeypatch.setattr(module.requests, 'get', get)
+        with pytest.raises(SplitsUnavailable) as excinfo:
+            fetch_splits('SPY', key)
+        assert excinfo.value.reason == reason
+        assert key not in str(excinfo.value)
+        assert excinfo.value.__cause__ is None and excinfo.value.__suppress_context__
+
+
+def _synth_window(**extra):
+    """18 sessions from D-12 for SYNTH reporting BMO on 2026-02-02, as traded."""
+    from lib.earnings_reactions import earnings_session_schedule
+    schedule = earnings_session_schedule(date(2026, 1, 1), date(2026, 2, 20))
+    days = [x.date() for x in schedule.index]
+    d = days.index(date(2026, 2, 2))
+    rows = [dict(date=day, open=100. + i, high=102. + i, low=99. + i, close=101. + i,
+                 data_source='alphavantage_daily', **extra)
+            for i, day in enumerate(days[d - 12:d + 6])]
+    return schedule, pd.DataFrame(rows)
+
+
+def test_price_basis_is_as_traded_and_split_checked():
+    """The gate admits an AlphaVantage daily window on its writer tag and an
+    explicit split check, reads no adjusted close, and names the evidence it
+    used. On main the first window refused with
+    missing_database_price_basis_metadata and the dividend-shaded one with
+    unresolved_adjustment_or_corporate_action."""
+    from lib.earnings_reactions import (
+        Splits, SplitsUnavailable, database_daily_price_evidence)
+
+    schedule, frame = _synth_window()
+    event = dict(ticker='SYNTH', fiscal_date_ending=date(2025, 11, 30),
+                 reported_date=date(2026, 2, 2), reaction_basis='BMO')
+    observed = pd.Timestamp('2026-02-20T21:01:00Z')
+    none = Splits.of('SYNTH', ())
+
+    def gate(rows, splits, native):
+        return database_daily_price_evidence(event, rows, schedule=schedule,
+                                             observed_at=observed, splits=splits,
+                                             native=native)
+
+    for native in (False, True):
+        first = gate(frame, none, native)
+        assert first['available'], first
+        receipt = first['receipt']
+        assert receipt['price_basis_id'] == 'av-as-traded-no-split-v1'
+        assert receipt['source_id'].startswith('current-db-projection:')
+        assert receipt['source_id'].endswith(':splits:' + none.digest)
+        assert receipt['evidence_grade'] == 'current_db_writer_declaration_only'
+
+        old = gate(frame, Splits.of('SYNTH', ((date(2010, 1, 4), 2.0),)), native)
+        assert old['available']
+        assert old['receipt']['source_id'] != receipt['source_id']
+
+        # A stored adjusted close is outside the projection: same receipt.
+        _, shaded = _synth_window()
+        shaded['adjusted_close'] = shaded['close'] * 0.99
+        assert gate(shaded, none, native) == first
+
+        inside = gate(frame, Splits.of('SYNTH', ((date(2026, 2, 2), 2.0),)), native)
+        assert not inside['available'] and inside['reason'] == 'split_in_window'
+
+        down = gate(frame, SplitsUnavailable('Information'), native)
+        assert not down['available'] and down['reason'] == 'split_status_unavailable'
+
+        for tag in (None, 'yfinance'):
+            odd = frame.copy()
+            odd.loc[odd.index[-3], 'data_source'] = tag
+            refused = gate(odd, none, native)
+            assert not refused['available']
+            assert refused['reason'] == 'unrecognized_database_price_writer'
+
+    # A split effective on the first required session leaves every required
+    # bar after it: admitted for the reaction (D-1 first), refused for the
+    # native prefix, whose required sessions start at D-10.
+    on_first = Splits.of('SYNTH', ((date(2026, 1, 30), 2.0),))
+    assert gate(frame, on_first, False)['available']
+    native_first = gate(frame, on_first, True)
+    assert not native_first['available'] and native_first['reason'] == 'split_in_window'
+
+
+def _two_ticker_run(monkeypatch, splits_for):
+    """populate_for_tickers wired for AAA (BMO 2026-02-02 and 2025-11-03) and
+    BBB (BMO 2026-02-02), each window D-12 to D+5 of as-traded bars.
+    `splits_for(ticker)` answers fetch_splits. Returns the recorders."""
+    import gcp.fetchers.compute_earnings_reactions as module
+    from lib.earnings_reactions import earnings_session_schedule
+
+    schedule = earnings_session_schedule(date(2025, 9, 1), date(2026, 3, 1))
+    days = [x.date() for x in schedule.index]
+
+    def window(reported):
+        d = days.index(reported)
+        return pd.DataFrame([dict(date=day, open=100. + i, high=102. + i, low=99. + i,
+                                  close=101. + i, volume=1000, atr_14=1.5,
+                                  data_source='alphavantage_daily')
+                             for i, day in enumerate(days[d - 12:d + 6])])
+
+    def event(ticker, reported, fiscal):
+        return dict(_eps(reported, ticker=ticker), fiscal_date_ending=fiscal,
+                    report_time='BMO')
+
+    eps = pd.DataFrame([event('AAA', date(2026, 2, 2), date(2025, 12, 31)),
+                        event('AAA', date(2025, 11, 3), date(2025, 9, 30)),
+                        event('BBB', date(2026, 2, 2), date(2025, 12, 31))])
+    rec = {'splits': [], 'upserts': [], 'pages': [], 'sleeps': [], 'history': 0}
+
+    def history(tickers):
+        rec['history'] += 1
+        return eps[eps['ticker'].isin(tickers)].reset_index(drop=True)
+
+    def fetch_splits(ticker, api_key):
+        rec['splits'].append(ticker)
+        return splits_for(ticker)
+
+    monkeypatch.setattr(module, 'fetch_earnings_history_for_tickers', history)
+    monkeypatch.setattr(module, 'fetch_calendar_timing_map', lambda *a: {})
+    monkeypatch.setattr(module, 'fetch_daily_windows_for_ticker_dates',
+                        lambda ticker, dates: {d: window(d) for d in dates})
+    monkeypatch.setattr(module, 'fetch_splits', fetch_splits)
+    monkeypatch.setattr(module, 'is_cloud_sql_configured', lambda: True)
+    monkeypatch.setattr(module, '_upsert_reaction_frame',
+                        lambda f, *a, **k: (rec['upserts'].extend(f.to_dict('records')) or len(f)))
+    monkeypatch.setattr(module.time, 'sleep', rec['sleeps'].append)
+    return module, rec
+
+
+def _skips(pages):
+    return {(e['event_id'], e['reason']) for page in pages for e in page['events']
+            if e['disposition'] == 'write_skipped'}
+
+
+def test_split_in_loaded_window_skips_the_event(monkeypatch, caplog):
+    """A split inside an event's loaded window (after its first bar, on or
+    before its last) skips the event by name: the ATR fallback and the
+    pre-report fields read bars as far back as the window goes. A split on
+    the first loaded bar leaves every bar after it and is admitted. One
+    ticker's SPLITS outage refuses its own events by name only."""
+    import logging
+
+    from lib.config import AlphaVantageConfig
+    from lib.earnings_reactions import Splits, SplitsUnavailable
+
+    straddle = 'AAA:2025-12-31:2026-02-02'
+    clock = '2026-02-20T21:01:00Z'
+
+    # Case 1: 2026-01-20 is inside AAA's 2026-02-02 loaded window and outside
+    # the reaction's required sessions (D-1 to D+5).
+    module, rec = _two_ticker_run(monkeypatch, lambda t: Splits.of(
+        t, ((date(2026, 1, 20), 2.0),) if t == 'AAA' else ()))
+    with caplog.at_level(logging.INFO, logger=module.log.name):
+        written = module.populate_for_tickers(['AAA', 'BBB'], observation_ts=clock,
+                                              receipt_sink=rec['pages'].append, api_key='k')
+    assert rec['splits'] == ['AAA', 'BBB']
+    assert rec['sleeps'] == [AlphaVantageConfig().delay_between_calls]
+    assert (straddle, 'split_in_window') in _skips(rec['pages'])
+    keys = {(r['ticker'], str(r['reported_date'])) for r in rec['upserts']}
+    assert keys == {('AAA', '2025-11-03'), ('BBB', '2026-02-02')} and written == 2
+    for row in rec['upserts']:
+        assert row['daily_path_v1']['basis_id'] == 'av-as-traded-no-split-v1'
+    assert 'ticker=AAA splits=1 processed=1/2' in caplog.text
+    assert 'ticker=BBB splits=0 processed=2/2' in caplog.text
+    assert 'splits_unavailable=0' in caplog.text
+
+    # Case 2: a split effective on the first loaded bar (D-12, 2026-01-14).
+    module, rec = _two_ticker_run(monkeypatch, lambda t: Splits.of(
+        t, ((date(2026, 1, 14), 2.0),) if t == 'AAA' else ()))
+    module.populate_for_tickers(['AAA', 'BBB'], observation_ts=clock,
+                                receipt_sink=rec['pages'].append, api_key='k')
+    assert not any(reason == 'split_in_window' for _, reason in _skips(rec['pages']))
+    keys = {(r['ticker'], str(r['reported_date'])) for r in rec['upserts']}
+    assert ('AAA', '2026-02-02') in keys and len(keys) == 3
+
+    # Case 3: BBB's SPLITS reply held Information.
+    def outage(ticker):
+        if ticker == 'BBB':
+            raise SplitsUnavailable('Information')
+        return Splits.of(ticker, ())
+
+    caplog.clear()
+    module, rec = _two_ticker_run(monkeypatch, outage)
+    with caplog.at_level(logging.INFO, logger=module.log.name):
+        module.populate_for_tickers(['AAA', 'BBB'], observation_ts=clock,
+                                    receipt_sink=rec['pages'].append, api_key='k')
+    assert ('BBB:2025-12-31:2026-02-02', 'split_status_unavailable') in _skips(rec['pages'])
+    assert {r['ticker'] for r in rec['upserts']} == {'AAA'}
+    assert len(rec['upserts']) == 2
+    assert 'splits_unavailable=1' in caplog.text
+
+
+def test_every_splits_request_failing_fails_the_run(monkeypatch, caplog):
+    """The job's entry point exits non-zero when no ticker's split evidence
+    could be read, and 0 when at least one could; without an API key it
+    fails before reading anything. On main it printed the count and exited
+    0 when nothing was written."""
+    import logging
+    import sys
+
+    from lib.earnings_reactions import Splits, SplitsUnavailable
+
+    def none_available(ticker):
+        raise SplitsUnavailable('Information')
+
+    argv = ['compute_earnings_reactions', '--tickers', 'AAA,BBB', '--force']
+    monkeypatch.setattr(sys, 'argv', argv)
+    monkeypatch.setenv('ALPHA_VANTAGE_API_KEY', 'k')
+
+    module, rec = _two_ticker_run(monkeypatch, none_available)
+    with caplog.at_level(logging.INFO, logger=module.log.name):
+        assert module.main() == 1
+    assert rec['upserts'] == []
+    assert 'splits_unavailable=2' in caplog.text
+
+    def aaa_only(ticker):
+        if ticker == 'BBB':
+            raise SplitsUnavailable('Information')
+        return Splits.of(ticker, ())
+
+    module, rec = _two_ticker_run(monkeypatch, aaa_only)
+    assert module.main() == 0
+    assert {r['ticker'] for r in rec['upserts']} == {'AAA'}
+
+    monkeypatch.delenv('ALPHA_VANTAGE_API_KEY')
+    module, rec = _two_ticker_run(monkeypatch, aaa_only)
+    assert module.main() == 1
+    assert rec['history'] == 0 and rec['splits'] == []
