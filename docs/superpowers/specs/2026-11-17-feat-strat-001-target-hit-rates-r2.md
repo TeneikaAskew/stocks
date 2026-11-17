@@ -13,8 +13,8 @@ done_when:
   - "Live writer: resolve_one upserts at most one plan_excursions row per resolved (analysis_date, ticker) with source resolver, rule_version entry_rule_version of the basis's rule_version, the basis's ATR and RESOLVER_VERSION, in the same transaction as the premarket_analysis update; re-resolving with force replaces it, and when the forced re-resolution gives no trade (a same-bar tie or no entry) it deletes the existing row for that ticker, session and rule version in the same transaction, pinned by a writer test that first resolves a trade and then force-resolves the session to no trade; a row whose basis has no rule_version, or whose entry_rule_version is None, writes nothing; RESOLVER_VERSION moves to the next version after the one on the implementation's merge base; the existing outcome and plan columns are byte-identical to origin/main's on the existing resolver tests"
   - "History writer: gcp/backfill_plan_excursions.py (TICKERS, START, END; START defaults to the policy row's since) rebuilds each session's level basis through the same build the brief runs under BRIEF_AS_OF, with no_persist so nothing is written to premarket_analysis or premarket_analysis_history and no model is called, reads one ticker-month of market_data_intraday bars per query, scores with the Excursion function and upserts source history rows keyed by entry_rule_version of the rebuilt basis's version, that never replace a source resolver row, and deletes its own source history row for a session that now gives no trade; a re-run over the same span writes the same rows; tests cover resume, the delete, the never-replace rule and that no model client is called; the job's deploy entry is not part of this change (gcp/deploy.sh belongs to FEAT-DEPLOY-001 and is changed there)"
   - "Reader: lib/target_reach.py loads, in ONE query per brief run for all of the run's tickers, the excursions of rows whose rule_version equals entry_rule_version of the basis being built (never a constant), session_date before the brief's session and on or after since (or within the last lookback_sessions sessions when that is set), and gives per ticker the trade count, the first and last dates, and for any distance the number of trades whose excursion in the policy's measure column is at least that distance, NULL counting as reaching nothing; a failed query or a missing table raises and the brief prints the unavailable line of Design 5 for that ticker, never a count; tests cover the window, the point-in-time cut, each of the four measures, the version filter and the NULL rule"
-  - "Brief copy: tests/lib/test_strat_levels.py has a golden on the IWM 2025-10-22 basis (tests/fixtures/iwm_2025_10_22_level_basis.json) with a fixed reach table equal to the Experiment's 906 IWM trades before that date in ATR, giving the puts block of Design 5 byte for byte: the counts line after the stop line and each target line ending with its count and percent; with fewer trades than min_sample each line ends with the count and no percent; with no trades each line ends with 'no history yet' and never '0 of 0'; the unavailable line and the no-stop line are pinned; in every case every other line of the side's block is unchanged, there is no line of rungs separate from the target lines, and with no reach table passed (every caller but the brief) format_levels_for_brief's output equals origin/main's, so the existing D8 goldens are unchanged"
-  - "Wired into the brief: a test in tests/gcp/ on generate_premarket_brief (the production path, BRIEF_AS_OF with a stubbed database) asserts that the run issues the reach read once for all of its tickers, that the stored playbook text carries the counts of Design 5 on the target lines, and that a failed reach read leaves every ticker's brief written with the unavailable line in place of the counts (no PLAYBOOK_FAILED, no count)"
+  - "Brief copy: format_levels_for_brief takes the reach table and passes it on, and on every basis whose targets the level rule picked (every basis on main today) its output with a reach table equals its output without one, which equals origin/main's: tests/lib/test_strat_levels.py pins this on the IWM 2025-10-22 basis (tests/fixtures/iwm_2025_10_22_level_basis.json) with the Experiment's 906 IWM trades as the table, on both sides, and on the existing D8 goldens, so no thirds line ever carries a count; the counts are printed only on the quarter-target lines, by the quarter-target change (docs/superpowers/specs/2026-11-17-feat-strat-001-atr-quarter-targets-r3.md, Design 4 and 7), in the wording of Design 5; lib/target_reach.py exposes the count, the trade count, the first and last dates and the formatted count text ('reached k of n (p%)', 'reached k of n' below min_sample, 'no history yet' with none), each pinned by unit tests"
+  - "Wired into the brief: a test in tests/gcp/ on generate_premarket_brief (the production path, BRIEF_AS_OF with a stubbed database) asserts that the run issues the reach read once for all of its tickers and passes each ticker's table to format_levels_for_brief, that a failed reach read leaves every ticker's brief written (no PLAYBOOK_FAILED) with the ticker's table marked unavailable, and that the stored playbook text of a level-rule basis is unchanged either way"
   - "Unchanged, each pinned by an existing test that passes on origin/main and on the implementation head: the trigger and stop rule, gate targets and the t1..t3 columns, the plan's targets, spacing, thirds, entry cutoff and gap edges, the ATR levels line, the signal monitor, the movement statement, persona plans and every premarket_analysis column the resolver writes today; LEVEL_RULE_VERSION does not change"
   - "Experiment through the production paths, before any production change: the implementation PR body shows the history writer run on a local copy built like this spec's Experiment (as-traded bars, 2022-01-03 to 2026-11-10, SPY 2025-04-09 and IWM 2026-06-26 left out) producing the same 3,463 trades (same ticker, date, side and stop) and, on every trade filled at the trigger, excursions in stop distances and in ATR within 1e-6 of this spec's rows; Tables 3, 4, 6 and 7 reproduced from those rows; and the measured wall-clock per ticker, which sets the job's timeout at four times or more; a reproduction for the record, not a gate"
   - "Source identity (DASHBOARD-01): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, DASHBOARD-01) note row carries that source_identity_sha256 with implementation and test prose for this PR"
@@ -23,7 +23,7 @@ status: approved
 supersedes: docs/superpowers/specs/2026-11-16-feat-strat-001-target-hit-rates.md
 ---
 
-# Each target line in the brief says how often price has reached it before the stop, back to 2022
+# Each quarter-target line says how often price has reached it before the stop, back to 2022
 
 ## What changed from r1
 
@@ -35,10 +35,11 @@ superseded spec.
 
 The owner chose one set of target lines on 2026-11-17 (below). So:
 
-1. **No separate ladder.** r1 printed a block of up to six rungs under each plan. Now each target
-   line the plan already prints ends with its count. Under today's rule those are the plan's level
-   targets; once the quarter-target change is built, its four ATR targets and the levels between
-   them read the same counts through the same reader (that change's own revision).
+1. **No separate ladder, and counts on the quarter lines only.** r1 printed a block of up to six
+   rungs under each plan. Now the counts go on the quarter-target lines (25, 50, 75 and 100% of
+   ATR) and the levels between them, which the quarter-target change prints (its r3 reads this
+   spec's table). The thirds plan's lines never carry a count; this change prints nothing new on
+   them. Until the quarters go live, this change stores the history and builds the reader.
 2. **Distances in ATR.** The quarter targets are fractions of ATR from the trigger, so the counts
    are read in ATR. Out of sample ATR scored better than stop distances (Table 6). The table keeps
    both, and the measure is a policy value.
@@ -214,50 +215,34 @@ rule version.
 
 ### 5. What the brief will look like
 
-The brief reads the counts in one query per run (Design 1's window, sessions before the brief's own,
-the basis's entry version only). After the stop line of each side with a plan it prints one line
-naming the trades counted, and each target line ends with its count. No other line changes and no
-line is added between the targets.
+This change prints nothing new. A basis whose targets the level rule picked (the thirds plan, every
+basis today) prints exactly what main prints, with or without the table. The counts appear on the
+quarter-target lines, printed by the quarter-target change through this spec's reader, in these
+words:
+
+- after the stop line, `Reached before the stop: {ticker} trades {first} to {last} ({n})`;
+- at the end of each target and level line, `reached k of n (p%)`; below the policy's minimum
+  `reached k of n`; with no trades `no history yet`, never `0 of 0`;
+- with the row or the table unusable, `Reached before the stop: unavailable ({status}).` and no
+  count on any line.
 
 IWM on 2025-10-22, puts side (trigger 245.66 PMK_L, stop 246.99 PDC, ATR(14) 4.48), counted from
-the 906 IWM trades from 2022-01-03 to 2025-10-21. Today:
+the 906 IWM trades from 2022-01-03 to 2025-10-21, as the quarter lines would read (the quarter
+change's own wording around the counts):
 
 ```
-  PUTS below 245.66 (PMK_L), new entries 09:30 to 10:00 ET
-    No entry if the open is at or below 245.66.
-    Stop: 246.99 (PDC)
-    T1: 243.41 (PWC), sell 1/3
-    T2: 241.96 (PMC), sell 1/3
-    T3: 240.36 (PWL), sell the last 1/3, or hold to the close or the stop
-    Skipped, closer than 0.25 x ATR(14) = 1.12: 245.50 (PDL), 244.98 (PYH)
-    Room to trigger: 0.24%
-```
-
-After:
-
-```
-  PUTS below 245.66 (PMK_L), new entries 09:30 to 10:00 ET
-    No entry if the open is at or below 245.66.
-    Stop: 246.99 (PDC)
     Reached before the stop: IWM trades 2022-01-03 to 2025-10-21 (906)
-    T1: 243.41 (PWC), sell 1/3, 0.50 ATR past the trigger, reached 245 of 906 (27%)
-    T2: 241.96 (PMC), sell 1/3, 0.82 ATR past the trigger, reached 81 of 906 (9%)
-    T3: 240.36 (PWL), sell the last 1/3, or hold to the close or the stop, 1.18 ATR past the trigger, reached 23 of 906 (3%)
-    Skipped, closer than 0.25 x ATR(14) = 1.12: 245.50 (PDL), 244.98 (PYH)
-    Room to trigger: 0.24%
+      245.50 (PDL): level on the way, 0.04 ATR past the trigger, reached 802 of 906 (89%)
+      244.98 (PYH): level on the way, 0.15 ATR past the trigger, reached 616 of 906 (68%)
+    T1: 244.54 (25% of ATR), sell 1/4, reached 475 of 906 (52%)
+    T2: 243.42 (50% of ATR), sell 1/4, reached 247 of 906 (27%)
+    T3: 242.30 (75% of ATR), sell 1/4, reached 105 of 906 (12%)
+    T4: 241.18 (100% of ATR), sell the last 1/4, or hold to the close or the stop, reached 38 of 906 (4%)
 ```
 
-That day price reached T1 and T2 before the stop and missed T3 (low 240.77). Once the quarter
-targets are built, the same day's lines would read T1 244.54 reached 475 of 906 (52%), T2 243.42
-247 (27%), T3 242.30 105 (12%), T4 241.18 38 (4%), with PDL 245.50 (802, 89%) and PYH 244.98 (616,
-68%) as levels on the way, in that change's own words.
-
-With fewer trades than the minimum each line ends `reached 12 of 20`, no percent. With none, each
-line ends `no history yet`. With the row or the table unusable the counts line reads
-`    Reached before the stop: unavailable (input_unavailable).` and no target line carries a count. A
-side with no stop, or a stop not on the losing side of the trigger, reads
-`    Reached before the stop: unavailable (no stop to measure from).` A side with no plan prints
-nothing new.
+That day price went past all four quarters before the stop (low 240.77). A side with no stop, or a stop not on the losing
+side of the trigger, has nothing to count from and prints `Reached before the stop: unavailable (no
+stop to measure from).`
 
 ### 6. Production order
 
@@ -267,10 +252,11 @@ anything is deployed; the owner's merge of the implementation PR is the yes for 
 additive: nothing live changes until the deploy. Then, each on its own yes:
 
 1. The history job's deploy entry, through its FEAT-DEPLOY-001 change.
-2. Deploy the resolver and the brief. Until step 3 every line reads `no history yet`.
+2. Deploy the resolver and the brief. Nothing in the brief changes; the resolver adds a row a day.
 3. Run `gcp/backfill_plan_excursions.py` per ticker and record the rows written per ticker.
 
-The order can be 1, 3, 2 to avoid any day of `no history yet`.
+The history run is done before the quarter targets go live, so their lines never read `no history
+yet`.
 
 ## Experiment
 
@@ -376,10 +362,11 @@ rung_rows_trades.csv 148e8dff.
 
 ## Expected effect
 
-Each side with a plan prints one more line (the trades counted), and each target line ends with how
-far it sits from the trigger in ATR and how many of that ticker's trades got that far before the
-stop. Near targets read high, the far ones single digits. Nothing the brief trades, alerts or scores
-changes.
+Nothing the brief prints, trades, alerts or scores changes with this change. The table holds every
+trade since 2022 and grows by one a ticker-day, ready for the quarter lines. When the quarters go
+live each of their lines ends with how many of that ticker's trades got that far before the stop:
+about half reach the first quarter, a quarter the second, one in eight the third and one in fifteen
+to twenty the fourth.
 
 ## Capacity and cost
 
@@ -394,15 +381,14 @@ changes.
 
 ## Source identity and close-out
 
-`lib/`, `gcp/` and `tests/` are inside SITE's watched scope. DASHBOARD-01 (the brief) shows the new
-counts. Only the `(FEAT-STRAT-001, DASHBOARD-01)` row of the Implementation-source notes table may
+`lib/`, `gcp/` and `tests/` are inside SITE's watched scope. DASHBOARD-01 (the brief) shows the
+counts once the quarter lines print them. Only the `(FEAT-STRAT-001, DASHBOARD-01)` row of the Implementation-source notes table may
 describe this implementation, as backend source and local tests only. Every other SITE byte stays
 unchanged.
 
 After the merge, separately and never as a pre-merge box: confirm the apply-schema build created the
 table and the one policy row (record both); on the owner's yes, the deploy entry and the deploy; on a
-second yes, run the history job and record the rows per ticker; confirm the next live brief prints
-the counts; mark r1 `superseded` in the change that sets this one `approved` (done in this change);
+second yes, run the history job and record the rows per ticker; confirm the next live brief is unchanged; mark r1 `superseded` in the change that sets this one `approved` (done in this change);
 and complete the DOC close-out as the product-delivery skill prescribes.
 
 ## Risks
