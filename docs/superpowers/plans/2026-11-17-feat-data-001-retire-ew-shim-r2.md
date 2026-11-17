@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-10-31-feat-data-001-retire-ew-module-shim.md
 branch: fix/feat-data-001-retire-ew-shim-r2
-pr: null
+pr: 2084
 status: ready
 ---
 
