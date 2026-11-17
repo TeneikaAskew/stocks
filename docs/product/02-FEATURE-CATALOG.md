@@ -540,11 +540,11 @@ EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), f
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — notifier runtime access isolated; EW calendar binding source retirement prepared, rollout pending; 03-SITE citation of the deleted prompt renderer retired (#1794); `evaluate-ew-strikes` job and `evaluate-ew-strikes-daily` scheduler retired from the declared fleet ([#1834](https://github.com/TeneikaAskew/stocks/pull/1834), spec [#1666](https://github.com/TeneikaAskew/stocks/pull/1666)), live deletion is the separately authorized close-out; deploy.sh gcloud flag syntax fixed and the fetchers target no longer runs the data backfill (#1813), redeployed 2026-11-13 from main `ec430899` by `./gcp/deploy.sh fetchers` (image `sha256:c7d6f1d3`, both audit jobs included; close-out on #1813) |
+| Status | Production but needs remediation — notifier runtime access isolated; EW calendar binding source retirement prepared, rollout pending; 03-SITE citation of the deleted prompt renderer retired (#1794); `evaluate-ew-strikes` job and `evaluate-ew-strikes-daily` scheduler retired from the declared fleet ([#1834](https://github.com/TeneikaAskew/stocks/pull/1834), spec [#1666](https://github.com/TeneikaAskew/stocks/pull/1666)), live deletion is the separately authorized close-out; deploy.sh gcloud flag syntax fixed and the fetchers target no longer runs the data backfill (#1813), redeployed 2026-11-13 from main `ec430899` by `./gcp/deploy.sh fetchers` (image `sha256:c7d6f1d3`, both audit jobs included; close-out on #1813); late premarket run declared: `premarket-refresh-late` and `premarket-brief-late` at `20 9 * * 1-5` America/New_York ([#2020](https://github.com/TeneikaAskew/stocks/pull/2020), spec [#1929](https://github.com/TeneikaAskew/stocks/pull/1929)), creating them in the project is the owner's close-out |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-13 |
+| Last reviewed | 2026-11-16 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | — |
 | Backend | — |
