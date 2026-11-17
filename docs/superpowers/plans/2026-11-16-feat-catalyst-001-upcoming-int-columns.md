@@ -30,7 +30,7 @@ status: ready
 
 ## Review Focus
 
-- `_coerce_int_columns` keys off the reflected column types, so a column that is INTEGER in Postgres and absent from the frame is skipped, and a frame column absent from the table still fails the insert loudly as before.
+- `_coerce_int_columns` keys off the reflected column types, so a column that is INTEGER in Postgres and absent from the frame is skipped, and a frame column absent from the table is dropped by `table.insert()` without an error, as it was before this change (run on SQLite and on Postgres 16 with pg8000 in the review of 2026-11-17).
 - The empty-frame path (`pd.DataFrame()`) reaches the DELETE and skips the coercion, as before.
 
 ---
@@ -44,7 +44,7 @@ Spec: § Design (`gcp/refresh_earnings_views.py`, atomic replacement of the upco
 - Modify: `gcp/refresh_earnings_views.py` (`_replace_upcoming_rows`, the `gcp.database` import list)
 
 - [ ] Write `tests/gcp/test_refresh_earnings_views_int_columns.py`: an in-memory SQLite table with the INTEGER, FLOAT and JSON columns, a `before_execute` listener capturing the INSERT records, and a frame built the way `refresh_daily` builds it (one ticker with lean stats, one without, so pandas widens the INTEGER columns to float64)
-- [ ] Run: `python3 -m pytest tests/gcp/test_refresh_earnings_views_int_columns.py -q` (expect `test_integer_columns_bind_as_int_or_none` to fail with `total_quarters bound as 43.0 (float)`)
+- [ ] Run: `python3 -m pytest tests/gcp/test_refresh_earnings_views_int_columns.py -q` (expect `test_integer_columns_bind_as_int_or_none` to fail with `WITHLEAN.options_volume bound as 12000.0 (float)`, the first INTEGER column the frame writes)
 - [ ] In `_replace_upcoming_rows`, after the table is reflected: `frame = _coerce_int_columns(frame, table)`; import it beside `get_engine`
 - [ ] Run again (expect 4 passed); run `python3 -m pytest tests/gcp/test_refresh_earnings_views_retired_score.py tests/gcp/test_refresh_earnings_views_sources.py tests/api/test_earnings_upcoming_retired_score.py -q` (expect all passed)
 - [ ] Run the whole hermetic suite: `python3 -m pytest tests/ -q --ignore=tests/integration`; no failure that `origin/main` does not also have
