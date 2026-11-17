@@ -238,3 +238,73 @@ def test_object_name():
         'premarket-as-read/v1/2026-11-16/SPY/20261116T132001123456Z.json.gz')
     with pytest.raises(ValueError):
         par.object_name('SPY', SESSION, FETCHED_AT.replace(tzinfo=None))
+
+
+# R7's stored bars (Design 5), as UTC instants: 08:59Z only in the store,
+# 09:00Z equal to the 04:00 read, 09:02Z the measured SPY 04:02 pair (low
+# 749.74, volume 7,151), 09:03Z a revised close, 09:04Z after the newest read.
+STORED_ROWS = [
+    ('2026-11-16 08:59:00+00:00', 752.6, 752.7, 752.5, 752.6, 400),
+    ('2026-11-16 09:00:00+00:00', 752.5, 752.6, 752.4, 752.5, 500),
+    ('2026-11-16 09:02:00+00:00', 752.3, 752.4, 749.74, 752.3, 7151),
+    ('2026-11-16 09:03:00+00:00', 752.2, 752.3, 752.1, 752.25, 10),
+    ('2026-11-16 09:04:00+00:00', 752.1, 752.2, 752.0, 752.1, 20),
+]
+R7_COUNTS = {'as_read_bars': 4, 'stored_bars': 4, 'matched': 3, 'only_as_read': 1,
+             'only_stored': 1, 'differing': 2, 'differ_open': 0, 'differ_high': 0,
+             'differ_low': 1, 'differ_close': 1, 'differ_volume': 1}
+# The premarket block: 08:59Z is 03:59 Eastern, outside 04:00 to 09:29.
+R7_PREMARKET = {**R7_COUNTS, 'stored_bars': 3, 'only_stored': 0}
+
+
+def stored_frame(rows=STORED_ROWS) -> pd.DataFrame:
+    """Stored bars as the comparison takes them: ts as aware UTC instants."""
+    return pd.DataFrame({
+        'ts': pd.to_datetime([r[0] for r in rows]),
+        'open': [r[1] for r in rows], 'high': [r[2] for r in rows],
+        'low': [r[3] for r in rows], 'close': [r[4] for r in rows],
+        'volume': [r[5] for r in rows],
+    })
+
+
+def as_read_frame() -> pd.DataFrame:
+    from gcp.fetchers import premarket_as_read as par
+    return par.read_record(record_of(vendor_frame(R1_ROWS)))[1]
+
+
+def test_compare_counts_differing_bars():
+    """R7: the as-read bars of R1 against five stored bars: matched,
+    one-sided and differing bars counted, with the premarket block."""
+    from gcp.fetchers import premarket_as_read as par
+
+    got = par.compare_bars(as_read_frame(), stored_frame(), SESSION)
+    assert {k: v for k, v in got.items() if k != 'premarket'} == R7_COUNTS
+    assert got['premarket'] == R7_PREMARKET
+    assert list(got) == [*R7_COUNTS, 'premarket']
+
+    # a price 0.00004 apart is the same price; 0.00005 apart is not
+    for delta, differ_open in ((0.00004, 0), (0.00005, 1)):
+        rows = [STORED_ROWS[0], (STORED_ROWS[1][0], 752.5 + delta, *STORED_ROWS[1][2:]),
+                *STORED_ROWS[2:]]
+        got = par.compare_bars(as_read_frame(), stored_frame(rows), SESSION)
+        assert got['differ_open'] == differ_open
+        assert got['differing'] == 2 + differ_open
+
+
+def test_compare_counts_a_missing_stored_value_as_different():
+    """A stored NULL beside a value read is a difference, never a match."""
+    from gcp.fetchers import premarket_as_read as par
+
+    rows = [STORED_ROWS[0], (STORED_ROWS[1][0], float('nan'), *STORED_ROWS[1][2:]),
+            *STORED_ROWS[2:]]
+    stored = stored_frame(rows)
+    stored['volume'] = pd.array([400, None, 7151, 10, 20], dtype='Int64')
+    got = par.compare_bars(as_read_frame(), stored, SESSION)
+    assert got['differ_open'] == 1 and got['differ_volume'] == 2 and got['differing'] == 3
+
+
+def test_compare_refuses_a_session_before_true_utc():
+    from gcp.fetchers import premarket_as_read as par
+
+    with pytest.raises(ValueError, match='TRUE_UTC_FROM'):
+        par.compare_bars(as_read_frame(), stored_frame(), date(2026, 9, 25))

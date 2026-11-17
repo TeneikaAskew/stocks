@@ -24,12 +24,19 @@ import json
 import logging
 import os
 import time
-from datetime import date, datetime
+from datetime import date, datetime, time as dt_time
 from typing import Any, Callable, Mapping, NamedTuple, Optional, Sequence
 
 import pandas as pd
 
-from lib.eastern_time import as_utc_instant, require_aware
+from lib.eastern_time import (
+    TRUE_UTC_FROM,
+    as_utc_instant,
+    eastern_bounds_utc,
+    eastern_index_to_utc,
+    market_date,
+    require_aware,
+)
 
 log = logging.getLogger(__name__)
 
@@ -274,3 +281,96 @@ def write_records(bucket_factory: Callable[[], Any], session_date: date,
     log.info('as_read_records written=%d failed=%d session=%s',
              len(written), len(failed), session_date.isoformat())
     return written, failed
+
+
+# ── The comparison (read-only, spec Design 5) ──────────────────────────────
+
+_PRICES = ('open', 'high', 'low', 'close')
+# A price differs when the two values are this far apart or more:
+# market_data_intraday prices are DOUBLE PRECISION and the vendor's carry at
+# most four decimals.
+PRICE_TOLERANCE = 0.00005
+
+
+def _price_differs(a, b) -> bool:
+    if pd.isna(a) or pd.isna(b):
+        return not (pd.isna(a) and pd.isna(b))
+    # Rounded to 9 decimals so two prices 0.00005 apart in decimal are not
+    # read as 0.0000499999 apart in binary.
+    return round(abs(float(a) - float(b)), 9) >= PRICE_TOLERANCE
+
+
+def _volume_differs(a, b) -> bool:
+    if pd.isna(a) or pd.isna(b):
+        return not (pd.isna(a) and pd.isna(b))
+    return int(a) != int(b)
+
+
+def _counts(read: pd.DataFrame, stored: pd.DataFrame) -> dict:
+    a, b = read.set_index('ts'), stored.set_index('ts')
+    both = a.index.intersection(b.index).sort_values()
+    per_field = {
+        name: [(_volume_differs if name == 'volume' else _price_differs)(
+            a.at[ts, name], b.at[ts, name]) for ts in both]
+        for name in (*_PRICES, 'volume')}
+    return {
+        'as_read_bars': len(a),
+        'stored_bars': len(b),
+        'matched': len(both),
+        'only_as_read': len(a.index.difference(b.index)),
+        'only_stored': len(b.index.difference(a.index)),
+        'differing': sum(any(flags) for flags in zip(*per_field.values())),
+        **{f'differ_{name}': sum(flags) for name, flags in per_field.items()},
+    }
+
+
+def compare_bars(as_read: pd.DataFrame, stored: pd.DataFrame, session_date: date) -> dict:
+    """Count how the bars a run read differ from the stored bars of its
+    session.
+
+    *as_read* is ``read_record``'s frame (``ts`` naive Eastern, as the vendor
+    keyed it); *stored* has ``ts`` as aware instants and the five value
+    columns, as ``./scripts/db_query_cr.sh`` or ``read_bars`` give them.
+    Stored bars are kept when their Eastern date is *session_date* and they
+    are at or before the newest bar read, so bars the vendor had not yet
+    published are not counted (a read with no bars keeps none). A price
+    differs at ``PRICE_TOLERANCE`` or more, a volume when the integers
+    differ, and a missing value beside a present one is a difference.
+
+    Returns ``as_read_bars``, ``stored_bars``, ``matched``, ``only_as_read``,
+    ``only_stored``, ``differing`` (a matched bar with any field different),
+    ``differ_open`` ... ``differ_volume``, and the same eleven under
+    ``premarket`` for the bars from 04:00 to 09:29 Eastern.
+
+    Raises ValueError for a session before ``lib.eastern_time.TRUE_UTC_FROM``
+    (its stored instants are not known to be UTC), for a stored ``ts``
+    without a zone, and for a ``ts`` that appears twice on either side.
+    """
+    if session_date < TRUE_UTC_FROM:
+        raise ValueError(
+            f"session {session_date.isoformat()} is before TRUE_UTC_FROM "
+            f"({TRUE_UTC_FROM.isoformat()}): its stored instants are not known to be UTC")
+    read = as_read.loc[:, ['ts', *_PRICES, 'volume']].copy()
+    read['ts'] = eastern_index_to_utc(pd.DatetimeIndex(read['ts']))
+    stored_ts = pd.DatetimeIndex(stored['ts'])
+    if stored_ts.tz is None:
+        raise ValueError('stored ts has no zone: which instant it names cannot be known')
+    kept = stored.loc[:, ['ts', *_PRICES, 'volume']].copy()
+    kept['ts'] = stored_ts.tz_convert('UTC')
+    for side, frame in (('as-read', read), ('stored', kept)):
+        if frame['ts'].duplicated().any():
+            raise ValueError(f'the {side} bars hold a ts twice')
+
+    in_session = [market_date(ts) == session_date for ts in kept['ts']]
+    if len(read):
+        newest = read['ts'].max()
+        kept = kept.loc[pd.Series(in_session, index=kept.index) & (kept['ts'] <= newest)]
+    else:
+        kept = kept.iloc[0:0]
+
+    start, end = eastern_bounds_utc(session_date, dt_time(4, 0), dt_time(9, 30))
+
+    def premarket(frame: pd.DataFrame) -> pd.DataFrame:
+        return frame.loc[(frame['ts'] >= start) & (frame['ts'] < end)]
+
+    return {**_counts(read, kept), 'premarket': _counts(premarket(read), premarket(kept))}
