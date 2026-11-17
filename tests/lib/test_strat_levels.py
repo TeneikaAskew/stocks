@@ -1441,6 +1441,9 @@ class TestAtrRungsDisplayOnly:
             assert hb['plan_target_level_types_status'] == 'ok', t
             assert hparams.pop('plan_target_level_types')['extra'] == {
                 'level_types': ['gap_high', 'gap_low']}, t
+            # ATR marks spec: the two seeded policy-wide rows are recorded too.
+            assert hparams.pop('plan_target_marks_atr')['extra'] == {'marks': []}, t
+            assert hparams.pop('ladder_history_sessions')['extra'] == {'sessions': 250}, t
             assert hparams == bb['params'], t
             # The base is a stored v3 basis; a brief built now records v5
             # (FEAT-PLAYBOOK-001 B8b, then the prior-close print rule). They

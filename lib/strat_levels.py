@@ -18,6 +18,7 @@ from lib import eastern_time
 from lib.eastern_time import ET_NAME, session_count
 import pandas as pd
 import numpy as np
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date as date_type
@@ -1011,8 +1012,15 @@ POLICY_SEEDED_KEYS = (TARGET_SPACING_KEY, GAP_FILL_FLAG_KEY, ATR_RUNG_STEP_KEY,
 # target walk may use. Never a trigger, stop, gate target or ladder rung.
 PLAN_TARGET_LEVEL_TYPES_KEY = 'plan_target_level_types'
 PLAN_TARGET_LEVEL_TYPE_CHOICES = ('gap_high', 'gap_low')
+# FEAT-STRAT-001 ATR mark targets (2026-11-16 spec r2). Policy-wide: the
+# distances of the plan targets from the entry trigger in ATR, nearest first
+# (an empty list keeps the level rule's targets), and how many analysis
+# dates of reach history the brief reads for its plan lines.
+PLAN_TARGET_MARKS_KEY = 'plan_target_marks_atr'
+LADDER_HISTORY_KEY = 'ladder_history_sessions'
 POLICY_WIDE_KEYS = (EXIT_LEGS_KEY, ENTRY_CUTOFF_KEY, ATR_RUNG_ANCHORS_KEY,
-                    PLAN_TARGET_LEVEL_TYPES_KEY)
+                    PLAN_TARGET_LEVEL_TYPES_KEY, PLAN_TARGET_MARKS_KEY,
+                    LADDER_HISTORY_KEY)
 
 
 def target_key(persona: str, k: int) -> str:
@@ -1234,6 +1242,13 @@ class LevelParams:
         p = self.param(PLAN_TARGET_LEVEL_TYPES_KEY)
         return plan_target_level_types(p.extra) if p.ok else None
 
+    def plan_target_marks(self) -> Optional[tuple]:
+        """The ATR marks of the PLAN_TARGET_MARKS_KEY row in force (recorded
+        in its extra), nearest first: empty when the row lists none, None
+        when that row is not usable."""
+        p = self.param(PLAN_TARGET_MARKS_KEY)
+        return plan_target_marks(p.extra) if p.ok else None
+
     def to_basis(self) -> dict:
         return {
             'atr_basis': self.atr_basis,
@@ -1362,6 +1377,34 @@ def plan_target_level_types(extra) -> Optional[tuple]:
     return tuple(types)
 
 
+def _is_number(x) -> bool:
+    """An int or float that is finite; a bool is not a number here."""
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def plan_target_marks(extra) -> Optional[tuple]:
+    """The marks of a PLAN_TARGET_MARKS_KEY policy extra ({"marks": [...]})
+    as a tuple of floats, nearest first (empty when the list is empty), or
+    None when the list is missing or not a list, an entry is not a number,
+    an entry is at or below zero, or an entry is not above the one before."""
+    marks = (extra or {}).get('marks') if isinstance(extra, dict) else None
+    if not isinstance(marks, list) or not all(_is_number(m) for m in marks):
+        return None
+    out = tuple(float(m) for m in marks)
+    if any(m <= 0 for m in out) or any(b <= a for a, b in zip(out, out[1:])):
+        return None
+    return out
+
+
+def ladder_history_sessions(extra) -> Optional[int]:
+    """The `sessions` of a LADDER_HISTORY_KEY policy extra: a whole
+    number of at least one (a bool is not one), else None."""
+    n = (extra or {}).get('sessions') if isinstance(extra, dict) else None
+    if isinstance(n, int) and not isinstance(n, bool) and n >= 1:
+        return n
+    return None
+
+
 def policy_atr_rung_anchors(policy: Dict[str, dict]) -> tuple:
     """The atr_rung_anchors row in force, read like atr_basis: a policy
     without a usable row cannot build levels (CLAUDE.md 3.7)."""
@@ -1401,6 +1444,14 @@ def policy_wide_param(key: str, pol: dict, ticker: str, atr_basis: str) -> Level
         # types are the extra.
         types = plan_target_level_types(extra)
         value = float(len(types)) if types is not None else None
+    elif key == PLAN_TARGET_MARKS_KEY:
+        # The value is the number of marks (0 keeps the level rule); the
+        # marks are the extra.
+        marks = plan_target_marks(extra)
+        value = float(len(marks)) if marks is not None else None
+    elif key == LADDER_HISTORY_KEY:
+        sessions = ladder_history_sessions(extra)
+        value = float(sessions) if sessions is not None else None
     return LevelParam(
         key=key, status=PARAM_OK if value is not None else 'input_unavailable',
         value=value, ticker=ticker, effective_from=pol.get('effective_from'),

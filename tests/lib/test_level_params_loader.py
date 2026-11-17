@@ -28,7 +28,8 @@ def test_schema_seeds_the_design_2_policy_and_no_ticker_values():
     policy = seeded_policy()
     assert set(policy) == DESIGN_2_KEYS | {"atr_basis", "calibration_universe",
                                            "exit_legs", "entry_cutoff_et", "atr_rung_anchors",
-                                           "plan_target_level_types"}
+                                           "plan_target_level_types", "plan_target_marks_atr",
+                                           "ladder_history_sessions"}
     assert policy["atr_basis"]["extra"] == {"column": "atr_14"}
     assert {p["effective_from"] for p in policy.values()} == {"2015-01-02"}
     assert policy["trigger_window_long_atr"]["statistic_q"] == 0.99
@@ -325,3 +326,134 @@ def test_plan_target_level_types_reads_its_extra(extra, status, value):
                      params={"plan_target_level_types": p})
     expect = tuple(extra["level_types"]) if status == "ok" else None
     assert lp.plan_target_level_types() == expect
+
+
+# ── ATR marks spec (2026-11-16), done_when "Policy rows" ───────────────
+#
+# Two policy-wide rows seeded to reproduce today's plan: no ATR marks (the
+# level rule picks the targets) and 250 analysis dates of reach history.
+
+# The policy rows gcp/schema.sql seeds on origin/main f3b2344c4, each in
+# force from 2015-01-02: (method_id, statistic_q, lookback_sessions,
+# min_sample, extra). No existing row changes.
+BASE_POLICY_ROWS = {
+    'atr_basis': ('policy', None, None, None, {'column': 'atr_14'}),
+    'atr_rung_anchors': ('policy', None, None, None, {'anchors': ['PDH', 'PDL', 'PMK_H', 'PMK_L']}),
+    'atr_rung_max_atr': ('policy_seed', None, None, None, {'seed': 2.0}),
+    'atr_rung_step_atr': ('policy_seed', None, None, None, {'seed': 0.5}),
+    'atr_rung_stretch_atr': ('policy_seed', None, None, None, {'seed': 1.5}),
+    'calibration_universe': ('policy', None, None, None, {'sources': ['market_config_tickers', 'insight_default_tickers', 'watchlist', 'on_demand']}),
+    'entry_buffer_aggressive_hi_atr': ('follow_through_quantile', 0.75, 750, 150, {'persona': 'aggressive', 'edge': 'hi', 'follow_through_minutes': 15}),
+    'entry_buffer_aggressive_lo_atr': ('at_trigger', None, 750, 150, {'persona': 'aggressive', 'edge': 'lo', 'follow_through_minutes': 15}),
+    'entry_buffer_conservative_hi_atr': ('follow_through_quantile', 0.65, 750, 150, {'persona': 'conservative', 'edge': 'hi', 'follow_through_minutes': 15}),
+    'entry_buffer_conservative_lo_atr': ('follow_through_quantile', 0.2, 750, 150, {'persona': 'conservative', 'edge': 'lo', 'follow_through_minutes': 15}),
+    'entry_buffer_neutral_hi_atr': ('follow_through_quantile', 0.5, 750, 150, {'persona': 'neutral', 'edge': 'hi', 'follow_through_minutes': 15}),
+    'entry_buffer_neutral_lo_atr': ('at_trigger', None, 750, 150, {'persona': 'neutral', 'edge': 'lo', 'follow_through_minutes': 15}),
+    'entry_cutoff_et': ('policy', None, None, None, {'time_et': '16:00'}),
+    'exit_legs': ('policy', None, None, None, {'legs': 3}),
+    'gap_fill_flag_atr': ('policy_seed', None, None, None, {'seed': 0.5}),
+    'level_cluster_atr': ('rth_interval_change_quantile', 0.5, 60, 40, {'interval_minutes': 15}),
+    'min_stop_atr': ('filled_held_mae_quantile', 0.5, 750, 150, {'persona': 'neutral'}),
+    'plan_target_level_types': ('policy', None, None, None, {'level_types': ['gap_high', 'gap_low']}),
+    'pm_spike_atr': ('premarket_wick_excess_quantile', 0.999, 60, 40, {'min_bars_per_session': 60}),
+    'pm_stale_print_atr': ('premarket_bar_spread_quantile', 0.95, 60, 40, {'min_bars_per_session': 60}),
+    'stop_aggressive_atr': ('filled_held_mae_quantile', 0.9, 750, 150, {'persona': 'aggressive'}),
+    'stop_conservative_atr': ('filled_held_mae_quantile', 0.6, 750, 150, {'persona': 'conservative'}),
+    'stop_neutral_atr': ('filled_held_mae_quantile', 0.75, 750, 150, {'persona': 'neutral'}),
+    'target_aggressive_1_r': ('filled_reach_share', 0.4, 750, 150, {'persona': 'aggressive', 'k': 1}),
+    'target_aggressive_2_r': ('filled_reach_share', 0.25, 750, 150, {'persona': 'aggressive', 'k': 2}),
+    'target_aggressive_3_r': ('filled_reach_share', 0.15, 750, 150, {'persona': 'aggressive', 'k': 3}),
+    'target_conservative_1_r': ('filled_reach_share', 0.65, 750, 150, {'persona': 'conservative', 'k': 1}),
+    'target_conservative_2_r': ('filled_reach_share', 0.5, 750, 150, {'persona': 'conservative', 'k': 2}),
+    'target_min_spacing_atr': ('policy_seed', None, None, None, {'seed': 0.25}),
+    'target_neutral_1_r': ('filled_reach_share', 0.6, 750, 150, {'persona': 'neutral', 'k': 1}),
+    'target_neutral_2_r': ('filled_reach_share', 0.45, 750, 150, {'persona': 'neutral', 'k': 2}),
+    'target_neutral_3_r': ('filled_reach_share', 0.3, 750, 150, {'persona': 'neutral', 'k': 3}),
+    'trigger_window_long_atr': ('daily_excursion_quantile', 0.99, 750, 250, {'side': 'long'}),
+    'trigger_window_short_atr': ('daily_excursion_quantile', 0.99, 750, 250, {'side': 'short'}),
+}
+
+
+def test_schema_seeds_the_two_rows():
+    policy = seeded_policy()
+    marks, history = policy["plan_target_marks_atr"], policy["ladder_history_sessions"]
+    assert (marks["method_id"], marks["effective_from"], marks["extra"]) == (
+        "policy", "2015-01-02", {"marks": []})
+    assert (history["method_id"], history["effective_from"], history["extra"]) == (
+        "policy", "2015-01-02", {"sessions": 250})
+    assert policy["exit_legs"]["extra"] == {"legs": 3}
+    rest = {k: (r["method_id"], r["statistic_q"], r["lookback_sessions"], r["min_sample"], r["extra"])
+            for k, r in policy.items()
+            if k not in ("plan_target_marks_atr", "ladder_history_sessions")}
+    assert rest == BASE_POLICY_ROWS
+    assert {r["effective_from"] for r in policy.values()} == {"2015-01-02"}
+    schema = (Path(__file__).resolve().parents[2] / "gcp" / "schema.sql").read_text()
+    for key in ("plan_target_marks_atr", "ladder_history_sessions"):
+        block = schema[schema.index(f"('{key}'"):]
+        assert block.index("ON CONFLICT (param_key, effective_from) DO NOTHING") < block.index(";")
+
+
+def test_both_keys_are_policy_wide():
+    import ast
+
+    from lib.strat_levels import LADDER_HISTORY_KEY, PLAN_TARGET_MARKS_KEY, POLICY_WIDE_KEYS
+
+    assert {PLAN_TARGET_MARKS_KEY, LADDER_HISTORY_KEY} <= set(POLICY_WIDE_KEYS)
+    src = (Path(__file__).resolve().parents[2] / "lib" / "strat_levels.py").read_text()
+    strings = [n.value for n in ast.walk(ast.parse(src))
+               if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    for key in ("plan_target_marks_atr", "ladder_history_sessions"):
+        assert sum(key in s for s in strings) == 1, key
+
+
+def _load_with_policy(key, extra):
+    db = ParamsDb()
+    db.set_policy(key, effective_from=date(2026, 11, 2), extra=extra)
+    return db.load(["SPY"], D)["SPY"]
+
+
+@pytest.mark.parametrize("extra, status, value", [
+    ('{"marks": []}', "ok", 0.0),
+    ('{"marks": [0.25, 0.5, 0.75, 1.0]}', "ok", 4.0),
+    ('{"marks": [0.25]}', "ok", 1.0),
+    ('{}', "input_unavailable", None),
+    ('{"marks": null}', "input_unavailable", None),
+    ('{"marks": "0.25"}', "input_unavailable", None),
+    ('{"marks": [0.25, "0.5"]}', "input_unavailable", None),
+    ('{"marks": [true]}', "input_unavailable", None),
+    ('{"marks": [0.0, 0.5]}', "input_unavailable", None),
+    ('{"marks": [-0.25]}', "input_unavailable", None),
+    ('{"marks": [0.25, 0.25]}', "input_unavailable", None),
+    ('{"marks": [0.5, 0.25]}', "input_unavailable", None),
+])
+def test_marks_param_status(extra, status, value):
+    lp = _load_with_policy("plan_target_marks_atr", extra)
+    p = lp.param("plan_target_marks_atr")
+    assert (p.status, p.value) == (status, value)
+    import json
+    expect = tuple(json.loads(extra)["marks"]) if status == "ok" else None
+    assert lp.plan_target_marks() == expect
+
+
+@pytest.mark.parametrize("extra, status, value", [
+    ('{"sessions": 250}', "ok", 250.0),
+    ('{"sessions": 1}', "ok", 1.0),
+    ('{"sessions": 0}', "input_unavailable", None),
+    ('{"sessions": -1}', "input_unavailable", None),
+    ('{"sessions": 2.5}', "input_unavailable", None),
+    ('{"sessions": "250"}', "input_unavailable", None),
+    ('{"sessions": true}', "input_unavailable", None),
+    ('{}', "input_unavailable", None),
+])
+def test_history_sessions_param_status(extra, status, value):
+    p = _load_with_policy("ladder_history_sessions", extra).param("ladder_history_sessions")
+    assert (p.status, p.value) == (status, value)
+
+
+def test_seeded_marks_accessor():
+    from tests.lib.level_params_fixtures import fixture_params
+
+    assert fixture_params().plan_target_marks() == ()
+    lp = ParamsDb().load(["SPY"], D)["SPY"]
+    assert lp.plan_target_marks() == ()
+    assert (lp.status("ladder_history_sessions"), lp.value("ladder_history_sessions")) == ("ok", 250.0)

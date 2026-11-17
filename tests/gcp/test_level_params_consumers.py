@@ -235,7 +235,9 @@ def test_level_basis_records_every_parameter_and_the_policy(monkeypatch):
     # with the policy row they came from.
     assert set(b["params"]) == set(LEGACY_1753_VALUES) | {"exit_legs", "entry_cutoff_et",
                                                          "atr_rung_anchors",
-                                                         "plan_target_level_types"}
+                                                         "plan_target_level_types",
+                                                         "plan_target_marks_atr",
+                                                         "ladder_history_sessions"}
     # Gap-edge plan targets spec: the type list is policy-wide, recorded with
     # its row, and the basis carries the rule's marker with the types used.
     types = b["params"]["plan_target_level_types"]

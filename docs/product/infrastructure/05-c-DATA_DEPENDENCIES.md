@@ -19,40 +19,40 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 <!-- inventory:tables:start -->
 | Relation | Kind | Defined |
 |---|---|---|
-| `admin_refresh_leases` | table | [`gcp/schema.sql:5418`](../../../gcp/schema.sql#L5418) |
+| `admin_refresh_leases` | table | [`gcp/schema.sql:5427`](../../../gcp/schema.sql#L5427) |
 | `archive_yahoo_earnings_options_snapshots` | table | [`gcp/schema.sql:566`](../../../gcp/schema.sql#L566) |
 | `archive_yahoo_etf_options_snapshots` | table | [`gcp/schema.sql:563`](../../../gcp/schema.sql#L563) |
 | `archive_yahoo_market_data_daily` | table | [`gcp/schema.sql:557`](../../../gcp/schema.sql#L557) |
 | `archive_yahoo_market_data_intraday` | table | [`gcp/schema.sql:560`](../../../gcp/schema.sql#L560) |
-| `backtest_reports` | table | [`gcp/schema.sql:4227`](../../../gcp/schema.sql#L4227) |
-| `backtest_sweeps` | table | [`gcp/schema.sql:4198`](../../../gcp/schema.sql#L4198) |
-| `backtest_trades` | table | [`gcp/schema.sql:4156`](../../../gcp/schema.sql#L4156) |
-| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:4253`](../../../gcp/schema.sql#L4253) |
-| `bar_recompute_ledger` | table | [`gcp/schema.sql:5576`](../../../gcp/schema.sql#L5576) |
+| `backtest_reports` | table | [`gcp/schema.sql:4236`](../../../gcp/schema.sql#L4236) |
+| `backtest_sweeps` | table | [`gcp/schema.sql:4207`](../../../gcp/schema.sql#L4207) |
+| `backtest_trades` | table | [`gcp/schema.sql:4165`](../../../gcp/schema.sql#L4165) |
+| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:4262`](../../../gcp/schema.sql#L4262) |
+| `bar_recompute_ledger` | table | [`gcp/schema.sql:5585`](../../../gcp/schema.sql#L5585) |
 | `daily_rates` | table | [`gcp/schema.sql:536`](../../../gcp/schema.sql#L536) |
 | `earnings_calendar` | table | [`gcp/schema.sql:576`](../../../gcp/schema.sql#L576) |
-| `earnings_calibration` | table | [`gcp/schema.sql:4346`](../../../gcp/schema.sql#L4346) |
+| `earnings_calibration` | table | [`gcp/schema.sql:4355`](../../../gcp/schema.sql#L4355) |
 | `earnings_history` | table | [`gcp/schema.sql:737`](../../../gcp/schema.sql#L737) |
 | `earnings_options_snapshots` | table | [`gcp/schema.sql:475`](../../../gcp/schema.sql#L475) |
-| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:4574`](../../../gcp/schema.sql#L4574) |
-| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:4602`](../../../gcp/schema.sql#L4602) |
+| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:4583`](../../../gcp/schema.sql#L4583) |
+| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:4611`](../../../gcp/schema.sql#L4611) |
 | `earnings_reactions` | table | [`gcp/schema.sql:783`](../../../gcp/schema.sql#L783) |
-| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:5130`](../../../gcp/schema.sql#L5130) |
+| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:5139`](../../../gcp/schema.sql#L5139) |
 | `economic_events` | table | [`gcp/schema.sql:1455`](../../../gcp/schema.sql#L1455) |
 | `etf_options_daily_greeks` | table | [`gcp/schema.sql:382`](../../../gcp/schema.sql#L382) |
 | `etf_options_snapshots` | table | [`gcp/schema.sql:175`](../../../gcp/schema.sql#L175) |
-| `exit_config_overrides` | table | [`gcp/schema.sql:3575`](../../../gcp/schema.sql#L3575) |
-| `historical_signals` | table | [`gcp/schema.sql:2418`](../../../gcp/schema.sql#L2418) |
-| `indicator_correlation` | table | [`gcp/schema.sql:4415`](../../../gcp/schema.sql#L4415) |
+| `exit_config_overrides` | table | [`gcp/schema.sql:3584`](../../../gcp/schema.sql#L3584) |
+| `historical_signals` | table | [`gcp/schema.sql:2427`](../../../gcp/schema.sql#L2427) |
+| `indicator_correlation` | table | [`gcp/schema.sql:4424`](../../../gcp/schema.sql#L4424) |
 | `insider_transactions` | table | [`gcp/schema.sql:992`](../../../gcp/schema.sql#L992) |
 | `insight_reports` | table | [`gcp/schema.sql:1554`](../../../gcp/schema.sql#L1554) |
-| `insight_reports_history` | table | [`gcp/schema.sql:2349`](../../../gcp/schema.sql#L2349) |
+| `insight_reports_history` | table | [`gcp/schema.sql:2358`](../../../gcp/schema.sql#L2358) |
 | `insight_runs` | table | [`gcp/schema.sql:1590`](../../../gcp/schema.sql#L1590) |
-| `intraday_bar_flag_coverage` | table | [`gcp/schema.sql:5629`](../../../gcp/schema.sql#L5629) |
-| `intraday_bar_flags` | table | [`gcp/schema.sql:5606`](../../../gcp/schema.sql#L5606) |
+| `intraday_bar_flag_coverage` | table | [`gcp/schema.sql:5638`](../../../gcp/schema.sql#L5638) |
+| `intraday_bar_flags` | table | [`gcp/schema.sql:5615`](../../../gcp/schema.sql#L5615) |
 | `intraday_flow_15m` | table | [`gcp/schema.sql:422`](../../../gcp/schema.sql#L422) |
 | `intraday_gex_15m` | table | [`gcp/schema.sql:443`](../../../gcp/schema.sql#L443) |
-| `job_runs` | table | [`gcp/schema.sql:5267`](../../../gcp/schema.sql#L5267) |
+| `job_runs` | table | [`gcp/schema.sql:5276`](../../../gcp/schema.sql#L5276) |
 | `journal_entries` | table | [`gcp/schema.sql:1213`](../../../gcp/schema.sql#L1213) |
 | `level_param_policy` | table | [`gcp/schema.sql:2211`](../../../gcp/schema.sql#L2211) |
 | `market_data_daily` | table | [`gcp/schema.sql:37`](../../../gcp/schema.sql#L37) |
@@ -66,37 +66,37 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 | `news_sentiment` | table | [`gcp/schema.sql:1632`](../../../gcp/schema.sql#L1632) |
 | `options_daily_features` | table | [`gcp/schema.sql:285`](../../../gcp/schema.sql#L285) |
 | `playbook_cards` | table | [`gcp/schema.sql:1381`](../../../gcp/schema.sql#L1381) |
-| `playbook_cards_staging` | table | [`gcp/schema.sql:5241`](../../../gcp/schema.sql#L5241) |
+| `playbook_cards_staging` | table | [`gcp/schema.sql:5250`](../../../gcp/schema.sql#L5250) |
 | `premarket_analysis` | table | [`gcp/schema.sql:1327`](../../../gcp/schema.sql#L1327) |
 | `premarket_analysis_history` | table | [`gcp/schema.sql:2053`](../../../gcp/schema.sql#L2053) |
 | `ranker_runs` | table | [`gcp/schema.sql:1067`](../../../gcp/schema.sql#L1067) |
 | `realtime_gex_15m` | table | [`gcp/schema.sql:462`](../../../gcp/schema.sql#L462) |
-| `regime_combo_results` | table | [`gcp/schema.sql:4492`](../../../gcp/schema.sql#L4492) |
-| `schema_apply_history` | table | [`gcp/schema.sql:5432`](../../../gcp/schema.sql#L5432) |
+| `regime_combo_results` | table | [`gcp/schema.sql:4501`](../../../gcp/schema.sql#L4501) |
+| `schema_apply_history` | table | [`gcp/schema.sql:5441`](../../../gcp/schema.sql#L5441) |
 | `sec_filings` | table | [`gcp/schema.sql:959`](../../../gcp/schema.sql#L959) |
 | `signal_alerts` | table | [`gcp/schema.sql:1085`](../../../gcp/schema.sql#L1085) |
-| `signal_metrics` | table | [`gcp/schema.sql:3805`](../../../gcp/schema.sql#L3805) |
-| `strat_combo_results` | table | [`gcp/schema.sql:4524`](../../../gcp/schema.sql#L4524) |
+| `signal_metrics` | table | [`gcp/schema.sql:3814`](../../../gcp/schema.sql#L3814) |
+| `strat_combo_results` | table | [`gcp/schema.sql:4533`](../../../gcp/schema.sql#L4533) |
 | `strat_levels` | table | [`gcp/schema.sql:1672`](../../../gcp/schema.sql#L1672) |
-| `ticker_calibration` | table | [`gcp/schema.sql:3488`](../../../gcp/schema.sql#L3488) |
-| `ticker_info` | table | [`gcp/schema.sql:2483`](../../../gcp/schema.sql#L2483) |
+| `ticker_calibration` | table | [`gcp/schema.sql:3497`](../../../gcp/schema.sql#L3497) |
+| `ticker_info` | table | [`gcp/schema.sql:2492`](../../../gcp/schema.sql#L2492) |
 | `ticker_level_params` | table | [`gcp/schema.sql:2224`](../../../gcp/schema.sql#L2224) |
 | `top_movers_daily` | table | [`gcp/schema.sql:1018`](../../../gcp/schema.sql#L1018) |
 | `top_movers_intraday` | table | [`gcp/schema.sql:1042`](../../../gcp/schema.sql#L1042) |
 | `trades` | table | [`gcp/schema.sql:1170`](../../../gcp/schema.sql#L1170) |
-| `user_preferences` | table | [`gcp/schema.sql:5355`](../../../gcp/schema.sql#L5355) |
-| `user_profile` | table | [`gcp/schema.sql:5386`](../../../gcp/schema.sql#L5386) |
-| `user_roles` | table | [`gcp/schema.sql:5304`](../../../gcp/schema.sql#L5304) |
-| `user_style_results` | table | [`gcp/schema.sql:5223`](../../../gcp/schema.sql#L5223) |
-| `user_watchlists` | table | [`gcp/schema.sql:2655`](../../../gcp/schema.sql#L2655) |
-| `waitlist_signups` | table | [`gcp/schema.sql:5210`](../../../gcp/schema.sql#L5210) |
-| `walk_forward_results` | table | [`gcp/schema.sql:4299`](../../../gcp/schema.sql#L4299) |
-| `watched_tickers` | table | [`gcp/schema.sql:2646`](../../../gcp/schema.sql#L2646) |
-| `watchlist_history` | table | [`gcp/schema.sql:2775`](../../../gcp/schema.sql#L2775) |
-| `watchlist_history_origin` | table | [`gcp/schema.sql:3381`](../../../gcp/schema.sql#L3381) |
-| `watchlists` | table | [`gcp/schema.sql:2539`](../../../gcp/schema.sql#L2539) |
-| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:4740`](../../../gcp/schema.sql#L4740) |
-| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4935`](../../../gcp/schema.sql#L4935) |
+| `user_preferences` | table | [`gcp/schema.sql:5364`](../../../gcp/schema.sql#L5364) |
+| `user_profile` | table | [`gcp/schema.sql:5395`](../../../gcp/schema.sql#L5395) |
+| `user_roles` | table | [`gcp/schema.sql:5313`](../../../gcp/schema.sql#L5313) |
+| `user_style_results` | table | [`gcp/schema.sql:5232`](../../../gcp/schema.sql#L5232) |
+| `user_watchlists` | table | [`gcp/schema.sql:2664`](../../../gcp/schema.sql#L2664) |
+| `waitlist_signups` | table | [`gcp/schema.sql:5219`](../../../gcp/schema.sql#L5219) |
+| `walk_forward_results` | table | [`gcp/schema.sql:4308`](../../../gcp/schema.sql#L4308) |
+| `watched_tickers` | table | [`gcp/schema.sql:2655`](../../../gcp/schema.sql#L2655) |
+| `watchlist_history` | table | [`gcp/schema.sql:2784`](../../../gcp/schema.sql#L2784) |
+| `watchlist_history_origin` | table | [`gcp/schema.sql:3390`](../../../gcp/schema.sql#L3390) |
+| `watchlists` | table | [`gcp/schema.sql:2548`](../../../gcp/schema.sql#L2548) |
+| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:4749`](../../../gcp/schema.sql#L4749) |
+| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4944`](../../../gcp/schema.sql#L4944) |
 | `v_etf_options_node` | view | [`gcp/schema.sql:319`](../../../gcp/schema.sql#L319) |
 <!-- inventory:tables:end -->
 
@@ -424,7 +424,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `strat_levels`
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [3614](../../../lib/strat_levels.py#L3614)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [3665](../../../lib/strat_levels.py#L3665)
 
 ### `ticker_calibration`
 - [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [497](../../../scripts/calibrate_thresholds.py#L497)
@@ -700,7 +700,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `level_param_policy`
 - [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [75](../../../gcp/calibrate_level_params.py#L75)
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1274](../../../lib/strat_levels.py#L1274)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1289](../../../lib/strat_levels.py#L1289)
 
 ### `market_data_daily`
 - [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [347](../../../gcp/backfill_ticker.py#L347), [425](../../../gcp/backfill_ticker.py#L425)
@@ -730,7 +730,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/earnings_reactions.py`](../../../lib/earnings_reactions.py) — line [594](../../../lib/earnings_reactions.py#L594)
 - [`lib/features/experimental/cross_asset.py`](../../../lib/features/experimental/cross_asset.py) — line [45](../../../lib/features/experimental/cross_asset.py#L45)
 - [`lib/features/experimental/vol_regime.py`](../../../lib/features/experimental/vol_regime.py) — line [52](../../../lib/features/experimental/vol_regime.py#L52)
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [2169](../../../lib/strat_levels.py#L2169)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [2220](../../../lib/strat_levels.py#L2220)
 - [`platform/api/main.py`](../../../platform/api/main.py) — line [1123](../../../platform/api/main.py#L1123), [1289](../../../platform/api/main.py#L1289), [1459](../../../platform/api/main.py#L1459), [1461](../../../platform/api/main.py#L1461)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [791](../../../platform/api/routers/catalysts.py#L791)
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [150](../../../platform/api/routers/dashboard.py#L150), [285](../../../platform/api/routers/dashboard.py#L285)
@@ -825,7 +825,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3563](../../../gcp/premarket_brief.py#L3563), [4078](../../../gcp/premarket_brief.py#L4078), [4315](../../../gcp/premarket_brief.py#L4315)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [684](../../../gcp/premarket_playbook_resolver.py#L684), [933](../../../gcp/premarket_playbook_resolver.py#L933), [1049](../../../gcp/premarket_playbook_resolver.py#L1049)
 - [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [346](../../../lib/movement_statement.py#L346), [427](../../../lib/movement_statement.py#L427)
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [3031](../../../lib/strat_levels.py#L3031)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [3082](../../../lib/strat_levels.py#L3082)
 - [`lib/strategies/brief_bias.py`](../../../lib/strategies/brief_bias.py) — line [83](../../../lib/strategies/brief_bias.py#L83)
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [107](../../../platform/api/routers/dashboard.py#L107), [116](../../../platform/api/routers/dashboard.py#L116)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [666](../../../scripts/audit_data_freshness.py#L666), [667](../../../scripts/audit_data_freshness.py#L667), [826](../../../scripts/audit_data_freshness.py#L826)
@@ -894,7 +894,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `ticker_level_params`
 - [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [89](../../../gcp/calibrate_level_params.py#L89)
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1286](../../../lib/strat_levels.py#L1286)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1301](../../../lib/strat_levels.py#L1301)
 
 ### `top_movers_daily`
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [172](../../../lib/agents/ranker/candidates.py#L172)

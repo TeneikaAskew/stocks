@@ -2316,7 +2316,16 @@ INSERT INTO level_param_policy (
     -- Policy-wide: the level types, beyond the trigger candidates, the exits
     -- plan's spaced target walk may use. An empty list turns gap edges off.
     ('plan_target_level_types', 'policy', NULL, NULL, NULL, '{"level_types": ["gap_high", "gap_low"]}', '2015-01-02',
-     'level types, beyond the trigger candidates, the exits plan''s spaced target walk may use')
+     'level types, beyond the trigger candidates, the exits plan''s spaced target walk may use'),
+    -- ATR mark targets (docs/superpowers/specs/2026-11-16-feat-strat-001-atr-quarter-targets-r2.md).
+    -- Policy-wide, seeded to reproduce today's plan: an empty marks list
+    -- keeps the level rule's targets, and the reach history the brief reads
+    -- for a plan line covers this many analysis dates. A later-dated row
+    -- turns the marks on, so sessions before it replay as they were.
+    ('plan_target_marks_atr', 'policy', NULL, NULL, NULL, '{"marks": []}', '2015-01-02',
+     'targets at these distances from the entry trigger / ATR, nearest first, an empty list keeps the level rule'),
+    ('ladder_history_sessions', 'policy', NULL, NULL, NULL, '{"sessions": 250}', '2015-01-02',
+     'analysis dates of reach history the brief reads for a plan line')
 ON CONFLICT (param_key, effective_from) DO NOTHING;
 
 
