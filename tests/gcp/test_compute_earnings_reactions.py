@@ -1331,6 +1331,41 @@ def test_fetch_splits_request_and_reply(monkeypatch):
     assert sent == []
 
 
+def test_a_splits_failure_never_carries_the_api_key(monkeypatch):
+    """requests puts the request URL, apikey included, in the text of an
+    HTTPError and of a transport error, and populate_for_tickers logs the
+    reason (Codex on #2047). The reason names the failure by HTTP status or
+    exception class only, and the original exception is not chained, so a
+    printed traceback carries no key either."""
+    import requests
+    from gcp.fetchers import compute_earnings_reactions as module
+    from gcp.fetchers.compute_earnings_reactions import SplitsUnavailable, fetch_splits
+
+    key = 'SECRETKEY1234567'
+    url = f'https://www.alphavantage.co/query?function=SPLITS&symbol=SPY&apikey={key}'
+
+    def http_503(u, params=None, timeout=None):
+        resp = requests.Response()
+        resp.status_code = 503
+        resp.reason = 'Service Unavailable'
+        resp.url = url
+        return resp
+
+    def refused(u, params=None, timeout=None):
+        raise requests.ConnectionError(
+            "HTTPSConnectionPool(host='www.alphavantage.co', port=443): Max retries "
+            f"exceeded with url: /query?function=SPLITS&symbol=SPY&apikey={key}")
+
+    for get, reason in ((http_503, 'request_failed: HTTP 503'),
+                        (refused, 'request_failed: ConnectionError')):
+        monkeypatch.setattr(module.requests, 'get', get)
+        with pytest.raises(SplitsUnavailable) as excinfo:
+            fetch_splits('SPY', key)
+        assert excinfo.value.reason == reason
+        assert key not in str(excinfo.value)
+        assert excinfo.value.__cause__ is None and excinfo.value.__suppress_context__
+
+
 def _synth_window(**extra):
     """18 sessions from D-12 for SYNTH reporting BMO on 2026-02-02, as traded."""
     from lib.earnings_reactions import earnings_session_schedule

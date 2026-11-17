@@ -604,6 +604,15 @@ def fetch_calendar_timing_map(tickers: list[str]) -> dict[tuple[str, date], Opti
     return out
 
 
+def _request_failure(exc: Exception) -> str:
+    """A failed request's reason with no part of the request in it: the HTTP
+    status when there was a reply, else the exception's class name."""
+    status = getattr(getattr(exc, 'response', None), 'status_code', None)
+    if status is not None:
+        return f'request_failed: HTTP {status}'
+    return f'request_failed: {type(exc).__name__}'
+
+
 def fetch_splits(ticker: str, api_key: str) -> Splits:
     """The ticker's split history from AlphaVantage SPLITS, for one run.
 
@@ -627,7 +636,11 @@ def fetch_splits(ticker: str, api_key: str) -> Splits:
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as exc:
-        raise SplitsUnavailable(f'request_failed: {exc}'[:160]) from exc
+        # The text of an HTTP or transport error carries the request URL,
+        # apikey included, and the reason is logged: name the failure by its
+        # HTTP status or exception class only, and chain nothing, so no
+        # printed traceback carries the key (Codex on #2047).
+        raise SplitsUnavailable(_request_failure(exc)) from None
     except ValueError as exc:
         raise SplitsUnavailable(f'reply_not_json: {exc}'[:160]) from exc
     if not isinstance(data, dict):
