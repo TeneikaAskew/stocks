@@ -308,3 +308,90 @@ def test_compare_refuses_a_session_before_true_utc():
 
     with pytest.raises(ValueError, match='TRUE_UTC_FROM'):
         par.compare_bars(as_read_frame(), stored_frame(), date(2026, 9, 25))
+
+
+def _write_cli_inputs(tmp_path, *, offsets=True, tamper=False):
+    """R1's record and R7's stored bars as files, the CSV as
+    ./scripts/db_query_cr.sh writes a TIMESTAMPTZ (with its offset)."""
+    data = record_of(vendor_frame(R1_ROWS))
+    if tamper:
+        doc = decode(data)
+        doc['bars_csv'] = doc['bars_csv'].replace('752.02', '752.03')
+        data = gzip.compress(json.dumps(doc, sort_keys=True, separators=(',', ':')).encode(),
+                             mtime=0)
+    record = tmp_path / 'record.json.gz'
+    record.write_bytes(data)
+    lines = ['ts,open,high,low,close,volume']
+    for ts, *values in STORED_ROWS:
+        lines.append(','.join([ts if offsets else ts[:19], *map(str, values)]))
+    stored = tmp_path / 'stored.csv'
+    stored.write_text('\n'.join(lines) + '\n')
+    return str(record), str(stored)
+
+
+def _cli(*args):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    return subprocess.run([sys.executable, '-m', 'gcp.fetchers.premarket_as_read', *args],
+                          cwd=Path(__file__).resolve().parents[2], capture_output=True,
+                          text=True, timeout=300)
+
+
+def test_compare_cli_is_read_only(tmp_path):
+    """R7: the command prints the counts as one JSON line, exits 2 on a
+    record whose sha256 does not match, and the module imports neither the
+    database layer nor requests."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    record, stored = _write_cli_inputs(tmp_path)
+    done = _cli('compare', '--as-read', record, '--stored-csv', stored)
+    assert done.returncode == 0, done.stderr
+    (line,) = done.stdout.splitlines()
+    assert json.loads(line) == {**R7_COUNTS, 'premarket': R7_PREMARKET}
+
+    record, stored = _write_cli_inputs(tmp_path, tamper=True)
+    done = _cli('compare', '--as-read', record, '--stored-csv', stored)
+    assert done.returncode == 2 and done.stdout == ''
+    assert R1_SHA256 in done.stderr
+
+    probe = subprocess.run(
+        [sys.executable, '-c', "import sys, gcp.fetchers.premarket_as_read as m; m.compare_bars; "
+                               "print('requests' in sys.modules, 'gcp.database' in sys.modules)"],
+        cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, timeout=300)
+    assert probe.stdout.strip() == 'False False', probe.stderr
+
+
+def test_compare_cli_refuses_a_naive_stored_ts(tmp_path):
+    """A stored ts without an offset names no instant: exit 2, nothing on
+    stdout, the reason on stderr."""
+    record, stored = _write_cli_inputs(tmp_path, offsets=False)
+    done = _cli('compare', '--as-read', record, '--stored-csv', stored)
+    assert done.returncode == 2 and done.stdout == ''
+    assert 'ts' in done.stderr and len(done.stderr.strip().splitlines()) == 1
+
+
+def test_compare_cli_reads_the_bucket_copy(tmp_path, monkeypatch, capsys):
+    """--bars-root reads the record's ticker and month through
+    export_intraday_bars.read_bars (stood in here; its own tests cover the
+    folder) and compares the same way."""
+    from gcp.fetchers import export_intraday_bars as xb
+    from gcp.fetchers import premarket_as_read as par
+
+    asked = []
+    stored = stored_frame()
+    stored['volume'] = stored['volume'].astype('Int64')
+    stored['data_source'] = 'alphavantage'
+
+    def read_bars(root, ticker, first, last):
+        asked.append((root, ticker, first, last))
+        return stored, [{'month': first}]
+
+    monkeypatch.setattr(xb, 'read_bars', read_bars)
+    record, _ = _write_cli_inputs(tmp_path)
+    assert par.main(['compare', '--as-read', record, '--bars-root', str(tmp_path)]) == 0
+    assert asked == [(str(tmp_path), 'SPY', '2026-11', '2026-11')]
+    assert json.loads(capsys.readouterr().out) == {**R7_COUNTS, 'premarket': R7_PREMARKET}

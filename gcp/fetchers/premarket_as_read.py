@@ -374,3 +374,76 @@ def compare_bars(as_read: pd.DataFrame, stored: pd.DataFrame, session_date: date
         return frame.loc[(frame['ts'] >= start) & (frame['ts'] < end)]
 
     return {**_counts(read, kept), 'premarket': _counts(premarket(read), premarket(kept))}
+
+
+# ── The read-only command ─────────────────────────────────────────────────
+
+def _stored_from_csv(path: str) -> pd.DataFrame:
+    """``ts,open,high,low,close,volume`` as ``./scripts/db_query_cr.sh``
+    writes a result: ``ts`` must carry its offset, which says the instant; a
+    ``ts`` without one raises ValueError rather than being guessed. An empty
+    field is a missing value, never 0."""
+    import csv  # noqa: PLC0415
+
+    with open(path, newline='') as handle:
+        rows = list(csv.DictReader(handle))
+    stamps = []
+    for row in rows:
+        stamp = pd.Timestamp(row['ts'])
+        if stamp.tzinfo is None:
+            raise ValueError(f"stored ts {row['ts']!r} has no UTC offset: which instant it "
+                             "names cannot be known")
+        stamps.append(stamp.tz_convert('UTC'))
+    return pd.DataFrame({
+        'ts': pd.DatetimeIndex(stamps, tz='UTC'),
+        **{name: pd.Series([float(row[name]) if row[name] != '' else float('nan')
+                            for row in rows], dtype='float64') for name in _PRICES},
+        'volume': pd.array([int(row['volume']) if row['volume'] != '' else None
+                            for row in rows], dtype='Int64'),
+    })
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """``python -m gcp.fetchers.premarket_as_read compare --as-read FILE
+    (--stored-csv FILE | --bars-root DIR)``: one JSON line of
+    ``compare_bars``'s counts on stdout and exit 0; exit 2 with one line on
+    stderr when the record's sha256 does not match, the session is before
+    TRUE_UTC_FROM, a stored ts has no offset, or the arguments are wrong.
+
+    Read-only: it opens no database and calls no vendor. ``--stored-csv`` is
+    a read-only query's result; ``--bars-root`` a download of the ticker's
+    bucket copy (``export_intraday_bars.read_bars``)."""
+    import argparse  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    parser = argparse.ArgumentParser(
+        prog='python -m gcp.fetchers.premarket_as_read',
+        description='Compare a premarket as-read record with the stored bars (read-only).')
+    commands = parser.add_subparsers(dest='command', required=True)
+    compare = commands.add_parser('compare')
+    compare.add_argument('--as-read', required=True, help='a premarket-as-read .json.gz object')
+    stored_from = compare.add_mutually_exclusive_group(required=True)
+    stored_from.add_argument('--stored-csv', help='ts,open,high,low,close,volume, ts with offset')
+    stored_from.add_argument('--bars-root', help="a download of the ticker's bucket folder")
+    args = parser.parse_args(argv)
+
+    try:
+        with open(args.as_read, 'rb') as handle:
+            header, bars = read_record(handle.read())
+        session = date.fromisoformat(header['session_date'])
+        if args.stored_csv is not None:
+            stored = _stored_from_csv(args.stored_csv)
+        else:
+            from gcp.fetchers.export_intraday_bars import read_bars  # noqa: PLC0415
+            month = session.isoformat()[:7]
+            stored, _ = read_bars(args.bars_root, header['ticker'], month, month)
+        result = compare_bars(bars, stored, session)
+    except ValueError as exc:
+        print(f'premarket_as_read compare: {exc}', file=sys.stderr)
+        return 2
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
