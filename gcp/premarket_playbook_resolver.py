@@ -32,7 +32,11 @@ days), so a missed night self-heals on the next run instead of orphaning
 the date, and a same-day pre-ingestion miss is benign while a past date
 with no bars turns the run red — unless that date is a known NYSE
 holiday (see classify_date_outcome), which never gets bars and would
-otherwise alarm once a day for the rest of the lookback window.
+otherwise alarm once a day for the rest of the lookback window. A row whose
+level_basis names a rule version this image does not know, or cannot read,
+is left pending with nothing written and turns the run red until an image
+that knows the version resolves it (FEAT-STRAT-001 unknown rule version
+spec, decision 3).
 
 Environment overrides:
   - PLAYBOOK_RESOLVE_DATE=YYYY-MM-DD : resolve one specific date instead
@@ -1028,8 +1032,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                         lookback)
             return 0
 
+    from lib.strat_levels import REFUSED_RULE_VERSION_STATUSES
+
     n_failed_dates = 0
     n_exceptions = 0
+    # Rows whose level_basis names a rule version this image does not know
+    # or cannot read: left pending, counted apart from skips so the date's
+    # outcome keeps its meaning, and the run exits 1 for them (spec
+    # 2026-11-16-feat-strat-001-unknown-rule-version, decision 3).
+    n_refused_total = 0
     for target_date in target_dates:
         if raw_tickers:
             tickers = [t.strip().upper() for t in raw_tickers.split(',') if t.strip()]
@@ -1046,6 +1057,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         n_resolved = 0
         n_skipped = 0
         n_noop = 0
+        n_refused = 0
         for ticker in tickers:
             try:
                 result, reason = resolve_one(target_date, ticker, engine,
@@ -1056,6 +1068,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                     # Idempotent retry of a resolved row — success, not a
                     # skip: it must never flip a date to 'failed'.
                     n_noop += 1
+                elif reason in REFUSED_RULE_VERSION_STATUSES:
+                    n_refused += 1
                 else:
                     n_skipped += 1
             except Exception as exc:
@@ -1064,14 +1078,22 @@ def main(argv: Optional[list[str]] = None) -> int:
                 n_exceptions += 1
 
         outcome = classify_date_outcome(target_date, n_resolved, n_skipped, now_et)
-        logger.info("done %s: %d resolved, %d already-resolved, %d skipped (%s)",
-                    target_date, n_resolved, n_noop, n_skipped, outcome)
+        logger.info("done %s: %d resolved, %d already-resolved, %d skipped, %d refused (%s)",
+                    target_date, n_resolved, n_noop, n_skipped, n_refused, outcome)
         if outcome == 'failed':
             n_failed_dates += 1
+        n_refused_total += n_refused
+
+    if n_refused_total:
+        logger.error("run left %d row(s) pending whose level_basis rule version this image "
+                     "does not know or cannot read; an image that knows their version "
+                     "resolves them: exiting non-zero", n_refused_total)
 
     if n_failed_dates or n_exceptions:
         logger.error("run had %d failed date(s) and %d exception(s) — exiting non-zero",
                      n_failed_dates, n_exceptions)
+        return 1
+    if n_refused_total:
         return 1
     return 0
 

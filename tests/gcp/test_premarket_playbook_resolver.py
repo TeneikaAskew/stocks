@@ -1336,3 +1336,154 @@ def test_resolve_one_returns_the_derive_paths_refusal(monkeypatch, caplog):
     [line] = _error_lines(caplog)
     for part in ('TST', '2026-11-16', repr(newer_rule_versions()[0]), 'rule_version_newer'):
         assert part in line, (part, line)
+
+
+# ── Unknown rule version spec, decision 3: main() exits non-zero (U4) ───
+
+from datetime import time as _time  # noqa: E402
+
+PLAN_COLUMNS = tuple(f'{side}_plan_{f}' for side in ('calls', 'puts') for f in PLAN_FIELDS)
+_ROW_SELECT = tuple(V3_PLAN_COLUMNS) + ('level_basis', 'outcome_resolved_at')
+
+
+def _session_bars(d: _date) -> pd.DataFrame:
+    """The four bars of the v3 plan test at 09:30, 09:31, 09:32 and 15:59
+    Eastern on `d`: the calls side enters at 252.10 and books T1."""
+    from lib.eastern_time import eastern_bounds_utc
+    open_utc = eastern_bounds_utc(d, _time(9, 30), _time(16, 0))[0]
+    rows = [(0, 251.00, 251.50, 250.80, 251.40), (1, 251.90, 252.50, 251.80, 252.40),
+            (2, 260.00, 276.00, 259.00, 270.00), (389, 270.00, 271.00, 269.00, 270.00)]
+    return pd.DataFrame([{'time': open_utc + timedelta(minutes=m), 'open': o, 'high': h,
+                          'low': lo, 'close': c} for m, o, h, lo, c in rows])
+
+
+def _table_row(d: _date, ticker: str, rule_version, *, outcome_resolved_at=None, **cols) -> dict:
+    """A premarket_analysis row: the v3 plan row with a d8 basis stamped
+    `rule_version`, every plan column NULL unless `cols` says otherwise."""
+    row = {'analysis_date': d, 'ticker': ticker,
+           **_v3_plan_row(rule_version, outcome_resolved_at=outcome_resolved_at),
+           **{c: None for c in PLAN_COLUMNS}}
+    row.update(cols)
+    return row
+
+
+class _ResolverTable:
+    """premarket_analysis and the day's bars in memory, behind the four
+    statements main() issues. An UPDATE premarket_analysis is applied to the
+    row its d and t name; any other statement fails the test."""
+
+    def __init__(self, rows: list, bars_for):
+        self.rows = rows
+        self.bars_for = bars_for
+        self.statements = []
+        self.writes = []
+        self.pending_answers = []
+        table = self
+
+        class _Conn:
+            def execute(self, sql, params=None):
+                sql_text = getattr(sql, 'text', str(sql))
+                bound = dict(params or {})
+                table.statements.append((sql_text, bound))
+                if not sql_text.startswith('UPDATE premarket_analysis SET '):
+                    pytest.fail(f'unexpected write: {sql_text[:80]}')
+                [row] = [r for r in table.rows
+                         if str(r['analysis_date']) == bound['d'] and r['ticker'] == bound['t']]
+                row.update({k: v for k, v in bound.items() if k not in ('d', 't')})
+                table.writes.append((sql_text, bound))
+
+        class _Engine:
+            def begin(self):
+                from contextlib import contextmanager
+
+                @contextmanager
+                def _cm():
+                    yield _Conn()
+                return _cm()
+
+        self.engine = _Engine()
+
+    def read_sql(self, sql, engine, params=None):
+        sql_text = getattr(sql, 'text', str(sql))
+        p = dict(params or {})
+        self.statements.append((sql_text, p))
+        if 'SELECT DISTINCT analysis_date FROM premarket_analysis' in sql_text:
+            today, floor = _date.fromisoformat(p['today']), _date.fromisoformat(p['floor'])
+            dates = sorted({r['analysis_date'] for r in self.rows
+                            if r['outcome_resolved_at'] is None
+                            and floor <= r['analysis_date'] <= today
+                            and r['analysis_date'].weekday() < 5})
+            self.pending_answers.append(dates)
+            return pd.DataFrame({'analysis_date': pd.Series(dates, dtype=object)})
+        if 'SELECT DISTINCT ticker FROM premarket_analysis' in sql_text:
+            return pd.DataFrame({'ticker': pd.Series(
+                [r['ticker'] for r in self.rows if str(r['analysis_date']) == p['d']],
+                dtype=object)})
+        if 'level_basis, outcome_resolved_at' in sql_text and 'LIMIT 1' in sql_text:
+            hits = [r for r in self.rows
+                    if str(r['analysis_date']) == p['d'] and r['ticker'] == p['t']]
+            return pd.DataFrame([{c: r[c] for c in _ROW_SELECT} for r in hits[:1]])
+        if 'FROM market_data_intraday' in sql_text:
+            return self.bars_for(_date.fromisoformat(p['d']))
+        pytest.fail(f'unexpected read: {sql_text.strip()[:80]}')
+
+
+def _run_main(monkeypatch, table, *, pick=None, **env) -> int:
+    """main() at 2026-11-17 20:00 Eastern against `table`, with only the
+    PLAYBOOK_RESOLVE_* variables in `env` set; `pick` patches
+    lib.strat_levels.PICK_RULE_VERSIONS (a straggler image)."""
+    import os
+
+    import gcp.database
+    import gcp.premarket_playbook_resolver as mod
+    import lib.strat_levels
+
+    for key in [k for k in os.environ if k.startswith('PLAYBOOK_RESOLVE_')]:
+        monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    class _Now(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 17, 20, 0, tzinfo=tz)
+
+    monkeypatch.setattr(gcp.database, 'is_cloud_sql_configured', lambda: True)
+    monkeypatch.setattr(gcp.database, 'get_engine', lambda *a, **k: table.engine)
+    monkeypatch.setattr(mod.pd, 'read_sql', table.read_sql)
+    monkeypatch.setattr(mod, 'datetime', _Now)
+    if pick is not None:
+        monkeypatch.setattr(lib.strat_levels, 'PICK_RULE_VERSIONS', pick)
+    return mod.main([])
+
+
+@pytest.mark.parametrize('version, reason', [(newer_rule_versions()[0], 'rule_version_newer'),
+                                             ('', 'rule_version_unreadable')])
+def test_main_exits_non_zero_on_a_refused_row(monkeypatch, caplog, version, reason):
+    """Decision 3: a refused row on today's date, which classify_date_outcome
+    would call benign_pending, still turns the run red."""
+    import gcp.premarket_playbook_resolver as mod
+    from lib.strat_levels import newest_pick_rule_version
+
+    table = _ResolverTable([_table_row(_date(2026, 11, 17), 'TST', version)], _session_bars)
+    with caplog.at_level(logging.INFO, logger=mod.logger.name):
+        assert _run_main(monkeypatch, table) == 1
+    assert table.writes == []
+    assert any(all(part in line for part in ('TST', '2026-11-17', repr(version), reason,
+                                             newest_pick_rule_version()))
+               for line in _error_lines(caplog)), _error_lines(caplog)
+
+
+def test_main_exits_non_zero_on_a_refused_row_on_a_past_date(monkeypatch, caplog):
+    """A refused row alone on a past date does not read as nothing to do:
+    the date's done line counts it and the run exits 1."""
+    import gcp.premarket_playbook_resolver as mod
+
+    table = _ResolverTable([_table_row(_date(2026, 11, 16), 'TST', newer_rule_versions()[0])],
+                           _session_bars)
+    with caplog.at_level(logging.INFO, logger=mod.logger.name):
+        assert _run_main(monkeypatch, table) == 1
+    assert table.writes == []
+    done = [r.getMessage() for r in caplog.records
+            if r.levelno == logging.INFO and r.getMessage().startswith('done 2026-11-16:')]
+    assert len(done) == 1 and '1 refused' in done[0], done
