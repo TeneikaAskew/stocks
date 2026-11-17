@@ -91,6 +91,51 @@ class TestNormalizeColumns:
         result = loader.normalize_columns(df)
         assert 'Extra' in result.columns
 
+    @pytest.mark.parametrize('name', ['Adj Close', 'adj_close', 'adjusted_close', 'adjclose'])
+    def test_an_adjusted_close_is_never_a_close(self, loader, name, monkeypatch):
+        """FEAT-DATA-001: nothing is adjusted, everything is as traded. A
+        frame holding only a split- or dividend-shaded close is refused by
+        name instead of loading as if it were the traded close; a frame
+        holding both keeps the raw close and drops the other. On main the
+        first came back with the adjusted values as Close."""
+        import re
+
+        import lib.data_loader as data_loader
+        from lib.data_loader import ADJUSTED_CLOSE_COLUMNS
+
+        only = pd.DataFrame({
+            'Open': [100], 'High': [101], 'Low': [99], name: [99.5], 'Volume': [1000],
+        }, index=pd.date_range('2024-01-01', periods=1))
+        with pytest.raises(ValueError, match=re.escape(name)):
+            loader.normalize_columns(only)
+
+        both = pd.DataFrame({
+            'open': [100], 'high': [101], 'low': [99], 'close': [101.0],
+            name: [99.5], 'volume': [1000],
+        }, index=pd.date_range('2024-01-01', periods=1))
+        result = loader.normalize_columns(both)
+        assert result['Close'].tolist() == [101.0]
+        assert not set(result.columns) & set(ADJUSTED_CLOSE_COLUMNS)
+
+        assert not set(COLUMN_MAP) & set(ADJUSTED_CLOSE_COLUMNS)
+
+        # The SQL daily read names no adjusted column. The optional-group
+        # flags are module state the read sets; monkeypatch restores them.
+        monkeypatch.setattr(data_loader, '_PREMARKET_PROVENANCE_PRESENT', None)
+        monkeypatch.setattr(data_loader, '_ATR5_PRESENT', None)
+        sent: list[str] = []
+
+        def query(sql, params=None):
+            sent.append(sql)
+            return pd.DataFrame({'date': ['2024-01-02'], 'Open': [1.0], 'High': [1.0],
+                                 'Low': [1.0], 'Close': [1.0], 'Volume': [1]})
+
+        monkeypatch.setattr(data_loader, '_query_cloud_sql', query)
+        DataLoader()._load_daily_from_sql('SPY', None)
+        assert sent
+        for sql in sent:
+            assert 'adjusted_close' not in sql
+
 
 class TestAggregateToTimeframe:
     def test_5min(self, loader, minute_data):

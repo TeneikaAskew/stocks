@@ -65,7 +65,7 @@ Worth stating plainly, because the count is the finding:
 
 | Implementation | Where | Governed by |
 |---|---|---|
-| `classify_archetype` | `lib/earnings_reactions.py:460` | MODEL-EARN-001 — the canonical one |
+| `classify_archetype` | `lib/earnings_reactions.py:463` | MODEL-EARN-001 — the canonical one |
 | `_derive_archetype` | `gcp/refresh_earnings_views.py:295-319` | MODEL-EARN-001, as a **divergence** — [#1135](https://github.com/TeneikaAskew/stocks/issues/1135) |
 | `recommended_structure` | `lib/earnings_reactions.py` | MODEL-EARN-001 |
 | **`classify_context`** | `gcp/earnings_reactions_brief.py:474` | **this model** |

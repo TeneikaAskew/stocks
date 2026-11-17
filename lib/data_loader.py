@@ -43,8 +43,6 @@ log = logging.getLogger(__name__)
 COLUMN_MAP = {
     'Last': 'Close',
     'last': 'Close',
-    'Adj Close': 'Close',
-    'adj_close': 'Close',
     'open': 'Open',
     'high': 'High',
     'low': 'Low',
@@ -54,6 +52,16 @@ COLUMN_MAP = {
 }
 
 REQUIRED_COLUMNS = ['Open', 'High', 'Low', 'Close', 'Volume']
+
+# The names a split- or dividend-shaded close arrives under. Nothing is
+# adjusted: every price is as traded (FEAT-DATA-001). These names exist only
+# so normalize_columns can refuse a frame whose only close is one of them and
+# drop them from a frame that also holds the raw close. This assignment is
+# the one place the names are written (tests/gcp/test_no_adjusted_prices.py).
+ADJUSTED_CLOSE_COLUMNS = ('Adj Close', 'adj_close', 'adjusted_close', 'adjclose')
+
+# The raw close under any name COLUMN_MAP turns into Close.
+_RAW_CLOSE_COLUMNS = ('Close', 'close', 'Last', 'last')
 
 # Resampling rules for pandas. Keys mirror methodology doc §4.
 RESAMPLE_RULES = {
@@ -322,6 +330,17 @@ class DataLoader:
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(-1)
 
+        # An adjusted close is never taken as a close (FEAT-DATA-001): a
+        # frame whose only close is one is refused by name, and one that
+        # also holds the raw close loses the adjusted column.
+        shaded = [col for col in df.columns if col in ADJUSTED_CLOSE_COLUMNS]
+        if shaded:
+            if not any(col in df.columns for col in _RAW_CLOSE_COLUMNS):
+                raise ValueError(
+                    f"{shaded[0]}: a split- or dividend-shaded price is never "
+                    f"taken as a close (FEAT-DATA-001)")
+            df = df.drop(columns=shaded)
+
         # Apply column mapping
         rename = {}
         for col in df.columns:
@@ -554,7 +573,7 @@ class DataLoader:
 
         sql = f"""
             SELECT date, open AS "Open", high AS "High", low AS "Low",
-                   close AS "Close", adjusted_close, volume AS "Volume",
+                   close AS "Close", volume AS "Volume",
                    rsi_14, rsi_9,
                    ema_9, ema_20, ema_50,
                    ma_5, ma_10, ma_20, ma_50, sma_200,
