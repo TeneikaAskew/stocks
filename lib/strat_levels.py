@@ -1516,15 +1516,20 @@ def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]
 # premarket high and low were taken differs (a confirmed print, not a thin
 # bar, not a stale closing-price report), so the version marks which
 # extremes a basis was built on and reach rates count one version at a time.
+# v5 (2026-11-16 prior-close prints): the pick rule is v3's. A print at the
+# prior close inside a bar that traded elsewhere no longer sets the premarket
+# high or low (rule prior-close-print-v1), so v5 marks those extremes and v4
+# marks the ones before it.
 LEVEL_RULE_V2 = 'feat-strat-001.v2'
 LEVEL_RULE_V3 = 'feat-strat-001.v3'
-LEVEL_RULE_VERSION = 'feat-strat-001.v4'
-PICK_RULE_VERSIONS = (LEVEL_RULE_V3, LEVEL_RULE_VERSION)
+LEVEL_RULE_V4 = 'feat-strat-001.v4'
+LEVEL_RULE_VERSION = 'feat-strat-001.v5'
+PICK_RULE_VERSIONS = (LEVEL_RULE_V3, LEVEL_RULE_V4, LEVEL_RULE_VERSION)
 
 
 def is_current_pick_rule(version) -> bool:
     """True when `version` names a rule that picks as the current one does
-    (v3 or v4). Every reader that asks "is this basis under the pick rule"
+    (v3, v4 or v5). Every reader that asks "is this basis under the pick rule"
     asks here; only the reach-rate population filters on one exact version."""
     return isinstance(version, str) and version in PICK_RULE_VERSIONS
 

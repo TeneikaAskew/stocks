@@ -354,8 +354,8 @@ def _fetch_reach_rates(ticker: str, side: str, query_fn,
     """Population reach-rates per playbook slot from `premarket_analysis`.
 
     The population is the resolved rows of exactly `rule_version` (the
-    session row's own, so a v3 session's rungs show v3 rates and a v4
-    session's v4 rates), defaulting to the current LEVEL_RULE_VERSION.
+    session row's own, so a v3, v4 or v5 session's rungs show the rates of
+    its own version), defaulting to the current LEVEL_RULE_VERSION.
 
     Returns `_ok(side=..., slots={slot: envelope}, ...)` where every slot is
     its own OK / UNAVAILABLE envelope with the rate, numerator, denominator and
@@ -503,8 +503,8 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
 
 
 def _new_rule_mark(basis, side: str) -> Optional[float]:
-    """The cleared mark of a level_basis written under the pick rule (v3 or
-    v4), or None for a legacy row (no basis, or an earlier rule_version)."""
+    """The cleared mark of a level_basis written under the pick rule (v3, v4
+    or v5), or None for a legacy row (no basis, or an earlier rule_version)."""
     from lib.strat_levels import is_current_pick_rule, parse_level_basis  # noqa: PLC0415
 
     b = parse_level_basis(basis)

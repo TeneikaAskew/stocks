@@ -1441,11 +1441,11 @@ class TestAtrRungsDisplayOnly:
             assert hparams.pop('plan_target_level_types')['extra'] == {
                 'level_types': ['gap_high', 'gap_low']}, t
             assert hparams == bb['params'], t
-            # The base is a stored v3 basis; a brief built now records v4
-            # (FEAT-PLAYBOOK-001 B8b). The two share the pick rule, so every
-            # other key is still the base's.
+            # The base is a stored v3 basis; a brief built now records v5
+            # (FEAT-PLAYBOOK-001 B8b, then the prior-close print rule). They
+            # share the pick rule, so every other key is still the base's.
             assert bb['rule_version'] == 'feat-strat-001.v3', t
-            assert hb['rule_version'] == 'feat-strat-001.v4', t
+            assert hb['rule_version'] == 'feat-strat-001.v5', t
             assert {k: v for k, v in hb.items()
                     if k not in rung_keys | {'params', 'rule_version'}} == {
                 k: v for k, v in bb.items() if k not in ('params', 'rule_version')}, t
@@ -1506,7 +1506,7 @@ class TestAtrRungsDisplayOnly:
     def test_the_rule_version_and_persisted_levels_are_unchanged(self):
         from lib.strat_levels import LEVEL_RULE_VERSION
         sl = d8_session()
-        assert LEVEL_RULE_VERSION == sl.rule_version == 'feat-strat-001.v4'
+        assert LEVEL_RULE_VERSION == sl.rule_version == 'feat-strat-001.v5'
         lm = sl.to_level_map()
         assert sorted(lv.name for lv in lm.levels) == sorted(list(D8_LEVELS) + ['PMK_H', 'PMK_L'])
         assert [(r['price'], r['name']) for r in lm.call_levels] == [(252.10, 'PMK_H'), (253.00, 'PDH')]
@@ -1868,15 +1868,52 @@ def test_v3_basis_rebuilds_as_on_main():
     assert sl.to_basis()['rule_version'] == V3
 
 
-def test_a_new_build_records_v4():
+def test_a_new_build_records_v5():
+    """The prior-close print rule (FEAT-PLAYBOOK-001, spec r2 decision 3)
+    changes how the premarket extremes are taken again, so every basis built
+    under it records v5, whether or not a v4 row exists."""
     from lib.strat_levels import LEVEL_RULE_VERSION, SessionLevels
     from tests.lib.session_levels_helpers import d8_basis
-    assert LEVEL_RULE_VERSION == 'feat-strat-001.v4'
-    assert SessionLevels(ticker='TST', session_date=None).rule_version == 'feat-strat-001.v4'
+    assert LEVEL_RULE_VERSION == 'feat-strat-001.v5'
+    assert SessionLevels(ticker='TST', session_date=None).rule_version == 'feat-strat-001.v5'
     built = SessionLevels.from_basis(d8_basis())
-    assert built.rule_version == built.to_basis()['rule_version'] == 'feat-strat-001.v4'
-    # v3 and v4 share the pick rule: the same levels give the same picks.
+    assert built.rule_version == built.to_basis()['rule_version'] == 'feat-strat-001.v5'
+    # v3, v4 and v5 share the pick rule: the same levels give the same picks.
     assert _picks_of(built) == V3_D8_PICKS
+
+
+# The picks a stored v4 basis gave on the merge base 6243496db, where
+# d8_basis() is stamped v4, the current version there: printed by
+# SessionLevels.from_basis(d8_basis()) on the unchanged code and equal to
+# V3_D8_PICKS and V3_D8_PLAN.
+V4 = 'feat-strat-001.v4'
+
+
+def test_v4_basis_rebuilds_as_on_the_merge_base():
+    from lib.strat_levels import LEVEL_RULE_VERSION, SessionLevels
+    from tests.lib.session_levels_helpers import d8_basis
+    sl = SessionLevels.from_basis({**d8_basis(), 'rule_version': V4})
+    assert LEVEL_RULE_VERSION != V4
+    assert sl.rule_version == V4
+    assert _picks_of(sl) == V3_D8_PICKS
+    assert sl.long.plan == sl.short.plan == V3_D8_PLAN
+    assert sl.to_basis()['rule_version'] == V4
+
+
+def test_v4_basis_keeps_its_rule_under_a_new_premarket_snapshot():
+    """The first v5 morning: a stored v4 basis given a new premarket snapshot
+    stays v4 with its targets spaced, and never falls to the v2 branch."""
+    from lib.strat_levels import SessionLevels
+    from tests.lib.session_levels_helpers import d8_basis
+    v4 = {**d8_basis(), 'rule_version': V4}
+    snap = {**v4['premarket'], 'pre_high': 252.50}
+    sl = SessionLevels.from_basis(v4).with_premarket(snap)
+    assert sl.rule_version == V4
+    assert sl.long.trigger['price'] == 252.50
+    assert [r['price'] for r in sl.long.targets] == [275.0, 280.0, 285.0]
+    assert [r['price'] for r in sl.long.gate_targets] == [253.0, 275.0, 280.0]
+    assert sl.long.targets != sl.long.gate_targets      # the v2 rule makes them equal
+    assert sl.long.plan == V3_D8_PLAN
 
 
 def test_v3_basis_keeps_its_rule_under_a_new_premarket_snapshot():
@@ -1896,11 +1933,15 @@ def test_v3_basis_keeps_its_rule_under_a_new_premarket_snapshot():
 
 def test_is_current_pick_rule():
     from lib.strat_levels import (
-        LEVEL_RULE_V2, LEVEL_RULE_V3, LEVEL_RULE_VERSION, PICK_RULE_VERSIONS,
+        LEVEL_RULE_V2, LEVEL_RULE_V3, LEVEL_RULE_V4, LEVEL_RULE_VERSION, PICK_RULE_VERSIONS,
         is_current_pick_rule,
     )
-    assert LEVEL_RULE_V3 == V3 and PICK_RULE_VERSIONS == (V3, 'feat-strat-001.v4')
+    assert LEVEL_RULE_V3 == V3 and LEVEL_RULE_V4 == 'feat-strat-001.v4'
+    assert PICK_RULE_VERSIONS == (V3, 'feat-strat-001.v4', 'feat-strat-001.v5')
     assert is_current_pick_rule(V3) and is_current_pick_rule(LEVEL_RULE_VERSION)
+    assert is_current_pick_rule('feat-strat-001.v4') and is_current_pick_rule('feat-strat-001.v5')
+    # A version this code has never seen is not the pick rule.
+    assert is_current_pick_rule('feat-strat-001.v6') is False
     assert is_current_pick_rule(None) is False
     assert is_current_pick_rule('feat-strat-001.v1') is False
     assert is_current_pick_rule('feat-strat-001.v2') is False
