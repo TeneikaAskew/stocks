@@ -82,8 +82,7 @@ def av_listed_symbol(ticker: str) -> str:
     return AV_SYMBOL_MAP.get(ticker, ticker).replace('.', '-')
 
 
-def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
-                      adjusted: bool = False) -> tuple[pd.DataFrame, str]:
+def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str) -> tuple[pd.DataFrame, str]:
     """1-minute OHLCV bars from AlphaVantage TIME_SERIES_INTRADAY, with why
     there are none when there are none.
 
@@ -91,10 +90,9 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
     returned in naive ET (Eastern Time) as-is from AV. The reason is FETCH_OK
     with bars, else one of the names above, so a caller can tell a refused
     symbol from a rate limit from a transport error (#1181). A failure in this
-    code rather than in the vendor's reply is raised, not named.
+    code rather than in the vendor's reply is raised, not named. The bars
+    are as traded, always; there is no switch for adjusted bars.
     """
-    if adjusted:
-        raise ValueError("1-min bars are fetched as traded only; adjusted=True is not supported")
     av_symbol = av_listed_symbol(ticker)
     if not api_key:
         log.warning("    No AV API key — cannot fetch intraday for %s", ticker)
@@ -172,11 +170,11 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
     return df, FETCH_OK
 
 
-def fetch_minute_data(ticker: str, fetch_date: str, api_key: str, *, adjusted: bool = False) -> pd.DataFrame:
+def fetch_minute_data(ticker: str, fetch_date: str, api_key: str) -> pd.DataFrame:
     """fetch_minute_bars without the reason: the bars, or an empty frame when
     AlphaVantage returned none, which is what the daily fetcher and the
     premarket refresh read."""
-    return fetch_minute_bars(ticker, fetch_date, api_key, adjusted=adjusted)[0]
+    return fetch_minute_bars(ticker, fetch_date, api_key)[0]
 
 
 def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str,

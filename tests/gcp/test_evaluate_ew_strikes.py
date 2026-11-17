@@ -94,7 +94,7 @@ def _patched(rows: pd.DataFrame, bars_for, now_utc: str):
     engine = _Engine()
 
     def fake_fetch(ticker, fetch_date, api_key, *args, **kw):
-        calls.append((ticker, fetch_date, kw.get("adjusted", args[0] if args else None)))
+        calls.append((ticker, fetch_date, "adjusted" in kw))
         return _answer(bars_for(ticker, fetch_date) if bars_for is not None
                        else _day_bars(fetch_date))
 
@@ -251,7 +251,8 @@ def test_n_rows_over_k_sessions_fetch_k_times():
 
 def test_the_evaluator_fetches_as_traded_bars():
     """A re-score months later must compare as-traded bars with as-traded
-    strikes; split-adjusted history would not match the pick."""
+    strikes; split-adjusted history would not match the pick. Every 1-minute
+    request is as traded, so the call carries no adjusted keyword."""
     rows = _rows((1, "XYZ", date(2026, 9, 24), "postmarket", "Long Calls", 105.0, None))
     _, calls, _ = _run(rows)
     assert calls[0][2] is False
