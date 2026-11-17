@@ -540,11 +540,11 @@ EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), f
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — notifier runtime access isolated; EW calendar binding source retirement prepared, rollout pending; 03-SITE citation of the deleted prompt renderer retired (#1794); `evaluate-ew-strikes` job and `evaluate-ew-strikes-daily` scheduler retired from the declared fleet ([#1834](https://github.com/TeneikaAskew/stocks/pull/1834), spec [#1666](https://github.com/TeneikaAskew/stocks/pull/1666)), live deletion is the separately authorized close-out; deploy.sh gcloud flag syntax fixed and the fetchers target no longer runs the data backfill (#1813), redeployed 2026-11-13 from main `ec430899` by `./gcp/deploy.sh fetchers` (image `sha256:c7d6f1d3`, both audit jobs included; close-out on #1813); the db-query dispatcher refuses a statement timeout the job's 600s task timeout cannot reach, before dispatch ([#1886](https://github.com/TeneikaAskew/stocks/pull/1886), spec [#1862](https://github.com/TeneikaAskew/stocks/pull/1862), issue [#1861](https://github.com/TeneikaAskew/stocks/issues/1861)) |
+| Status | Production but needs remediation — notifier runtime access isolated; EW calendar binding source retirement prepared, rollout pending; 03-SITE citation of the deleted prompt renderer retired (#1794); `evaluate-ew-strikes` job and `evaluate-ew-strikes-daily` scheduler retired from the declared fleet ([#1834](https://github.com/TeneikaAskew/stocks/pull/1834), spec [#1666](https://github.com/TeneikaAskew/stocks/pull/1666)), live deletion is the separately authorized close-out; deploy.sh gcloud flag syntax fixed and the fetchers target no longer runs the data backfill (#1813), redeployed 2026-11-13 from main `ec430899` by `./gcp/deploy.sh fetchers` (image `sha256:c7d6f1d3`, both audit jobs included; close-out on #1813); the db-query dispatcher refuses a statement timeout the job's 600s task timeout cannot reach, before dispatch ([#1886](https://github.com/TeneikaAskew/stocks/pull/1886), spec [#1862](https://github.com/TeneikaAskew/stocks/pull/1862); the incident record, issue [#1861](https://github.com/TeneikaAskew/stocks/issues/1861), is closed) |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-13 |
+| Last reviewed | 2026-11-17 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | — |
 | Backend | — |
