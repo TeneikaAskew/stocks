@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.md
 branch: feature/feat-cicd-001-source-review-verifier
 pr: 1470
-status: done
+status: ready
 ---
 
 # Committed-source documentation identity implementation plan
