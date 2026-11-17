@@ -30,7 +30,7 @@ from lib.strat_levels import (
     read_session_premarket,
 )
 from tests.lib import strat_2026_11_06 as fx
-from tests.lib.session_levels_helpers import basis
+from tests.lib.session_levels_helpers import basis, newer_rule_versions
 
 SESSION = fx.SESSION
 
@@ -275,10 +275,10 @@ def test_read_live_level_basis_ignores_a_replay_row(brief_basis):
     assert {lv["name"]: lv["price"] for lv in got["levels"]}["PDH"] != 999.99
 
 
-def _planner_section(monkeypatch, db):
-    from lib.agents import summarizers
-    frame = fx.loader_frame("QQQ")
-    snap = fx.premarket_snapshot_row(frame)
+def _planner_query(db):
+    """The planner's `_query`: premarket_analysis from `db`, the session's
+    premarket snapshot from the QQQ fixture, nothing else."""
+    snap = fx.premarket_snapshot_row(fx.loader_frame("QQQ"))
 
     def q(sql, params=None):
         if "premarket_analysis" in sql:
@@ -286,16 +286,28 @@ def _planner_section(monkeypatch, db):
         if "pre_high" in sql:
             return snap
         return pd.DataFrame()
+    return q
+
+
+def _planner_section(monkeypatch, db):
+    from lib.agents import summarizers
+    frame = fx.loader_frame("QQQ")
 
     class _L:
         def load_daily(self, *a, **k):
             return frame.copy()
 
-    monkeypatch.setattr(summarizers, "_query", q)
+    monkeypatch.setattr(summarizers, "_query", _planner_query(db))
     return summarizers.summarize_session_levels("QQQ", as_of=SESSION, loader=_L())
 
 
 def _monitor_session(monkeypatch, db):
+    return _monitor(monkeypatch, db).session_levels["QQQ"]
+
+
+def _monitor(monkeypatch, db):
+    """A SignalMonitor on the 2026-11-06 replay clock after one level
+    refresh of QQQ against `db`."""
     import gcp.database as database
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -316,7 +328,7 @@ def _monitor_session(monkeypatch, db):
 
     monkeypatch.setattr("lib.data_loader.DataLoader", _L)
     monitor.refresh_level_map("QQQ")
-    return monitor.session_levels["QQQ"]
+    return monitor
 
 
 def _movement_map(monkeypatch, db):
@@ -410,6 +422,87 @@ def test_resolver_reads_live_basis_ignores_replay_and_builds_without_the_column(
 # ── A failed read is never "no premarket" (Codex review on #1753) ──────────
 
 
+# ── Unknown rule version spec (2026-11-16), Design 3: every reader refuses
+# by name (U5). The live QQQ 2026-11-06 basis with only rule_version changed.
+
+@pytest.mark.parametrize("version", newer_rule_versions())
+@pytest.mark.parametrize("reader", ["planner", "signal_monitor", "api", "resolver_derive"])
+def test_each_reader_refuses_a_version_it_does_not_know(monkeypatch, caplog, brief_basis,
+                                                       reader, version):
+    import logging
+
+    from lib.strat_levels import LevelRuleVersionUnknown
+    db = _AnalysisDb([_row({**brief_basis, "rule_version": version})])
+    if reader == "planner":
+        with pytest.raises(LevelRuleVersionUnknown) as e:
+            _planner_section(monkeypatch, db)
+        assert (e.value.reason, e.value.recorded) == ("rule_version_newer", version)
+    elif reader == "signal_monitor":
+        with caplog.at_level(logging.ERROR, logger="gcp.signal_monitor"):
+            monitor = _monitor(monkeypatch, db)
+        assert monitor.level_maps.get("QQQ") is None
+        assert "QQQ" not in monitor.session_levels
+        assert "QQQ" not in monitor.level_map_atr
+        assert monitor.level_refresh_rule_version_unknown_count["QQQ"] == 1
+        assert monitor.level_refresh_exception_count.get("QQQ", 0) == 0
+        assert monitor.level_refresh_success_count.get("QQQ", 0) == 0
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("QQQ" in m and "rule_version_newer" in m and repr(version) in m
+                   for m in errors), errors
+    elif reader == "api":
+        with caplog.at_level(logging.ERROR, logger="routers.dashboard"):
+            assert _movement_map(monkeypatch, db) is None
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("QQQ" in m and "rule_version_newer" in m and repr(version) in m
+                   for m in errors), [r.getMessage() for r in caplog.records]
+    else:
+        with pytest.raises(LevelRuleVersionUnknown) as e:
+            _resolver_inputs(db)
+        assert (e.value.reason, e.value.recorded) == ("rule_version_newer", version)
+
+
+@pytest.mark.parametrize("version, reason", [(newer_rule_versions()[0], "rule_version_newer"),
+                                             ("", "rule_version_unreadable")])
+def test_the_insight_run_fails_for_the_ticker_on_a_version_it_does_not_know(
+        monkeypatch, brief_basis, version, reason):
+    """Decision 4: the refusal escapes build_context_bundle's section loop
+    (its except Exception would make it an unavailable section, which the
+    planner reads as no levels), and the ticker's run fails with no report
+    written. Every other section is stubbed available; the parameters read
+    from the autouse fixture, so the version is the only failure."""
+    import asyncio
+
+    from gcp import insight_pipeline_job as job
+    from lib.agents import summarizers
+    from lib.strat_levels import LevelRuleVersionUnknown
+    from tests.gcp.test_level_params_consumers import _refuse_network
+
+    _refuse_network(monkeypatch)
+    for name in ("summarize_market_context", "summarize_strat_status", "summarize_options_flow",
+                 "summarize_gamma_levels", "summarize_backtest_metrics", "summarize_catalysts",
+                 "summarize_news_sentiment"):
+        monkeypatch.setattr(summarizers, name, lambda *a, **k: {"available": True})
+    db = _AnalysisDb([_row({**brief_basis, "rule_version": version})])
+    monkeypatch.setattr(summarizers, "_query", _planner_query(db))
+    monkeypatch.setattr("lib.data_loader.DataLoader",
+                        lambda *a, **k: pytest.fail("a stored basis loads no daily bars"))
+
+    with pytest.raises(LevelRuleVersionUnknown) as e:
+        summarizers.build_context_bundle("QQQ", SESSION)
+    assert e.value.reason == reason
+
+    transitions = []
+    monkeypatch.setattr(job, "_transition",
+                        lambda run_id, status, **k: transitions.append((status, k)) or True)
+    monkeypatch.setattr(job, "load_routes_snapshot", lambda: object())
+    monkeypatch.setattr(job, "_insert_report_history",
+                        lambda *a, **k: pytest.fail("no report on a failed run"))
+    monkeypatch.setattr(job, "_upsert_report", lambda *a, **k: pytest.fail("no report on a failed run"))
+    assert asyncio.run(job._run_one("run-1", "QQQ", as_of=SESSION)) is False
+    assert [s for s, _ in transitions] == ["running", "failed"]
+    assert transitions[-1][1]["error"].startswith(reason)
+
+
 def _raising(exc):
     def q(sql, params=None):
         raise exc
@@ -459,7 +552,7 @@ def _exit_picks(sl):
 def test_v3_basis_records_the_exit_parameters():
     from tests.lib.session_levels_helpers import d8_basis
     stored = json.loads(json.dumps(SessionLevels.from_basis(d8_basis()).to_basis()))
-    assert LEVEL_RULE_VERSION == stored["rule_version"] == "feat-strat-001.v4"
+    assert LEVEL_RULE_VERSION == stored["rule_version"] == "feat-strat-001.v5"
     for key in EXIT_KEYS:
         p = stored["params"][key]
         assert p["status"] == "ok" and p["value"] is not None
@@ -594,6 +687,86 @@ def test_from_basis_v2_rebuilds_the_v2_targets():
     from lib.strat_levels import format_levels_for_brief
     text = format_levels_for_brief(lm, "neutral")
     assert "    T1: 253.00 (PDH)\n" in text and "sell" not in text
+
+
+def test_known_versions_round_trip():
+    """Unknown rule version spec, U3: every version this image knows
+    rebuilds to what it wrote, a v2 basis keeps v2, and a v1 basis or one
+    with no rule_version rebuilds under the v2 rule with the v2 picks."""
+    from lib.strat_levels import PICK_RULE_VERSIONS
+    from tests.lib.session_levels_helpers import d8_basis
+    keys = ("rule_version", "long", "short")
+    for v in PICK_RULE_VERSIONS:
+        first = json.loads(json.dumps(
+            SessionLevels.from_basis({**d8_basis(), "rule_version": v}).to_basis()))
+        second = json.loads(json.dumps(SessionLevels.from_basis(first).to_basis()))
+        assert first["rule_version"] == v
+        assert first["long"]["plan"] is not None
+        assert {k: second[k] for k in keys} == {k: first[k] for k in keys}, v
+
+    v2 = json.loads(json.dumps(d8_basis()))
+    v2["rule_version"] = "feat-strat-001.v2"
+    for key in EXIT_KEYS:
+        v2["params"].pop(key)
+    first = json.loads(json.dumps(SessionLevels.from_basis(v2).to_basis()))
+    second = json.loads(json.dumps(SessionLevels.from_basis(first).to_basis()))
+    assert first["rule_version"] == "feat-strat-001.v2"
+    assert {k: second[k] for k in keys} == {k: first[k] for k in keys}
+
+    v2_picks = _exit_picks(SessionLevels.from_basis(v2))
+    v1 = {**v2, "rule_version": "feat-strat-001.v1"}
+    missing = {k: val for k, val in v2.items() if k != "rule_version"}
+    for stored in (v1, missing):
+        rebuilt = SessionLevels.from_basis(stored)
+        assert rebuilt.rule_version == "feat-strat-001.v2"
+        assert _exit_picks(rebuilt) == v2_picks
+
+
+def test_a_reader_that_knows_fewer_versions_refuses_then_recovers(monkeypatch):
+    """Unknown rule version spec, U7: a straggler or rolled-back reader
+    (PICK_RULE_VERSIONS patched to v3 only) meets a real basis written by
+    the unpatched code. It refuses by name and writes nothing; with the
+    patch removed the same stored row rebuilds as written and resolves."""
+    from datetime import date as _date
+
+    import gcp.premarket_playbook_resolver as mod
+    import lib.strat_levels as strat_levels
+    from lib.strat_levels import LEVEL_RULE_V3, LevelRuleVersionUnknown
+    from tests.gcp.test_premarket_playbook_resolver import (
+        V3_PLAN_COLUMNS, _RecordingEngine, _session_bars,
+    )
+    from tests.lib.session_levels_helpers import d8_basis
+
+    written = json.loads(json.dumps(SessionLevels.from_basis(d8_basis()).to_basis()))
+    assert written["rule_version"] == LEVEL_RULE_VERSION
+    day = _date(2026, 11, 16)
+    keys = ("rule_version", "long", "short")
+
+    def _resolve(outcome_resolved_at=None, force=False):
+        row = pd.DataFrame([{**V3_PLAN_COLUMNS, "level_basis": json.dumps(written),
+                             "outcome_resolved_at": outcome_resolved_at}])
+        reads = iter([row, _session_bars(day)])
+        monkeypatch.setattr(mod.pd, "read_sql", lambda *a, **k: next(reads))
+        engine = _RecordingEngine()
+        return mod.resolve_one(day, "TST", engine, force=force), engine
+
+    with monkeypatch.context() as mp:
+        mp.setattr(strat_levels, "PICK_RULE_VERSIONS", (LEVEL_RULE_V3,))
+        with pytest.raises(LevelRuleVersionUnknown) as e:
+            SessionLevels.from_basis(written)
+        assert e.value.reason == "rule_version_newer" and e.value.recorded == LEVEL_RULE_VERSION
+        out, engine = _resolve()
+        assert out == (None, "rule_version_newer") and engine.conn.calls == []
+        # A row resolved before the rollback is not rewritten under force.
+        out, engine = _resolve(outcome_resolved_at="2026-11-16T21:15:00Z", force=True)
+        assert out == (None, "rule_version_newer") and engine.conn.calls == []
+
+    rebuilt = SessionLevels.from_basis(written).to_basis()
+    assert {k: json.loads(json.dumps(rebuilt))[k] for k in keys} == {k: written[k] for k in keys}
+    (updates, reason), engine = _resolve()
+    assert reason == "resolved"
+    [(_, bound)] = engine.conn.calls
+    assert bound["calls_plan_r_status"] == "ok" and bound["calls_plan_r"] is not None
 
 
 def test_a_replay_with_no_spacing_row_publishes_no_unspaced_target():

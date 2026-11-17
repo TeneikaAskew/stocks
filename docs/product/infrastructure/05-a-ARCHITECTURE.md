@@ -70,7 +70,7 @@ flowchart LR
     VAI[Vertex AI Gemini + embeddings]:::ext
 
     SCH[Cloud Scheduler<br/>65 entries live, all America/New_York]:::gcp
-    JOBS[Cloud Run Jobs<br/>76 live / 67 in deploy.sh]:::gcp
+    JOBS[Cloud Run Jobs<br/>66 live / 67 in deploy.sh]:::gcp
     API1[solyra-api-prod<br/>FastAPI, IAP]:::gcp
     API2[solyra-api-staging<br/>FastAPI, public edge + Firebase]:::gcp
     DI[discord-interactions<br/>slash commands]:::gcp
@@ -109,7 +109,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 | Service | Role | Live 2026-09-07 |
 |---|---|---|
 | Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 95 relations live, of which **26 runtime relations** are created by research and analytics jobs and are not declared in `gcp/schema.sql`; that file declares 79 (76 tables, 2 materialized views, 1 view), a set that overlaps the live one without equalling it (§5) |
-| Cloud Run Jobs | every fetcher, analyzer, backfill, audit and research run | 76 jobs; 68 declared in [`gcp/deploy.sh`](../../../gcp/deploy.sh) |
+| Cloud Run Jobs | every fetcher, analyzer, backfill, audit and research run | 66 jobs; 68 declared in [`gcp/deploy.sh`](../../../gcp/deploy.sh) |
 | Cloud Run Services | 3 long-lived HTTP services | `solyra-api-staging`, `discord-interactions` (min-instances 1 only inside the weekday warm window, 0 otherwise — §7.4), `failure-notifier` |
 | Cloud Scheduler | cron triggers, all `America/New_York` | 65 entries, none paused (`evaluate-ew-strikes-daily` deleted 2026-11-12, `signal-quality-report-hourly` 2026-09-07) |
 | Cloud Build | image builds and the API deploy triggers | triggers `deploy-solyra-api-staging` (push to `main`), `deploy-solyra-api-prod` (manual), `apply-schema-on-change` (push to `main`) |
@@ -352,7 +352,7 @@ Declared in `gcp/schema.sql` but absent live: `bar_recompute_ledger`, `intraday_
 
 ## 6. Cloud Run Jobs
 
-76 jobs exist live; 68 are declared by a `deploy_*` function in [`gcp/deploy.sh`](../../../gcp/deploy.sh). 66 names appear on both sides, so 10 of the live jobs have no `deploy_*` function and 2 declared jobs are not deployed. Those 10 were created by hand with `gcloud run jobs create` in May 2026 and are not reproducible from the repo (`backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`; 10 names, none of them scheduled). `p2-build-gamma-levels`, the one hand-made job with a scheduler (`gamma-levels-daily`), was codified as `deploy_p2_build_gamma_levels` in September 2026 (#829, #834). Two declared jobs are not deployed (`compute-spx-greeks-backfill`, `options-exec-backtest`). Retry policy is **`--max-retries 0` for 43 of the 67 declared jobs, `1` for 23 and `2` for one** (each row below says which); five fetchers omit `--task-timeout` and run at the Cloud Run default of 600 s.
+66 jobs exist live; 67 are declared by a `deploy_*` function in [`gcp/deploy.sh`](../../../gcp/deploy.sh). All 66 live names are declared, so no live job lacks a `deploy_*` function, and one declared job is not deployed (`compute-spx-greeks-backfill`; read live 2026-11-16). The 10 jobs that were created by hand with `gcloud run jobs create` in May 2026 and were not reproducible from the repo (`backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`; none of them scheduled) were deleted live on 2026-11-14. `p2-build-gamma-levels`, the one hand-made job with a scheduler (`gamma-levels-daily`), was codified as `deploy_p2_build_gamma_levels` in September 2026 (#829, #834). Retry policy is **`--max-retries 0` for 43 of the 67 declared jobs, `1` for 23 and `2` for one** (each row below says which); five fetchers omit `--task-timeout` and run at the Cloud Run default of 600 s.
 
 <!-- inventory:jobs:start -->
 | Job | Declared | Entrypoint | Memory / CPU / timeout / retries | Image | Last execution (live 2026-09-07) |
@@ -565,7 +565,7 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/me/watchlist` | [`platform/api/routers/me_watchlist.py:102`](../../../platform/api/routers/me_watchlist.py#L102) | List the caller's active watchlist (401 without a signed-in identity, |
 | `POST` | `/api/me/watchlist` | [`platform/api/routers/me_watchlist.py:109`](../../../platform/api/routers/me_watchlist.py#L109) | Add a ticker to the caller's watchlist and answer the updated list. |
 | `DELETE` | `/api/me/watchlist/{ticker}` | [`platform/api/routers/me_watchlist.py:151`](../../../platform/api/routers/me_watchlist.py#L151) | Soft-remove a ticker from the caller's watchlist and answer the list. |
-| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:539`](../../../platform/api/routers/dashboard.py#L539) | PHASE 3 — read-only, feature-flagged movement statement. |
+| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:547`](../../../platform/api/routers/dashboard.py#L547) | PHASE 3 — read-only, feature-flagged movement statement. |
 | `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:325`](../../../platform/api/routers/options.py#L325) | Return the `limit` most-recent snapshot dates with AlphaVantage data. |
 | `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:807`](../../../platform/api/routers/options.py#L807) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
 | `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:686`](../../../platform/api/routers/options.py#L686) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |
@@ -962,6 +962,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/fetchers/fetch_top_movers.py`](../../../gcp/fetchers/fetch_top_movers.py) | Cloud Run Job: Fetch AV TOP_GAINERS_LOSERS daily snapshot → Cloud SQL. | `fetch-top-movers` |
 | [`gcp/fetchers/fetch_watched_tickers.py`](../../../gcp/fetchers/fetch_watched_tickers.py) | Watched-ticker ingest job (fetch-watched-tickers), v2. | — |
 | [`gcp/fetchers/intraday_bar_flags.py`](../../../gcp/fetchers/intraday_bar_flags.py) | The bar flag pass over the stored 1-minute bars of SPY, QQQ and IWM | — |
+| [`gcp/fetchers/premarket_as_read.py`](../../../gcp/fetchers/premarket_as_read.py) | The SPY, QQQ and IWM premarket bars as each refresh run read them. | — |
 | [`gcp/gcs_utils.py`](../../../gcp/gcs_utils.py) | Google Cloud Storage utility helpers shared across gcp/ modules. | — |
 | [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) | Cloud SQL helpers for the ``historical_signals`` table. | — |
 | [`gcp/indicator_correlation_job.py`](../../../gcp/indicator_correlation_job.py) | Intraday indicator → forward-return correlation / Information Coefficient (Cloud Run Job). | `indicator-correlation` |

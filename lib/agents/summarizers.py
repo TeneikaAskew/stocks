@@ -35,7 +35,9 @@ import pandas as pd
 
 from lib.eastern_time import ET_NAME, market_today
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
-from lib.strat_levels import PREMARKET_UNFILTERED_NOTE, LevelParamsUnavailable
+from lib.strat_levels import (
+    PREMARKET_UNFILTERED_NOTE, LevelParamsUnavailable, LevelRuleVersionUnknown,
+)
 
 from .embeddings import format_vector_literal
 from .schema import JournalRef
@@ -2091,10 +2093,12 @@ def build_context_bundle(
                 reason = result.get("reason")
                 if isinstance(reason, str) and reason:
                     failed_reasons[name] = reason
-        except LevelParamsUnavailable:
-            # INTERNAL (CLAUDE.md 3.7): the parameter tables cannot be read.
-            # Not a degraded section: the run fails with reason
-            # level_params_unavailable.
+        except (LevelParamsUnavailable, LevelRuleVersionUnknown):
+            # INTERNAL (CLAUDE.md 3.7): the parameter tables cannot be read,
+            # or the session's level_basis names a rule version this image
+            # does not know or cannot read. Not a degraded section, which
+            # the planner would read as no levels: the run fails with the
+            # reason named (unknown rule version spec, decision 4).
             raise
         except Exception as e:
             logger.exception("summarizer %s failed", name)

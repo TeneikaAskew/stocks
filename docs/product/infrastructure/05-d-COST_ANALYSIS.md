@@ -25,13 +25,13 @@ August 2026 is a partial month in this window.
 | Rank | Service | SKU | 90-day cost | Aug 2026 | Maps to (ARCHITECTURE.md) |
 |---:|---|---|---:|---:|---:|
 | 1 | Cloud Run | `Services CPU (Instance-based billing) in us-east1` | $47.89 | $47.89 | `solyra-api-prod`, `discord-interactions`, `failure-notifier` services. |
-| 2 | Cloud Run | `Jobs CPU in us-east1` | $35.70 | $35.70 | CPU time across all 76 Cloud Run Jobs. Not attributable per-job from billing. |
+| 2 | Cloud Run | `Jobs CPU in us-east1` | $35.70 | $35.70 | CPU time across all 66 Cloud Run Jobs. Not attributable per-job from billing. |
 | 3 | Cloud SQL | `Cloud SQL for PostgreSQL: Zonal - Standard storage in Americas` | $32.16 | $32.16 | Persistent disk on `trading-db`. |
 | 4 | Artifact Registry | `Artifact Registry Storage` | $29.10 | $29.10 | The `trading/trading-system` container repo. High cost suggests many images. |
 | 5 | Cloud SQL | `Cloud SQL for PostgreSQL: Zonal - Small instance in Americas` | $25.80 | $25.80 | The single `trading-db` instance. Used by all jobs and services. |
 | 6 | Cloud SQL | `Cloud SQL for PostgreSQL: Zonal - Serverless Exports in Americas` | $10.10 | $10.10 | SQL data exports. |
 | 7 | Cloud Scheduler | `Jobs` | $8.02 | $8.02 | All scheduled jobs (e.g., `premarket-brief-daily`). |
-| 8 | Cloud Run | `Jobs Memory in us-east1` | $8.01 | $8.01 | RAM allocation across all 76 jobs. |
+| 8 | Cloud Run | `Jobs Memory in us-east1` | $8.01 | $8.01 | RAM allocation across all 66 jobs. |
 | 9 | Cloud SQL | `Storage PD Snapshot` | $4.81 | $4.81 | Automated daily backups of `trading-db`. |
 | 10 | Cloud Run | `Services Memory (Instance-based billing) in us-east1` | $2.66 | $2.66 | Memory for Cloud Run services. |
 
