@@ -1254,3 +1254,74 @@ def test_generated_inventory_does_not_read_bind_names_as_tables(table):
         assert producer not in {hit['file'] for hit in refs['reads'] + refs['writes']}
     calendar = inventory.table_refs(root, ['earnings_calendar'])['earnings_calendar']
     assert producer in {hit['file'] for hit in calendar['reads']}
+
+
+# ── FEAT-DATA-001 no-adjusted: split evidence from AlphaVantage SPLITS ──────
+
+
+class _SplitsReply:
+    def __init__(self, payload, http_error=False):
+        self._payload = payload
+        self._http_error = http_error
+
+    def raise_for_status(self):
+        if self._http_error:
+            import requests
+            raise requests.HTTPError('503 Service Unavailable')
+
+    def json(self):
+        return self._payload
+
+
+def test_fetch_splits_request_and_reply(monkeypatch):
+    """One SPLITS request per call, the listed share class as its symbol; the
+    reply's dated factors with a digest that names the evidence. A vendor
+    refusal, an HTTP error, a reply without a data list or an unparseable
+    row is SplitsUnavailable (EXTERNAL, CLAUDE.md 3.7), never "no split"."""
+    from gcp.fetchers import compute_earnings_reactions as module
+    from gcp.fetchers.compute_earnings_reactions import Splits, SplitsUnavailable, fetch_splits
+
+    sent = []
+    answer = {}
+
+    def get(url, params=None, timeout=None):
+        sent.append(dict(params))
+        return answer['reply']
+
+    monkeypatch.setattr(module.requests, 'get', get)
+
+    answer['reply'] = _SplitsReply({'symbol': 'BF-B', 'data': []})
+    fetch_splits('BF.B', 'k')
+    assert sent == [{'function': 'SPLITS', 'symbol': 'BF-B', 'apikey': 'k'}]
+
+    nvda = [{'effective_date': '2024-06-10', 'split_factor': '10.0000'},
+            {'effective_date': '2021-07-20', 'split_factor': '4.0000'}]
+    answer['reply'] = _SplitsReply({'symbol': 'NVDA', 'data': nvda})
+    splits = fetch_splits('NVDA', 'k')
+    assert isinstance(splits, Splits)
+    assert splits.events == ((date(2021, 7, 20), 4.0), (date(2024, 6, 10), 10.0))
+    assert len(splits.digest) == 64 and int(splits.digest, 16) >= 0
+    answer['reply'] = _SplitsReply({'symbol': 'NVDA', 'data': list(reversed(nvda))})
+    assert fetch_splits('NVDA', 'k').digest == splits.digest
+    answer['reply'] = _SplitsReply({'symbol': 'NVDA', 'data': [
+        {'effective_date': '2024-06-10', 'split_factor': '2.0000'}, nvda[1]]})
+    assert fetch_splits('NVDA', 'k').digest != splits.digest
+
+    answer['reply'] = _SplitsReply({'symbol': 'SPY', 'data': []})
+    assert fetch_splits('SPY', 'k').events == ()
+
+    for reply in (_SplitsReply({'Information': 'x'}), _SplitsReply({'Note': 'x'}),
+                  _SplitsReply({'Error Message': 'x'}), _SplitsReply({'symbol': 'X'}),
+                  _SplitsReply({'symbol': 'X', 'data': []}, http_error=True),
+                  _SplitsReply({'data': [{'effective_date': '2024-13-40', 'split_factor': '10'}]}),
+                  _SplitsReply({'data': [{'effective_date': '2024-06-10', 'split_factor': 'ten'}]})):
+        answer['reply'] = reply
+        with pytest.raises(SplitsUnavailable):
+            fetch_splits('X', 'k')
+
+    # No key is a misconfiguration of this job (INTERNAL), not a vendor answer.
+    sent.clear()
+    with pytest.raises(ValueError) as excinfo:
+        fetch_splits('SPY', '')
+    assert not isinstance(excinfo.value, SplitsUnavailable)
+    assert sent == []

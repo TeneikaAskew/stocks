@@ -25,6 +25,7 @@ Usage:
 
 import argparse
 import logging
+import math
 import os
 import sys
 from datetime import date, timedelta
@@ -32,12 +33,15 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+from lib.config import AlphaVantageConfig
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL, Splits, SplitsUnavailable
 from lib.eastern_time import market_today
 from gcp.database import upsert_dataframe, query_to_dataframe, is_cloud_sql_configured
+from gcp.fetchers.fetch_market_data import AV_BASE_URL, av_listed_symbol
 from lib.logging_config import setup_logging
 
 setup_logging()
@@ -599,6 +603,53 @@ def fetch_calendar_timing_map(tickers: list[str]) -> dict[tuple[str, date], Opti
     return out
 
 
+def fetch_splits(ticker: str, api_key: str) -> Splits:
+    """The ticker's split history from AlphaVantage SPLITS, for one run.
+
+    One request, the listed share class as its symbol; the caller paces
+    successive calls. The reply is {"symbol": ..., "data": [{"effective_date":
+    "2024-06-10", "split_factor": "10.0000"}, ...]}, and an empty data list
+    means no split on record. Held in memory only: the run stores the
+    reaction and nothing else (FEAT-DATA-001, no adjusted prices, Design 6).
+
+    Raises SplitsUnavailable for a vendor refusal (Information, Note, Error
+    Message), an HTTP or transport error, a reply without a data list, or a
+    row whose date or factor does not parse: an EXTERNAL failure the caller
+    names per event, never "no split". An empty api_key is this job's own
+    misconfiguration and raises ValueError before any request.
+    """
+    if not api_key:
+        raise ValueError('fetch_splits: ALPHA_VANTAGE_API_KEY is required')
+    params = {'function': 'SPLITS', 'symbol': av_listed_symbol(ticker), 'apikey': api_key}
+    try:
+        resp = requests.get(AV_BASE_URL, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as exc:
+        raise SplitsUnavailable(f'request_failed: {exc}'[:160]) from exc
+    except ValueError as exc:
+        raise SplitsUnavailable(f'reply_not_json: {exc}'[:160]) from exc
+    if not isinstance(data, dict):
+        raise SplitsUnavailable('reply_not_an_object')
+    for key in ('Error Message', 'Information', 'Note'):
+        if key in data:
+            raise SplitsUnavailable(f'{key}: {data[key]}'[:160])
+    rows = data.get('data')
+    if not isinstance(rows, list):
+        raise SplitsUnavailable('reply_without_data_list')
+    events = []
+    for row in rows:
+        try:
+            effective = date.fromisoformat(str(row['effective_date']))
+            factor = float(row['split_factor'])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SplitsUnavailable(f'unparseable_split_row: {row!r}'[:160]) from exc
+        if not math.isfinite(factor) or factor <= 0:
+            raise SplitsUnavailable(f'unparseable_split_row: {row!r}'[:160])
+        events.append((effective, factor))
+    return Splits.of(ticker, events)
+
+
 def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
     """Return ~30 trading days centered on reported_date for this ticker.
 
@@ -616,7 +667,7 @@ def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
     see issue #452 and the post-fix benchmarks in the PR description.
     """
     sql = """
-        SELECT date, open, high, low, close, volume, atr_14, adjusted_close, data_source
+        SELECT date, open, high, low, close, volume, atr_14, data_source
           FROM market_data_daily
          WHERE ticker = :t AND date BETWEEN :start AND :end
          ORDER BY date
@@ -675,7 +726,7 @@ def fetch_daily_windows_for_ticker_dates(
     min_date = min(reported_dates) - timedelta(days=90)
     max_date = max(reported_dates) + timedelta(days=25)
     sql = """
-        SELECT date, open, high, low, close, volume, atr_14, adjusted_close, data_source
+        SELECT date, open, high, low, close, volume, atr_14, data_source
           FROM market_data_daily
          WHERE ticker = :t AND date BETWEEN :start AND :end
          ORDER BY date

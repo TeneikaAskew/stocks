@@ -34,9 +34,12 @@ Tunable knobs (env vars, defaults match the values locked in Phase 0.5):
 """
 from __future__ import annotations
 
+import hashlib as _hashlib
+import json as _json
 import logging
 import math
 import os
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional
 
@@ -1305,6 +1308,42 @@ def compute_daily_path_v1(event, daily, *, observation_ts, price_evidence=None,
                        first_opposite_close_step=None, first_opposite_close_date=None,
                        closing_gap_fill_step=None, closing_gap_fill_date=None)
         return {'available': False, 'reason': str(exc)[:160], 'payload': payload}
+
+
+@dataclass(frozen=True)
+class Splits:
+    """A ticker's split history from AlphaVantage SPLITS, held for one run.
+
+    `events` are (effective_date, split_factor) pairs sorted by date; an
+    empty tuple is a valid answer (no split on record). `digest` is the
+    sha256 hex of their canonical JSON, so a receipt can name the evidence
+    that admitted it (FEAT-DATA-001, no adjusted prices, Design 6).
+    """
+    ticker: str
+    events: tuple
+    digest: str
+
+    @classmethod
+    def of(cls, ticker, events) -> 'Splits':
+        ordered = tuple(sorted((effective, float(factor)) for effective, factor in events))
+        canonical = _json.dumps(
+            [{'effective_date': effective.isoformat(), 'split_factor': factor}
+             for effective, factor in ordered],
+            sort_keys=True, separators=(',', ':'))
+        return cls(ticker=ticker, events=ordered,
+                   digest=_hashlib.sha256(canonical.encode()).hexdigest())
+
+
+class SplitsUnavailable(Exception):
+    """The vendor gave no usable split evidence (EXTERNAL, CLAUDE.md 3.7).
+
+    Never read as "no split": every event of the ticker is refused with
+    split_status_unavailable instead.
+    """
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 def database_daily_price_evidence(event, frame, *, schedule, observed_at, native=False):
