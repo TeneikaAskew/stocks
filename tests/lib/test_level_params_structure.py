@@ -44,6 +44,11 @@ ALLOWED_COUNTS = {"GAP_LEVEL_LOOKBACK_BARS", "_PARENT_BAR_LOOKBACK"}
 # The premarket window's clock boundaries (04:00 and 09:30 ET): when the
 # session is, not how far price may be.
 ALLOWED_CLOCK = {"PREMARKET_START", "REGULAR_SESSION_OPEN"}
+# The thin bar rule's share count (FEAT-PLAYBOOK-001 B7c, one round lot): how
+# many shares a premarket bar must hold to give a price to the extremes. It is
+# a volume, not a price distance, and that spec makes it a module constant
+# with a named measurement, not a calibrated per-ticker parameter.
+ALLOWED_VOLUME = {"PM_MIN_EXTREME_VOLUME"}
 
 REMOVED = {
     "lib/strat_levels.py": ("MAX_TRIGGER_DISTANCE_ATR", "MAX_TRIGGER_DISTANCE_PCT",
@@ -130,7 +135,7 @@ def _exempt_constant_ids(fn: ast.AST) -> set[int]:
 def _violations(rel: str) -> list[str]:
     tree = _tree(rel)
     constants = _module_numeric_constants(tree)
-    allowed_names = ALLOWED_SIZING_AND_FTFC | ALLOWED_COUNTS | ALLOWED_CLOCK
+    allowed_names = ALLOWED_SIZING_AND_FTFC | ALLOWED_COUNTS | ALLOWED_CLOCK | ALLOWED_VOLUME
     out = []
     for name, fns in sorted(_reachable(tree, ROOTS[rel]).items()):
         for fn in fns:
@@ -168,10 +173,13 @@ def test_no_numbers_on_the_level_and_plan_path(rel):
 
 def test_the_walk_reaches_the_rules_it_must_cover():
     """The walk is not vacuous: it reaches the side rule, the window check,
-    the cluster detector, the premarket acceptance and the persona plan."""
+    the cluster detector, the premarket acceptance, the target spacing (exits
+    in thirds spec), the ATR rung builder and the thinning walk (ATR levels
+    spec) and the persona plan."""
     reach = set(_reachable(_tree("lib/strat_levels.py"), "build_session_levels"))
     assert {"_pick_side", "_within_staleness_window", "detect_level_clusters",
-            "_accept_premarket", "compute_gap_levels"} <= reach
+            "_accept_premarket", "compute_gap_levels", "_plan_targets"} <= reach
+    assert {"_place_atr_rungs", "_atr_rung_ladder", "_thin_atr_rungs"} <= reach
     plan = set(_reachable(_tree("lib/agents/trade_planner.py"), "compute_persona_plans"))
     assert {"_plan", "compute_risk_metrics", "_build_rationale"} <= plan
 

@@ -35,8 +35,14 @@ import pytest
 
 from gcp import calibrate_level_params as job
 from lib.indicators import calculate_atr
+from lib.strat_levels import POLICY_WIDE_KEYS
 from tests.lib import strat_2026_11_06 as fx
-from tests.lib.level_params_fixtures import ParamsDb
+from tests.lib.level_params_fixtures import LEGACY_1753_VALUES, ParamsDb
+
+# Rows per ticker and effective date: the 23 Design 2 keys and the exits
+# spec's two policy_seed keys (exit_legs and entry_cutoff_et are policy-wide
+# and write no ticker row).
+CALIBRATED_KEYS = len(LEGACY_1753_VALUES)
 
 ROOT = Path(__file__).resolve().parents[2]
 TICKERS = ["SPY", "QQQ", "IWM"]
@@ -68,7 +74,8 @@ def _minutes(ticker):
         ts = et.append(pm).tz_localize("America/New_York").tz_convert("UTC")
         px = np.concatenate([rth, np.full(150, r.Open)])
         frames.append(pd.DataFrame({"ts": ts, "open": px, "high": px + 0.02, "low": px - 0.02,
-                                    "close": px, "volume": 100}))
+                                    "close": px, "volume": 100,
+                                    "inserted_at": pd.Timestamp("2026-02-23 03:00", tz="UTC")}))
     return pd.concat(frames, ignore_index=True)
 
 
@@ -137,7 +144,7 @@ def test_n_tickers_cost_n_reads_and_n_write_batches():
     assert db.reads["daily"] == TICKERS and db.reads["minutes"] == TICKERS
     assert len(db.batches) == 3
     rows = db.rows()
-    assert len(rows) == 3 * 23 and set(rows["effective_from"]) == {"2026-11-06"}
+    assert len(rows) == 3 * CALIBRATED_KEYS and set(rows["effective_from"]) == {"2026-11-06"}
     assert set(rows["source"]) == {"nightly"}
     # Every row carries its method, sample, input range and run id.
     full = db.rows("run_id, method_id, sample_n, calibrated_at, value, status")
@@ -382,7 +389,7 @@ def test_history_mode_writes_in_chunks_and_a_rerun_converges(monkeypatch):
     assert _main(monkeypatch, db, "--history", *HIST, "--chunk-sessions", "2") == 1
     partial = db.rows(KEEP)
     assert sorted(partial["effective_from"].unique()) == SESSIONS[:2]
-    assert len(db.batches) == 2 and db.batches[0] == 2 * 23
+    assert len(db.batches) == 2 and db.batches[0] == 2 * CALIBRATED_KEYS
     db.fail_batch = 0
     assert _main(monkeypatch, db, "--history", *HIST, "--chunk-sessions", "2") == 0
     full = db.rows(KEEP)
@@ -429,7 +436,8 @@ def test_basis_switch_follows_the_transition_order(monkeypatch):
     assert basis == "atr_5" and all(st != "params_basis_mismatch" for st, _ in late_values.values())
     atr5 = switched[(switched["atr_basis"] == "atr_5") & (switched["effective_from"] == "2026-11-06")]
     assert {k: (st, None if pd.isna(v) else v)
-            for k, st, v in zip(atr5["param_key"], atr5["status"], atr5["value"])} == late_values
+            for k, st, v in zip(atr5["param_key"], atr5["status"], atr5["value"])} == {
+        k: v for k, v in late_values.items() if k not in POLICY_WIDE_KEYS}
     assert late_values["trigger_window_long_atr"][0] == "ok"
 
 
@@ -530,3 +538,63 @@ def test_daily_read_covers_the_longest_one_minute_lookback():
         b = job.read_windows(p, "2026-11-09", "2026-11-09")
         assert len(sessions_between(b["daily_start"], date(2026, 11, 6))) >= 2000 + 1, key
         assert len(sessions_between(b["minutes_start"], date(2026, 11, 6))) >= 2000, key
+
+
+# ── exits in thirds spec: the policy_seed keys ───────────────────────────
+
+
+def test_a_later_seed_applies_from_its_effective_date(monkeypatch):
+    """The history run writes target_min_spacing_atr and gap_fill_flag_atr
+    per ticker and session at the seed in force: a policy row with seed
+    0.30 effective 2026-11-05 gives 0.30 from that session and 0.25
+    before it, and load_level_params reads each."""
+    db = FakeDb()
+    db.pdb.set_policy("target_min_spacing_atr", effective_from=date(2026, 11, 5),
+                      extra='{"seed": 0.30}', method_id="policy_seed")
+    assert _main(monkeypatch, db, "--history", *HIST) == 0
+    rows = db.rows("param_key, value, status, method_id, effective_from, run_id")
+    spacing = rows[rows["param_key"] == "target_min_spacing_atr"]
+    assert dict(zip(spacing["effective_from"], spacing["value"])) == {
+        "2026-11-03": 0.25, "2026-11-04": 0.25, "2026-11-05": 0.30, "2026-11-06": 0.30}
+    assert set(spacing["status"]) == {"ok"} and set(spacing["method_id"]) == {"policy_seed"}
+    assert spacing["run_id"].notna().all()
+    flag = rows[rows["param_key"] == "gap_fill_flag_atr"]
+    assert set(flag["value"]) == {0.5} and len(flag) == len(SESSIONS)
+    assert db.pdb.load(["SPY"], date(2026, 11, 4))["SPY"].value("target_min_spacing_atr") == 0.25
+    assert db.pdb.load(["SPY"], date(2026, 11, 6))["SPY"].value("target_min_spacing_atr") == 0.30
+
+
+# ── ATR levels spec (2026-11-11): the rung keys ─────────────────────────
+
+
+def test_a_later_atr_rung_max_seed_applies_from_its_effective_date(monkeypatch):
+    """The history run writes the three ATR rung keys per ticker and
+    session at the seed in force: an atr_rung_max_atr row with seed 3.0
+    effective 2026-11-05 gives 3.0 from that session and 2.0 before it,
+    and from it the Design 8 fixture gains the 2.5 and 3 rungs."""
+    from lib.strat_levels import SessionLevels
+    from tests.lib.session_levels_helpers import D8_LEVELS, D8_PREMARKET, basis
+
+    db = FakeDb()
+    db.pdb.set_policy("atr_rung_max_atr", effective_from=date(2026, 11, 5),
+                      extra='{"seed": 3.0}', method_id="policy_seed")
+    assert _main(monkeypatch, db, "--history", *HIST) == 0
+    rows = db.rows("param_key, value, status, method_id, effective_from, run_id")
+    reach = rows[rows["param_key"] == "atr_rung_max_atr"]
+    assert dict(zip(reach["effective_from"], reach["value"])) == {
+        "2026-11-03": 2.0, "2026-11-04": 2.0, "2026-11-05": 3.0, "2026-11-06": 3.0}
+    assert set(reach["status"]) == {"ok"} and set(reach["method_id"]) == {"policy_seed"}
+    for key, seed in (("atr_rung_step_atr", 0.5), ("atr_rung_stretch_atr", 1.5)):
+        r = rows[rows["param_key"] == key]
+        assert set(r["value"]) == {seed} and len(r) == len(SESSIONS)
+
+    def multiples(day):
+        lp = db.pdb.load(["SPY"], day)["SPY"]
+        b = basis(D8_LEVELS, prior_close=247.00, atr=14.0, premarket=D8_PREMARKET,
+                  session_date=day, ticker="SPY", params=lp)
+        sl = SessionLevels.from_basis(b)
+        assert sl.atr_rung_status == "ok"
+        return sorted({r["multiple"] for r in sl.atr_rungs + sl.atr_rungs_dropped})
+
+    assert multiples(date(2026, 11, 4)) == [0.5, 1.0, 1.5, 2.0]
+    assert multiples(date(2026, 11, 5)) == [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]

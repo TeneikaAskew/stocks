@@ -1,0 +1,5363 @@
+{
+ "columns": [
+  "ticker",
+  "analysis_ts",
+  "run_kind",
+  "rvol",
+  "ftfc_score",
+  "ftfc_labels",
+  "level_basis"
+ ],
+ "rows": [
+  [
+   "IWM",
+   "2026-11-16 13:31:23.355460+00:00",
+   "live",
+   0.7576517718496028,
+   -0.7499999999999999,
+   "{\"1d\": \"2D\", \"1w\": \"1\", \"1mo\": \"2U\"}",
+   {
+    "atr": 4.874951094061365,
+    "long": {
+     "plan": {
+      "legs": 3,
+      "atr_basis": "atr_14",
+      "spacing_atr": 0.25,
+      "spacing_price": 1.22,
+      "entry_cutoff_et": "16:00",
+      "gap_fill_flag_atr": 0.5,
+      "entry_cutoff_status": "ok",
+      "gap_fill_flag_status": "ok"
+     },
+     "side": "long",
+     "stop": {
+      "name": "PMK_L",
+      "price": 275.86,
+      "period": "premarket",
+      "aliases": [],
+      "timeframe": "intraday",
+      "level_type": "low"
+     },
+     "ladder": [
+      {
+       "name": "PMK_H",
+       "price": 278.92,
+       "period": "intraday",
+       "level_type": "high",
+       "distance_pct": 0.92
+      },
+      {
+       "name": "PDH",
+       "price": 279.17,
+       "period": "day",
+       "level_type": "high",
+       "distance_pct": 1.01
+      }
+     ],
+     "reason": null,
+     "regime": "normal",
+     "window": {
+      "key": "trigger_window_long_atr",
+      "value": 2.166790838471162,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "ticker": "IWM",
+      "input_to": "2026-11-13",
+      "sample_n": 750,
+      "atr_basis": "atr_14",
+      "method_id": "daily_excursion_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 250,
+      "statistic_q": 0.99,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "skipped": [
+      {
+       "name": "PDH",
+       "price": 279.17,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_high"
+       ],
+       "timeframe": "day",
+       "level_type": "high",
+       "distance_atr": 0.051
+      },
+      {
+       "name": "PMC",
+       "price": 279.33,
+       "period": "2026-10",
+       "aliases": [],
+       "timeframe": "month",
+       "level_type": "close",
+       "distance_atr": 0.084
+      }
+     ],
+     "targets": [
+      {
+       "name": "PWH",
+       "price": 283.79,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "timeframe": "week",
+       "level_type": "high"
+      },
+      {
+       "name": "PMH",
+       "price": 285.26,
+       "period": "2026-10",
+       "aliases": [],
+       "timeframe": "month",
+       "level_type": "high"
+      }
+     ],
+     "trigger": {
+      "name": "PMK_H",
+      "price": 278.92,
+      "period": "premarket",
+      "aliases": [],
+      "timeframe": "intraday",
+      "level_type": "high"
+     },
+     "room_pct": 0.921,
+     "candidates": [
+      {
+       "name": "PQL",
+       "cents": 27741,
+       "price": 277.41,
+       "broken": true,
+       "period": "2026Q3",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "quarter",
+       "level_type": "low",
+       "distance_atr": 0.213
+      },
+      {
+       "name": "PDC",
+       "cents": 27754,
+       "price": 277.54,
+       "broken": true,
+       "period": "2026-11-13",
+       "aliases": [
+        "PWC"
+       ],
+       "in_window": true,
+       "timeframe": "day",
+       "level_type": "close",
+       "distance_atr": 0.239
+      },
+      {
+       "name": "PQC",
+       "cents": 27789,
+       "price": 277.89,
+       "broken": true,
+       "period": "2026Q3",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "quarter",
+       "level_type": "close",
+       "distance_atr": 0.311
+      },
+      {
+       "name": "PMK_H",
+       "cents": 27892,
+       "price": 278.92,
+       "broken": false,
+       "period": "premarket",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "intraday",
+       "level_type": "high",
+       "distance_atr": 0.522
+      },
+      {
+       "name": "PDH",
+       "cents": 27917,
+       "price": 279.17,
+       "broken": false,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_high"
+       ],
+       "in_window": true,
+       "timeframe": "day",
+       "level_type": "high",
+       "distance_atr": 0.574
+      },
+      {
+       "name": "PMC",
+       "cents": 27933,
+       "price": 279.33,
+       "broken": false,
+       "period": "2026-10",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "month",
+       "level_type": "close",
+       "distance_atr": 0.607
+      },
+      {
+       "name": "PWH",
+       "cents": 28379,
+       "price": 283.79,
+       "broken": false,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "week",
+       "level_type": "high",
+       "distance_atr": 1.521
+      },
+      {
+       "name": "PMH",
+       "cents": 28526,
+       "price": 285.26,
+       "broken": false,
+       "period": "2026-10",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "month",
+       "level_type": "high",
+       "distance_atr": 1.823
+      },
+      {
+       "name": "PQH",
+       "cents": 30518,
+       "price": 305.18,
+       "broken": false,
+       "period": "2026Q3",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "quarter",
+       "level_type": "high",
+       "distance_atr": 5.909
+      }
+     ],
+     "distance_atr": 0.522,
+     "gate_targets": [
+      {
+       "name": "PDH",
+       "price": 279.17,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_high"
+       ],
+       "timeframe": "day",
+       "level_type": "high"
+      },
+      {
+       "name": "PMC",
+       "price": 279.33,
+       "period": "2026-10",
+       "aliases": [],
+       "timeframe": "month",
+       "level_type": "close"
+      },
+      {
+       "name": "PWH",
+       "price": 283.79,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "timeframe": "week",
+       "level_type": "high"
+      }
+     ],
+     "target_status": "ok"
+    },
+    "atr_5": 5.3623612361634505,
+    "short": {
+     "plan": {
+      "legs": 3,
+      "atr_basis": "atr_14",
+      "spacing_atr": 0.25,
+      "spacing_price": 1.22,
+      "entry_cutoff_et": "16:00",
+      "gap_fill_flag_atr": 0.5,
+      "entry_cutoff_status": "ok",
+      "gap_fill_flag_status": "ok"
+     },
+     "side": "short",
+     "stop": {
+      "name": "PQL",
+      "price": 277.41,
+      "period": "2026Q3",
+      "aliases": [],
+      "timeframe": "quarter",
+      "level_type": "low"
+     },
+     "ladder": [
+      {
+       "name": "PMK_L",
+       "price": 275.86,
+       "period": "intraday",
+       "level_type": "low",
+       "distance_pct": -0.19
+      },
+      {
+       "name": "PDL",
+       "price": 274.67,
+       "period": "day",
+       "level_type": "low",
+       "distance_pct": -0.62
+      }
+     ],
+     "reason": null,
+     "regime": "normal",
+     "window": {
+      "key": "trigger_window_short_atr",
+      "value": 2.2699133652700563,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "ticker": "IWM",
+      "input_to": "2026-11-13",
+      "sample_n": 750,
+      "atr_basis": "atr_14",
+      "method_id": "daily_excursion_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 250,
+      "statistic_q": 0.99,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "skipped": [
+      {
+       "name": "PDL",
+       "price": 274.665,
+       "period": "2026-11-13",
+       "aliases": [
+        "PWL",
+        "parent_bar_low"
+       ],
+       "timeframe": "day",
+       "level_type": "low",
+       "distance_atr": 0.244
+      }
+     ],
+     "targets": [
+      {
+       "name": "GAP_L_2026-11-09",
+       "price": 274.55,
+       "period": "2026-11-09",
+       "aliases": [],
+       "timeframe": "day",
+       "level_type": "gap_low"
+      },
+      {
+       "name": "PML",
+       "price": 269.875,
+       "period": "2026-10",
+       "aliases": [],
+       "timeframe": "month",
+       "level_type": "low"
+      }
+     ],
+     "trigger": {
+      "name": "PMK_L",
+      "price": 275.86,
+      "period": "premarket",
+      "aliases": [],
+      "timeframe": "intraday",
+      "level_type": "low"
+     },
+     "room_pct": 0.186,
+     "candidates": [
+      {
+       "name": "PMK_L",
+       "cents": 27586,
+       "price": 275.86,
+       "broken": false,
+       "period": "premarket",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "intraday",
+       "level_type": "low",
+       "distance_atr": 0.105
+      },
+      {
+       "name": "PDL",
+       "cents": 27467,
+       "price": 274.665,
+       "broken": false,
+       "period": "2026-11-13",
+       "aliases": [
+        "PWL",
+        "parent_bar_low"
+       ],
+       "in_window": true,
+       "timeframe": "day",
+       "level_type": "low",
+       "distance_atr": 0.35
+      },
+      {
+       "name": "PML",
+       "cents": 26988,
+       "price": 269.875,
+       "broken": false,
+       "period": "2026-10",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "month",
+       "level_type": "low",
+       "distance_atr": 1.333
+      },
+      {
+       "name": "PYH",
+       "cents": 25820,
+       "price": 258.2,
+       "broken": false,
+       "period": "2025",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "year",
+       "level_type": "high",
+       "distance_atr": 3.728
+      },
+      {
+       "name": "PYC",
+       "cents": 24616,
+       "price": 246.16,
+       "broken": false,
+       "period": "2025",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "year",
+       "level_type": "close",
+       "distance_atr": 6.198
+      },
+      {
+       "name": "PYL",
+       "cents": 17173,
+       "price": 171.73,
+       "broken": false,
+       "period": "2025",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "year",
+       "level_type": "low",
+       "distance_atr": 21.465
+      }
+     ],
+     "distance_atr": 0.105,
+     "gate_targets": [
+      {
+       "name": "PDL",
+       "price": 274.665,
+       "period": "2026-11-13",
+       "aliases": [
+        "PWL",
+        "parent_bar_low"
+       ],
+       "timeframe": "day",
+       "level_type": "low"
+      },
+      {
+       "name": "PML",
+       "price": 269.875,
+       "period": "2026-10",
+       "aliases": [],
+       "timeframe": "month",
+       "level_type": "low"
+      }
+     ],
+     "target_status": "ok"
+    },
+    "atr_14": 4.874951094061365,
+    "levels": [
+     {
+      "name": "PDH",
+      "price": 279.17,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "2D",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PDL",
+      "price": 274.665,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "2D",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PDC",
+      "price": 277.54,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "2D",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PWH",
+      "price": 283.79,
+      "timeframe": "week",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "1",
+      "period_label": "2026-11-09/2026-11-15"
+     },
+     {
+      "name": "PWL",
+      "price": 274.665,
+      "timeframe": "week",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "1",
+      "period_label": "2026-11-09/2026-11-15"
+     },
+     {
+      "name": "PWC",
+      "price": 277.54,
+      "timeframe": "week",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "1",
+      "period_label": "2026-11-09/2026-11-15"
+     },
+     {
+      "name": "PMH",
+      "price": 285.26,
+      "timeframe": "month",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "Failed_2D",
+      "period_label": "2026-10"
+     },
+     {
+      "name": "PML",
+      "price": 269.875,
+      "timeframe": "month",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "Failed_2D",
+      "period_label": "2026-10"
+     },
+     {
+      "name": "PMC",
+      "price": 279.33,
+      "timeframe": "month",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "Failed_2D",
+      "period_label": "2026-10"
+     },
+     {
+      "name": "PQH",
+      "price": 305.18,
+      "timeframe": "quarter",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "Failed_2U",
+      "period_label": "2026Q3"
+     },
+     {
+      "name": "PQL",
+      "price": 277.41,
+      "timeframe": "quarter",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "Failed_2U",
+      "period_label": "2026Q3"
+     },
+     {
+      "name": "PQC",
+      "price": 277.89,
+      "timeframe": "quarter",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "Failed_2U",
+      "period_label": "2026Q3"
+     },
+     {
+      "name": "PYH",
+      "price": 258.2,
+      "timeframe": "year",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "3",
+      "period_label": "2025"
+     },
+     {
+      "name": "PYL",
+      "price": 171.73,
+      "timeframe": "year",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "3",
+      "period_label": "2025"
+     },
+     {
+      "name": "PYC",
+      "price": 246.16,
+      "timeframe": "year",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "3",
+      "period_label": "2025"
+     },
+     {
+      "name": "PDO",
+      "price": 278.95,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "open",
+      "strat_class": "2D",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PWO",
+      "price": 277.44,
+      "timeframe": "week",
+      "is_current": false,
+      "level_type": "open",
+      "strat_class": "1",
+      "period_label": "2026-11-09/2026-11-15"
+     },
+     {
+      "name": "CMO",
+      "price": 281.64,
+      "timeframe": "month",
+      "is_current": true,
+      "level_type": "open",
+      "strat_class": "Failed_2U",
+      "period_label": "2026-11"
+     },
+     {
+      "name": "GAP_H_2026-11-09",
+      "price": 276.81,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "gap_high",
+      "strat_class": "gap_up",
+      "period_label": "2026-11-09"
+     },
+     {
+      "name": "GAP_L_2026-11-09",
+      "price": 274.55,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "gap_low",
+      "strat_class": "gap_up",
+      "period_label": "2026-11-09"
+     },
+     {
+      "name": "parent_bar_high",
+      "price": 279.17,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "parent_bar_low",
+      "price": 274.665,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PMK_H",
+      "price": 278.92,
+      "timeframe": "intraday",
+      "is_current": true,
+      "level_type": "high",
+      "strat_class": "",
+      "period_label": "premarket"
+     },
+     {
+      "name": "PMK_L",
+      "price": 275.86,
+      "timeframe": "intraday",
+      "is_current": true,
+      "level_type": "low",
+      "strat_class": "",
+      "period_label": "premarket"
+     }
+    ],
+    "params": {
+     "exit_legs": {
+      "extra": {
+       "legs": 3
+      },
+      "value": 3.0,
+      "run_id": null,
+      "source": "policy",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": null,
+      "atr_basis": "atr_14",
+      "method_id": "policy",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2015-01-02",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "min_stop_atr": {
+      "value": 0.15612583154385337,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 389,
+      "atr_basis": "atr_14",
+      "method_id": "filled_held_mae_quantile",
+      "input_from": "2023-11-20",
+      "min_sample": 150,
+      "statistic_q": 0.5,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "pm_spike_atr": {
+      "value": 0.542076067170152,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 60,
+      "atr_basis": "atr_14",
+      "method_id": "premarket_wick_excess_quantile",
+      "input_from": "2026-08-21",
+      "min_sample": 40,
+      "statistic_q": 0.999,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 60,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_cutoff_et": {
+      "extra": {
+       "time_et": "16:00"
+      },
+      "value": 960.0,
+      "run_id": null,
+      "source": "policy",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": null,
+      "atr_basis": "atr_14",
+      "method_id": "policy",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2015-01-02",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "atr_rung_anchors": {
+      "extra": {
+       "anchors": [
+        "PDH",
+        "PDL",
+        "PMK_H",
+        "PMK_L"
+       ]
+      },
+      "value": 4.0,
+      "run_id": null,
+      "source": "policy",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": null,
+      "atr_basis": "atr_14",
+      "method_id": "policy",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2015-01-02",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "atr_rung_max_atr": {
+      "value": 2.0,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "stop_neutral_atr": {
+      "value": 0.2737495535518202,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 389,
+      "atr_basis": "atr_14",
+      "method_id": "filled_held_mae_quantile",
+      "input_from": "2023-11-20",
+      "min_sample": 150,
+      "statistic_q": 0.75,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "atr_rung_step_atr": {
+      "value": 0.5,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "gap_fill_flag_atr": {
+      "value": 0.5,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "level_cluster_atr": {
+      "value": 0.05033947137774778,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 60,
+      "atr_basis": "atr_14",
+      "method_id": "rth_interval_change_quantile",
+      "input_from": "2026-08-21",
+      "min_sample": 40,
+      "statistic_q": 0.5,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 60,
+      "policy_effective_from": "2015-01-02"
+     },
+     "pm_stale_print_atr": {
+      "value": 0.03287993142806097,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 60,
+      "atr_basis": "atr_14",
+      "method_id": "premarket_bar_spread_quantile",
+      "input_from": "2026-08-21",
+      "min_sample": 40,
+      "statistic_q": 0.95,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 60,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_neutral_1_r": {
+      "value": 0.5663995736350704,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 701,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-20",
+      "min_sample": 150,
+      "statistic_q": 0.6,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_neutral_2_r": {
+      "value": 0.9550935779992592,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 701,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-20",
+      "min_sample": 150,
+      "statistic_q": 0.45,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_neutral_3_r": {
+      "value": 1.4692923445467252,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 701,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-20",
+      "min_sample": 150,
+      "statistic_q": 0.3,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "stop_aggressive_atr": {
+      "value": 0.4974219245683639,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 408,
+      "atr_basis": "atr_14",
+      "method_id": "filled_held_mae_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.9,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "atr_rung_stretch_atr": {
+      "value": 1.5,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "stop_conservative_atr": {
+      "value": 0.21262722990096888,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 414,
+      "atr_basis": "atr_14",
+      "method_id": "filled_held_mae_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.6,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_aggressive_1_r": {
+      "value": 0.6899578827345964,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 606,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.4,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_aggressive_2_r": {
+      "value": 1.0231370961171957,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 606,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.25,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_aggressive_3_r": {
+      "value": 1.2552889027354035,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 606,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.15,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_min_spacing_atr": {
+      "value": 0.25,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "plan_target_level_types": {
+      "extra": {
+       "level_types": [
+        "gap_high",
+        "gap_low"
+       ]
+      },
+      "value": 2.0,
+      "run_id": null,
+      "source": "policy",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": null,
+      "atr_basis": "atr_14",
+      "method_id": "policy",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2015-01-02",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_conservative_1_r": {
+      "value": 0.4259595533153376,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 660,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.65,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_conservative_2_r": {
+      "value": 0.8333904113104319,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 660,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.5,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "trigger_window_long_atr": {
+      "value": 2.166790838471162,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 750,
+      "atr_basis": "atr_14",
+      "method_id": "daily_excursion_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 250,
+      "statistic_q": 0.99,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "trigger_window_short_atr": {
+      "value": 2.2699133652700563,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 750,
+      "atr_basis": "atr_14",
+      "method_id": "daily_excursion_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 250,
+      "statistic_q": 0.99,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_neutral_hi_atr": {
+      "value": 0.10243522554515236,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 887,
+      "atr_basis": "atr_14",
+      "method_id": "follow_through_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.5,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_neutral_lo_atr": {
+      "value": 0.0,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 887,
+      "atr_basis": "atr_14",
+      "method_id": "at_trigger",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_aggressive_hi_atr": {
+      "value": 0.3756250365359926,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 887,
+      "atr_basis": "atr_14",
+      "method_id": "follow_through_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.75,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_aggressive_lo_atr": {
+      "value": 0.0,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 887,
+      "atr_basis": "atr_14",
+      "method_id": "at_trigger",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_conservative_hi_atr": {
+      "value": 0.2669199738635997,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 887,
+      "atr_basis": "atr_14",
+      "method_id": "follow_through_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.65,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_conservative_lo_atr": {
+      "value": 0.013803980948894729,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 887,
+      "atr_basis": "atr_14",
+      "method_id": "follow_through_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.2,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     }
+    },
+    "status": "ok",
+    "ticker": "IWM",
+    "built_at": "2026-11-16T08:31:19.190515-05:00",
+    "atr_basis": "atr_14",
+    "atr_rungs": [
+     {
+      "name": "PMK_L-2ATR",
+      "sign": "-",
+      "cents": 26611,
+      "label": "PMK_L-2",
+      "price": 266.11,
+      "anchor": "PMK_L",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     },
+     {
+      "name": "PMK_L-1.5ATR",
+      "sign": "-",
+      "cents": 26855,
+      "label": "PMK_L-1.5",
+      "price": 268.55,
+      "anchor": "PMK_L",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PDH-1.5ATR",
+      "sign": "-",
+      "cents": 27186,
+      "label": "PDH-1.5",
+      "price": 271.86,
+      "anchor": "PDH",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PMK_L-0.5ATR",
+      "sign": "-",
+      "cents": 27342,
+      "label": "PMK_L-0.5",
+      "price": 273.42,
+      "anchor": "PMK_L",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PMK_L+1ATR",
+      "sign": "+",
+      "cents": 28073,
+      "label": "PMK_L+1",
+      "price": 280.73,
+      "anchor": "PMK_L",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PDL+1.5ATR",
+      "sign": "+",
+      "cents": 28198,
+      "label": "PDL+1.5",
+      "price": 281.98,
+      "anchor": "PDL",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PDH+1.5ATR",
+      "sign": "+",
+      "cents": 28648,
+      "label": "PDH+1.5",
+      "price": 286.48,
+      "anchor": "PDH",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PMK_H+2ATR",
+      "sign": "+",
+      "cents": 28867,
+      "label": "PMK_H+2",
+      "price": 288.67,
+      "anchor": "PMK_H",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     }
+    ],
+    "pmg_zones": [
+     {
+      "count": 4,
+      "strength": 5.0,
+      "timeframes": [
+       "day",
+       "quarter",
+       "week"
+      ],
+      "level_names": [
+       "PQL",
+       "PWO",
+       "PDC",
+       "PWC"
+      ],
+      "center_price": 277.48
+     },
+     {
+      "count": 3,
+      "strength": 3.5,
+      "timeframes": [
+       "day",
+       "week"
+      ],
+      "level_names": [
+       "GAP_L_2026-11-09",
+       "PDL",
+       "PWL"
+      ],
+      "center_price": 274.63
+     },
+     {
+      "count": 2,
+      "strength": 2.0,
+      "timeframes": [
+       "day"
+      ],
+      "level_names": [
+       "PDO",
+       "PDH"
+      ],
+      "center_price": 279.06
+     }
+    ],
+    "premarket": {
+     "date": "2026-11-16",
+     "gap_pct": -0.4968,
+     "pre_low": 275.86,
+     "pre_high": 278.92,
+     "pre_vwap": 276.37323242887334,
+     "fetched_at": "2026-11-16T13:20:48.817736+00:00",
+     "excluded_bars": 7,
+     "excluded_spikes": 0,
+     "pre_filter_params": {
+      "atr": 4.874951094061365,
+      "atr_basis": "atr_14",
+      "pm_spike_atr": {
+       "value": 0.542076067170152,
+       "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+       "status": "ok",
+       "effective_from": "2026-11-16"
+      },
+      "pm_stale_print_atr": {
+       "value": 0.03287993142806097,
+       "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+       "status": "ok",
+       "effective_from": "2026-11-16"
+      },
+      "policy_effective_from": "2015-01-02"
+     },
+     "pre_filter_status": "ok",
+     "excluded_stale_prints": 7
+    },
+    "reference": 276.37323242887334,
+    "pmg_status": "ok",
+    "prior_close": 277.54,
+    "strat_class": "2D",
+    "rule_version": "feat-strat-001.v3",
+    "session_date": "2026-11-16",
+    "cleared_above": 278.92,
+    "cleared_below": 275.86,
+    "last_bar_date": "2026-11-13",
+    "atr_rung_params": {
+     "atr_rung_anchors": {
+      "value": [
+       "PDH",
+       "PDL",
+       "PMK_H",
+       "PMK_L"
+      ],
+      "status": "ok",
+      "method_id": "policy",
+      "effective_from": "2015-01-02"
+     },
+     "atr_rung_max_atr": {
+      "value": 2.0,
+      "status": "ok",
+      "method_id": "policy_seed",
+      "effective_from": "2026-11-16"
+     },
+     "atr_rung_step_atr": {
+      "value": 0.5,
+      "status": "ok",
+      "method_id": "policy_seed",
+      "effective_from": "2026-11-16"
+     },
+     "atr_rung_stretch_atr": {
+      "value": 1.5,
+      "status": "ok",
+      "method_id": "policy_seed",
+      "effective_from": "2026-11-16"
+     }
+    },
+    "atr_rung_status": "ok",
+    "atr_rung_anchors": [
+     {
+      "name": "PDH",
+      "price": 279.17,
+      "status": "ok"
+     },
+     {
+      "name": "PDL",
+      "price": 274.67,
+      "status": "ok"
+     },
+     {
+      "name": "PMK_H",
+      "price": 278.92,
+      "status": "ok"
+     },
+     {
+      "name": "PMK_L",
+      "price": 275.86,
+      "status": "ok"
+     }
+    ],
+    "premarket_status": "ok",
+    "reference_source": "pre_vwap",
+    "atr_rungs_dropped": [
+     {
+      "name": "PDL-2ATR",
+      "sign": "-",
+      "cents": 26492,
+      "label": "PDL-2",
+      "price": 264.92,
+      "anchor": "PDL",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0,
+      "near_price": 266.11
+     },
+     {
+      "name": "PDL-1.5ATR",
+      "sign": "-",
+      "cents": 26736,
+      "label": "PDL-1.5",
+      "price": 267.36,
+      "anchor": "PDL",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5,
+      "near_price": 268.55
+     },
+     {
+      "name": "PMK_H-2ATR",
+      "near": "PML",
+      "sign": "-",
+      "cents": 26917,
+      "label": "PMK_H-2",
+      "price": 269.17,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     },
+     {
+      "name": "PDH-2ATR",
+      "near": "PML",
+      "sign": "-",
+      "cents": 26942,
+      "label": "PDH-2",
+      "price": 269.42,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     },
+     {
+      "name": "PDL-1ATR",
+      "near": "PML",
+      "sign": "-",
+      "cents": 26980,
+      "label": "PDL-1",
+      "price": 269.8,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PMK_L-1ATR",
+      "near": "PML",
+      "sign": "-",
+      "cents": 27099,
+      "label": "PMK_L-1",
+      "price": 270.99,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PMK_H-1.5ATR",
+      "sign": "-",
+      "cents": 27161,
+      "label": "PMK_H-1.5",
+      "price": 271.61,
+      "anchor": "PMK_H",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5,
+      "near_price": 271.86
+     },
+     {
+      "name": "PDL-0.5ATR",
+      "sign": "-",
+      "cents": 27223,
+      "label": "PDL-0.5",
+      "price": 272.23,
+      "anchor": "PDL",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5,
+      "near_price": 273.42
+     },
+     {
+      "name": "PMK_H-1ATR",
+      "near": "PDL",
+      "sign": "-",
+      "cents": 27405,
+      "label": "PMK_H-1",
+      "price": 274.05,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PDH-1ATR",
+      "near": "PDL",
+      "sign": "-",
+      "cents": 27430,
+      "label": "PDH-1",
+      "price": 274.3,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PMK_H-0.5ATR",
+      "near": "PMK_L",
+      "sign": "-",
+      "cents": 27648,
+      "label": "PMK_H-0.5",
+      "price": 276.48,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PDH-0.5ATR",
+      "near": "PQL",
+      "sign": "-",
+      "cents": 27673,
+      "label": "PDH-0.5",
+      "price": 276.73,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PDL+0.5ATR",
+      "near": "PQL",
+      "sign": "+",
+      "cents": 27711,
+      "label": "PDL+0.5",
+      "price": 277.11,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PMK_L+0.5ATR",
+      "near": "PQC",
+      "sign": "+",
+      "cents": 27830,
+      "label": "PMK_L+0.5",
+      "price": 278.3,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PDL+1ATR",
+      "near": "PMC",
+      "sign": "+",
+      "cents": 27954,
+      "label": "PDL+1",
+      "price": 279.54,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PMK_H+0.5ATR",
+      "sign": "+",
+      "cents": 28136,
+      "label": "PMK_H+0.5",
+      "price": 281.36,
+      "anchor": "PMK_H",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5,
+      "near_price": 280.73
+     },
+     {
+      "name": "PDH+0.5ATR",
+      "sign": "+",
+      "cents": 28161,
+      "label": "PDH+0.5",
+      "price": 281.61,
+      "anchor": "PDH",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5,
+      "near_price": 280.73
+     },
+     {
+      "name": "PMK_L+1.5ATR",
+      "near": "PWH",
+      "sign": "+",
+      "cents": 28317,
+      "label": "PMK_L+1.5",
+      "price": 283.17,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PMK_H+1ATR",
+      "sign": "+",
+      "cents": 28379,
+      "label": "PMK_H+1",
+      "price": 283.79,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "alias_of": "PWH",
+      "multiple": 1.0
+     },
+     {
+      "name": "PDH+1ATR",
+      "near": "PWH",
+      "sign": "+",
+      "cents": 28404,
+      "label": "PDH+1",
+      "price": 284.04,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PDL+2ATR",
+      "near": "PWH",
+      "sign": "+",
+      "cents": 28442,
+      "label": "PDL+2",
+      "price": 284.42,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     },
+     {
+      "name": "PMK_L+2ATR",
+      "near": "PMH",
+      "sign": "+",
+      "cents": 28561,
+      "label": "PMK_L+2",
+      "price": 285.61,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     },
+     {
+      "name": "PMK_H+1.5ATR",
+      "near": "PMH",
+      "sign": "+",
+      "cents": 28623,
+      "label": "PMK_H+1.5",
+      "price": 286.23,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PDH+2ATR",
+      "sign": "+",
+      "cents": 28892,
+      "label": "PDH+2",
+      "price": 288.92,
+      "anchor": "PDH",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0,
+      "near_price": 288.67
+     }
+    ],
+    "policy_effective_from": "2015-01-02",
+    "plan_target_level_types": [
+     "gap_high",
+     "gap_low"
+    ],
+    "plan_target_level_types_status": "ok"
+   }
+  ],
+  [
+   "QQQ",
+   "2026-11-16 13:31:23.355460+00:00",
+   "live",
+   0.8530903853754517,
+   -0.7499999999999999,
+   "{\"1d\": \"2D\", \"1w\": \"1\", \"1mo\": \"2D\"}",
+   {
+    "atr": 16.338327465620264,
+    "long": {
+     "plan": {
+      "legs": 3,
+      "atr_basis": "atr_14",
+      "spacing_atr": 0.25,
+      "spacing_price": 4.08,
+      "entry_cutoff_et": "16:00",
+      "gap_fill_flag_atr": 0.5,
+      "entry_cutoff_status": "ok",
+      "gap_fill_flag_status": "ok"
+     },
+     "side": "long",
+     "stop": {
+      "name": "PDL",
+      "price": 671.681,
+      "period": "2026-11-13",
+      "aliases": [
+       "parent_bar_low"
+      ],
+      "timeframe": "day",
+      "level_type": "low"
+     },
+     "ladder": [
+      {
+       "name": "PMK_H",
+       "price": 681.02,
+       "period": "intraday",
+       "level_type": "high",
+       "distance_pct": 1.33
+      },
+      {
+       "name": "PML",
+       "price": 683.45,
+       "period": "month",
+       "level_type": "low",
+       "distance_pct": 1.69
+      }
+     ],
+     "reason": null,
+     "regime": "normal",
+     "window": {
+      "key": "trigger_window_long_atr",
+      "value": 1.887211516070131,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "ticker": "QQQ",
+      "input_to": "2026-11-13",
+      "sample_n": 750,
+      "atr_basis": "atr_14",
+      "method_id": "daily_excursion_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 250,
+      "statistic_q": 0.99,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "skipped": [
+      {
+       "name": "PML",
+       "price": 683.45,
+       "period": "2026-10",
+       "aliases": [],
+       "timeframe": "month",
+       "level_type": "low",
+       "distance_atr": 0.149
+      },
+      {
+       "name": "PMC",
+       "price": 690.49,
+       "period": "2026-10",
+       "aliases": [],
+       "timeframe": "month",
+       "level_type": "close",
+       "distance_atr": 0.106
+      },
+      {
+       "name": "GAP_L_2026-10-30",
+       "price": 698.63,
+       "period": "2026-10-30",
+       "aliases": [],
+       "timeframe": "day",
+       "level_type": "gap_low",
+       "distance_atr": 0.187
+      }
+     ],
+     "targets": [
+      {
+       "name": "PDH",
+       "price": 688.75,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_high"
+       ],
+       "timeframe": "day",
+       "level_type": "high"
+      },
+      {
+       "name": "PWH",
+       "price": 695.57,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "timeframe": "week",
+       "level_type": "high"
+      }
+     ],
+     "trigger": {
+      "name": "PMK_H",
+      "price": 681.022,
+      "period": "premarket",
+      "aliases": [],
+      "timeframe": "intraday",
+      "level_type": "high"
+     },
+     "room_pct": 1.33,
+     "candidates": [
+      {
+       "name": "PDC",
+       "cents": 67989,
+       "price": 679.89,
+       "broken": true,
+       "period": "2026-11-13",
+       "aliases": [
+        "PWC"
+       ],
+       "in_window": true,
+       "timeframe": "day",
+       "level_type": "close",
+       "distance_atr": 0.478
+      },
+      {
+       "name": "PMK_H",
+       "cents": 68102,
+       "price": 681.022,
+       "broken": false,
+       "period": "premarket",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "intraday",
+       "level_type": "high",
+       "distance_atr": 0.547
+      },
+      {
+       "name": "PML",
+       "cents": 68345,
+       "price": 683.45,
+       "broken": false,
+       "period": "2026-10",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "month",
+       "level_type": "low",
+       "distance_atr": 0.696
+      },
+      {
+       "name": "PDH",
+       "cents": 68875,
+       "price": 688.75,
+       "broken": false,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_high"
+       ],
+       "in_window": true,
+       "timeframe": "day",
+       "level_type": "high",
+       "distance_atr": 1.02
+      },
+      {
+       "name": "PMC",
+       "cents": 69049,
+       "price": 690.49,
+       "broken": false,
+       "period": "2026-10",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "month",
+       "level_type": "close",
+       "distance_atr": 1.127
+      },
+      {
+       "name": "PWH",
+       "cents": 69557,
+       "price": 695.57,
+       "broken": false,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "week",
+       "level_type": "high",
+       "distance_atr": 1.437
+      },
+      {
+       "name": "PQC",
+       "cents": 73977,
+       "price": 739.77,
+       "broken": false,
+       "period": "2026Q3",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "quarter",
+       "level_type": "close",
+       "distance_atr": 4.143
+      },
+      {
+       "name": "PQH",
+       "cents": 74835,
+       "price": 748.3489999999999,
+       "broken": false,
+       "period": "2026Q3",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "quarter",
+       "level_type": "high",
+       "distance_atr": 4.668
+      },
+      {
+       "name": "PMH",
+       "cents": 76286,
+       "price": 762.86,
+       "broken": false,
+       "period": "2026-10",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "month",
+       "level_type": "high",
+       "distance_atr": 5.556
+      }
+     ],
+     "distance_atr": 0.547,
+     "gate_targets": [
+      {
+       "name": "PML",
+       "price": 683.45,
+       "period": "2026-10",
+       "aliases": [],
+       "timeframe": "month",
+       "level_type": "low"
+      },
+      {
+       "name": "PDH",
+       "price": 688.75,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_high"
+       ],
+       "timeframe": "day",
+       "level_type": "high"
+      },
+      {
+       "name": "PMC",
+       "price": 690.49,
+       "period": "2026-10",
+       "aliases": [],
+       "timeframe": "month",
+       "level_type": "close"
+      }
+     ],
+     "target_status": "ok"
+    },
+    "atr_5": 18.650581197166698,
+    "short": {
+     "plan": {
+      "legs": 3,
+      "atr_basis": "atr_14",
+      "spacing_atr": 0.25,
+      "spacing_price": 4.08,
+      "entry_cutoff_et": "16:00",
+      "gap_fill_flag_atr": 0.5,
+      "entry_cutoff_status": "ok",
+      "gap_fill_flag_status": "ok"
+     },
+     "side": "short",
+     "stop": {
+      "name": "PDC",
+      "price": 679.89,
+      "period": "2026-11-13",
+      "aliases": [
+       "PWC"
+      ],
+      "timeframe": "day",
+      "level_type": "close"
+     },
+     "ladder": [
+      {
+       "name": "PMK_L",
+       "price": 668.3,
+       "period": "intraday",
+       "level_type": "low",
+       "distance_pct": -0.56
+      },
+      {
+       "name": "PWL",
+       "price": 662.02,
+       "period": "week",
+       "level_type": "low",
+       "distance_pct": -1.5
+      }
+     ],
+     "reason": null,
+     "regime": "normal",
+     "window": {
+      "key": "trigger_window_short_atr",
+      "value": 2.471954787514459,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "ticker": "QQQ",
+      "input_to": "2026-11-13",
+      "sample_n": 750,
+      "atr_basis": "atr_14",
+      "method_id": "daily_excursion_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 250,
+      "statistic_q": 0.99,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "skipped": [
+      {
+       "name": "PQL",
+       "price": 661.14,
+       "period": "2026Q3",
+       "aliases": [],
+       "timeframe": "quarter",
+       "level_type": "low",
+       "distance_atr": 0.054
+      }
+     ],
+     "targets": [
+      {
+       "name": "PWL",
+       "price": 662.02,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "timeframe": "week",
+       "level_type": "low"
+      },
+      {
+       "name": "PYH",
+       "price": 637.01,
+       "period": "2025",
+       "aliases": [],
+       "timeframe": "year",
+       "level_type": "high"
+      }
+     ],
+     "trigger": {
+      "name": "PMK_L",
+      "price": 668.3,
+      "period": "premarket",
+      "aliases": [],
+      "timeframe": "intraday",
+      "level_type": "low"
+     },
+     "room_pct": 0.563,
+     "candidates": [
+      {
+       "name": "PDL",
+       "cents": 67168,
+       "price": 671.681,
+       "broken": true,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_low"
+       ],
+       "in_window": true,
+       "timeframe": "day",
+       "level_type": "low",
+       "distance_atr": 0.025
+      },
+      {
+       "name": "PMK_L",
+       "cents": 66830,
+       "price": 668.3,
+       "broken": false,
+       "period": "premarket",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "intraday",
+       "level_type": "low",
+       "distance_atr": 0.232
+      },
+      {
+       "name": "PWL",
+       "cents": 66202,
+       "price": 662.02,
+       "broken": false,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "week",
+       "level_type": "low",
+       "distance_atr": 0.616
+      },
+      {
+       "name": "PQL",
+       "cents": 66114,
+       "price": 661.14,
+       "broken": false,
+       "period": "2026Q3",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "quarter",
+       "level_type": "low",
+       "distance_atr": 0.67
+      },
+      {
+       "name": "PYH",
+       "cents": 63701,
+       "price": 637.01,
+       "broken": false,
+       "period": "2025",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "year",
+       "level_type": "high",
+       "distance_atr": 2.147
+      },
+      {
+       "name": "PYC",
+       "cents": 61431,
+       "price": 614.31,
+       "broken": false,
+       "period": "2025",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "year",
+       "level_type": "close",
+       "distance_atr": 3.536
+      },
+      {
+       "name": "PYL",
+       "cents": 40239,
+       "price": 402.39,
+       "broken": false,
+       "period": "2025",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "year",
+       "level_type": "low",
+       "distance_atr": 16.507
+      }
+     ],
+     "distance_atr": 0.232,
+     "gate_targets": [
+      {
+       "name": "PWL",
+       "price": 662.02,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "timeframe": "week",
+       "level_type": "low"
+      },
+      {
+       "name": "PQL",
+       "price": 661.14,
+       "period": "2026Q3",
+       "aliases": [],
+       "timeframe": "quarter",
+       "level_type": "low"
+      },
+      {
+       "name": "PYH",
+       "price": 637.01,
+       "period": "2025",
+       "aliases": [],
+       "timeframe": "year",
+       "level_type": "high"
+      }
+     ],
+     "target_status": "ok"
+    },
+    "atr_14": 16.338327465620264,
+    "levels": [
+     {
+      "name": "PDH",
+      "price": 688.75,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "2D",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PDL",
+      "price": 671.681,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "2D",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PDC",
+      "price": 679.89,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "2D",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PWH",
+      "price": 695.57,
+      "timeframe": "week",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "1",
+      "period_label": "2026-11-09/2026-11-15"
+     },
+     {
+      "name": "PWL",
+      "price": 662.02,
+      "timeframe": "week",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "1",
+      "period_label": "2026-11-09/2026-11-15"
+     },
+     {
+      "name": "PWC",
+      "price": 679.89,
+      "timeframe": "week",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "1",
+      "period_label": "2026-11-09/2026-11-15"
+     },
+     {
+      "name": "PMH",
+      "price": 762.86,
+      "timeframe": "month",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "3",
+      "period_label": "2026-10"
+     },
+     {
+      "name": "PML",
+      "price": 683.45,
+      "timeframe": "month",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "3",
+      "period_label": "2026-10"
+     },
+     {
+      "name": "PMC",
+      "price": 690.49,
+      "timeframe": "month",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "3",
+      "period_label": "2026-10"
+     },
+     {
+      "name": "PQH",
+      "price": 748.3489999999999,
+      "timeframe": "quarter",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "1",
+      "period_label": "2026Q3"
+     },
+     {
+      "name": "PQL",
+      "price": 661.14,
+      "timeframe": "quarter",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "1",
+      "period_label": "2026Q3"
+     },
+     {
+      "name": "PQC",
+      "price": 739.77,
+      "timeframe": "quarter",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "1",
+      "period_label": "2026Q3"
+     },
+     {
+      "name": "PYH",
+      "price": 637.01,
+      "timeframe": "year",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "2U",
+      "period_label": "2025"
+     },
+     {
+      "name": "PYL",
+      "price": 402.39,
+      "timeframe": "year",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "2U",
+      "period_label": "2025"
+     },
+     {
+      "name": "PYC",
+      "price": 614.31,
+      "timeframe": "year",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "2U",
+      "period_label": "2025"
+     },
+     {
+      "name": "PDO",
+      "price": 688.54,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "open",
+      "strat_class": "2D",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PWO",
+      "price": 662.64,
+      "timeframe": "week",
+      "is_current": false,
+      "level_type": "open",
+      "strat_class": "1",
+      "period_label": "2026-11-09/2026-11-15"
+     },
+     {
+      "name": "CMO",
+      "price": 695.315,
+      "timeframe": "month",
+      "is_current": true,
+      "level_type": "open",
+      "strat_class": "2D",
+      "period_label": "2026-11"
+     },
+     {
+      "name": "GAP_H_2026-10-29",
+      "price": 720.3,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "gap_high",
+      "strat_class": "gap_down",
+      "period_label": "2026-10-29"
+     },
+     {
+      "name": "GAP_L_2026-10-29",
+      "price": 718.07,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "gap_low",
+      "strat_class": "gap_down",
+      "period_label": "2026-10-29"
+     },
+     {
+      "name": "GAP_H_2026-10-30",
+      "price": 711.62,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "gap_high",
+      "strat_class": "gap_down",
+      "period_label": "2026-10-30"
+     },
+     {
+      "name": "GAP_L_2026-10-30",
+      "price": 698.63,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "gap_low",
+      "strat_class": "gap_down",
+      "period_label": "2026-10-30"
+     },
+     {
+      "name": "parent_bar_high",
+      "price": 688.75,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "parent_bar_low",
+      "price": 671.681,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PMK_H",
+      "price": 681.022,
+      "timeframe": "intraday",
+      "is_current": true,
+      "level_type": "high",
+      "strat_class": "",
+      "period_label": "premarket"
+     },
+     {
+      "name": "PMK_L",
+      "price": 668.3,
+      "timeframe": "intraday",
+      "is_current": true,
+      "level_type": "low",
+      "strat_class": "",
+      "period_label": "premarket"
+     }
+    ],
+    "params": {
+     "exit_legs": {
+      "extra": {
+       "legs": 3
+      },
+      "value": 3.0,
+      "run_id": null,
+      "source": "policy",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": null,
+      "atr_basis": "atr_14",
+      "method_id": "policy",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2015-01-02",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "min_stop_atr": {
+      "value": 0.1768941897838584,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 386,
+      "atr_basis": "atr_14",
+      "method_id": "filled_held_mae_quantile",
+      "input_from": "2023-11-20",
+      "min_sample": 150,
+      "statistic_q": 0.5,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "pm_spike_atr": {
+      "value": 1.072507165357459,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 60,
+      "atr_basis": "atr_14",
+      "method_id": "premarket_wick_excess_quantile",
+      "input_from": "2026-08-21",
+      "min_sample": 40,
+      "statistic_q": 0.999,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 60,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_cutoff_et": {
+      "extra": {
+       "time_et": "16:00"
+      },
+      "value": 960.0,
+      "run_id": null,
+      "source": "policy",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": null,
+      "atr_basis": "atr_14",
+      "method_id": "policy",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2015-01-02",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "atr_rung_anchors": {
+      "extra": {
+       "anchors": [
+        "PDH",
+        "PDL",
+        "PMK_H",
+        "PMK_L"
+       ]
+      },
+      "value": 4.0,
+      "run_id": null,
+      "source": "policy",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": null,
+      "atr_basis": "atr_14",
+      "method_id": "policy",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2015-01-02",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "atr_rung_max_atr": {
+      "value": 2.0,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "stop_neutral_atr": {
+      "value": 0.31183693291165704,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 386,
+      "atr_basis": "atr_14",
+      "method_id": "filled_held_mae_quantile",
+      "input_from": "2023-11-20",
+      "min_sample": 150,
+      "statistic_q": 0.75,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "atr_rung_step_atr": {
+      "value": 0.5,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "gap_fill_flag_atr": {
+      "value": 0.5,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "level_cluster_atr": {
+      "value": 0.05072557608866945,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 60,
+      "atr_basis": "atr_14",
+      "method_id": "rth_interval_change_quantile",
+      "input_from": "2026-08-21",
+      "min_sample": 40,
+      "statistic_q": 0.5,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 60,
+      "policy_effective_from": "2015-01-02"
+     },
+     "pm_stale_print_atr": {
+      "value": 0.03712180991173313,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 60,
+      "atr_basis": "atr_14",
+      "method_id": "premarket_bar_spread_quantile",
+      "input_from": "2026-08-21",
+      "min_sample": 40,
+      "statistic_q": 0.95,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 60,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_neutral_1_r": {
+      "value": 0.5063396726618952,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 686,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.6,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_neutral_2_r": {
+      "value": 0.7849896656818667,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 686,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.45,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_neutral_3_r": {
+      "value": 1.1924490238432188,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 686,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.3,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "stop_aggressive_atr": {
+      "value": 0.5174364829346509,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 407,
+      "atr_basis": "atr_14",
+      "method_id": "filled_held_mae_quantile",
+      "input_from": "2023-11-20",
+      "min_sample": 150,
+      "statistic_q": 0.9,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "atr_rung_stretch_atr": {
+      "value": 1.5,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "stop_conservative_atr": {
+      "value": 0.23625212764015807,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 407,
+      "atr_basis": "atr_14",
+      "method_id": "filled_held_mae_quantile",
+      "input_from": "2023-11-20",
+      "min_sample": 150,
+      "statistic_q": 0.6,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_aggressive_1_r": {
+      "value": 0.6164530732603762,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 595,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-20",
+      "min_sample": 150,
+      "statistic_q": 0.4,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_aggressive_2_r": {
+      "value": 0.955835736865826,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 595,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-20",
+      "min_sample": 150,
+      "statistic_q": 0.25,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_aggressive_3_r": {
+      "value": 1.2890424481208882,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 595,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-20",
+      "min_sample": 150,
+      "statistic_q": 0.15,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_min_spacing_atr": {
+      "value": 0.25,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "plan_target_level_types": {
+      "extra": {
+       "level_types": [
+        "gap_high",
+        "gap_low"
+       ]
+      },
+      "value": 2.0,
+      "run_id": null,
+      "source": "policy",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": null,
+      "atr_basis": "atr_14",
+      "method_id": "policy",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2015-01-02",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_conservative_1_r": {
+      "value": 0.4454596518681976,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 644,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.65,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_conservative_2_r": {
+      "value": 0.7273331840984542,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 644,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.5,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "trigger_window_long_atr": {
+      "value": 1.887211516070131,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 750,
+      "atr_basis": "atr_14",
+      "method_id": "daily_excursion_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 250,
+      "statistic_q": 0.99,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "trigger_window_short_atr": {
+      "value": 2.471954787514459,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 750,
+      "atr_basis": "atr_14",
+      "method_id": "daily_excursion_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 250,
+      "statistic_q": 0.99,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_neutral_hi_atr": {
+      "value": 0.102981506234984,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 865,
+      "atr_basis": "atr_14",
+      "method_id": "follow_through_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.5,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_neutral_lo_atr": {
+      "value": 0.0,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 865,
+      "atr_basis": "atr_14",
+      "method_id": "at_trigger",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_aggressive_hi_atr": {
+      "value": 0.37218006719998104,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 865,
+      "atr_basis": "atr_14",
+      "method_id": "follow_through_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.75,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_aggressive_lo_atr": {
+      "value": 0.0,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 865,
+      "atr_basis": "atr_14",
+      "method_id": "at_trigger",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_conservative_hi_atr": {
+      "value": 0.24674603643003123,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 865,
+      "atr_basis": "atr_14",
+      "method_id": "follow_through_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.65,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_conservative_lo_atr": {
+      "value": 0.014111068823917631,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 865,
+      "atr_basis": "atr_14",
+      "method_id": "follow_through_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.2,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     }
+    },
+    "status": "ok",
+    "ticker": "QQQ",
+    "built_at": "2026-11-16T08:31:19.536117-05:00",
+    "atr_basis": "atr_14",
+    "atr_rungs": [
+     {
+      "name": "PDL-1.5ATR",
+      "sign": "-",
+      "cents": 64717,
+      "label": "PDL-1.5",
+      "price": 647.17,
+      "anchor": "PDL",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PMK_L-1ATR",
+      "sign": "-",
+      "cents": 65196,
+      "label": "PMK_L-1",
+      "price": 651.96,
+      "anchor": "PMK_L",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PMK_H-1.5ATR",
+      "sign": "-",
+      "cents": 65651,
+      "label": "PMK_H-1.5",
+      "price": 656.51,
+      "anchor": "PMK_H",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PMK_L+2ATR",
+      "sign": "+",
+      "cents": 70098,
+      "label": "PMK_L+2",
+      "price": 700.98,
+      "anchor": "PMK_L",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     },
+     {
+      "name": "PDH+1ATR",
+      "sign": "+",
+      "cents": 70509,
+      "label": "PDH+1",
+      "price": 705.09,
+      "anchor": "PDH",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PDH+1.5ATR",
+      "sign": "+",
+      "cents": 71326,
+      "label": "PDH+1.5",
+      "price": 713.26,
+      "anchor": "PDH",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PDH+2ATR",
+      "sign": "+",
+      "cents": 72143,
+      "label": "PDH+2",
+      "price": 721.43,
+      "anchor": "PDH",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     }
+    ],
+    "pmg_zones": [
+     {
+      "count": 2,
+      "strength": 2.5,
+      "timeframes": [
+       "day",
+       "week"
+      ],
+      "level_names": [
+       "PDC",
+       "PWC"
+      ],
+      "center_price": 679.89
+     },
+     {
+      "count": 2,
+      "strength": 2.5,
+      "timeframes": [
+       "month",
+       "week"
+      ],
+      "level_names": [
+       "CMO",
+       "PWH"
+      ],
+      "center_price": 695.44
+     },
+     {
+      "count": 2,
+      "strength": 2.0,
+      "timeframes": [
+       "week"
+      ],
+      "level_names": [
+       "PWL",
+       "PWO"
+      ],
+      "center_price": 662.33
+     },
+     {
+      "count": 2,
+      "strength": 2.0,
+      "timeframes": [
+       "day"
+      ],
+      "level_names": [
+       "PDO",
+       "PDH"
+      ],
+      "center_price": 688.64
+     }
+    ],
+    "premarket": {
+     "date": "2026-11-16",
+     "gap_pct": -0.7428,
+     "pre_low": 668.3,
+     "pre_high": 681.022,
+     "pre_vwap": 672.0842284536367,
+     "fetched_at": "2026-11-16T13:20:55.074732+00:00",
+     "excluded_bars": 16,
+     "excluded_spikes": 0,
+     "pre_filter_params": {
+      "atr": 16.338327465620264,
+      "atr_basis": "atr_14",
+      "pm_spike_atr": {
+       "value": 1.072507165357459,
+       "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+       "status": "ok",
+       "effective_from": "2026-11-16"
+      },
+      "pm_stale_print_atr": {
+       "value": 0.03712180991173313,
+       "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+       "status": "ok",
+       "effective_from": "2026-11-16"
+      },
+      "policy_effective_from": "2015-01-02"
+     },
+     "pre_filter_status": "ok",
+     "excluded_stale_prints": 16
+    },
+    "reference": 672.0842284536367,
+    "pmg_status": "ok",
+    "prior_close": 679.89,
+    "strat_class": "2D",
+    "rule_version": "feat-strat-001.v3",
+    "session_date": "2026-11-16",
+    "cleared_above": 681.022,
+    "cleared_below": 668.3,
+    "last_bar_date": "2026-11-13",
+    "atr_rung_params": {
+     "atr_rung_anchors": {
+      "value": [
+       "PDH",
+       "PDL",
+       "PMK_H",
+       "PMK_L"
+      ],
+      "status": "ok",
+      "method_id": "policy",
+      "effective_from": "2015-01-02"
+     },
+     "atr_rung_max_atr": {
+      "value": 2.0,
+      "status": "ok",
+      "method_id": "policy_seed",
+      "effective_from": "2026-11-16"
+     },
+     "atr_rung_step_atr": {
+      "value": 0.5,
+      "status": "ok",
+      "method_id": "policy_seed",
+      "effective_from": "2026-11-16"
+     },
+     "atr_rung_stretch_atr": {
+      "value": 1.5,
+      "status": "ok",
+      "method_id": "policy_seed",
+      "effective_from": "2026-11-16"
+     }
+    },
+    "atr_rung_status": "ok",
+    "atr_rung_anchors": [
+     {
+      "name": "PDH",
+      "price": 688.75,
+      "status": "ok"
+     },
+     {
+      "name": "PDL",
+      "price": 671.68,
+      "status": "ok"
+     },
+     {
+      "name": "PMK_H",
+      "price": 681.02,
+      "status": "ok"
+     },
+     {
+      "name": "PMK_L",
+      "price": 668.3,
+      "status": "ok"
+     }
+    ],
+    "premarket_status": "ok",
+    "reference_source": "pre_vwap",
+    "atr_rungs_dropped": [
+     {
+      "name": "PMK_L-2ATR",
+      "near": "PYH",
+      "sign": "-",
+      "cents": 63562,
+      "label": "PMK_L-2",
+      "price": 635.62,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     },
+     {
+      "name": "PDL-2ATR",
+      "near": "PYH",
+      "sign": "-",
+      "cents": 63900,
+      "label": "PDL-2",
+      "price": 639.0,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     },
+     {
+      "name": "PMK_L-1.5ATR",
+      "sign": "-",
+      "cents": 64379,
+      "label": "PMK_L-1.5",
+      "price": 643.79,
+      "anchor": "PMK_L",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5,
+      "near_price": 647.17
+     },
+     {
+      "name": "PMK_H-2ATR",
+      "sign": "-",
+      "cents": 64834,
+      "label": "PMK_H-2",
+      "price": 648.34,
+      "anchor": "PMK_H",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0,
+      "near_price": 651.96
+     },
+     {
+      "name": "PDL-1ATR",
+      "sign": "-",
+      "cents": 65534,
+      "label": "PDL-1",
+      "price": 655.34,
+      "anchor": "PDL",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0,
+      "near_price": 656.51
+     },
+     {
+      "name": "PDH-2ATR",
+      "sign": "-",
+      "cents": 65607,
+      "label": "PDH-2",
+      "price": 656.07,
+      "anchor": "PDH",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0,
+      "near_price": 656.51
+     },
+     {
+      "name": "PMK_L-0.5ATR",
+      "near": "PQL",
+      "sign": "-",
+      "cents": 66013,
+      "label": "PMK_L-0.5",
+      "price": 660.13,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PDL-0.5ATR",
+      "near": "PWL",
+      "sign": "-",
+      "cents": 66351,
+      "label": "PDL-0.5",
+      "price": 663.51,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PDH-1.5ATR",
+      "near": "PWL",
+      "sign": "-",
+      "cents": 66424,
+      "label": "PDH-1.5",
+      "price": 664.24,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PMK_H-1ATR",
+      "near": "PWL",
+      "sign": "-",
+      "cents": 66468,
+      "label": "PMK_H-1",
+      "price": 664.68,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PDH-1ATR",
+      "near": "PDL",
+      "sign": "-",
+      "cents": 67241,
+      "label": "PDH-1",
+      "price": 672.41,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PMK_H-0.5ATR",
+      "near": "PDL",
+      "sign": "-",
+      "cents": 67285,
+      "label": "PMK_H-0.5",
+      "price": 672.85,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PMK_L+0.5ATR",
+      "near": "PDC",
+      "sign": "+",
+      "cents": 67647,
+      "label": "PMK_L+0.5",
+      "price": 676.47,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PDL+0.5ATR",
+      "near": "PDC",
+      "sign": "+",
+      "cents": 67985,
+      "label": "PDL+0.5",
+      "price": 679.85,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PDH-0.5ATR",
+      "near": "PMK_H",
+      "sign": "-",
+      "cents": 68058,
+      "label": "PDH-0.5",
+      "price": 680.58,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PMK_L+1ATR",
+      "near": "PML",
+      "sign": "+",
+      "cents": 68464,
+      "label": "PMK_L+1",
+      "price": 684.64,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PDL+1ATR",
+      "near": "PDH",
+      "sign": "+",
+      "cents": 68802,
+      "label": "PDL+1",
+      "price": 688.02,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PMK_H+0.5ATR",
+      "near": "PDH",
+      "sign": "+",
+      "cents": 68919,
+      "label": "PMK_H+0.5",
+      "price": 689.19,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PMK_L+1.5ATR",
+      "near": "PMC",
+      "sign": "+",
+      "cents": 69281,
+      "label": "PMK_L+1.5",
+      "price": 692.81,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PDL+1.5ATR",
+      "near": "PWH",
+      "sign": "+",
+      "cents": 69619,
+      "label": "PDL+1.5",
+      "price": 696.19,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PDH+0.5ATR",
+      "near": "PWH",
+      "sign": "+",
+      "cents": 69692,
+      "label": "PDH+0.5",
+      "price": 696.92,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PMK_H+1ATR",
+      "near": "PWH",
+      "sign": "+",
+      "cents": 69736,
+      "label": "PMK_H+1",
+      "price": 697.36,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PDL+2ATR",
+      "sign": "+",
+      "cents": 70436,
+      "label": "PDL+2",
+      "price": 704.36,
+      "anchor": "PDL",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0,
+      "near_price": 700.98
+     },
+     {
+      "name": "PMK_H+1.5ATR",
+      "sign": "+",
+      "cents": 70553,
+      "label": "PMK_H+1.5",
+      "price": 705.53,
+      "anchor": "PMK_H",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5,
+      "near_price": 705.09
+     },
+     {
+      "name": "PMK_H+2ATR",
+      "sign": "+",
+      "cents": 71370,
+      "label": "PMK_H+2",
+      "price": 713.7,
+      "anchor": "PMK_H",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0,
+      "near_price": 713.26
+     }
+    ],
+    "policy_effective_from": "2015-01-02",
+    "plan_target_level_types": [
+     "gap_high",
+     "gap_low"
+    ],
+    "plan_target_level_types_status": "ok"
+   }
+  ],
+  [
+   "SPY",
+   "2026-11-16 13:31:23.355460+00:00",
+   "live",
+   0.8249563944286675,
+   -0.7499999999999999,
+   "{\"1d\": \"2D\", \"1w\": \"1\", \"1mo\": \"2D\"}",
+   {
+    "atr": 11.035733780082667,
+    "long": {
+     "plan": {
+      "legs": 3,
+      "atr_basis": "atr_14",
+      "spacing_atr": 0.25,
+      "spacing_price": 2.76,
+      "entry_cutoff_et": "16:00",
+      "gap_fill_flag_atr": 0.5,
+      "entry_cutoff_status": "ok",
+      "gap_fill_flag_status": "ok"
+     },
+     "side": "long",
+     "stop": {
+      "name": "PMK_L",
+      "price": 747.95,
+      "period": "premarket",
+      "aliases": [],
+      "timeframe": "intraday",
+      "level_type": "low"
+     },
+     "ladder": [
+      {
+       "name": "PMK_H",
+       "price": 754.38,
+       "period": "intraday",
+       "level_type": "high",
+       "distance_pct": 0.55
+      },
+      {
+       "name": "PMC",
+       "price": 755.72,
+       "period": "month",
+       "level_type": "close",
+       "distance_pct": 0.73
+      }
+     ],
+     "reason": null,
+     "regime": "normal",
+     "window": {
+      "key": "trigger_window_long_atr",
+      "value": 1.9894379223416279,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "ticker": "SPY",
+      "input_to": "2026-11-13",
+      "sample_n": 750,
+      "atr_basis": "atr_14",
+      "method_id": "daily_excursion_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 250,
+      "statistic_q": 0.99,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "skipped": [
+      {
+       "name": "PMC",
+       "price": 755.72,
+       "period": "2026-10",
+       "aliases": [],
+       "timeframe": "month",
+       "level_type": "close",
+       "distance_atr": 0.121
+      },
+      {
+       "name": "PQC",
+       "price": 762.63,
+       "period": "2026Q3",
+       "aliases": [],
+       "timeframe": "quarter",
+       "level_type": "close",
+       "distance_atr": 0.227
+      }
+     ],
+     "targets": [
+      {
+       "name": "PDH",
+       "price": 760.12,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_high"
+       ],
+       "timeframe": "day",
+       "level_type": "high"
+      },
+      {
+       "name": "PWH",
+       "price": 763.04,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "timeframe": "week",
+       "level_type": "high"
+      }
+     ],
+     "trigger": {
+      "name": "PMK_H",
+      "price": 754.3772,
+      "period": "premarket",
+      "aliases": [],
+      "timeframe": "intraday",
+      "level_type": "high"
+     },
+     "room_pct": 0.551,
+     "candidates": [
+      {
+       "name": "PML",
+       "cents": 75036,
+       "price": 750.36,
+       "broken": true,
+       "period": "2026-10",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "month",
+       "level_type": "low",
+       "distance_atr": 0.01
+      },
+      {
+       "name": "PDC",
+       "cents": 75437,
+       "price": 754.37,
+       "broken": true,
+       "period": "2026-11-13",
+       "aliases": [
+        "PWC"
+       ],
+       "in_window": true,
+       "timeframe": "day",
+       "level_type": "close",
+       "distance_atr": 0.374
+      },
+      {
+       "name": "PMK_H",
+       "cents": 75438,
+       "price": 754.3772,
+       "broken": false,
+       "period": "premarket",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "intraday",
+       "level_type": "high",
+       "distance_atr": 0.374
+      },
+      {
+       "name": "PMC",
+       "cents": 75572,
+       "price": 755.72,
+       "broken": false,
+       "period": "2026-10",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "month",
+       "level_type": "close",
+       "distance_atr": 0.496
+      },
+      {
+       "name": "PDH",
+       "cents": 76012,
+       "price": 760.12,
+       "broken": false,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_high"
+       ],
+       "in_window": true,
+       "timeframe": "day",
+       "level_type": "high",
+       "distance_atr": 0.895
+      },
+      {
+       "name": "PQC",
+       "cents": 76263,
+       "price": 762.63,
+       "broken": false,
+       "period": "2026Q3",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "quarter",
+       "level_type": "close",
+       "distance_atr": 1.122
+      },
+      {
+       "name": "PWH",
+       "cents": 76304,
+       "price": 763.04,
+       "broken": false,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "week",
+       "level_type": "high",
+       "distance_atr": 1.159
+      },
+      {
+       "name": "PQH",
+       "cents": 77937,
+       "price": 779.37,
+       "broken": false,
+       "period": "2026Q3",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "quarter",
+       "level_type": "high",
+       "distance_atr": 2.639
+      },
+      {
+       "name": "PMH",
+       "cents": 78162,
+       "price": 781.62,
+       "broken": false,
+       "period": "2026-10",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "month",
+       "level_type": "high",
+       "distance_atr": 2.843
+      }
+     ],
+     "distance_atr": 0.374,
+     "gate_targets": [
+      {
+       "name": "PMC",
+       "price": 755.72,
+       "period": "2026-10",
+       "aliases": [],
+       "timeframe": "month",
+       "level_type": "close"
+      },
+      {
+       "name": "PDH",
+       "price": 760.12,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_high"
+       ],
+       "timeframe": "day",
+       "level_type": "high"
+      },
+      {
+       "name": "PQC",
+       "price": 762.63,
+       "period": "2026Q3",
+       "aliases": [],
+       "timeframe": "quarter",
+       "level_type": "close"
+      }
+     ],
+     "target_status": "ok"
+    },
+    "atr_5": 12.758162711582399,
+    "short": {
+     "plan": {
+      "legs": 3,
+      "atr_basis": "atr_14",
+      "spacing_atr": 0.25,
+      "spacing_price": 2.76,
+      "entry_cutoff_et": "16:00",
+      "gap_fill_flag_atr": 0.5,
+      "entry_cutoff_status": "ok",
+      "gap_fill_flag_status": "ok"
+     },
+     "side": "short",
+     "stop": {
+      "name": "PML",
+      "price": 750.36,
+      "period": "2026-10",
+      "aliases": [],
+      "timeframe": "month",
+      "level_type": "low"
+     },
+     "ladder": [
+      {
+       "name": "PMK_L",
+       "price": 747.95,
+       "period": "intraday",
+       "level_type": "low",
+       "distance_pct": -0.31
+      },
+      {
+       "name": "PDL",
+       "price": 747.88,
+       "period": "day",
+       "level_type": "low",
+       "distance_pct": -0.32
+      }
+     ],
+     "reason": null,
+     "regime": "normal",
+     "window": {
+      "key": "trigger_window_short_atr",
+      "value": 2.771036318176734,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "ticker": "SPY",
+      "input_to": "2026-11-13",
+      "sample_n": 750,
+      "atr_basis": "atr_14",
+      "method_id": "daily_excursion_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 250,
+      "statistic_q": 0.99,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "skipped": [
+      {
+       "name": "PDL",
+       "price": 747.88,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_low"
+       ],
+       "timeframe": "day",
+       "level_type": "low",
+       "distance_atr": 0.006
+      }
+     ],
+     "targets": [
+      {
+       "name": "PWL",
+       "price": 741.025,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "timeframe": "week",
+       "level_type": "low"
+      },
+      {
+       "name": "PQL",
+       "price": 729.1,
+       "period": "2026Q3",
+       "aliases": [],
+       "timeframe": "quarter",
+       "level_type": "low"
+      }
+     ],
+     "trigger": {
+      "name": "PMK_L",
+      "price": 747.95,
+      "period": "premarket",
+      "aliases": [],
+      "timeframe": "intraday",
+      "level_type": "low"
+     },
+     "room_pct": 0.306,
+     "candidates": [
+      {
+       "name": "PMK_L",
+       "cents": 74795,
+       "price": 747.95,
+       "broken": false,
+       "period": "premarket",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "intraday",
+       "level_type": "low",
+       "distance_atr": 0.208
+      },
+      {
+       "name": "PDL",
+       "cents": 74788,
+       "price": 747.88,
+       "broken": false,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_low"
+       ],
+       "in_window": true,
+       "timeframe": "day",
+       "level_type": "low",
+       "distance_atr": 0.214
+      },
+      {
+       "name": "PWL",
+       "cents": 74103,
+       "price": 741.025,
+       "broken": false,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "week",
+       "level_type": "low",
+       "distance_atr": 0.835
+      },
+      {
+       "name": "PQL",
+       "cents": 72910,
+       "price": 729.1,
+       "broken": false,
+       "period": "2026Q3",
+       "aliases": [],
+       "in_window": true,
+       "timeframe": "quarter",
+       "level_type": "low",
+       "distance_atr": 1.916
+      },
+      {
+       "name": "PYH",
+       "cents": 69166,
+       "price": 691.66,
+       "broken": false,
+       "period": "2025",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "year",
+       "level_type": "high",
+       "distance_atr": 5.309
+      },
+      {
+       "name": "PYC",
+       "cents": 68192,
+       "price": 681.92,
+       "broken": false,
+       "period": "2025",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "year",
+       "level_type": "close",
+       "distance_atr": 6.191
+      },
+      {
+       "name": "PYL",
+       "cents": 48180,
+       "price": 481.8,
+       "broken": false,
+       "period": "2025",
+       "aliases": [],
+       "in_window": false,
+       "timeframe": "year",
+       "level_type": "low",
+       "distance_atr": 24.325
+      }
+     ],
+     "distance_atr": 0.208,
+     "gate_targets": [
+      {
+       "name": "PDL",
+       "price": 747.88,
+       "period": "2026-11-13",
+       "aliases": [
+        "parent_bar_low"
+       ],
+       "timeframe": "day",
+       "level_type": "low"
+      },
+      {
+       "name": "PWL",
+       "price": 741.025,
+       "period": "2026-11-09/2026-11-15",
+       "aliases": [],
+       "timeframe": "week",
+       "level_type": "low"
+      },
+      {
+       "name": "PQL",
+       "price": 729.1,
+       "period": "2026Q3",
+       "aliases": [],
+       "timeframe": "quarter",
+       "level_type": "low"
+      }
+     ],
+     "target_status": "ok"
+    },
+    "atr_14": 11.035733780082667,
+    "levels": [
+     {
+      "name": "PDH",
+      "price": 760.12,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "2D",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PDL",
+      "price": 747.88,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "2D",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PDC",
+      "price": 754.37,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "2D",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PWH",
+      "price": 763.04,
+      "timeframe": "week",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "1",
+      "period_label": "2026-11-09/2026-11-15"
+     },
+     {
+      "name": "PWL",
+      "price": 741.025,
+      "timeframe": "week",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "1",
+      "period_label": "2026-11-09/2026-11-15"
+     },
+     {
+      "name": "PWC",
+      "price": 754.37,
+      "timeframe": "week",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "1",
+      "period_label": "2026-11-09/2026-11-15"
+     },
+     {
+      "name": "PMH",
+      "price": 781.62,
+      "timeframe": "month",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "Failed_2U",
+      "period_label": "2026-10"
+     },
+     {
+      "name": "PML",
+      "price": 750.36,
+      "timeframe": "month",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "Failed_2U",
+      "period_label": "2026-10"
+     },
+     {
+      "name": "PMC",
+      "price": 755.72,
+      "timeframe": "month",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "Failed_2U",
+      "period_label": "2026-10"
+     },
+     {
+      "name": "PQH",
+      "price": 779.37,
+      "timeframe": "quarter",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "2U",
+      "period_label": "2026Q3"
+     },
+     {
+      "name": "PQL",
+      "price": 729.1,
+      "timeframe": "quarter",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "2U",
+      "period_label": "2026Q3"
+     },
+     {
+      "name": "PQC",
+      "price": 762.63,
+      "timeframe": "quarter",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "2U",
+      "period_label": "2026Q3"
+     },
+     {
+      "name": "PYH",
+      "price": 691.66,
+      "timeframe": "year",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "2U",
+      "period_label": "2025"
+     },
+     {
+      "name": "PYL",
+      "price": 481.8,
+      "timeframe": "year",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "2U",
+      "period_label": "2025"
+     },
+     {
+      "name": "PYC",
+      "price": 681.92,
+      "timeframe": "year",
+      "is_current": false,
+      "level_type": "close",
+      "strat_class": "2U",
+      "period_label": "2025"
+     },
+     {
+      "name": "PDO",
+      "price": 760.07,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "open",
+      "strat_class": "2D",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PWO",
+      "price": 741.95,
+      "timeframe": "week",
+      "is_current": false,
+      "level_type": "open",
+      "strat_class": "1",
+      "period_label": "2026-11-09/2026-11-15"
+     },
+     {
+      "name": "CMO",
+      "price": 759.45,
+      "timeframe": "month",
+      "is_current": true,
+      "level_type": "open",
+      "strat_class": "2D",
+      "period_label": "2026-11"
+     },
+     {
+      "name": "parent_bar_high",
+      "price": 760.12,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "high",
+      "strat_class": "",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "parent_bar_low",
+      "price": 747.88,
+      "timeframe": "day",
+      "is_current": false,
+      "level_type": "low",
+      "strat_class": "",
+      "period_label": "2026-11-13"
+     },
+     {
+      "name": "PMK_H",
+      "price": 754.3772,
+      "timeframe": "intraday",
+      "is_current": true,
+      "level_type": "high",
+      "strat_class": "",
+      "period_label": "premarket"
+     },
+     {
+      "name": "PMK_L",
+      "price": 747.95,
+      "timeframe": "intraday",
+      "is_current": true,
+      "level_type": "low",
+      "strat_class": "",
+      "period_label": "premarket"
+     }
+    ],
+    "params": {
+     "exit_legs": {
+      "extra": {
+       "legs": 3
+      },
+      "value": 3.0,
+      "run_id": null,
+      "source": "policy",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": null,
+      "atr_basis": "atr_14",
+      "method_id": "policy",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2015-01-02",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "min_stop_atr": {
+      "value": 0.16128902215937146,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 380,
+      "atr_basis": "atr_14",
+      "method_id": "filled_held_mae_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.5,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "pm_spike_atr": {
+      "value": 0.9423201653542802,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 60,
+      "atr_basis": "atr_14",
+      "method_id": "premarket_wick_excess_quantile",
+      "input_from": "2026-08-21",
+      "min_sample": 40,
+      "statistic_q": 0.999,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 60,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_cutoff_et": {
+      "extra": {
+       "time_et": "16:00"
+      },
+      "value": 960.0,
+      "run_id": null,
+      "source": "policy",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": null,
+      "atr_basis": "atr_14",
+      "method_id": "policy",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2015-01-02",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "atr_rung_anchors": {
+      "extra": {
+       "anchors": [
+        "PDH",
+        "PDL",
+        "PMK_H",
+        "PMK_L"
+       ]
+      },
+      "value": 4.0,
+      "run_id": null,
+      "source": "policy",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": null,
+      "atr_basis": "atr_14",
+      "method_id": "policy",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2015-01-02",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "atr_rung_max_atr": {
+      "value": 2.0,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "stop_neutral_atr": {
+      "value": 0.298616651542652,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 380,
+      "atr_basis": "atr_14",
+      "method_id": "filled_held_mae_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.75,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "atr_rung_step_atr": {
+      "value": 0.5,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "gap_fill_flag_atr": {
+      "value": 0.5,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "level_cluster_atr": {
+      "value": 0.05458315455826109,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 60,
+      "atr_basis": "atr_14",
+      "method_id": "rth_interval_change_quantile",
+      "input_from": "2026-08-21",
+      "min_sample": 40,
+      "statistic_q": 0.5,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 60,
+      "policy_effective_from": "2015-01-02"
+     },
+     "pm_stale_print_atr": {
+      "value": 0.035928084025308005,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 60,
+      "atr_basis": "atr_14",
+      "method_id": "premarket_bar_spread_quantile",
+      "input_from": "2026-08-21",
+      "min_sample": 40,
+      "statistic_q": 0.95,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 60,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_neutral_1_r": {
+      "value": 0.5149998755903704,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 724,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.6,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_neutral_2_r": {
+      "value": 0.8155655707373574,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 724,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.45,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_neutral_3_r": {
+      "value": 1.270926405810771,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 724,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.3,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "stop_aggressive_atr": {
+      "value": 0.5240643867338437,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 407,
+      "atr_basis": "atr_14",
+      "method_id": "filled_held_mae_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.9,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "atr_rung_stretch_atr": {
+      "value": 1.5,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "stop_conservative_atr": {
+      "value": 0.2231529435889776,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 404,
+      "atr_basis": "atr_14",
+      "method_id": "filled_held_mae_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.6,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_aggressive_1_r": {
+      "value": 0.6045162101222421,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 618,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.4,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_aggressive_2_r": {
+      "value": 0.9191316440716627,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 618,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.25,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_aggressive_3_r": {
+      "value": 1.2367740966173015,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 618,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.15,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_min_spacing_atr": {
+      "value": 0.25,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": 0,
+      "atr_basis": "atr_14",
+      "method_id": "policy_seed",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "plan_target_level_types": {
+      "extra": {
+       "level_types": [
+        "gap_high",
+        "gap_low"
+       ]
+      },
+      "value": 2.0,
+      "run_id": null,
+      "source": "policy",
+      "status": "ok",
+      "input_to": null,
+      "sample_n": null,
+      "atr_basis": "atr_14",
+      "method_id": "policy",
+      "input_from": null,
+      "min_sample": null,
+      "statistic_q": null,
+      "effective_from": "2015-01-02",
+      "lookback_sessions": null,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_conservative_1_r": {
+      "value": 0.4338692218164431,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 674,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.65,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "target_conservative_2_r": {
+      "value": 0.7051182718409313,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 674,
+      "atr_basis": "atr_14",
+      "method_id": "filled_reach_share",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.5,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "trigger_window_long_atr": {
+      "value": 1.9894379223416279,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 750,
+      "atr_basis": "atr_14",
+      "method_id": "daily_excursion_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 250,
+      "statistic_q": 0.99,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "trigger_window_short_atr": {
+      "value": 2.771036318176734,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 750,
+      "atr_basis": "atr_14",
+      "method_id": "daily_excursion_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 250,
+      "statistic_q": 0.99,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_neutral_hi_atr": {
+      "value": 0.07014785063986059,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 881,
+      "atr_basis": "atr_14",
+      "method_id": "follow_through_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.5,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_neutral_lo_atr": {
+      "value": 0.0,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 881,
+      "atr_basis": "atr_14",
+      "method_id": "at_trigger",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_aggressive_hi_atr": {
+      "value": 0.31964765076547497,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 881,
+      "atr_basis": "atr_14",
+      "method_id": "follow_through_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.75,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_aggressive_lo_atr": {
+      "value": 0.0,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 881,
+      "atr_basis": "atr_14",
+      "method_id": "at_trigger",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": null,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_conservative_hi_atr": {
+      "value": 0.1968284930094051,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 881,
+      "atr_basis": "atr_14",
+      "method_id": "follow_through_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.65,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     },
+     "entry_buffer_conservative_lo_atr": {
+      "value": 0.01203643441686825,
+      "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+      "source": "history",
+      "status": "ok",
+      "input_to": "2026-11-13",
+      "sample_n": 881,
+      "atr_basis": "atr_14",
+      "method_id": "follow_through_quantile",
+      "input_from": "2023-11-17",
+      "min_sample": 150,
+      "statistic_q": 0.2,
+      "effective_from": "2026-11-16",
+      "lookback_sessions": 750,
+      "policy_effective_from": "2015-01-02"
+     }
+    },
+    "status": "ok",
+    "ticker": "SPY",
+    "built_at": "2026-11-16T08:31:19.871062-05:00",
+    "atr_basis": "atr_14",
+    "atr_rungs": [
+     {
+      "name": "PMK_L-2ATR",
+      "sign": "-",
+      "cents": 72588,
+      "label": "PMK_L-2",
+      "price": 725.88,
+      "anchor": "PMK_L",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     },
+     {
+      "name": "PMK_H-2ATR",
+      "sign": "-",
+      "cents": 73231,
+      "label": "PMK_H-2",
+      "price": 732.31,
+      "anchor": "PMK_H",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     },
+     {
+      "name": "PDH-2ATR",
+      "sign": "-",
+      "cents": 73805,
+      "label": "PDH-2",
+      "price": 738.05,
+      "anchor": "PDH",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     },
+     {
+      "name": "PDL+2ATR",
+      "sign": "+",
+      "cents": 76995,
+      "label": "PDL+2",
+      "price": 769.95,
+      "anchor": "PDL",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     },
+     {
+      "name": "PMK_H+2ATR",
+      "sign": "+",
+      "cents": 77645,
+      "label": "PMK_H+2",
+      "price": 776.45,
+      "anchor": "PMK_H",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     }
+    ],
+    "pmg_zones": [
+     {
+      "count": 2,
+      "strength": 2.5,
+      "timeframes": [
+       "day",
+       "week"
+      ],
+      "level_names": [
+       "PDC",
+       "PWC"
+      ],
+      "center_price": 754.37
+     },
+     {
+      "count": 2,
+      "strength": 2.5,
+      "timeframes": [
+       "quarter",
+       "week"
+      ],
+      "level_names": [
+       "PQC",
+       "PWH"
+      ],
+      "center_price": 762.84
+     },
+     {
+      "count": 2,
+      "strength": 2.0,
+      "timeframes": [
+       "day"
+      ],
+      "level_names": [
+       "PDO",
+       "PDH"
+      ],
+      "center_price": 760.1
+     }
+    ],
+    "premarket": {
+     "date": "2026-11-16",
+     "gap_pct": -0.2558,
+     "pre_low": 747.95,
+     "pre_high": 754.3772,
+     "pre_vwap": 750.2446547951109,
+     "fetched_at": "2026-11-16T13:20:58.074056+00:00",
+     "excluded_bars": 9,
+     "excluded_spikes": 0,
+     "pre_filter_params": {
+      "atr": 11.035733780082667,
+      "atr_basis": "atr_14",
+      "pm_spike_atr": {
+       "value": 0.9423201653542802,
+       "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+       "status": "ok",
+       "effective_from": "2026-11-16"
+      },
+      "pm_stale_print_atr": {
+       "value": 0.035928084025308005,
+       "run_id": "929e221d-80a0-46ae-aedc-876417db4036",
+       "status": "ok",
+       "effective_from": "2026-11-16"
+      },
+      "policy_effective_from": "2015-01-02"
+     },
+     "pre_filter_status": "ok",
+     "excluded_stale_prints": 9
+    },
+    "reference": 750.2446547951109,
+    "pmg_status": "ok",
+    "prior_close": 754.37,
+    "strat_class": "2D",
+    "rule_version": "feat-strat-001.v3",
+    "session_date": "2026-11-16",
+    "cleared_above": 754.3772,
+    "cleared_below": 747.95,
+    "last_bar_date": "2026-11-13",
+    "atr_rung_params": {
+     "atr_rung_anchors": {
+      "value": [
+       "PDH",
+       "PDL",
+       "PMK_H",
+       "PMK_L"
+      ],
+      "status": "ok",
+      "method_id": "policy",
+      "effective_from": "2015-01-02"
+     },
+     "atr_rung_max_atr": {
+      "value": 2.0,
+      "status": "ok",
+      "method_id": "policy_seed",
+      "effective_from": "2026-11-16"
+     },
+     "atr_rung_step_atr": {
+      "value": 0.5,
+      "status": "ok",
+      "method_id": "policy_seed",
+      "effective_from": "2026-11-16"
+     },
+     "atr_rung_stretch_atr": {
+      "value": 1.5,
+      "status": "ok",
+      "method_id": "policy_seed",
+      "effective_from": "2026-11-16"
+     }
+    },
+    "atr_rung_status": "ok",
+    "atr_rung_anchors": [
+     {
+      "name": "PDH",
+      "price": 760.12,
+      "status": "ok"
+     },
+     {
+      "name": "PDL",
+      "price": 747.88,
+      "status": "ok"
+     },
+     {
+      "name": "PMK_H",
+      "price": 754.38,
+      "status": "ok"
+     },
+     {
+      "name": "PMK_L",
+      "price": 747.95,
+      "status": "ok"
+     }
+    ],
+    "premarket_status": "ok",
+    "reference_source": "pre_vwap",
+    "atr_rungs_dropped": [
+     {
+      "name": "PDL-2ATR",
+      "sign": "-",
+      "cents": 72581,
+      "label": "PDL-2",
+      "price": 725.81,
+      "anchor": "PDL",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0,
+      "near_price": 725.88
+     },
+     {
+      "name": "PDL-1.5ATR",
+      "near": "PQL",
+      "sign": "-",
+      "cents": 73133,
+      "label": "PDL-1.5",
+      "price": 731.33,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PMK_L-1.5ATR",
+      "near": "PQL",
+      "sign": "-",
+      "cents": 73140,
+      "label": "PMK_L-1.5",
+      "price": 731.4,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PDL-1ATR",
+      "sign": "-",
+      "cents": 73684,
+      "label": "PDL-1",
+      "price": 736.84,
+      "anchor": "PDL",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0,
+      "near_price": 738.05
+     },
+     {
+      "name": "PMK_L-1ATR",
+      "sign": "-",
+      "cents": 73691,
+      "label": "PMK_L-1",
+      "price": 736.91,
+      "anchor": "PMK_L",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0,
+      "near_price": 738.05
+     },
+     {
+      "name": "PMK_H-1.5ATR",
+      "sign": "-",
+      "cents": 73783,
+      "label": "PMK_H-1.5",
+      "price": 737.83,
+      "anchor": "PMK_H",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5,
+      "near_price": 738.05
+     },
+     {
+      "name": "PDL-0.5ATR",
+      "near": "PWL",
+      "sign": "-",
+      "cents": 74236,
+      "label": "PDL-0.5",
+      "price": 742.36,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PMK_L-0.5ATR",
+      "near": "PWL",
+      "sign": "-",
+      "cents": 74243,
+      "label": "PMK_L-0.5",
+      "price": 742.43,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PMK_H-1ATR",
+      "near": "PWL",
+      "sign": "-",
+      "cents": 74334,
+      "label": "PMK_H-1",
+      "price": 743.34,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PDH-1.5ATR",
+      "near": "PWL",
+      "sign": "-",
+      "cents": 74357,
+      "label": "PDH-1.5",
+      "price": 743.57,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PMK_H-0.5ATR",
+      "near": "PMK_L",
+      "sign": "-",
+      "cents": 74886,
+      "label": "PMK_H-0.5",
+      "price": 748.86,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PDH-1ATR",
+      "near": "PMK_L",
+      "sign": "-",
+      "cents": 74908,
+      "label": "PDH-1",
+      "price": 749.08,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PDL+0.5ATR",
+      "near": "PDC",
+      "sign": "+",
+      "cents": 75340,
+      "label": "PDL+0.5",
+      "price": 753.4,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PMK_L+0.5ATR",
+      "near": "PDC",
+      "sign": "+",
+      "cents": 75347,
+      "label": "PMK_L+0.5",
+      "price": 753.47,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PDH-0.5ATR",
+      "near": "PMK_H",
+      "sign": "-",
+      "cents": 75460,
+      "label": "PDH-0.5",
+      "price": 754.6,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PDL+1ATR",
+      "near": "PDH",
+      "sign": "+",
+      "cents": 75892,
+      "label": "PDL+1",
+      "price": 758.92,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PMK_L+1ATR",
+      "near": "PDH",
+      "sign": "+",
+      "cents": 75899,
+      "label": "PMK_L+1",
+      "price": 758.99,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PMK_H+0.5ATR",
+      "near": "PDH",
+      "sign": "+",
+      "cents": 75990,
+      "label": "PMK_H+0.5",
+      "price": 759.9,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PDL+1.5ATR",
+      "near": "PWH",
+      "sign": "+",
+      "cents": 76443,
+      "label": "PDL+1.5",
+      "price": 764.43,
+      "anchor": "PDL",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PMK_L+1.5ATR",
+      "near": "PWH",
+      "sign": "+",
+      "cents": 76450,
+      "label": "PMK_L+1.5",
+      "price": 764.5,
+      "anchor": "PMK_L",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PMK_H+1ATR",
+      "near": "PWH",
+      "sign": "+",
+      "cents": 76542,
+      "label": "PMK_H+1",
+      "price": 765.42,
+      "anchor": "PMK_H",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0
+     },
+     {
+      "name": "PDH+0.5ATR",
+      "near": "PWH",
+      "sign": "+",
+      "cents": 76564,
+      "label": "PDH+0.5",
+      "price": 765.64,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 0.5
+     },
+     {
+      "name": "PMK_L+2ATR",
+      "sign": "+",
+      "cents": 77002,
+      "label": "PMK_L+2",
+      "price": 770.02,
+      "anchor": "PMK_L",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0,
+      "near_price": 769.95
+     },
+     {
+      "name": "PMK_H+1.5ATR",
+      "sign": "+",
+      "cents": 77093,
+      "label": "PMK_H+1.5",
+      "price": 770.93,
+      "anchor": "PMK_H",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5,
+      "near_price": 769.95
+     },
+     {
+      "name": "PDH+1ATR",
+      "sign": "+",
+      "cents": 77116,
+      "label": "PDH+1",
+      "price": 771.16,
+      "anchor": "PDH",
+      "reason": "neighbor",
+      "aliases": [],
+      "stretch": false,
+      "multiple": 1.0,
+      "near_price": 769.95
+     },
+     {
+      "name": "PDH+1.5ATR",
+      "near": "PQH",
+      "sign": "+",
+      "cents": 77667,
+      "label": "PDH+1.5",
+      "price": 776.67,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 1.5
+     },
+     {
+      "name": "PDH+2ATR",
+      "near": "PMH",
+      "sign": "+",
+      "cents": 78219,
+      "label": "PDH+2",
+      "price": 782.19,
+      "anchor": "PDH",
+      "reason": "structural",
+      "aliases": [],
+      "stretch": true,
+      "multiple": 2.0
+     }
+    ],
+    "policy_effective_from": "2015-01-02",
+    "plan_target_level_types": [
+     "gap_high",
+     "gap_low"
+    ],
+    "plan_target_level_types_status": "ok"
+   }
+  ]
+ ]
+}

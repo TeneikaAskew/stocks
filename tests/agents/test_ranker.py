@@ -652,3 +652,60 @@ def test_earnings_candidates_retire_ew_at_query_layer(monkeypatch):
                 json.dumps(asdict(baseline[ticker]), sort_keys=True).encode()
     finally:
         conn.close()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# The owner the ranker loads (FEAT-INSIGHT-001 stage A)
+#
+# GET /api/insights/watchlist pins user_id="default" for every caller; the
+# source scan in tests/gcp/test_watchlist_readers_default_owner.py accepts
+# the one forwarding expression in candidates._load_watchlist without
+# resolving it, because the two tests below prove the chain behaviourally:
+# rank_tickers -> gather_candidates -> _load_watchlist -> load_watchlist.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_rank_tickers_threads_user_id_to_gather_candidates(monkeypatch):
+    """The first link: rank_tickers forwards user_id and extras to
+    gather_candidates unchanged."""
+    from lib.agents.ranker import rank as rank_module
+
+    seen: dict = {}
+
+    def fake_gather(**kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(rank_module, "gather_candidates", fake_gather)
+    result = rank_module.rank_tickers(
+        user_id="default", extras=["NVDA"], persist_audit=False,
+    )
+    assert seen["user_id"] == "default"
+    assert seen["extras"] == ["NVDA"]
+    assert result["candidate_count"] == 0 and result["ranked"] == []
+
+
+def test_gather_candidates_loads_the_default_owner(monkeypatch, patch_candidates_query):
+    """The last link (lib/agents/ranker/candidates.py, _load_watchlist):
+    with user_id=None and with user_id="default", load_watchlist is called
+    for the default owner with surface="all". The other candidate sources
+    are empty here. Extras dedupe case-insensitively into one manual
+    candidate (Review Focus 3 of the stage A plan)."""
+    from lib.agents.ranker.candidates import gather_candidates
+
+    calls: list[dict] = []
+
+    def fake_load(*args, **kwargs):
+        calls.append(dict(kwargs))
+        return ["SPY"]
+
+    monkeypatch.setattr("gcp.fetchers._watchlist.load_watchlist", fake_load)
+    for user_id in (None, "default"):
+        cands = gather_candidates(user_id=user_id, extras=["nvda", "NVDA"])
+        by_ticker = {c.ticker: c for c in cands}
+        assert set(by_ticker) == {"SPY", "NVDA"}
+        assert by_ticker["NVDA"].catalyst_types == ["manual"]
+    assert calls == [
+        {"user_id": "default", "surface": "all"},
+        {"user_id": "default", "surface": "all"},
+    ]

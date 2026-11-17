@@ -96,7 +96,8 @@ def test_brief_basis_is_plain_json_with_what_the_spec_lists(brief_basis):
     assert b["session_date"] == "2026-11-06" and b["last_bar_date"] == "2026-11-05"
     assert b["atr"] == pytest.approx(fx.prior_atr("QQQ"))
     assert b["premarket"]["date"] == "2026-11-06"
-    assert b["premarket"]["pre_low"] == pytest.approx(649.62)
+    # FEAT-PLAYBOOK-001 B7: the confirmed low (649.62 until then, a lone wick).
+    assert b["premarket"]["pre_low"] == pytest.approx(649.65)
     assert {lv["name"] for lv in b["levels"]} >= {"PDH", "PDL", "PDC", "PWH", "PYH", "PMK_L"}
     assert b["long"]["trigger"]["name"] == "PMK_H" and b["short"]["trigger"]["name"] == "PMK_L"
     rebuilt = SessionLevels.from_basis(b)
@@ -114,13 +115,22 @@ def test_persist_writes_level_basis_to_both_tables(monkeypatch, brief_basis):
                         lambda df, table, keys: captured.append((table, df.to_dict("records"))) or len(df))
     monkeypatch.setattr(database, "row_exists", lambda *a, **k: False)
     monkeypatch.delenv("BRIEF_AS_OF", raising=False)      # a live run
+    # Exits in thirds spec: the gating t1..t3 and the spaced plan targets
+    # (the Design 8 calls) are written beside each other to both tables.
+    prices = {"calls_t1_price": 253.0, "calls_t2_price": 275.0, "calls_t3_price": 280.0,
+              "calls_plan_t1_price": 275.0, "calls_plan_t2_price": 280.0,
+              "calls_plan_t3_price": 285.0, "puts_t1_price": 247.5, "puts_t2_price": 247.0,
+              "puts_t3_price": 225.0, "puts_plan_t1_price": 225.0, "puts_plan_t2_price": 220.0,
+              "puts_plan_t3_price": 215.0}
     brief = {"analysis_date": SESSION,
-             "tickers": {"QQQ": {"status": None, "price": 647.05, "level_basis": brief_basis}}}
+             "tickers": {"QQQ": {"status": None, "price": 647.05, "level_basis": brief_basis,
+                                 **prices}}}
     persist_to_cloud_sql(brief, allow_update=True, run_kind="scheduled", triggered_by="test")
     tables = {t: rows for t, rows in captured}
     assert set(tables) == {"premarket_analysis_history", "premarket_analysis"}
     for rows in tables.values():
         assert rows[0]["level_basis"] == brief_basis
+        assert {k: rows[0][k] for k in prices} == prices
     assert tables["premarket_analysis"][0]["run_kind"] == "live"
 
 
@@ -388,7 +398,8 @@ def test_each_reader_builds_when_the_column_is_absent(monkeypatch, brief_basis, 
 def test_resolver_reads_live_basis_ignores_replay_and_builds_without_the_column(brief_basis):
     bogus = _bogus(brief_basis)
     built = _resolver_inputs(_AnalysisDb([_row(bogus, "replay")]))
-    assert built["calls_trigger_price"] == pytest.approx(660.398)
+    # FEAT-PLAYBOOK-001 B7: the confirmed high (660.398 until then, a lone wick).
+    assert built["calls_trigger_price"] == pytest.approx(660.29)
     assert built["calls_t1_price"] == pytest.approx(661.14)
     live = _resolver_inputs(_AnalysisDb([_row(bogus, "live")]))
     assert live["calls_t1_price"] != pytest.approx(661.14)        # read the live row
@@ -431,3 +442,283 @@ def test_read_live_level_basis_raises_on_a_failed_query_and_none_on_a_missing_co
                               "SPY", "2026-11-06")
     missing = _raising(RuntimeError('column "level_basis" does not exist'))
     assert read_live_level_basis(missing, "SPY", "2026-11-06") is None
+
+
+# ── exits in thirds spec, Design 7: level_basis and the rule version ───
+
+EXIT_KEYS = ("target_min_spacing_atr", "gap_fill_flag_atr", "exit_legs", "entry_cutoff_et")
+
+
+def _exit_picks(sl):
+    return [([round(r["price"], 2) for r in side.targets],
+             [round(r["price"], 2) for r in side.gate_targets],
+             [round(r["price"], 2) for r in side.skipped], side.target_status)
+            for side in (sl.long, sl.short)]
+
+
+def test_v3_basis_records_the_exit_parameters():
+    from tests.lib.session_levels_helpers import d8_basis
+    stored = json.loads(json.dumps(SessionLevels.from_basis(d8_basis()).to_basis()))
+    assert LEVEL_RULE_VERSION == stored["rule_version"] == "feat-strat-001.v4"
+    for key in EXIT_KEYS:
+        p = stored["params"][key]
+        assert p["status"] == "ok" and p["value"] is not None
+        assert p["method_id"] and p["effective_from"]
+    assert stored["params"]["target_min_spacing_atr"]["value"] == 0.25
+    assert stored["params"]["exit_legs"]["value"] == 3.0
+    assert stored["long"]["plan"]["legs"] == 3
+
+
+def test_from_basis_v3_rebuilds_the_recorded_plan_after_the_row_changes():
+    from tests.lib.session_levels_helpers import d8_basis, d8_params
+    stored = json.loads(json.dumps(SessionLevels.from_basis(d8_basis()).to_basis()))
+    rebuilt = SessionLevels.from_basis(stored)
+    offered = SessionLevels.from_basis(stored, params=d8_params(spacing=0.05))
+    want = [([275.0, 280.0, 285.0], [253.0, 275.0, 280.0], [253.0], "ok"),
+            ([225.0, 220.0, 215.0], [247.5, 247.0, 225.0], [247.5, 247.0], "ok")]
+    assert _exit_picks(rebuilt) == _exit_picks(offered) == want
+
+
+def test_a_stored_brief_keeps_the_cutoff_it_recorded():
+    """Drop-entry-cutoff spec: a basis stored under the 10:00 cutoff rebuilds
+    and scores with 10:00 after the policy row moves to 16:00, and a basis
+    built after the move records 16:00."""
+    from dataclasses import replace
+
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib.session_levels_helpers import d8_basis, d8_params
+
+    old = d8_params()
+    p = old.params["entry_cutoff_et"]
+    old.params["entry_cutoff_et"] = replace(p, value=600.0, extra={"time_et": "10:00"})
+    stored = json.loads(json.dumps(SessionLevels.from_basis(d8_basis(params=old)).to_basis()))
+    assert stored["params"]["entry_cutoff_et"]["extra"] == {"time_et": "10:00"}
+
+    rebuilt = SessionLevels.from_basis(stored, params=d8_params())
+    assert rebuilt.long.plan["entry_cutoff_et"] == rebuilt.short.plan["entry_cutoff_et"] == "10:00"
+    plan = mod.plan_inputs("calls", {}, stored, policy_fn=lambda: pytest.fail("no policy read"))
+    assert plan.cutoff_minutes == 600
+    t0 = pd.Timestamp("2026-05-06 13:30", tz="UTC")
+    bars = pd.DataFrame(
+        [{"time": t0 + pd.Timedelta(minutes=m), "open": 251.50, "high": 251.90, "low": 251.40,
+          "close": 251.80} for m in range(30)]
+        + [{"time": t0 + pd.Timedelta(minutes=30), "open": 251.80, "high": 252.40, "low": 251.70,
+            "close": 252.30}])
+    assert mod.resolve_plan("call", plan, bars).entry_status == "late_cross"
+
+    fresh = SessionLevels.from_basis(d8_basis()).to_basis()
+    assert fresh["params"]["entry_cutoff_et"]["extra"] == {"time_et": "16:00"}
+    assert fresh["long"]["plan"]["entry_cutoff_et"] == "16:00"
+
+
+def _with_gap(b: dict) -> dict:
+    b = json.loads(json.dumps(b))
+    b["levels"].append({"name": "GAP_H_2026-10-20", "price": 262.40, "timeframe": "day",
+                        "level_type": "gap_high", "period_label": "2026-10-20"})
+    return b
+
+
+@pytest.mark.parametrize("recorded", ["absent", "ok", "input_unavailable"])
+def test_a_stored_brief_without_the_gap_marker_keeps_its_targets(recorded):
+    """Gap-edge plan targets spec, done_when 'Stored briefs keep their
+    targets': a basis with no plan_target_level_types_status key, whose params
+    (a) do not record plan_target_level_types (every brief stored before the
+    row exists) or (b) record it (as the loader records every policy key once
+    the row exists, whatever its status), rebuilds the old walk: the gap edge
+    in reach is not a target, the new key is never checked, target_status ok
+    and plan_inputs gives the same targets with plan_available true."""
+    from dataclasses import replace
+
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib.session_levels_helpers import d8_basis, d8_params
+
+    lp = d8_params()
+    if recorded == "absent":
+        del lp.params["plan_target_level_types"]
+    else:
+        p = lp.params["plan_target_level_types"]
+        lp.params["plan_target_level_types"] = replace(p, status=recorded)
+    stored = _with_gap(d8_basis(params=lp))
+    assert "plan_target_level_types_status" not in stored
+    assert ("plan_target_level_types" in stored["params"]) is (recorded != "absent")
+
+    sl = SessionLevels.from_basis(stored)
+    assert [t["price"] for t in sl.long.targets] == [275.00, 280.00, 285.00]
+    assert [t["price"] for t in sl.long.skipped] == [253.00]
+    assert sl.long.target_status == sl.short.target_status == "ok"
+    assert "plan_target_level_types_status" not in sl.to_basis()
+    plan = mod.plan_inputs("calls", {}, stored, policy_fn=lambda: pytest.fail("no policy read"))
+    assert plan.targets == (275.00, 280.00, 285.00)
+    assert plan.plan_available
+
+
+def test_a_basis_built_under_the_gap_rule_records_it_and_rebuilds_it():
+    """A basis built on the head records plan_target_level_types_status ok and
+    the list used, and rebuilds with the gap edge as a target after a JSON
+    round trip; plan_inputs gives the same targets."""
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib.session_levels_helpers import d8_basis
+
+    b = _with_gap(d8_basis())
+    b["plan_target_level_types_status"] = None
+    built = SessionLevels.from_basis(b)
+    stored = json.loads(json.dumps(built.to_basis()))
+    assert stored["plan_target_level_types_status"] == "ok"
+    assert stored["plan_target_level_types"] == ["gap_high", "gap_low"]
+
+    rebuilt = SessionLevels.from_basis(stored)
+    assert [t["price"] for t in rebuilt.long.targets] == [262.40, 275.00, 280.00]
+    assert rebuilt.long.targets[0]["name"] == "GAP_H_2026-10-20"
+    assert rebuilt.long.targets == built.long.targets
+    plan = mod.plan_inputs("calls", {}, stored, policy_fn=lambda: pytest.fail("no policy read"))
+    assert plan.targets == (262.40, 275.00, 280.00)
+    assert plan.plan_available
+
+
+def test_from_basis_v2_rebuilds_the_v2_targets():
+    """A stored feat-strat-001.v2 basis records no spacing: it rebuilds the
+    v2 targets (the gating ones), no skipped list and no plan, and the brief
+    copy is the v2 copy."""
+    from tests.lib.session_levels_helpers import d8_basis
+    stored = json.loads(json.dumps(d8_basis()))
+    stored["rule_version"] = "feat-strat-001.v2"
+    for key in EXIT_KEYS:
+        stored["params"].pop(key)
+    rebuilt = SessionLevels.from_basis(stored)
+    assert rebuilt.to_basis()["rule_version"] == "feat-strat-001.v2"
+    assert _exit_picks(rebuilt) == [([253.0, 275.0, 280.0], [253.0, 275.0, 280.0], [], "ok"),
+                                    ([247.5, 247.0, 225.0], [247.5, 247.0, 225.0], [], "ok")]
+    assert rebuilt.long.plan is None
+    lm = rebuilt.to_level_map()
+    assert "plan" not in lm.calls_trigger
+    from lib.strat_levels import format_levels_for_brief
+    text = format_levels_for_brief(lm, "neutral")
+    assert "    T1: 253.00 (PDH)\n" in text and "sell" not in text
+
+
+def test_a_replay_with_no_spacing_row_publishes_no_unspaced_target():
+    """A session the history run did not cover for the exits keys reads
+    target_min_spacing_atr as params_unavailable: the side keeps its
+    trigger and stop and publishes no target, never the unspaced ones."""
+    from tests.lib.level_params_fixtures import LEGACY_1753_VALUES, ParamsDb
+    from tests.lib.session_levels_helpers import D8_LEVELS, D8_PREMARKET
+    db = ParamsDb()
+    db.write("TST", {k: v for k, v in LEGACY_1753_VALUES.items()
+                     if k not in ("target_min_spacing_atr", "gap_fill_flag_atr")},
+             effective_from=date(2015, 1, 2))
+    lp = db.load(["TST"], SESSION)["TST"]
+    assert lp.status("target_min_spacing_atr") == "params_unavailable"
+    sl = SessionLevels.from_basis(basis(D8_LEVELS, prior_close=247.0, atr=14.0,
+                                        premarket=D8_PREMARKET, params=lp))
+    for side in (sl.long, sl.short):
+        assert side.trigger is not None and side.stop is not None
+        assert side.targets == [] and side.target_status == "params_unavailable"
+
+
+# ── ATR levels spec (2026-11-11): level_basis and replay ────────────────
+
+ATR_RUNG_PARAM_KEYS = ("atr_rung_anchors", "atr_rung_step_atr", "atr_rung_max_atr",
+                       "atr_rung_stretch_atr")
+SESSION_D8 = "2026-11-06"     # the Design 8 fixture's session
+ATR_BASIS_KEYS = ("atr_rungs", "atr_rungs_dropped", "atr_rung_status", "atr_rung_anchors",
+                  "atr_rung_params")
+
+
+def _rungs(sl):
+    return ([(r["price"], r["name"]) for r in sl.atr_rungs],
+            [(r["price"], r["name"], r["reason"]) for r in sl.atr_rungs_dropped])
+
+
+def test_basis_records_the_atr_rungs_and_their_parameters():
+    from tests.lib.session_levels_helpers import d8_basis
+    stored = json.loads(json.dumps(SessionLevels.from_basis(d8_basis()).to_basis()))
+    assert stored["atr_rung_status"] == "ok"
+    kept = stored["atr_rungs"]
+    assert [(r["price"], r["anchor"], r["multiple"], r["sign"], r["stretch"], r["aliases"])
+            for r in kept] == [(234.2, "PMK_L", 1.0, "-", False, []),
+                               (241.2, "PMK_L", 0.5, "-", False, []),
+                               (259.1, "PMK_H", 0.5, "+", False, []),
+                               (266.1, "PMK_H", 1.0, "+", False, [])]
+    dropped = stored["atr_rungs_dropped"]
+    assert len(dropped) == 28
+    assert all({"price", "anchor", "multiple", "reason"} <= set(r) for r in dropped)
+    assert [(a["name"], a["price"], a["status"]) for a in stored["atr_rung_anchors"]] == [
+        ("PDH", 253.0, "ok"), ("PDL", 247.5, "ok"), ("PMK_H", 252.1, "ok"), ("PMK_L", 248.2, "ok")]
+    params = stored["atr_rung_params"]
+    assert set(params) == set(ATR_RUNG_PARAM_KEYS)
+    for key in ATR_RUNG_PARAM_KEYS:
+        assert set(params[key]) == {"value", "status", "method_id", "effective_from"}
+        assert params[key]["status"] == "ok" and params[key]["effective_from"]
+    assert params["atr_rung_anchors"]["value"] == ["PDH", "PDL", "PMK_H", "PMK_L"]
+    assert params["atr_rung_anchors"]["method_id"] == "policy"
+    assert (params["atr_rung_step_atr"]["value"], params["atr_rung_max_atr"]["value"],
+            params["atr_rung_stretch_atr"]["value"]) == (0.5, 2.0, 1.5)
+    # The rungs are never levels, candidates or targets in the stored basis.
+    names = [lv["name"] for lv in stored["levels"]]
+    names += [c["name"] for side in ("long", "short") for c in stored[side]["candidates"]]
+    assert not any(n.endswith("ATR") for n in names)
+
+
+def test_from_basis_rebuilds_the_recorded_rungs_after_the_rows_change():
+    """A later ticker_level_params or policy row (offered as params) does
+    not move a recorded basis's rungs: the recorded parameters rebuild."""
+    from tests.lib.session_levels_helpers import d8_basis, d8_params
+    first = SessionLevels.from_basis(d8_basis())
+    stored = json.loads(json.dumps(first.to_basis()))
+    rebuilt = SessionLevels.from_basis(stored)
+    offered = SessionLevels.from_basis(stored, params=d8_params(
+        anchors=["PDC"], atr_rung_step_atr=0.25, atr_rung_max_atr=3.0))
+    assert _rungs(rebuilt) == _rungs(offered) == _rungs(first)
+    assert rebuilt.to_basis()["atr_rungs"] == stored["atr_rungs"]
+    assert rebuilt.to_basis()["atr_rungs_dropped"] == stored["atr_rungs_dropped"]
+
+
+def test_a_basis_without_the_atr_keys_rebuilds_no_rungs_and_the_same_targets():
+    """A level_basis stored before ATR rungs (no rung keys, no rung
+    parameters recorded) rebuilds none, even when the rows in force are
+    offered, and its targets, stop and gate targets are unchanged."""
+    from tests.lib.session_levels_helpers import d8_basis, d8_params
+    new = SessionLevels.from_basis(d8_basis())
+    stored = json.loads(json.dumps(new.to_basis()))
+    for k in ATR_BASIS_KEYS:
+        stored.pop(k)
+    for k in ATR_RUNG_PARAM_KEYS:
+        stored["params"].pop(k)
+    old = SessionLevels.from_basis(stored, params=d8_params())
+    assert old.atr_rungs == [] and old.atr_rungs_dropped == [] and old.atr_rung_status is None
+    assert not set(ATR_BASIS_KEYS) & set(old.to_basis())
+    assert old.to_level_map().atr_levels is None
+    assert _exit_picks(old) == _exit_picks(new)
+    assert (old.long.stop, old.short.stop) == (new.long.stop, new.short.stop)
+    assert old.with_premarket({"date": SESSION_D8, "pre_high": 253.5, "pre_low": 246.0,
+                               "pre_vwap": 250.0, "pre_filter_status": "ok"}).atr_rungs == []
+
+
+def test_with_premarket_rebuilds_the_premarket_rungs():
+    from tests.lib.session_levels_helpers import d8_basis
+    sl = SessionLevels.from_basis(d8_basis())
+    newer = sl.with_premarket({"date": SESSION_D8, "pre_high": 253.60, "pre_low": 247.80,
+                               "pre_vwap": 250.00, "pre_filter_status": "ok"})
+    pmk = sorted((r["price"], r["label"]) for r in newer.atr_rungs + newer.atr_rungs_dropped
+                 if r["anchor"] in ("PMK_H", "PMK_L"))
+    assert (260.6, "PMK_H+0.5") in pmk and (240.8, "PMK_L-0.5") in pmk
+    assert (259.1, "PMK_H+0.5") not in pmk and (241.2, "PMK_L-0.5") not in pmk
+    anchors = {a["name"]: a["price"] for a in newer.atr_rung_anchors}
+    assert (anchors["PMK_H"], anchors["PMK_L"]) == (253.6, 247.8)
+    # PDH and PDL rungs are the same as before the newer snapshot.
+    def pd(s):
+        return sorted(r["cents"] for r in s.atr_rungs + s.atr_rungs_dropped
+                      if r["anchor"] in ("PDH", "PDL"))
+    assert pd(newer) == pd(sl)
+
+
+def test_published_prices_include_the_kept_rungs():
+    from lib.strat_levels import price_cents
+    from tests.lib.session_levels_helpers import d8_basis
+    sl = SessionLevels.from_basis(d8_basis())
+    known = sl.published_prices()
+    assert {25910, 26610, 24120, 23420} <= known
+    assert {price_cents(lv.price) for lv in sl.levels} <= known
+    level_cents = {price_cents(lv.price) for lv in sl.levels}
+    dropped_off_level = {r["cents"] for r in sl.atr_rungs_dropped} - level_cents
+    assert dropped_off_level and not (dropped_off_level & known)

@@ -53,6 +53,7 @@ from gcp.database import (  # noqa: E402
     upsert_dataframe,
 )
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL  # noqa: E402
+from lib.eastern_time import market_today, market_today_sql  # noqa: E402
 from lib.logging_config import setup_logging  # noqa: E402
 
 setup_logging()
@@ -133,7 +134,7 @@ def refresh_daily(days_ahead: int) -> None:
     last-3-events JSONB summary. The five score-dependent fields are NULL
     (see the row build below).
     """
-    today = date.today()
+    today = market_today()
     log.info("refresh_daily — days_ahead=%d as_of=%s", days_ahead, today)
 
     # ── Pull upcoming reporters (deduped per ticker) + market_data_daily.close
@@ -161,8 +162,8 @@ def refresh_daily(days_ahead: int) -> None:
                    MAX(options_volume) AS options_volume,
                    MAX(open_interest) AS open_interest
             FROM earnings_calendar
-            WHERE earnings_date BETWEEN CURRENT_DATE
-                                    AND CURRENT_DATE + (:days)::int
+            WHERE earnings_date BETWEEN {market_today_sql()}
+                                    AND {market_today_sql()} + (:days)::int
               AND {EARNINGS_NOT_RETIRED_SQL}
             GROUP BY ticker
         ) u

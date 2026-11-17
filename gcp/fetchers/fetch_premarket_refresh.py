@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pre-market refresh fetcher — runs at 8:20 AM ET (premarket-refresh-daily), before the 8:30 brief.
+Pre-market refresh fetcher — runs at 8:20 AM ET (premarket-refresh-daily), before the 8:30 brief, and at 9:20 AM ET before the late brief once the FEAT-DEPLOY-001 schedule is applied.
 
 Targets a small set of tickers (today's earnings reporters + watchlist),
 fetches today's pre-market bars from AlphaVantage, and UPSERTs the
@@ -42,6 +42,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+from lib.eastern_time import market_today
+
 log = logging.getLogger(__name__)
 
 
@@ -81,11 +84,11 @@ def resolve_universe(target_date: date, max_tickers: int = 50) -> list[str]:
 
     # Today's earnings tickers with options flow (priority 1)
     try:
-        sql = """
+        sql = f"""
             SELECT ticker, MAX(options_volume) AS opt_vol,
                    MAX(market_cap)            AS mcap
               FROM earnings_calendar
-             WHERE earnings_date = :d
+             WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date = :d
                AND COALESCE(options_volume, 0) > 0
              GROUP BY ticker
              ORDER BY (COALESCE(MAX(options_volume), 0) + 1)
@@ -108,9 +111,9 @@ def resolve_universe(target_date: date, max_tickers: int = 50) -> list[str]:
         # Walk back over weekends/holidays — find most recent weekday
         while prior.weekday() >= 5:
             prior -= timedelta(days=1)
-        sql_amc = """
+        sql_amc = f"""
             SELECT DISTINCT ticker FROM earnings_calendar
-             WHERE earnings_date = :d
+             WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date = :d
                AND earnings_time = 'postmarket'
                AND COALESCE(options_volume, 0) > 0
         """
@@ -194,7 +197,7 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
     snapshot carries pre_filter_status naming why and NULL excluded counts.
     """
     from gcp.fetchers.fetch_market_data import fetch_minute_data
-    from lib.indicators import calculate_premarket_context
+    from lib.indicators import calculate_premarket_context, premarket_rule_record
 
     iso_date = fetch_date.strftime('%Y-%m-%d')
     df = fetch_minute_data(ticker, iso_date, api_key)
@@ -241,7 +244,7 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
                  ticker, iso_date)
         return None
 
-    return {
+    snapshot = {
         'ticker': ticker,
         'date': fetch_date,
         'pre_high': pm.get('pre_high'),
@@ -249,6 +252,8 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         'pre_vwap': pm.get('pre_vwap'),
         'pre_volume': pm.get('pre_volume'),
         'gap_pct': pm.get('gap_pct'),
+        # Follows the high and the low: None when either was rejected.
+        'pre_range_atr': pm.get('pre_range_atr'),
         'excluded_prior_close_prints': pm.get('excluded_prior_close_prints'),
         'excluded_spike_prints': pm.get('excluded_spike_prints'),
         # The provenance columns (FEAT-STRAT-001), written when the table
@@ -261,9 +266,40 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         # and which (Design 8). Not ok: the builder refuses the snapshot.
         'pre_filter_status': 'ok' if pm.get('filtered') else (
             pm_filter['status'] if pm_filter['status'] != 'ok' else 'atr_unavailable'),
-        'pre_filter_params': (json.dumps(pm_filter['params'], sort_keys=True)
-                              if pm_filter['params'] is not None else None),
+        # The threshold record with the extreme rules' record beside it
+        # (FEAT-PLAYBOOK-001 B8); the two rule blocks alone when the
+        # parameters could not be read.
+        'pre_filter_params': json.dumps(
+            {**(pm_filter['params'] or {}), **premarket_rule_record(pm)}, sort_keys=True),
     }
+    # How late the vendor's newest premarket bar is at this fetch
+    # (FEAT-PLAYBOOK-001: the late brief builds on what this run fetched).
+    # A log record only; nothing is stored.
+    from lib.eastern_time import as_eastern_time
+    newest = _newest_premarket_bar(df.index)
+    log.info("  %s: premarket bars=%d newest_bar=%s ET fetched_at=%s ET",
+             ticker, pm['bar_count'],
+             newest.strftime('%H:%M') if newest is not None else 'unavailable',
+             as_eastern_time(fetched_at).strftime('%H:%M:%S'))
+    return snapshot
+
+
+def _newest_premarket_bar(index) -> pd.Timestamp | None:
+    """The last bar at or after lib.indicators.PREMARKET_START and before
+    REGULAR_SESSION_OPEN, in the vendor's own Eastern wall time; None when
+    there is none. The vendor's index is naive Eastern and is read as it is;
+    a zone-aware index is converted to Eastern first, the way
+    calculate_premarket_context reads it."""
+    from lib.eastern_time import ET_NAME
+    from lib.indicators import PREMARKET_START, REGULAR_SESSION_OPEN
+
+    idx = pd.DatetimeIndex(index)
+    if len(idx) == 0:
+        return None
+    if idx.tz is not None:
+        idx = idx.tz_convert(ET_NAME)
+    premarket = [ts for ts in idx if PREMARKET_START <= ts.time() < REGULAR_SESSION_OPEN]
+    return max(premarket) if premarket else None
 
 
 # ── Persist (UPSERT only the pre_* columns) ─────────────────────────────────
@@ -279,7 +315,11 @@ def upsert_premarket(rows: list[dict]) -> int:
     underlying bad rows from being written in the first place.
 
     For rows that DO have at least one pre_* signal:
-    - If today's row exists (rare at 8:30am), UPDATE pre_* only.
+    - If today's row exists (rare at 8:30am), UPDATE pre_* only. pre_high,
+      pre_low and pre_range_atr are overwritten with the snapshot's own
+      values, NULL included: an extreme the rules rejected is cleared, not
+      kept (FEAT-PLAYBOOK-001 B8). A ticker with no snapshot is not in `rows`
+      and its row is not touched.
     - If it doesn't, INSERT pre_* fields; full OHLC fills tonight at 11pm.
 
     Returns the number of rows touched.
@@ -316,7 +356,7 @@ def upsert_premarket(rows: list[dict]) -> int:
 _PROVENANCE_COLUMNS = ('pre_fetched_at', 'pre_excluded_stale_prints', 'pre_excluded_spikes',
                        'pre_filter_status', 'pre_filter_params')
 _UPSERT_KEYS = ('ticker', 'date', 'pre_high', 'pre_low', 'pre_vwap', 'pre_volume',
-                'gap_pct') + _PROVENANCE_COLUMNS
+                'gap_pct', 'pre_range_atr') + _PROVENANCE_COLUMNS
 
 
 def _has_provenance_columns(eng) -> bool:
@@ -338,13 +378,17 @@ def _has_provenance_columns(eng) -> bool:
 
 
 def _upsert_premarket_sql(with_provenance: bool) -> str:
-    cols = ['pre_high', 'pre_low', 'pre_vwap', 'pre_volume', 'gap_pct']
+    cols = ['pre_high', 'pre_low', 'pre_vwap', 'pre_volume', 'gap_pct', 'pre_range_atr']
     if with_provenance:
         cols += list(_PROVENANCE_COLUMNS)
     # The filter status and its counts describe this snapshot only: they are
     # overwritten, never COALESCEd with an earlier run's, so an unfiltered
     # rerun cannot leave an earlier run's 'ok' beside its unfiltered prices.
-    overwrite = {'pre_excluded_stale_prints', 'pre_excluded_spikes',
+    # The high, the low and the range are overwritten too: a NULL there is an
+    # extreme this snapshot's rules rejected, and COALESCE would keep the
+    # earlier price under the new rule's label.
+    overwrite = {'pre_high', 'pre_low', 'pre_range_atr',
+                 'pre_excluded_stale_prints', 'pre_excluded_spikes',
                  'pre_filter_status', 'pre_filter_params'}
     sets = ',\n            '.join(
         f"{c} = EXCLUDED.{c}" if c in overwrite
@@ -382,7 +426,7 @@ def main():
     args = parser.parse_args()
 
     target = (datetime.strptime(args.date, '%Y-%m-%d').date()
-              if args.date else date.today())
+              if args.date else market_today())
 
     api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     if not api_key:

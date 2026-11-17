@@ -21,14 +21,14 @@ import argparse
 import logging
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import ET
+from lib.eastern_time import ET, market_today
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from lib.logging_config import setup_logging
@@ -78,7 +78,7 @@ def fetch_top_movers(api_key: str) -> pd.DataFrame:
         log.warning("AV info: %s", data["Information"])
         return pd.DataFrame()
 
-    snapshot_date = date.today()
+    snapshot_date = market_today()
     rows = []
     for av_key, our_category in CATEGORIES:
         items = data.get(av_key) or []

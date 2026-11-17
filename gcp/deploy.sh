@@ -4299,6 +4299,56 @@ _schedule_brief() {
         --quiet 2>/dev/null || echo "  ${NAME}: already exists"
 }
 
+# Create-or-update a brief scheduler that runs the job in a named slot, and
+# VERIFY it. Unlike _schedule_brief (create only, "already exists" swallowed)
+# it updates an existing entry, its body carries
+# BRIEF_TRIGGERED_BY=cloud-scheduler:<name> followed by the one KEY=VALUE pair
+# given, and it reads back schedule, target and ENABLED state, returning
+# nonzero on any mismatch so deploy_schedulers counts it into
+# SCHEDULER_FAILURES (REQ-DEPLOY-001). A fourth argument that is not
+# KEY=VALUE is refused before any gcloud call: a body with an empty variable
+# name would run the brief in its early slot, a second full Discord post.
+_schedule_brief_slot() {
+    local NAME=$1 CRON=$2 JOB=$3 ENV_KV=$4 uri live
+    case "${ENV_KV}" in
+        [A-Z_]*=?*) ;;
+        *) echo "  ERROR: ${NAME}: the fourth argument must be KEY=VALUE, got [${ENV_KV}]" >&2; return 1 ;;
+    esac
+    local BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"BRIEF_TRIGGERED_BY","value":"cloud-scheduler:'"${NAME}"'"},{"name":"'"${ENV_KV%%=*}"'","value":"'"${ENV_KV#*=}"'"}]}]}}'
+    uri=$(_job_uri "${JOB}")
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet >/dev/null 2>&1; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --update-headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: update of ${NAME} failed" >&2; return 1; }
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "${uri}" \
+            --http-method POST \
+            --headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet >/dev/null || { echo "  ERROR: create of ${NAME} failed" >&2; return 1; }
+    fi
+    live=$(gcloud scheduler jobs describe "${NAME}" --location "${REGION}" \
+        --format="value(schedule,httpTarget.uri,state)" 2>/dev/null) \
+        || { echo "  ERROR: cannot read back ${NAME}" >&2; return 1; }
+    if [ "${live}" != "${CRON}"$'\t'"${uri}"$'\t'"ENABLED" ]; then
+        echo "  ERROR: ${NAME} read back as [${live//$'\t'/ | }], expected [${CRON} | ${uri} | ENABLED]" >&2
+        return 1
+    fi
+    echo "  ${NAME}: verified ${CRON} ${ENV_KV}"
+}
+
 # Variant of _schedule that injects INSIGHT_TRIGGERED_BY=cloud-scheduler:<name>
 # as a containerOverride env var on the insight-pipeline ":run" body. Mirrors
 # _schedule_brief — without it, _resolve_update_mode_and_kind in
@@ -4447,6 +4497,10 @@ deploy_schedulers() {
     # is passed as a containerOverride env var on every trigger; without it the
     # brief misclassifies scheduled runs as manual_replay in history.
     _schedule_brief "premarket-brief-daily"    "30 8 * * 1-5"   "premarket-brief"
+    # Late brief, 09:20 ET with the late refresh: the late slot waits for the
+    # refresh's pre_fetched_at before it builds (it does not rely on a gap).
+    _schedule_brief_slot "premarket-brief-late" "20 9 * * 1-5" "premarket-brief" "BRIEF_RUN_SLOT=late" \
+        || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
     # Pre-market brief — 9:00 AM ET Sundays (week-ahead earnings digest)
     # Sunday brief moved to 9 PM ET (after weekly-earnings-refresh-* at
     # 7-7:30 PM has populated fresh AV options + history + reactions
@@ -4838,6 +4892,10 @@ deploy_schedulers() {
     # Populates today's gap_pct / pre_high / pre_low / pre_vwap into
     # market_data_daily; the 11pm fetcher fills in regular-session OHLC.
     _schedule "premarket-refresh-daily"  "20 8 * * 1-5"  "fetch-premarket-refresh"
+    # Late premarket refresh, 09:20 ET: the same job as 08:20, so the levels in
+    # force at the open include premarket through about 09:19.
+    _schedule_verified "premarket-refresh-late" "20 9 * * 1-5" "fetch-premarket-refresh" \
+        || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
 
     # evaluate-ew-strikes-daily (23:00 ET) retired 2026-10-31 with the
     # EarningsWhispers source: the job is no longer deployed, so the entry

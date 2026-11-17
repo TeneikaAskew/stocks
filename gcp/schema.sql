@@ -1895,6 +1895,14 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION,
+    -- Exits in thirds: the spaced plan targets (t1..t3 above keep the
+    -- gating targets the monitor and the existing outcome read).
+    ADD COLUMN IF NOT EXISTS calls_plan_t1_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t2_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t3_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t1_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t2_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t3_price    DOUBLE PRECISION,
 
     -- ── SHADOW: put leg re-anchored on the 9:31 open (audit §15.5) ───
     -- The brief anchors the playbook on the 8:31 price (yesterday's close).
@@ -1959,6 +1967,41 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS puts_entry_status     VARCHAR(16),
     ADD COLUMN IF NOT EXISTS puts_fill_price       DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_exit_reason      VARCHAR(8),
+
+    -- The brief's exit plan in thirds, scored (FEAT-STRAT-001 exits spec,
+    -- Design 6; outcome_resolver_version 2026-11-12.v3). Read from the row's
+    -- level_basis (plan targets, stop, exit_legs, entry_cutoff_et); a v2
+    -- basis falls back to the structured t1..t3 columns with the legs and
+    -- cutoff of the policy in force on the session. plan_entry_status:
+    -- 'entered', 'opened_through' (the first RTH bar opened at or beyond the
+    -- trigger), 'late_cross' (first cross in a bar starting at or after the
+    -- cutoff), 'no_cross', 'no_trigger'. plan_fill_price/_ts: the trigger, or
+    -- the open of a later bar that opened beyond it (entered only). plan_r:
+    -- sum over legs of (1/legs) x (exit - fill) x sign / |fill - stop|,
+    -- gross; NULL unless plan_r_status = 'ok'. plan_r_status, the first that
+    -- applies: 'targets_unavailable' (no plan published), 'stop_unavailable'
+    -- (no stop beyond the fill), 'not_entered', 'ok'. plan_t1..t3_hit_ts:
+    -- touches of the plan targets by the walk of t1_hit_ts (not exits).
+    -- plan_exit: each leg's exit in order, e.g. 't1,t2,close'. A stop-less
+    -- leg keeps its exits (targets or close) with plan_r NULL.
+    ADD COLUMN IF NOT EXISTS calls_plan_entry_status VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS calls_plan_fill_price  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_fill_ts     TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_r           DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_r_status    VARCHAR(24),
+    ADD COLUMN IF NOT EXISTS calls_plan_t1_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_t2_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_t3_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_exit        TEXT,
+    ADD COLUMN IF NOT EXISTS puts_plan_entry_status VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS puts_plan_fill_price  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_fill_ts     TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_r           DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_r_status    VARCHAR(24),
+    ADD COLUMN IF NOT EXISTS puts_plan_t1_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_t2_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_t3_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_exit        TEXT,
 
     -- ── Resolver metadata ────────────────────────────────────────────
     ADD COLUMN IF NOT EXISTS outcome_resolved_at   TIMESTAMPTZ,
@@ -2119,7 +2162,13 @@ ALTER TABLE premarket_analysis_history
     ADD COLUMN IF NOT EXISTS puts_stop_name        VARCHAR(20),
     ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
-    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION;
+    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t1_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t2_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t3_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t1_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t2_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t3_price    DOUBLE PRECISION;
 
 
 -- ============================================================================
@@ -2237,7 +2286,37 @@ INSERT INTO level_param_policy (
     ('target_neutral_2_r', 'filled_reach_share', 0.45, 750, 150, '{"persona": "neutral", "k": 2}', '2015-01-02', NULL),
     ('target_neutral_3_r', 'filled_reach_share', 0.30, 750, 150, '{"persona": "neutral", "k": 3}', '2015-01-02', NULL),
     ('target_conservative_1_r', 'filled_reach_share', 0.65, 750, 150, '{"persona": "conservative", "k": 1}', '2015-01-02', NULL),
-    ('target_conservative_2_r', 'filled_reach_share', 0.50, 750, 150, '{"persona": "conservative", "k": 2}', '2015-01-02', NULL)
+    ('target_conservative_2_r', 'filled_reach_share', 0.50, 750, 150, '{"persona": "conservative", "k": 2}', '2015-01-02', NULL),
+    -- Exits in thirds (docs/superpowers/specs/2026-11-11-feat-strat-001-brief-exits-in-thirds.md).
+    -- policy_seed: lib.level_calibration writes one ticker_level_params row
+    -- per ticker at the seed in force; a later per-ticker method replaces it
+    -- without a code change. policy: one value for every ticker.
+    ('target_min_spacing_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 0.25}', '2015-01-02',
+     'least distance from the trigger, or the target before, a published target keeps / ATR'),
+    ('gap_fill_flag_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 0.5}', '2015-01-02',
+     '|reference - prior close| / ATR at which a prior-close target is labelled a gap fill'),
+    ('exit_legs', 'policy', NULL, NULL, NULL, '{"legs": 3}', '2015-01-02',
+     'equal legs the exit plan sells, one at each spaced target'),
+    ('entry_cutoff_et', 'policy', NULL, NULL, NULL, '{"time_et": "16:00"}', '2015-01-02',
+     'last minute (ET, exclusive) a first cross of the trigger is an entry; 16:00 is the regular close, so every first cross in the session is one'),
+    -- ATR levels (docs/superpowers/specs/2026-11-11-feat-strat-001-brief-atr-levels.md).
+    -- Display only: the brief's NEXT LEVELS ATR line; never a trigger, stop
+    -- or target. The anchor list is policy-wide (it names levels, in name
+    -- priority, each a trigger candidate); the three distances are
+    -- policy_seed, one ticker_level_params row per ticker at the seed.
+    ('atr_rung_anchors', 'policy', NULL, NULL, NULL, '{"anchors": ["PDH", "PDL", "PMK_H", "PMK_L"]}', '2015-01-02',
+     'levels the ATR rungs hang from, in name priority'),
+    ('atr_rung_step_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 0.5}', '2015-01-02',
+     'distance between ATR rungs / ATR'),
+    ('atr_rung_max_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 2.0}', '2015-01-02',
+     'farthest ATR rung from its anchor / ATR'),
+    ('atr_rung_stretch_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 1.5}', '2015-01-02',
+     'distance from its anchor / ATR at which an ATR rung is marked stretch'),
+    -- Gap-edge plan targets (docs/superpowers/specs/2026-11-15-feat-strat-001-plan-targets-gap-edges.md).
+    -- Policy-wide: the level types, beyond the trigger candidates, the exits
+    -- plan's spaced target walk may use. An empty list turns gap edges off.
+    ('plan_target_level_types', 'policy', NULL, NULL, NULL, '{"level_types": ["gap_high", "gap_low"]}', '2015-01-02',
+     'level types, beyond the trigger candidates, the exits plan''s spaced target walk may use')
 ON CONFLICT (param_key, effective_from) DO NOTHING;
 
 
@@ -2560,6 +2639,30 @@ BEGIN
            AND removed_at IS NULL;
     END IF;
 END $$;
+
+-- One row per ticker anyone has ever watched, shared by every watcher and read owner-free by
+-- the FEAT-DATA-001 ingest job. Ten users on one ticker point at this one row; the ticker's bars,
+-- indicators and ticker_info row are written once, by the jobs, never per user.
+CREATE TABLE IF NOT EXISTS watched_tickers (
+    ticker      VARCHAR(10)  PRIMARY KEY CHECK (ticker = UPPER(ticker) AND ticker ~ '^[A-Z0-9.]{1,10}$'),
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- One row per (user, ticker): membership only, no ticker data. owner_uid is the Firebase account
+-- id (the token's uid), the immutable key REQ-TENANCY-001 asks for; owner_email is the verified
+-- email, stored for display and audit and refreshed on every write. Removal is a soft delete so a
+-- re-add keeps added_at.
+CREATE TABLE IF NOT EXISTS user_watchlists (
+    owner_uid    VARCHAR(128) NOT NULL,
+    owner_email  VARCHAR(320) NOT NULL,
+    ticker       VARCHAR(10)  NOT NULL REFERENCES watched_tickers(ticker),
+    source       VARCHAR(20)  NULL,          -- 'ui', 'combobox-auto-add'
+    added_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    removed_at   TIMESTAMPTZ  NULL,
+    PRIMARY KEY (owner_uid, ticker)
+);
+CREATE INDEX IF NOT EXISTS user_watchlists_active_idx        ON user_watchlists (owner_uid) WHERE removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS user_watchlists_ticker_active_idx ON user_watchlists (ticker)    WHERE removed_at IS NULL;
 
 
 -- ── watchlist_history: immutable membership log ──────────────────────
@@ -5454,3 +5557,99 @@ BEGIN
         END IF;
     END LOOP;
 END $$;
+
+-- Bar recompute ledger and markers (FEAT-DATA-001)
+-- Spec: docs/superpowers/specs/2026-11-14-feat-data-001-recompute-after-bar-rewrite.md
+-- (Design 2, "The ledger"). The two recompute tools, --re-resolve on the
+-- end-of-day resolver and --recompute-premarket on the daily fetcher, write
+-- one ledger row for each row they overwrite, in the same transaction as the
+-- overwrite: the old values, the new values, whether they differ, and the
+-- bars, code version and configuration the new values rest on. --revert-run
+-- reads these rows to write the old values back.
+--
+-- A marker column holds the run id of the committed run that last wrote the
+-- row's recomputed columns. NULL means the values are as first written: no
+-- recompute has confirmed or replaced them.
+--
+-- action is VARCHAR(16), not the spec's VARCHAR(8): 'recompute' is nine
+-- characters.
+CREATE TABLE IF NOT EXISTS bar_recompute_ledger (
+    id           BIGSERIAL   PRIMARY KEY,
+    run_id       TEXT        NOT NULL,
+    target       VARCHAR(32) NOT NULL,  -- 'signal-alert-exits' | 'daily-premarket'
+    action       VARCHAR(16) NOT NULL,  -- 'recompute' | 'revert'
+    ticker       VARCHAR(10) NOT NULL,
+    session_date DATE        NOT NULL,
+    row_key      TEXT        NOT NULL,  -- alert_ts in UTC to the microsecond | the date
+    old_values   JSONB       NOT NULL,
+    new_values   JSONB       NOT NULL,
+    changed      BOOLEAN     NOT NULL,
+    basis        JSONB       NOT NULL,
+    written_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (run_id, target, ticker, row_key)
+);
+ALTER TABLE signal_alerts     ADD COLUMN IF NOT EXISTS exit_recompute_run TEXT;
+ALTER TABLE trades            ADD COLUMN IF NOT EXISTS exit_recompute_run TEXT;
+ALTER TABLE market_data_daily ADD COLUMN IF NOT EXISTS pre_recompute_run  TEXT;
+
+-- Bar misprint flags (FEAT-DATA-001)
+-- Spec: docs/superpowers/specs/2026-11-16-feat-data-001-bar-misprint-flags-r2.md
+-- (Design 2). A print that sits far outside its own minute is flagged here,
+-- per bar and side, by gcp/fetchers/intraday_bar_flags.py under the rule of
+-- lib/bar_prints.py. No row of market_data_intraday is changed and none is
+-- read by a foreign key.
+--
+-- A coverage row for (ticker, month, rule version) says the month was judged
+-- at checked_at over the bars its bars_basis hashes. A bar of that month from
+-- first_judged_ts to last_judged_ts with no flag row was judged and not
+-- flagged. No coverage row means not judged, never clean.
+CREATE TABLE IF NOT EXISTS intraday_bar_flags (
+    ticker        VARCHAR(10)      NOT NULL,
+    interval      VARCHAR(5)       NOT NULL DEFAULT '1min',
+    ts            TIMESTAMPTZ      NOT NULL,   -- the bar's key in market_data_intraday
+    side          VARCHAR(4)       NOT NULL CHECK (side IN ('high', 'low')),
+    rule_version  VARCHAR(32)      NOT NULL,
+    print_kind    VARCHAR(14)      NOT NULL
+        CHECK (print_kind IN ('wick', 'open', 'close', 'open_and_close')),
+    session_part  VARCHAR(8)       NOT NULL CHECK (session_part IN ('regular', 'extended')),
+    observed      DOUBLE PRECISION NOT NULL,   -- the stored high or low
+    reference     DOUBLE PRECISION NOT NULL,
+    bound         DOUBLE PRECISION NOT NULL,
+    scale         DOUBLE PRECISION NOT NULL,
+    excess_bp     DOUBLE PRECISION NOT NULL,
+    read_start    TIMESTAMPTZ      NOT NULL,   -- the window the pass read for the month
+    read_end      TIMESTAMPTZ      NOT NULL,   -- (Design 3, step 1); a replace overlapping it clears the row
+    detected_at   TIMESTAMPTZ      NOT NULL,   -- the first pass that flagged it
+    checked_at    TIMESTAMPTZ      NOT NULL,   -- the last pass that flagged it
+    run_id        TEXT             NOT NULL,
+    CHECK (read_start < read_end),
+    PRIMARY KEY (ticker, interval, ts, side, rule_version)
+);
+
+CREATE TABLE IF NOT EXISTS intraday_bar_flag_coverage (
+    ticker              VARCHAR(10)  NOT NULL,
+    interval            VARCHAR(5)   NOT NULL DEFAULT '1min',
+    -- The month window's first instant (lib.eastern_time.intraday_month_window).
+    ts                  TIMESTAMPTZ  NOT NULL,
+    rule_version        VARCHAR(32)  NOT NULL,
+    month               DATE         NOT NULL,   -- the first of the Eastern month
+    read_start          TIMESTAMPTZ  NOT NULL,   -- the window the pass read, margins included;
+    read_end            TIMESTAMPTZ  NOT NULL,   -- a replace overlapping it clears the row (Design 7)
+    params              JSONB        NOT NULL,
+    bars_in_month       INTEGER      NOT NULL,
+    bars_judged         INTEGER      NOT NULL,
+    first_judged_ts     TIMESTAMPTZ,
+    last_judged_ts      TIMESTAMPTZ,
+    flags_regular_high  INTEGER      NOT NULL,
+    flags_regular_low   INTEGER      NOT NULL,
+    flags_extended_high INTEGER      NOT NULL,
+    flags_extended_low  INTEGER      NOT NULL,
+    bars_basis          JSONB        NOT NULL,   -- gcp.bar_recompute.bars_basis of the rows read
+    session_sha256      JSONB        NOT NULL,   -- Eastern date -> sha256 of that date's rows read
+    code_version        JSONB        NOT NULL,   -- gcp.bar_recompute.code_version()
+    run_id              TEXT         NOT NULL,
+    checked_at          TIMESTAMPTZ  NOT NULL,
+    CHECK ((bars_judged = 0) = (first_judged_ts IS NULL)),
+    CHECK (read_start < read_end),
+    PRIMARY KEY (ticker, interval, ts, rule_version)
+);

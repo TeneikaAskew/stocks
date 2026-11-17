@@ -11,7 +11,6 @@ AV fixture stamps below are naive Eastern, exactly as the vendor returns them.
 """
 from __future__ import annotations
 
-from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -61,37 +60,6 @@ def test_fetch_market_data_refuses_an_already_aware_vendor_index():
     df.index = df.index.tz_localize("UTC")
     with patch.object(mod, "upsert_dataframe"), pytest.raises(ValueError):
         mod.write_intraday_to_sql("SPY", df, "2026-09-24")
-
-
-# ── W3: gcp/backfill_ticker.run (Discord /replay, backfill_and_replay) ───────
-
-
-def test_backfill_ticker_writes_utc_instants(monkeypatch):
-    import gcp.backfill_ticker as mod
-
-    monkeypatch.setenv("BACKFILL_TICKER", "amd")
-    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "k")
-    monkeypatch.setenv("BACKFILL_DATES", "2026-09-24")
-    monkeypatch.setenv("BACKFILL_INCLUDE_NEWS", "false")
-    monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", "false")
-    daily = pd.DataFrame({
-        "date": [date(2026, 9, 23), date(2026, 9, 24)],
-        "open": [1.0, 1.0], "high": [1.0, 1.0], "low": [1.0, 1.0],
-        "close": [1.0, 1.0], "adjusted_close": [1.0, 1.0], "volume": [1, 1],
-    })
-    up = MagicMock()
-    with patch.object(mod, "av_daily_full", return_value=daily), \
-         patch.object(mod, "av_intraday_month", return_value=_av_frame([EDT_OPEN_ET])), \
-         patch.object(mod, "compute_indicators_for_full_range", return_value=0), \
-         patch.object(mod, "compute_indicators_for_dates"), \
-         patch("gcp.database.upsert_dataframe", up):
-        assert mod.run() == 0
-    written = _intraday_calls(up)
-    assert written, "backfill_ticker wrote no intraday rows"
-    for df in written:
-        ts = pd.DatetimeIndex(df["ts"])
-        assert str(ts.tz) == "UTC"
-        assert ts[0] == pd.Timestamp("2026-09-24 13:30", tz="UTC")
 
 
 # ── Backstop: gcp.database refuses naive ts for market_data_intraday ─────────

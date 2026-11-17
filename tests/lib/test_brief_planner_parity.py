@@ -28,9 +28,14 @@ from tests.lib import strat_2026_11_06 as fx
 
 PARITY = {
     #       long trig  short trig  long T1   T1 name  T1 aliases
-    "SPY": (738.04, 730.64, 750.36, "PWL", {"PML"}),
-    "QQQ": (660.40, 649.62, 661.14, "PQL", set()),
-    "IWM": (272.50, 269.13, 276.00, "PWL", set()),
+    # The triggers are the session's premarket extremes under the confirmed
+    # rule (FEAT-PLAYBOOK-001 B7). Until then they were the filter's own
+    # extremes, each one bar's lone wick: SPY 738.04 and 730.64, QQQ 660.40
+    # and 649.62, IWM 272.50 and 269.13 (the bars are named beside FILTERED
+    # in tests/lib/test_premarket_print_filter.py). The targets did not move.
+    "SPY": (737.93, 730.70, 750.36, "PWL", {"PML"}),
+    "QQQ": (660.29, 649.65, 661.14, "PQL", set()),
+    "IWM": (272.41, 269.36, 276.00, "PWL", set()),
 }
 
 
