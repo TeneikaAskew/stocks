@@ -16,6 +16,7 @@ from lib.strat_levels import (
     format_levels_for_brief,
     StratLevel,
     LevelMap,
+    SessionLevels,
 )
 from lib.strat_levels import build_level_map as _build_level_map
 from tests.lib.level_params_fixtures import fixture_params
@@ -2009,3 +2010,76 @@ def test_from_basis_refuses_a_version_it_does_not_know(version):
         sl.with_reference(250.0)
     assert e.value.reason == rule_version_status(version)
     assert e.value.recorded is version
+
+
+# ─── ATR marks spec (2026-11-16): today's plan on the three stored bases ──
+#
+# The stored 2026-11-16 level_basis rows (Design 7 fixtures) and what
+# origin/main f3b2344c4 gives for them, recorded before any change of the
+# ATR marks branch (tests/fixtures/level_basis_2026-11-16/).
+
+import hashlib  # noqa: E402
+import json  # noqa: E402
+
+from tests.lib import session_levels_helpers as slh  # noqa: E402
+
+# The spec's Design 7 "Today" block (r2, lines 520 to 536), character for character.
+SPEC_TODAY_CALLS = """  CALLS above 278.92 (PMK_H) -- only if bias denied, new entries 09:30 to 16:00 ET
+    No entry if the open is at or above 278.92.
+    Stop: 275.86 (PMK_L)
+    T1: 283.79 (PWH), sell 1/3
+    T2: 285.26 (PMH), sell 1/3, hold the last 1/3 to the close or the stop
+    Skipped, closer than 0.25 x ATR(14) = 1.22: 279.17 (PDH), 279.33 (PMC)
+    Room to trigger: 0.92%"""
+SPEC_TODAY_PUTS = """  PUTS below 275.86 (PMK_L), new entries 09:30 to 16:00 ET
+    No entry if the open is at or below 275.86.
+    Stop: 277.41 (PQL)
+    T1: 274.55 (11/9 Gap Low), sell 1/3
+    T2: 269.88 (PML), sell 1/3, hold the last 1/3 to the close or the stop
+    Skipped, closer than 0.25 x ATR(14) = 1.22: 274.67 (PDL)
+    Room to trigger: 0.19%"""
+
+
+def _sha256(path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class TestStored20261116:
+    def test_sources_json_matches_the_files(self):
+        export = json.loads((slh.BASES_1116.parent / 'sources.json').read_text())
+        assert _sha256(slh.BASES_1116) == export['files']['brief_rows.json']['sha256']
+        ours = json.loads((slh.MAIN_1116 / 'sources.json').read_text())
+        assert ours['bases']['sha256'] == _sha256(slh.BASES_1116)
+        assert sorted(ours['files']) == sorted(
+            f'{t}.main.{ext}' for t in slh.TICKERS_1116 for ext in ('json', 'txt'))
+        for name, entry in ours['files'].items():
+            assert _sha256(slh.MAIN_1116 / name) == entry['sha256'], name
+
+    def test_the_bases_are_the_0831_live_build(self):
+        for t in slh.TICKERS_1116:
+            b = slh.stored_1116(t)
+            assert b['built_at'].startswith('2026-11-16T08:31:19'), t
+            assert b['rule_version'] == 'feat-strat-001.v3'
+            assert b['session_date'] == '2026-11-16'
+
+    def test_iwm_trigger_and_stop(self):
+        b = slh.stored_1116('IWM')
+        assert b['atr_basis'] == 'atr_14' and round(b['atr_14'], 6) == 4.874951
+        sl = SessionLevels.from_basis(b)
+        assert (sl.long.trigger['price'], sl.long.trigger['name']) == (278.92, 'PMK_H')
+        assert (sl.long.stop['price'], sl.long.stop['name']) == (275.86, 'PMK_L')
+        assert (sl.short.trigger['price'], sl.short.trigger['name']) == (275.86, 'PMK_L')
+        assert (sl.short.stop['price'], sl.short.stop['name']) == (277.41, 'PQL')
+
+    @pytest.mark.parametrize('ticker', slh.TICKERS_1116)
+    def test_main_records_match(self, ticker):
+        main = slh.main_1116(ticker)
+        sl = SessionLevels.from_basis(slh.stored_1116(ticker))
+        assert sl.rule_version == main['rule_version']
+        assert slh.side_records(sl) == {'long': main['long'], 'short': main['short']}
+        assert format_levels_for_brief(sl.to_level_map(), 'bearish') == slh.main_text_1116(ticker)
+
+    def test_iwm_text_is_the_specs_today_block(self):
+        text = slh.main_text_1116('IWM')
+        assert SPEC_TODAY_CALLS in text
+        assert SPEC_TODAY_PUTS in text

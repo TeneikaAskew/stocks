@@ -1,0 +1,209 @@
+{
+ "atr": 4.874951094061365,
+ "atr_basis": "atr_14",
+ "long": {
+  "gate_targets": [
+   {
+    "aliases": [
+     "parent_bar_high"
+    ],
+    "level_type": "high",
+    "name": "PDH",
+    "period": "2026-11-13",
+    "price": 279.17,
+    "timeframe": "day"
+   },
+   {
+    "aliases": [],
+    "level_type": "close",
+    "name": "PMC",
+    "period": "2026-10",
+    "price": 279.33,
+    "timeframe": "month"
+   },
+   {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PWH",
+    "period": "2026-11-09/2026-11-15",
+    "price": 283.79,
+    "timeframe": "week"
+   }
+  ],
+  "plan": {
+   "atr_basis": "atr_14",
+   "entry_cutoff_et": "16:00",
+   "entry_cutoff_status": "ok",
+   "gap_fill_flag_atr": 0.5,
+   "gap_fill_flag_status": "ok",
+   "legs": 3,
+   "spacing_atr": 0.25,
+   "spacing_price": 1.22
+  },
+  "skipped": [
+   {
+    "aliases": [
+     "parent_bar_high"
+    ],
+    "distance_atr": 0.051,
+    "level_type": "high",
+    "name": "PDH",
+    "period": "2026-11-13",
+    "price": 279.17,
+    "timeframe": "day"
+   },
+   {
+    "aliases": [],
+    "distance_atr": 0.084,
+    "level_type": "close",
+    "name": "PMC",
+    "period": "2026-10",
+    "price": 279.33,
+    "timeframe": "month"
+   }
+  ],
+  "stop": {
+   "aliases": [],
+   "level_type": "low",
+   "name": "PMK_L",
+   "period": "premarket",
+   "price": 275.86,
+   "timeframe": "intraday"
+  },
+  "target_status": "ok",
+  "targets": [
+   {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PWH",
+    "period": "2026-11-09/2026-11-15",
+    "price": 283.79,
+    "timeframe": "week"
+   },
+   {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PMH",
+    "period": "2026-10",
+    "price": 285.26,
+    "timeframe": "month"
+   }
+  ],
+  "trigger": {
+   "aliases": [],
+   "level_type": "high",
+   "name": "PMK_H",
+   "period": "premarket",
+   "price": 278.92,
+   "timeframe": "intraday"
+  }
+ },
+ "plan_inputs_calls": {
+  "cutoff": 960,
+  "legs": 3,
+  "plan_available": true,
+  "status": "ok",
+  "stop": 275.86,
+  "targets": [
+   283.79,
+   285.26
+  ],
+  "trigger": 278.92
+ },
+ "plan_inputs_puts": {
+  "cutoff": 960,
+  "legs": 3,
+  "plan_available": true,
+  "status": "ok",
+  "stop": 277.41,
+  "targets": [
+   274.55,
+   269.875
+  ],
+  "trigger": 275.86
+ },
+ "rule_version": "feat-strat-001.v3",
+ "short": {
+  "gate_targets": [
+   {
+    "aliases": [
+     "PWL",
+     "parent_bar_low"
+    ],
+    "level_type": "low",
+    "name": "PDL",
+    "period": "2026-11-13",
+    "price": 274.665,
+    "timeframe": "day"
+   },
+   {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PML",
+    "period": "2026-10",
+    "price": 269.875,
+    "timeframe": "month"
+   }
+  ],
+  "plan": {
+   "atr_basis": "atr_14",
+   "entry_cutoff_et": "16:00",
+   "entry_cutoff_status": "ok",
+   "gap_fill_flag_atr": 0.5,
+   "gap_fill_flag_status": "ok",
+   "legs": 3,
+   "spacing_atr": 0.25,
+   "spacing_price": 1.22
+  },
+  "skipped": [
+   {
+    "aliases": [
+     "PWL",
+     "parent_bar_low"
+    ],
+    "distance_atr": 0.244,
+    "level_type": "low",
+    "name": "PDL",
+    "period": "2026-11-13",
+    "price": 274.665,
+    "timeframe": "day"
+   }
+  ],
+  "stop": {
+   "aliases": [],
+   "level_type": "low",
+   "name": "PQL",
+   "period": "2026Q3",
+   "price": 277.41,
+   "timeframe": "quarter"
+  },
+  "target_status": "ok",
+  "targets": [
+   {
+    "aliases": [],
+    "level_type": "gap_low",
+    "name": "GAP_L_2026-11-09",
+    "period": "2026-11-09",
+    "price": 274.55,
+    "timeframe": "day"
+   },
+   {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PML",
+    "period": "2026-10",
+    "price": 269.875,
+    "timeframe": "month"
+   }
+  ],
+  "trigger": {
+   "aliases": [],
+   "level_type": "low",
+   "name": "PMK_L",
+   "period": "premarket",
+   "price": 275.86,
+   "timeframe": "intraday"
+  }
+ },
+ "ticker": "IWM"
+}

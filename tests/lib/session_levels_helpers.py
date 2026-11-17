@@ -6,7 +6,10 @@ live consumer uses, so the picks come from the one builder's rules.
 """
 from __future__ import annotations
 
+import copy
+import json
 from datetime import date
+from pathlib import Path
 
 import lib.strat_levels as _strat_levels
 from lib.strat_levels import ATR_RUNG_KEYS, LEVEL_RULE_VERSION, LevelParams, SessionLevels, SideLevels
@@ -144,3 +147,51 @@ def newer_rule_versions() -> tuple[str, str, str]:
     parsed here, not through the classifier under test."""
     newest = max(int(v.rsplit('.v', 1)[1]) for v in _strat_levels.PICK_RULE_VERSIONS)
     return (f'feat-strat-001.v{newest + 1}', f'feat-strat-001.v{newest + 2}', 'feat-strat-001.v99')
+
+
+# ── ATR marks spec (2026-11-16), Design 7: the three stored bases ──────
+#
+# The level_basis of the live 2026-11-16 brief rows (built 08:31:19 ET,
+# feat-strat-001.v3), as exported read-only into
+# tests/fixtures/premarket_2026_11_16/brief_rows.json, and what origin/main
+# f3b2344c4 gives for each (tests/fixtures/level_basis_2026-11-16/).
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+BASES_1116 = FIXTURES / "premarket_2026_11_16" / "brief_rows.json"
+MAIN_1116 = FIXTURES / "level_basis_2026-11-16"
+TICKERS_1116 = ("SPY", "QQQ", "IWM")
+
+# Design 7's reach histories for the goldens, in ATR from the trigger.
+CALLS_REACH_D7 = (0.1, 0.3, 0.4, 0.7, 1.1, 1.2, 1.6, 2.4)
+PUTS_REACH_D7 = (0.05, 0.2, 0.3, 0.6, 0.9, 1.3, 1.5, 2.1)
+
+_BASES_1116: dict | None = None
+
+
+def stored_1116(ticker: str) -> dict:
+    """The stored 2026-11-16 level_basis of `ticker`, a fresh copy each call."""
+    global _BASES_1116
+    if _BASES_1116 is None:
+        d = json.loads(BASES_1116.read_text())
+        rows = [dict(zip(d["columns"], r)) for r in d["rows"]]
+        _BASES_1116 = {r["ticker"]: r["level_basis"] for r in rows}
+    return copy.deepcopy(_BASES_1116[ticker])
+
+
+def main_1116(ticker: str) -> dict:
+    """What origin/main f3b2344c4 gives for the stored basis (sides and plan_inputs)."""
+    return json.loads((MAIN_1116 / f"{ticker}.main.json").read_text())
+
+
+def main_text_1116(ticker: str) -> str:
+    """format_levels_for_brief(..., 'bearish') on origin/main f3b2344c4 for the stored basis."""
+    return (MAIN_1116 / f"{ticker}.main.txt").read_text().removesuffix("\n")
+
+
+MAIN_SIDE_KEYS = ("trigger", "stop", "targets", "skipped", "gate_targets", "target_status", "plan")
+
+
+def side_records(sl: SessionLevels) -> dict:
+    """Each side's MAIN_SIDE_KEYS from sl.to_basis(), the shape <T>.main.json holds."""
+    b = sl.to_basis()
+    return {side: {k: b[side][k] for k in MAIN_SIDE_KEYS} for side in ("long", "short")}

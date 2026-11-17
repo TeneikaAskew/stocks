@@ -1,0 +1,28 @@
+{
+ "_about": "What origin/main f3b2344c4 gives for the three stored 2026-11-16 level bases (FEAT-STRAT-001 ATR marks plan, Task 1). The bases are not copied: they are the level_basis column of tests/fixtures/premarket_2026_11_16/brief_rows.json, the read-only export db-query-jc8mj statement 4 (premarket_analysis, run_kind live, built_at 2026-11-16T08:31:19 ET, rule_version feat-strat-001.v3), whose sha256 that directory's sources.json records. <T>.main.json holds, per side, the trigger, stop, targets, skipped, gate_targets, target_status and plan of SessionLevels.from_basis(basis).to_basis(), and plan_inputs for calls and puts; <T>.main.txt is format_levels_for_brief(sl.to_level_map(), 'bearish'). Both were written on f3b2344c4 before any change of this branch. sha256 is of the committed file.",
+ "base_commit": "f3b2344c4b90f4e84b5605b825c55f48906ad477",
+ "bases": {
+  "file": "tests/fixtures/premarket_2026_11_16/brief_rows.json",
+  "sha256": "9189d52dfe9a70f9cf5075ef3f4c0e4218c8b95925442bab7a874bfc22d2291e"
+ },
+ "files": {
+  "IWM.main.json": {
+   "sha256": "b3bf08b8d9041200cabc3904af531d3cbc04cc59e2596586faacc3497fc57ae2"
+  },
+  "IWM.main.txt": {
+   "sha256": "85c212282bb52a4dafaf62f2dda9ae10db1d06e8cb6cf518f3f6d4858fff98a2"
+  },
+  "QQQ.main.json": {
+   "sha256": "e3cdcbc6433d138d1d16abceb34f836d09620f33bb802590e829b6fd5eb7324c"
+  },
+  "QQQ.main.txt": {
+   "sha256": "64f78dd84d59e38102a8e030b56e69d2416458f02308c437950e8735889fcc1f"
+  },
+  "SPY.main.json": {
+   "sha256": "666268eb80f2ea242d7604393cad6bfcb3147e2ab02d4b0d236744482c441e1e"
+  },
+  "SPY.main.txt": {
+   "sha256": "5fd25da84c212abac061e35f170d6f7ba43780149b38d945bae3b69de7ffffc5"
+  }
+ }
+}

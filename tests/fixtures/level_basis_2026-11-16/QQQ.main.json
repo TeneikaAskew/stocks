@@ -1,0 +1,224 @@
+{
+ "atr": 16.338327465620264,
+ "atr_basis": "atr_14",
+ "long": {
+  "gate_targets": [
+   {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PML",
+    "period": "2026-10",
+    "price": 683.45,
+    "timeframe": "month"
+   },
+   {
+    "aliases": [
+     "parent_bar_high"
+    ],
+    "level_type": "high",
+    "name": "PDH",
+    "period": "2026-11-13",
+    "price": 688.75,
+    "timeframe": "day"
+   },
+   {
+    "aliases": [],
+    "level_type": "close",
+    "name": "PMC",
+    "period": "2026-10",
+    "price": 690.49,
+    "timeframe": "month"
+   }
+  ],
+  "plan": {
+   "atr_basis": "atr_14",
+   "entry_cutoff_et": "16:00",
+   "entry_cutoff_status": "ok",
+   "gap_fill_flag_atr": 0.5,
+   "gap_fill_flag_status": "ok",
+   "legs": 3,
+   "spacing_atr": 0.25,
+   "spacing_price": 4.08
+  },
+  "skipped": [
+   {
+    "aliases": [],
+    "distance_atr": 0.149,
+    "level_type": "low",
+    "name": "PML",
+    "period": "2026-10",
+    "price": 683.45,
+    "timeframe": "month"
+   },
+   {
+    "aliases": [],
+    "distance_atr": 0.106,
+    "level_type": "close",
+    "name": "PMC",
+    "period": "2026-10",
+    "price": 690.49,
+    "timeframe": "month"
+   },
+   {
+    "aliases": [],
+    "distance_atr": 0.187,
+    "level_type": "gap_low",
+    "name": "GAP_L_2026-10-30",
+    "period": "2026-10-30",
+    "price": 698.63,
+    "timeframe": "day"
+   }
+  ],
+  "stop": {
+   "aliases": [
+    "parent_bar_low"
+   ],
+   "level_type": "low",
+   "name": "PDL",
+   "period": "2026-11-13",
+   "price": 671.681,
+   "timeframe": "day"
+  },
+  "target_status": "ok",
+  "targets": [
+   {
+    "aliases": [
+     "parent_bar_high"
+    ],
+    "level_type": "high",
+    "name": "PDH",
+    "period": "2026-11-13",
+    "price": 688.75,
+    "timeframe": "day"
+   },
+   {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PWH",
+    "period": "2026-11-09/2026-11-15",
+    "price": 695.57,
+    "timeframe": "week"
+   }
+  ],
+  "trigger": {
+   "aliases": [],
+   "level_type": "high",
+   "name": "PMK_H",
+   "period": "premarket",
+   "price": 681.022,
+   "timeframe": "intraday"
+  }
+ },
+ "plan_inputs_calls": {
+  "cutoff": 960,
+  "legs": 3,
+  "plan_available": true,
+  "status": "ok",
+  "stop": 671.681,
+  "targets": [
+   688.75,
+   695.57
+  ],
+  "trigger": 681.022
+ },
+ "plan_inputs_puts": {
+  "cutoff": 960,
+  "legs": 3,
+  "plan_available": true,
+  "status": "ok",
+  "stop": 679.89,
+  "targets": [
+   662.02,
+   637.01
+  ],
+  "trigger": 668.3
+ },
+ "rule_version": "feat-strat-001.v3",
+ "short": {
+  "gate_targets": [
+   {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PWL",
+    "period": "2026-11-09/2026-11-15",
+    "price": 662.02,
+    "timeframe": "week"
+   },
+   {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PQL",
+    "period": "2026Q3",
+    "price": 661.14,
+    "timeframe": "quarter"
+   },
+   {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PYH",
+    "period": "2025",
+    "price": 637.01,
+    "timeframe": "year"
+   }
+  ],
+  "plan": {
+   "atr_basis": "atr_14",
+   "entry_cutoff_et": "16:00",
+   "entry_cutoff_status": "ok",
+   "gap_fill_flag_atr": 0.5,
+   "gap_fill_flag_status": "ok",
+   "legs": 3,
+   "spacing_atr": 0.25,
+   "spacing_price": 4.08
+  },
+  "skipped": [
+   {
+    "aliases": [],
+    "distance_atr": 0.054,
+    "level_type": "low",
+    "name": "PQL",
+    "period": "2026Q3",
+    "price": 661.14,
+    "timeframe": "quarter"
+   }
+  ],
+  "stop": {
+   "aliases": [
+    "PWC"
+   ],
+   "level_type": "close",
+   "name": "PDC",
+   "period": "2026-11-13",
+   "price": 679.89,
+   "timeframe": "day"
+  },
+  "target_status": "ok",
+  "targets": [
+   {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PWL",
+    "period": "2026-11-09/2026-11-15",
+    "price": 662.02,
+    "timeframe": "week"
+   },
+   {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PYH",
+    "period": "2025",
+    "price": 637.01,
+    "timeframe": "year"
+   }
+  ],
+  "trigger": {
+   "aliases": [],
+   "level_type": "low",
+   "name": "PMK_L",
+   "period": "premarket",
+   "price": 668.3,
+   "timeframe": "intraday"
+  }
+ },
+ "ticker": "QQQ"
+}

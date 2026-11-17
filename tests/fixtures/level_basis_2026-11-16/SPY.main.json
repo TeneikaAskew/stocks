@@ -1,0 +1,215 @@
+{
+ "atr": 11.035733780082667,
+ "atr_basis": "atr_14",
+ "long": {
+  "gate_targets": [
+   {
+    "aliases": [],
+    "level_type": "close",
+    "name": "PMC",
+    "period": "2026-10",
+    "price": 755.72,
+    "timeframe": "month"
+   },
+   {
+    "aliases": [
+     "parent_bar_high"
+    ],
+    "level_type": "high",
+    "name": "PDH",
+    "period": "2026-11-13",
+    "price": 760.12,
+    "timeframe": "day"
+   },
+   {
+    "aliases": [],
+    "level_type": "close",
+    "name": "PQC",
+    "period": "2026Q3",
+    "price": 762.63,
+    "timeframe": "quarter"
+   }
+  ],
+  "plan": {
+   "atr_basis": "atr_14",
+   "entry_cutoff_et": "16:00",
+   "entry_cutoff_status": "ok",
+   "gap_fill_flag_atr": 0.5,
+   "gap_fill_flag_status": "ok",
+   "legs": 3,
+   "spacing_atr": 0.25,
+   "spacing_price": 2.76
+  },
+  "skipped": [
+   {
+    "aliases": [],
+    "distance_atr": 0.121,
+    "level_type": "close",
+    "name": "PMC",
+    "period": "2026-10",
+    "price": 755.72,
+    "timeframe": "month"
+   },
+   {
+    "aliases": [],
+    "distance_atr": 0.227,
+    "level_type": "close",
+    "name": "PQC",
+    "period": "2026Q3",
+    "price": 762.63,
+    "timeframe": "quarter"
+   }
+  ],
+  "stop": {
+   "aliases": [],
+   "level_type": "low",
+   "name": "PMK_L",
+   "period": "premarket",
+   "price": 747.95,
+   "timeframe": "intraday"
+  },
+  "target_status": "ok",
+  "targets": [
+   {
+    "aliases": [
+     "parent_bar_high"
+    ],
+    "level_type": "high",
+    "name": "PDH",
+    "period": "2026-11-13",
+    "price": 760.12,
+    "timeframe": "day"
+   },
+   {
+    "aliases": [],
+    "level_type": "high",
+    "name": "PWH",
+    "period": "2026-11-09/2026-11-15",
+    "price": 763.04,
+    "timeframe": "week"
+   }
+  ],
+  "trigger": {
+   "aliases": [],
+   "level_type": "high",
+   "name": "PMK_H",
+   "period": "premarket",
+   "price": 754.3772,
+   "timeframe": "intraday"
+  }
+ },
+ "plan_inputs_calls": {
+  "cutoff": 960,
+  "legs": 3,
+  "plan_available": true,
+  "status": "ok",
+  "stop": 747.95,
+  "targets": [
+   760.12,
+   763.04
+  ],
+  "trigger": 754.3772
+ },
+ "plan_inputs_puts": {
+  "cutoff": 960,
+  "legs": 3,
+  "plan_available": true,
+  "status": "ok",
+  "stop": 750.36,
+  "targets": [
+   741.025,
+   729.1
+  ],
+  "trigger": 747.95
+ },
+ "rule_version": "feat-strat-001.v3",
+ "short": {
+  "gate_targets": [
+   {
+    "aliases": [
+     "parent_bar_low"
+    ],
+    "level_type": "low",
+    "name": "PDL",
+    "period": "2026-11-13",
+    "price": 747.88,
+    "timeframe": "day"
+   },
+   {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PWL",
+    "period": "2026-11-09/2026-11-15",
+    "price": 741.025,
+    "timeframe": "week"
+   },
+   {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PQL",
+    "period": "2026Q3",
+    "price": 729.1,
+    "timeframe": "quarter"
+   }
+  ],
+  "plan": {
+   "atr_basis": "atr_14",
+   "entry_cutoff_et": "16:00",
+   "entry_cutoff_status": "ok",
+   "gap_fill_flag_atr": 0.5,
+   "gap_fill_flag_status": "ok",
+   "legs": 3,
+   "spacing_atr": 0.25,
+   "spacing_price": 2.76
+  },
+  "skipped": [
+   {
+    "aliases": [
+     "parent_bar_low"
+    ],
+    "distance_atr": 0.006,
+    "level_type": "low",
+    "name": "PDL",
+    "period": "2026-11-13",
+    "price": 747.88,
+    "timeframe": "day"
+   }
+  ],
+  "stop": {
+   "aliases": [],
+   "level_type": "low",
+   "name": "PML",
+   "period": "2026-10",
+   "price": 750.36,
+   "timeframe": "month"
+  },
+  "target_status": "ok",
+  "targets": [
+   {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PWL",
+    "period": "2026-11-09/2026-11-15",
+    "price": 741.025,
+    "timeframe": "week"
+   },
+   {
+    "aliases": [],
+    "level_type": "low",
+    "name": "PQL",
+    "period": "2026Q3",
+    "price": 729.1,
+    "timeframe": "quarter"
+   }
+  ],
+  "trigger": {
+   "aliases": [],
+   "level_type": "low",
+   "name": "PMK_L",
+   "period": "premarket",
+   "price": 747.95,
+   "timeframe": "intraday"
+  }
+ },
+ "ticker": "SPY"
+}

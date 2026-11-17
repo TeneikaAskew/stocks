@@ -1,0 +1,25 @@
+  CALLS above 754.38 (PMK_H) -- only if bias denied, new entries 09:30 to 16:00 ET
+    No entry if the open is at or above 754.38.
+    Stop: 747.95 (PMK_L)
+    T1: 760.12 (PDH), sell 1/3
+    T2: 763.04 (PWH), sell 1/3, hold the last 1/3 to the close or the stop
+    Skipped, closer than 0.25 x ATR(14) = 2.76: 755.72 (PMC), 762.63 (PQC)
+    Room to trigger: 0.55%
+
+  PUTS below 747.95 (PMK_L), new entries 09:30 to 16:00 ET
+    No entry if the open is at or below 747.95.
+    Stop: 750.36 (PML)
+    T1: 741.02 (PWL), sell 1/3
+    T2: 729.10 (PQL), sell 1/3, hold the last 1/3 to the close or the stop
+    Skipped, closer than 0.25 x ATR(14) = 2.76: 747.88 (PDL)
+    Room to trigger: 0.31%
+
+  NEXT LEVELS:
+    Calls (up):  754.38 PMK_H (intraday) +0.55%, 755.72 PMC (month) +0.73%
+    Puts (down): 747.95 PMK_L (intraday) -0.31%, 747.88 PDL (day) -0.32%
+    ATR levels, ATR(14) 11.04: up 769.95 (PDL+2 stretch); down 738.05 (PDH-2 stretch), 732.31 (PMK_H-2 stretch), 725.88 (PMK_L-2 stretch)
+
+  PMG ZONES:
+    754.37 (PDC, PWC) [strength: 2.5]
+    762.84 (PQC, PWH) [strength: 2.5]
+    760.10 (PDO, PDH) [strength: 2.0]

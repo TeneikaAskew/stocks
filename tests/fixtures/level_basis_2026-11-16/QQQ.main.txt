@@ -1,0 +1,25 @@
+  CALLS above 681.02 (PMK_H) -- only if bias denied, new entries 09:30 to 16:00 ET
+    No entry if the open is at or above 681.02.
+    Stop: 671.68 (PDL)
+    T1: 688.75 (PDH), sell 1/3
+    T2: 695.57 (PWH), sell 1/3, hold the last 1/3 to the close or the stop
+    Skipped, closer than 0.25 x ATR(14) = 4.08: 683.45 (PML), 690.49 (PMC), 698.63 (10/30 Gap Low)
+    Room to trigger: 1.33%
+
+  PUTS below 668.30 (PMK_L), new entries 09:30 to 16:00 ET
+    No entry if the open is at or below 668.30.
+    Stop: 679.89 (PDC)
+    T1: 662.02 (PWL), sell 1/3
+    T2: 637.01 (PYH), sell 1/3, hold the last 1/3 to the close or the stop
+    Skipped, closer than 0.25 x ATR(14) = 4.08: 661.14 (PQL)
+    Room to trigger: 0.56%
+
+  NEXT LEVELS:
+    Calls (up):  681.02 PMK_H (intraday) +1.33%, 683.45 PML (month) +1.69%
+    Puts (down): 668.30 PMK_L (intraday) -0.56%, 662.02 PWL (week) -1.50%
+    ATR levels, ATR(14) 16.34: up 700.98 (PMK_L+2 stretch); down 656.51 (PMK_H-1.5 stretch), 651.96 (PMK_L-1), 647.17 (PDL-1.5 stretch)
+
+  PMG ZONES:
+    679.89 (PDC, PWC) [strength: 2.5]
+    695.44 (CMO, PWH) [strength: 2.5]
+    662.33 (PWL, PWO) [strength: 2.0]
