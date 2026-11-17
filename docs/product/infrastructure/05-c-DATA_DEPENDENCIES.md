@@ -340,7 +340,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [398](../../../gcp/fetchers/fetch_premarket_refresh.py#L398)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [170](../../../gcp/migrate_to_gcp.py#L170), [588](../../../gcp/migrate_to_gcp.py#L588)
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [328](../../../gcp/premarket_brief.py#L328)
-- [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [236](../../../scripts/backfill_watchlist_data.py#L236)
+- [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [235](../../../scripts/backfill_watchlist_data.py#L235)
 - [`scripts/deep_backfill_ticker.py`](../../../scripts/deep_backfill_ticker.py) — line [102](../../../scripts/deep_backfill_ticker.py#L102)
 
 ### `market_data_intraday`

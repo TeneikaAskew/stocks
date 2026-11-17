@@ -81,7 +81,7 @@ def _recording_upsert():
     """An upsert_dataframe stand-in recording (table, frame) pairs."""
     calls: list[tuple[str, pd.DataFrame]] = []
 
-    def upsert(df, table, keys, *args, **kwargs):
+    def upsert(df, table, *args, **kwargs):
         calls.append((table, df.copy()))
         return len(df)
 
@@ -177,11 +177,51 @@ def _writer_migrate_to_gcp(monkeypatch):
     assert row["volume"] == 81234567
 
 
+def _writer_backfill_watchlist_data(monkeypatch):
+    import requests
+
+    import gcp.fetchers.fetch_market_data as fmd
+    from scripts import backfill_watchlist_data as mod
+    get, sent = _recording_get({"TIME_SERIES_DAILY": DAILY_REPLY})
+    upsert, calls = _recording_upsert()
+    monkeypatch.setenv("AV_API_KEY", "k")
+    monkeypatch.setattr(requests, "get", get)
+    monkeypatch.setattr("gcp.database.upsert_dataframe", upsert)
+    monkeypatch.setattr(fmd, "compute_and_upsert_daily_indicators",
+                        lambda ticker, fetch_date, **kw: None)
+    monkeypatch.setattr(fmd, "read_level_params_for_run", lambda tickers, day: {})
+
+    assert mod.backfill_daily("SPY") is True
+
+    assert [p["function"] for p in sent] == ["TIME_SERIES_DAILY"]
+    frames = _daily_frames(calls)
+    assert len(frames) == 1
+    frame = frames[0]
+    assert not (set(frame.columns) & ADJ), sorted(frame.columns)
+    row = frame[frame["date"] == dt.date(2026, 11, 13)].iloc[0]
+    assert row["volume"] == 81234567
+
+
+def _writer_scripts_fetch_market_data(monkeypatch):
+    from scripts import fetch_market_data as mod
+    get, sent = _recording_get({"TIME_SERIES_DAILY": DAILY_REPLY})
+    monkeypatch.setattr(mod, "AV_API_KEY", "k")
+    monkeypatch.setattr(mod.requests, "get", get)
+
+    frame = mod.fetch_historical_daily_data("SPY", "2026-11-01", "2026-11-30")
+
+    assert [p["function"] for p in sent] == ["TIME_SERIES_DAILY"]
+    assert list(frame.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert frame["Volume"].tolist() == [70111222, 81234567]
+
+
 WRITERS = {
     "fetch_daily_from_av": _writer_fetch_daily_from_av,
     "_av_get_full_daily_series": _writer_av_get_full_daily_series,
     "backfill_ticker": _writer_backfill_ticker,
     "migrate_to_gcp": _writer_migrate_to_gcp,
+    "backfill_watchlist_data": _writer_backfill_watchlist_data,
+    "scripts_fetch_market_data": _writer_scripts_fetch_market_data,
 }
 
 
