@@ -1119,13 +1119,17 @@ def _premarket_from_bars(ticker: str, session_date: date, prior: dict, level_par
     loaded today; `level_params` and `prior`'s ATR are only shown beside
     them. `prior` gives the prior close and open.
 
-    No recorded cutoff, no recorded parameters or no bars: None, with the
+    No recorded cutoff, no recorded parameters, no bars, or a live basis of
+    a rule version this image does not know or cannot read: None, with the
     line saying which, and the caller keeps the stored snapshot. Both reads
     go through `query_fn`, which must raise on a failed query; that
     propagates. It writes nothing.
     """
     from gcp.fetchers.fetch_market_data import premarket_snapshot  # noqa: PLC0415
-    from lib.strat_levels import premarket_filter_inputs, read_live_level_basis  # noqa: PLC0415
+    from lib.strat_levels import (  # noqa: PLC0415
+        REFUSED_RULE_VERSION_STATUSES, premarket_filter_inputs, read_live_level_basis,
+        rule_version_status,
+    )
 
     get = stored.get if stored is not None else (lambda _key, default=None: default)
     head = f"[brief:{ticker}]"
@@ -1133,6 +1137,15 @@ def _premarket_from_bars(ticker: str, session_date: date, prior: dict, level_par
            f"stored low={_bar_price(get('pre_low'))}")
 
     basis = read_live_level_basis(query_fn, ticker, session_date)
+    if isinstance(basis, dict):
+        # A basis of a rule version this image does not know, or cannot
+        # read, is not read for its cutoff either: the stored values are
+        # kept (unknown rule version spec, Design 3).
+        recorded_rule = basis.get('rule_version')
+        status = rule_version_status(recorded_rule)
+        if status in REFUSED_RULE_VERSION_STATUSES:
+            return None, (f"{head} rule version unavailable: {recorded_rule!r} is {status} "
+                          f"{was} (kept)")
     fetched_at = ((basis or {}).get('premarket') or {}).get('fetched_at')
     cutoff = None
     if fetched_at is not None:

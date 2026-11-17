@@ -451,6 +451,25 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
         )
     row = df.iloc[0].to_dict()
 
+    from lib.strat_levels import (  # noqa: PLC0415
+        REFUSED_RULE_VERSION_STATUSES, newest_pick_rule_version, parse_level_basis,
+        rule_version_status,
+    )
+
+    stored = parse_level_basis(row.get("level_basis"))
+    if stored is not None:
+        # A version this image does not know, or cannot read, is refused by
+        # name: its rungs are not seeded the pre-v3 way and no reach rate is
+        # read for it (unknown rule version spec, Design 3).
+        recorded = stored.get("rule_version")
+        status = rule_version_status(recorded)
+        if status in REFUSED_RULE_VERSION_STATUSES:
+            return _unavailable(
+                f"{status}: premarket_analysis row for {ticker.upper()} on {session_date} has "
+                f"level_basis rule_version {recorded!r}; this image knows up to "
+                f"{newest_pick_rule_version()}",
+                rule_version=recorded, rule_version_status=status)
+
     def _side(side: str) -> list:
         # Re-derive the ordinals the de-duplicated builder would have produced:
         # keep a persisted slot only when it is a real number at least one cent
@@ -489,9 +508,6 @@ def _fetch_tracked_levels(ticker: str, query_fn, session_date) -> dict:
         return out
 
     ad = row.get("analysis_date")
-    from lib.strat_levels import parse_level_basis  # noqa: PLC0415
-
-    stored = parse_level_basis(row.get("level_basis"))
     return _ok(
         analysis_date=ad.isoformat() if hasattr(ad, "isoformat") else (str(ad) if ad is not None else None),
         calls=_side("calls"),
@@ -548,6 +564,14 @@ def _build_levels(level_map, reach_calls: dict, reach_puts: dict, tracked: dict)
     tracked lines, or a side/slot whose population is unavailable, carries an
     explicit UNAVAILABLE envelope with the reason (Rule 3.7).
     """
+    from lib.strat_levels import REFUSED_RULE_VERSION_STATUSES  # noqa: PLC0415
+
+    # The session row's basis names a rule version this image does not know
+    # or cannot read: that is why the levels are unavailable, whether or not
+    # a level map was passed.
+    if tracked.get("rule_version_status") in REFUSED_RULE_VERSION_STATUSES:
+        return _unavailable(tracked["reason"], rule_version=tracked.get("rule_version"),
+                            rule_version_status=tracked["rule_version_status"])
     if level_map is None:
         return _unavailable("level map unavailable")
     # A side the builder could not check against its window (no prior-session
@@ -1046,9 +1070,15 @@ def assemble_movement_statement(
     # session with no row tracks no rung, and the population is then the
     # current rule's.
     tracked = _fetch_tracked_levels(ticker, query_fn, session_date)
-    session_rule = tracked.get("rule_version")
-    reach_calls = _fetch_reach_rates(ticker, "calls", query_fn, session_rule)
-    reach_puts = _fetch_reach_rates(ticker, "puts", query_fn, session_rule)
+    from lib.strat_levels import REFUSED_RULE_VERSION_STATUSES  # noqa: PLC0415
+
+    if tracked.get("rule_version_status") in REFUSED_RULE_VERSION_STATUSES:
+        # A version this image does not know: no population is read for it.
+        reach_calls = reach_puts = tracked
+    else:
+        session_rule = tracked.get("rule_version")
+        reach_calls = _fetch_reach_rates(ticker, "calls", query_fn, session_rule)
+        reach_puts = _fetch_reach_rates(ticker, "puts", query_fn, session_rule)
     levels = _build_levels(level_map, reach_calls, reach_puts, tracked)
 
     # ── Piece 3 + 4: CONTEXT modifiers (never touch the headline) ──────────
