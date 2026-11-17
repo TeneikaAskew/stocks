@@ -16,7 +16,7 @@ done_when:
   - "D9 the comparison report covers every family: tests/gcp/test_replay_compare.py passes one case per family, each a fixture equal on both sides except one item, where the summary says accurate false and only that family counts one difference: bars (SPY 2026-11-16 04:02 ET volume 7151 stored, 968 replay; a replay holding no bar after 19:50 ET of that session, which must report the 10 stored bars after it as only_stored; and an empty replay for that session, which must report all 960 stored bars as only_stored; on origin/main premarket_as_read.compare_bars reports 0 only_stored for both, run 2026-11-17 on the experiment's bars), flags (one flag on the replay side only; and a replay flag on a bar stamped after the live coverage's checked_at, reported not_published), premarket (IWM 2026-11-16 refresh_0820 low published 275.86, replay 275.74, cause data_revision), trigger (SPY 2026-11-16 calls PMK_H published 754.3772, replay 752.90, cause rule_change), stop (IWM 2026-11-16 calls stop PMK_L published 275.86, replay 275.74, cause data_revision), level pick (calls trigger name PMK_H published, PDH replay, cause level_pick), targets (calls_plan_t1 one cent apart), and the insight plan (InsightReport.stop, lib/agents/schema.py:329, one cent apart; and each of direction, entry_zone, targets and persona_plans in its own case); an all-equal fixture gives accurate true with zero in every family; a missing side is a row with status not_published or not_replayed, never a zero or a skipped line"
   - "D10 the guards hold: tests/meta/test_production_writers.py passes with gcp/replay_full_pull.py registered in REPLAY_PATH and one new entry, REPLAY_FETCH_INTO_STORE, holding exactly (gcp/replay_full_pull.py, pull); a new test there asserts that every write reached from that entry names a replay.* table and that the test fails on a snippet writing market_data_intraday from it; test_only_the_two_fetchers_write_one_minute_bars and test_only_named_entry_points_reach_the_intraday_writers pass with their lists unchanged"
   - "D11 close: make test and make test-integration pass on the PR head; the PR body's Capacity section carries the numbers of this spec's Capacity section re-measured on the head; the FEAT-REPLAY-001 catalog record and the traceability entry name the PR"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -24,7 +24,7 @@ supersedes: null
 
 ## Authority and status
 
-Draft, not approved. The request, relayed from the owner's chat on 2026-11-17: pull the 1-minute bars
+Approved by the owner on 2026-11-17: asked for the ten decisions below, the owner answered "Overcome all blockers", which takes the recommended (first) option on each. The request, relayed from the owner's chat on 2026-11-17: pull the 1-minute bars
 fresh from AlphaVantage exactly as the live fetcher does, through the deployed fetcher code path;
 apply the data fixes the way live would; store the result in a separate replay store, never over the
 live rows or bars; run the brief and the insights on that data as if live; compare bars, premarket
@@ -33,7 +33,7 @@ and whether the replay is accurate. Start with 2026-11-09 to 2026-11-16 for SPY,
 data changes in place anywhere." If the code cannot do it, say what is missing and draft the spec;
 do not work around it.
 
-This spec is that draft. Every claim below was read on `origin/main` f6e2a736b or run on 2026-11-17;
+This spec answers it. Every claim below was read on `origin/main` f6e2a736b or run on 2026-11-17;
 what was not checked says so.
 
 ## Capability
@@ -122,7 +122,9 @@ functions on local files.
   (Decision 4).
 - No retention automation; a run is removed only by `drop --run-id` on the owner's request.
 
-## Decisions for the owner (recommended first)
+## Decisions (owner, 2026-11-17: the recommended option on each)
+
+Each decision below is settled on its first, recommended option. The alternatives stay listed as the options considered.
 
 1. **Store.** (a) Schema `replay` in the same Cloud SQL database, every table keyed by `replay_run_id`
    first; the vendor's answers kept as bucket objects beside it (recommended: the brief, insight and
@@ -144,9 +146,9 @@ functions on local files.
    report never calls it as-live (recommended; the experiment's 11 of 12). The nightly read always
    uses the pull (Design 4). Or treat the pull as the morning read.
 5. **Daily inputs** (prior close, open, ATR, daily bars). Read live `market_data_daily` rows before
-   the session, as the brief does, and record the values used (recommended). Or pull
-   TIME_SERIES_DAILY_ADJUSTED full into the store (one call a ticker; note the daily rows for
-   2026-11-05 to 11-13 now say `av_daily_backfill`, so they were rewritten too).
+   the session, as the brief does, and record the values used (recommended). Pulling adjusted dailies into
+   the store is not an option: #2047 removed every adjusted price fetch. Note the daily rows for
+   2026-11-05 to 11-13 now say `av_daily_backfill`, so they were rewritten too.
 6. **Filter thresholds.** As live: the level parameters in force on the session and the prior ATR
    (recommended). Or the filter the stored row recorded (`_recorded_premarket_filter`, what the dry
    run uses; the experiment used it).
@@ -155,7 +157,7 @@ functions on local files.
 8. **"Published".** The latest `scheduled` or `live` history row written before 09:30 ET, the owner's
    scoring pick (recommended). Not the canonical row, which can be a replay (2026-11-10).
 9. **Quarter targets.** Compare plan targets by the columns both rows hold; once the marks build
-   (rule v6, spec r3 in #2052) lands its `plan_t4` and marks ride along with no change here; its
+   (rule v6, spec r3 in #2053) lands its `plan_t4` and marks ride along with no change here; its
    reach history reads earlier rows of the same replay run (recommended) or live rows.
 10. **Wider run.** A year only after the week's report is reviewed; 2015 onward after that.
 
