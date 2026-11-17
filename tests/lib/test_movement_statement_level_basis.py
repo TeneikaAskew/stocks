@@ -308,9 +308,13 @@ def _rate(slot, hits, rate):
 # reach_rate of the two calls rungs (PMK_H 101.00, PMH 103.00); every other
 # byte is the same for all four. Without a level map each gave
 # {"status": "UNAVAILABLE", "reason": "level map unavailable"}.
+# The resolved rows of _stamped_session are written by the current code, so they
+# carry LEVEL_RULE_VERSION (v5 from the prior-close change on): a live row of an
+# earlier version (v3, v4) finds no resolved row of its own version.
 MERGE_BASE_CALLS_RATES = {
     "feat-strat-001.v3": (_no_rows("trigger"), _no_rows("t1")),
-    "feat-strat-001.v4": (_rate("trigger", 4, 0.8), _rate("t1", 1, 0.2)),
+    "feat-strat-001.v4": (_no_rows("trigger"), _no_rows("t1")),
+    "feat-strat-001.v5": (_rate("trigger", 4, 0.8), _rate("t1", 1, 0.2)),
     "feat-strat-001.v2": (_NOT_TRACKED, _no_rows("trigger")),
     None: (_NOT_TRACKED, _rate("trigger", 4, 0.8)),
 }

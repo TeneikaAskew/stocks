@@ -1960,7 +1960,8 @@ def test_rule_version_status():
         assert rule_version_status(v) == 'legacy', v
     for v in PICK_RULE_VERSIONS:
         assert rule_version_status(v) == 'known', v
-    assert newer_rule_versions() == ('feat-strat-001.v5', 'feat-strat-001.v6', 'feat-strat-001.v99')
+    # v5 is known from the prior-close change on, so the newer versions start at v6.
+    assert newer_rule_versions() == ('feat-strat-001.v6', 'feat-strat-001.v7', 'feat-strat-001.v99')
     for v in newer_rule_versions():
         assert rule_version_status(v) == 'rule_version_newer', v
     for v in ('', 'feat-strat-001.v0', 'feat-strat-001.v05', 'feat-strat-001.vX',
