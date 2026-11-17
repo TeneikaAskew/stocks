@@ -390,7 +390,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 ### `premarket_analysis`
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [4200](../../../gcp/premarket_brief.py#L4200), [4248](../../../gcp/premarket_brief.py#L4248), [4265](../../../gcp/premarket_brief.py#L4265)
-- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [865](../../../gcp/premarket_playbook_resolver.py#L865)
+- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [891](../../../gcp/premarket_playbook_resolver.py#L891)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [575](../../../gcp/signal_monitor.py#L575)
 
 ### `premarket_analysis_history`
@@ -754,7 +754,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/intraday_bar_flags.py`](../../../gcp/fetchers/intraday_bar_flags.py) — line [60](../../../gcp/fetchers/intraday_bar_flags.py#L60)
 - [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) — line [325](../../../gcp/historical_signals.py#L325)
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [1029](../../../gcp/premarket_brief.py#L1029)
-- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [706](../../../gcp/premarket_playbook_resolver.py#L706)
+- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [734](../../../gcp/premarket_playbook_resolver.py#L734)
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [340](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L340)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2003](../../../gcp/signal_monitor.py#L2003)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [611](../../../gcp/signal_monitor_eod_resolver.py#L611)
@@ -823,7 +823,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `premarket_analysis`
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [357](../../../gcp/discord_interactions/main.py#L357)
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3550](../../../gcp/premarket_brief.py#L3550), [4065](../../../gcp/premarket_brief.py#L4065), [4302](../../../gcp/premarket_brief.py#L4302)
-- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [664](../../../gcp/premarket_playbook_resolver.py#L664), [903](../../../gcp/premarket_playbook_resolver.py#L903), [1012](../../../gcp/premarket_playbook_resolver.py#L1012)
+- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [680](../../../gcp/premarket_playbook_resolver.py#L680), [929](../../../gcp/premarket_playbook_resolver.py#L929), [1038](../../../gcp/premarket_playbook_resolver.py#L1038)
 - [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [346](../../../lib/movement_statement.py#L346), [427](../../../lib/movement_statement.py#L427)
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [3026](../../../lib/strat_levels.py#L3026)
 - [`lib/strategies/brief_bias.py`](../../../lib/strategies/brief_bias.py) — line [83](../../../lib/strategies/brief_bias.py#L83)

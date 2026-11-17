@@ -651,8 +651,24 @@ def resolve_one(
 
     Returns (updates, reason): (dict, 'resolved') on success, else
     (None, reason) with reason one of 'already_resolved' (idempotent
-    no-op — not a failure), 'no_row', 'no_setup', 'no_bars'.
+    no-op — not a failure), 'no_row', 'no_setup', 'no_bars', or
+    'rule_version_newer' / 'rule_version_unreadable': the row's level_basis
+    (or, for a row with no stored triggers, the session's live basis) names
+    a rule version this image does not know or cannot read. Nothing is
+    written, so the row stays pending for an image that knows its version
+    (spec 2026-11-16-feat-strat-001-unknown-rule-version, Design 3).
     """
+    from lib.strat_levels import (  # local import to keep top-level light
+        REFUSED_RULE_VERSION_STATUSES, LevelRuleVersionUnknown, load_level_params,
+        newest_pick_rule_version, parse_level_basis, rule_version_status,
+    )
+
+    def _refused(recorded, status) -> tuple[None, str]:
+        logger.error("%s %s level_basis rule_version %r is %s; this image knows up to %s: "
+                     "not resolved, nothing written", ticker.upper(), analysis_date,
+                     recorded, status, newest_pick_rule_version())
+        return None, status
+
     # Pull the row
     row_sql = text("""
         SELECT
@@ -676,6 +692,15 @@ def resolve_one(
                     ticker, analysis_date, row['outcome_resolved_at'])
         return None, 'already_resolved'
 
+    # The row's own level_basis, classified before the derive, the bar read
+    # and plan_inputs: a version this image does not know, or cannot read,
+    # is refused here even when the row's trigger columns are populated.
+    basis = parse_level_basis(row.get('level_basis') if hasattr(row, 'get') else None)
+    if basis is not None:
+        status = rule_version_status(basis.get('rule_version'))
+        if status in REFUSED_RULE_VERSION_STATUSES:
+            return _refused(basis.get('rule_version'), status)
+
     # Self-healing fallback: if structured input columns are NULL (e.g.
     # historical row written before the structured-column persistence
     # PR), re-derive the level map from daily data using the same
@@ -688,7 +713,10 @@ def resolve_one(
     ):
         logger.info("%s %s structured inputs are NULL — deriving from daily data",
                     ticker, analysis_date)
-        structured_inputs = derive_level_map_from_daily(ticker, analysis_date, engine)
+        try:
+            structured_inputs = derive_level_map_from_daily(ticker, analysis_date, engine)
+        except LevelRuleVersionUnknown as exc:
+            return _refused(exc.recorded, exc.reason)
         if structured_inputs is None or (
             structured_inputs['calls_trigger_price'] is None
             and structured_inputs['puts_trigger_price'] is None
@@ -741,10 +769,8 @@ def resolve_one(
         notional=notional,
     )
 
-    # The brief's exit plan (FEAT-STRAT-001 exits spec, Design 6).
-    from lib.strat_levels import load_level_params, parse_level_basis
-
-    basis = parse_level_basis(row.get('level_basis') if hasattr(row, 'get') else None)
+    # The brief's exit plan (FEAT-STRAT-001 exits spec, Design 6), from the
+    # row's level_basis parsed and classified above.
     _policy = {}
 
     def _policy_fn():

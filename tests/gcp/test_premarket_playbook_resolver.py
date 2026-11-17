@@ -1227,3 +1227,112 @@ def test_v3_plan_resolves_as_on_main(version):
                                   cutoff_minutes=960, target_status='ok')
     assert calls.target_status != mod.PLAN_TARGETS_UNAVAILABLE
     assert puts.target_status != mod.PLAN_TARGETS_UNAVAILABLE
+
+
+# ── Unknown rule version spec (2026-11-16), Design 3: the resolver row ──
+# A stored basis of a version this image does not know, or cannot read, is
+# refused: resolve_one writes nothing and reads no bars, so the row stays
+# pending and a compatible image resolves it inside the lookback.
+
+import logging  # noqa: E402
+
+from tests.lib.session_levels_helpers import newer_rule_versions  # noqa: E402
+
+# The v3 plan row of test_resolve_one_binds_the_plan_columns_from_a_v3_basis:
+# its calls and puts trigger, stop and t1 to t3 columns all populated, so it
+# never reaches from_basis and the resolver's own check is its only guard.
+V3_PLAN_COLUMNS = {
+    'calls_trigger_price': 252.10, 'calls_stop_price': 248.20,
+    'calls_t1_price': 253.00, 'calls_t2_price': 275.00, 'calls_t3_price': 280.00,
+    'puts_trigger_price': 248.20, 'puts_stop_price': 252.10,
+    'puts_t1_price': 247.50, 'puts_t2_price': 247.00, 'puts_t3_price': 225.00,
+}
+
+REFUSED_VERSIONS = [*((v, 'rule_version_newer') for v in newer_rule_versions()),
+                    ('', 'rule_version_unreadable'),
+                    ('feat-strat-001.vX', 'rule_version_unreadable'),
+                    (5, 'rule_version_unreadable')]
+
+
+def _v3_plan_row(rule_version, *, outcome_resolved_at=None) -> dict:
+    """The v3 plan row with a d8 basis stamped `rule_version`."""
+    import json
+
+    from tests.lib.session_levels_helpers import d8_basis
+    return {**V3_PLAN_COLUMNS,
+            'level_basis': json.dumps({**d8_basis(), 'rule_version': rule_version}),
+            'outcome_resolved_at': outcome_resolved_at}
+
+
+def _one_read(row: dict):
+    """A pd.read_sql stand-in that answers the row SELECT once and fails the
+    test on any second read (the bars, the daily frame, the parameters)."""
+    reads = []
+
+    def read_sql(sql, engine, params=None):
+        reads.append(getattr(sql, 'text', str(sql)))
+        if len(reads) > 1:
+            pytest.fail(f'a second read: {reads[-1].strip()[:80]}')
+        return pd.DataFrame([row])
+    return reads, read_sql
+
+
+def _error_lines(caplog) -> list:
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@pytest.mark.parametrize('force, outcome_resolved_at',
+                         [(False, None), (True, '2026-11-16T21:00:00Z')])
+@pytest.mark.parametrize('version, reason', REFUSED_VERSIONS)
+def test_resolve_one_refuses_a_version_it_does_not_know(monkeypatch, caplog, version, reason,
+                                                        force, outcome_resolved_at):
+    import gcp.premarket_playbook_resolver as mod
+    from lib.strat_levels import newest_pick_rule_version
+
+    reads, read_sql = _one_read(_v3_plan_row(version, outcome_resolved_at=outcome_resolved_at))
+    monkeypatch.setattr(mod.pd, 'read_sql', read_sql)
+    monkeypatch.setattr(mod, 'plan_inputs', lambda *a, **k: pytest.fail('plan_inputs called'))
+    monkeypatch.setattr(mod, 'derive_level_map_from_daily',
+                        lambda *a, **k: pytest.fail('derive_level_map_from_daily called'))
+    engine = _RecordingEngine()
+
+    with caplog.at_level(logging.ERROR, logger=mod.logger.name):
+        out = mod.resolve_one(_date(2026, 11, 16), 'tst', engine, force=force)
+
+    assert out == (None, reason)
+    assert engine.conn.calls == []
+    assert len(reads) == 1
+    [line] = _error_lines(caplog)
+    for part in ('TST', '2026-11-16', repr(version), reason, newest_pick_rule_version()):
+        assert part in line, (part, line)
+
+
+def test_resolve_one_returns_the_derive_paths_refusal(monkeypatch, caplog):
+    """A row with no stored triggers and a legacy (absent) basis of its own
+    passes the first check; the session's live basis read by the derive path
+    is newer, and that refusal is returned the same way, with no write and
+    no bar read."""
+    import gcp.premarket_playbook_resolver as mod
+    from lib.strat_levels import LevelRuleVersionUnknown
+
+    row = {**{k: None for k in V3_PLAN_COLUMNS}, 'level_basis': None,
+           'outcome_resolved_at': None}
+    reads, read_sql = _one_read(row)
+    monkeypatch.setattr(mod.pd, 'read_sql', read_sql)
+
+    def derive(*a, **k):
+        raise LevelRuleVersionUnknown('rule_version_newer', newer_rule_versions()[0])
+
+    monkeypatch.setattr(mod, 'derive_level_map_from_daily', derive)
+    monkeypatch.setattr(mod, 'plan_inputs', lambda *a, **k: pytest.fail('plan_inputs called'))
+    engine = _RecordingEngine()
+
+    with caplog.at_level(logging.ERROR, logger=mod.logger.name):
+        out = mod.resolve_one(_date(2026, 11, 16), 'tst', engine)
+
+    assert out == (None, 'rule_version_newer')
+    assert engine.conn.calls == []
+    assert len(reads) == 1
+    [line] = _error_lines(caplog)
+    for part in ('TST', '2026-11-16', repr(newer_rule_versions()[0]), 'rule_version_newer'):
+        assert part in line, (part, line)
