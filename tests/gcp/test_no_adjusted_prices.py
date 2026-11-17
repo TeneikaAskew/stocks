@@ -577,3 +577,226 @@ def test_the_guard_tells_adjusted_from_everything_else(src, rel, n):
 ])
 def test_the_sql_scan_allows_only_the_schema_lines(text, rel, n):
     assert len(sql_adjusted_lines(text, rel)) == n
+
+
+# ─── Close-out steps 1 and 2: every deployed reader ──────────────────────────
+#
+# Until it is redeployed, a job or service on an older image still selects
+# adjusted_close (DataLoader._load_daily_from_sql), and once the companion
+# data spec drops the column that query fails. So the close-out deploys every
+# Cloud Run job and service whose entrypoint reaches lib/data_loader.py,
+# lib/strat.py or a module naming adjusted_close through its imports.
+
+READER_TARGETS = ("lib/data_loader.py", "lib/strat.py")
+
+
+def _resolve_module(root: Path, dotted: str, search: tuple[Path, ...]) -> Path | None:
+    parts = dotted.split(".")
+    for base in search:
+        for candidate in (base.joinpath(*parts).with_suffix(".py"),
+                          base.joinpath(*parts, "__init__.py")):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _package_inits(path: Path, base: Path) -> list[Path]:
+    """The __init__.py files Python runs before `path`, under `base`."""
+    out = []
+    folder = path.parent
+    while folder != base and base in folder.parents:
+        init = folder / "__init__.py"
+        if init.is_file():
+            out.append(init)
+        folder = folder.parent
+    return out
+
+
+def _imported_files(path: Path, root: Path, search: tuple[Path, ...]) -> set[Path]:
+    """Files one module's imports load: absolute and relative, at any depth
+    of the module (function-level imports included), and their packages."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    base = next((b for b in search if b in path.parents), root)
+    package = ".".join(path.relative_to(base).with_suffix("").parts[:-1])
+    if path.name == "__init__.py":
+        package = ".".join(path.relative_to(base).parent.parts)
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                anchor = package.split(".") if package else []
+                anchor = anchor[:len(anchor) - (node.level - 1)] if node.level > 1 else anchor
+                module = ".".join(anchor + ([node.module] if node.module else []))
+            else:
+                module = node.module or ""
+            if module:
+                names.append(module)
+            names.extend(f"{module}.{alias.name}" if module else alias.name
+                         for alias in node.names if alias.name != "*")
+    found: set[Path] = set()
+    for name in names:
+        parts = name.split(".")
+        for i in range(1, len(parts) + 1):
+            hit = _resolve_module(root, ".".join(parts[:i]), search)
+            if hit is not None:
+                found.add(hit)
+    return found
+
+
+def _reached(entry: Path, root: Path) -> set[Path]:
+    search = (root, root / "platform")
+    seen: set[Path] = set()
+    stack = [entry, *_package_inits(entry, next((b for b in search if b in entry.parents), root))]
+    while stack:
+        path = stack.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        stack.extend(_imported_files(path, root, search) - seen)
+    return seen
+
+
+def _service_entry(root: Path, name: str, script: str) -> str:
+    """Repo-relative entry module of a Cloud Run service: from its deploy
+    command (`--command uvicorn --args a.b:app` or `--args=-m,a.b`), else
+    from the image's CMD (platform/Dockerfile's `uvicorn api.main:app
+    --app-dir /app/platform`)."""
+    text = (root / script).read_text(encoding="utf-8")
+    for block in re.split(r"\n(?=\s*gcloud run deploy\s)", text)[1:]:
+        head = block.split("\n", 1)[0]
+        if name not in head and "${" not in head:
+            continue
+        lines = []
+        for line in block.splitlines():
+            lines.append(line)
+            if not line.rstrip().endswith("\\"):
+                break
+        command = " ".join(lines)
+        if "${" in head and not re.search(rf'="?{re.escape(name)}"?\s*$', text, re.M):
+            continue
+        m = re.search(r'--args[= ]"?-m,([\w.]+)', command)
+        if m:
+            return m.group(1).replace(".", "/") + ".py"
+        m = re.search(r'--args[= ]"?([\w.]+):app', command)
+        if m:
+            return m.group(1).replace(".", "/") + ".py"
+    dockerfile = (root / Path(script).parent / "Dockerfile").read_text(encoding="utf-8")
+    m = re.search(r"uvicorn\s+([\w.]+):app.*--app-dir\s+/app/(\w+)", dockerfile)
+    if m:
+        return f"{m.group(2)}/" + m.group(1).replace(".", "/") + ".py"
+    raise ValueError(f"{script}: no entry module found for service {name}")
+
+
+def _dispatch_arms(root: Path) -> dict[str, set[str]]:
+    """`./gcp/deploy.sh <arm>` -> every shell function the arm's commands
+    call, transitively through the functions deploy.sh defines."""
+    from scripts.maintenance import doc_inventory as inventory
+
+    text = inventory._strip_comments((root / "gcp/deploy.sh").read_text(encoding="utf-8"))
+    funcs = inventory._functions(text)
+    names = set(inventory.deploy_targets(root))
+    dispatch = text[text.index('case "${1:-help}" in'):]
+    arms: dict[str, set[str]] = {}
+    for m in re.finditer(r"^\s{4}([a-z][a-z0-9-]*)\)(.*?);;", dispatch, re.M | re.S):
+        if m.group(1) not in names:
+            continue
+        todo = [w for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", m.group(2)) if w in funcs]
+        closure: set[str] = set()
+        while todo:
+            fn = todo.pop()
+            if fn in closure:
+                continue
+            closure.add(fn)
+            todo.extend(w for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", funcs[fn][1])
+                        if w in funcs and w not in closure)
+        arms[m.group(1)] = closure
+    return arms
+
+
+def _targets(arms: dict[str, set[str]], fn: str) -> str:
+    named = sorted(arm for arm, closure in arms.items() if fn in closure and arm != "all")
+    if named:
+        return ", ".join(named)
+    return "all" if fn in arms.get("all", set()) else ""
+
+
+def adjusted_readers(root: Path) -> list[dict]:
+    """One row per deployed Cloud Run job or service whose entrypoint reaches
+    lib/data_loader.py, lib/strat.py or a module naming adjusted_close."""
+    from scripts.maintenance import doc_inventory as inventory
+
+    root = Path(root).resolve()
+    arms = _dispatch_arms(root)
+    text = inventory._strip_comments((root / "gcp/deploy.sh").read_text(encoding="utf-8"))
+    funcs = inventory._functions(text)
+    entries = [("job", job["name"], inventory.entry_module(job), _targets(arms, job["function"]))
+               for job in inventory.deploy_jobs(root)]
+    for service in inventory.deploy_services(root):
+        if service["script"] == "platform/deploy.sh":
+            target = "platform/deploy.sh"
+        else:
+            owner = next(fn for fn, (_, body) in funcs.items()
+                         if re.search(rf"gcloud run deploy\s+(\"?\$\{{[A-Z_]+\}}\"?|{re.escape(service['name'])}\b)",
+                                      body)
+                         and (service["name"] in body or re.search(
+                             rf'^\s*(?:readonly\s+|local\s+)?[A-Z_]+="?{re.escape(service["name"])}"?\s*$',
+                             text, re.M)))
+            target = _targets(arms, owner)
+        entries.append(("service", service["name"],
+                        _service_entry(root, service["name"], service["script"]), target))
+    rows = []
+    for kind, name, entry, target in entries:
+        path = root / entry
+        if not entry or not path.is_file():
+            raise ValueError(f"{kind} {name}: entry module {entry!r} not found")
+        reached = _reached(path, root)
+        hits = sorted(p.relative_to(root).as_posix() for p in reached
+                      if p.relative_to(root).as_posix() in READER_TARGETS
+                      or "adjusted_close" in p.read_text(encoding="utf-8"))
+        if hits:
+            rows.append({"kind": kind, "name": name, "entry": entry,
+                         "reaches": hits, "target": target})
+    return sorted(rows, key=lambda r: (r["kind"], r["name"]))
+
+
+def readers_table(rows: list[dict]) -> str:
+    out = ["| Kind | Name | Entry | Reaches | Deploy target |", "|---|---|---|---|---|"]
+    out += [f"| {r['kind']} | `{r['name']}` | `{r['entry']}` | "
+            + ", ".join(f"`{h}`" for h in r["reaches"]) + f" | `{r['target']}` |"
+            for r in rows]
+    return "\n".join(out)
+
+
+def test_reader_walk_finds_the_direct_importers():
+    """The walk lists every entrypoint that imports the loader or strat
+    directly, each with a deploy target. gcp/trade_logger.py imports
+    neither, so it is listed only when another module it imports reaches
+    one of them."""
+    rows = adjusted_readers(REPO)
+    entries = {r["entry"]: r for r in rows}
+    for entry in ("gcp/signal_monitor.py", "gcp/signal_monitor_eod_resolver.py",
+                  "gcp/premarket_brief.py", "gcp/regime_combo_job.py",
+                  "gcp/indicator_correlation_job.py", "platform/api/main.py",
+                  "gcp/fetchers/fetch_market_data.py",
+                  "gcp/fetchers/backfill_daily_indicators.py", "gcp/backfill_ticker.py"):
+        assert entry in entries, entry
+    for row in rows:
+        assert row["reaches"] and row["target"], row
+    direct = {name for node in ast.walk(ast.parse((REPO / "gcp/trade_logger.py").read_text()))
+              if isinstance(node, (ast.Import, ast.ImportFrom))
+              for name in ([node.module or ""] if isinstance(node, ast.ImportFrom) else [])
+              + [a.name for a in node.names]}
+    assert not direct & {"lib.data_loader", "lib.strat", "data_loader", "strat"}
+    if "gcp/trade_logger.py" in entries:
+        reached = {p.relative_to(REPO).as_posix() for p in _reached(REPO / "gcp/trade_logger.py", REPO)}
+        assert set(entries["gcp/trade_logger.py"]["reaches"]) <= reached
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) != 3 or sys.argv[1] != "--readers":
+        sys.exit("usage: python3 -m tests.gcp.test_no_adjusted_prices --readers <checkout>")
+    print(readers_table(adjusted_readers(Path(sys.argv[2]))))
