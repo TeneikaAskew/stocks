@@ -200,12 +200,14 @@ def side_records(sl: SessionLevels) -> dict:
 MARKS_VERSION = "feat-strat-001.v6"
 
 
-def marks_basis(stored: dict, marks, legs: int, *, marks_extra: dict | None = None) -> dict:
+def marks_basis(stored: dict, marks, legs: int, *, marks_extra: dict | None = None,
+                reach_history: dict | None = None) -> dict:
     """A copy of a stored basis rebuilt as the ATR marks version would be:
     its params record plan_target_marks_atr with `marks` (or `marks_extra`)
     and exit_legs with `legs`, each as policy_wide_param builds them, its
     rule_version is the marks version, and its long and short records are
-    removed so nothing stored is trusted."""
+    removed so nothing stored is trusted. `reach_history` is recorded as the
+    plan_reach_history the brief read."""
     from lib.strat_levels import policy_wide_param
 
     out = copy.deepcopy(stored)
@@ -218,7 +220,15 @@ def marks_basis(stored: dict, marks, legs: int, *, marks_extra: dict | None = No
     out["rule_version"] = MARKS_VERSION
     out.pop("long", None)
     out.pop("short", None)
+    if reach_history is not None:
+        out["plan_reach_history"] = reach_history
     return out
+
+
+def d7_history(*, long=CALLS_REACH_D7, short=PUTS_REACH_D7, status: str = "ok") -> dict:
+    """Design 7's reach histories as the brief records them."""
+    return {"status": status, "sessions": 250, "rule_version": MARKS_VERSION,
+            "long": list(long), "short": list(short)}
 
 
 QUARTER_MARKS = (0.25, 0.5, 0.75, 1.0)

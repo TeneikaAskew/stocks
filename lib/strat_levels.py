@@ -1961,6 +1961,13 @@ class SessionLevels:
     atr_rungs_dropped: list = field(default_factory=list)
     atr_rung_anchors: list = field(default_factory=list)
     atr_rung_status: Optional[str] = None
+    # ATR marks spec (2026-11-16): the reach history the brief read for a
+    # session built under the marks ({'status', 'sessions', 'rule_version',
+    # 'long': [...], 'short': [...]}, each value how far price went past the
+    # trigger before the stop, in ATR, on one earlier session). Recorded in
+    # the basis so a stored brief rebuilds its own counts. None on a
+    # level-rule session.
+    plan_reach_history: Optional[dict] = None
 
     def side(self, direction: str) -> SideLevels:
         return self.long if direction in ('long', 'calls', 'call') else self.short
@@ -2027,8 +2034,14 @@ class SessionLevels:
     def _atr_levels_line(self) -> Optional[dict]:
         """The kept ATR rungs inside each side's window for the NEXT
         LEVELS line: up (above the reference, the long window) and down
-        (below it, the short window), nearest first."""
+        (below it, the short window), nearest first. A session built under
+        the ATR marks prints no such line (ATR marks spec, Decision 6): its
+        targets are an ATR ladder from the trigger, and a second one hung
+        from other anchors would read as the targets. The rungs stay in
+        level_basis."""
         if self.atr_rung_status is None:
+            return None
+        if plan_target_rule(self.rule_version) == TARGET_RULE_ATR_MARKS:
             return None
         out = {'status': self.atr_rung_status, 'atr': self.atr,
                'atr_basis': self.atr_basis, 'up': [], 'down': []}
@@ -2098,6 +2111,8 @@ class SessionLevels:
             **({'plan_target_level_types_status': self.plan_target_level_types_status,
                 'plan_target_level_types': list(self.plan_target_level_types)}
                if self.plan_target_rule else {}),
+            **({'plan_reach_history': _reach_history_record(self.plan_reach_history)}
+               if plan_target_rule(self.rule_version) == TARGET_RULE_ATR_MARKS else {}),
         }
 
     def _atr_rung_basis(self) -> dict:
@@ -2194,6 +2209,10 @@ class SessionLevels:
             # written before the rule keeps the old walk, whether or not its
             # params record plan_target_level_types (Codex P2 on #1970).
             plan_target_rule='plan_target_level_types_status' in basis,
+            # ATR marks spec: a marks basis rebuilds the counts it printed
+            # from the reach history it recorded.
+            plan_reach_history=(basis.get('plan_reach_history')
+                                if plan_target_rule(rule) == TARGET_RULE_ATR_MARKS else None),
         )
         if recorded is None:
             # A pre-parameter basis stored zones from the old percentage
@@ -2532,6 +2551,7 @@ def build_session_levels(
     reference: Optional[float] = None,
     *,
     daily_strat_class: str = '',
+    reach_history: Optional[dict] = None,
 ) -> SessionLevels:
     """Build every level decision for `ticker` on `session_date`.
 
@@ -2556,6 +2576,10 @@ def build_session_levels(
       trigger_window_*_atr; a window that is not ok gives no trigger on that
       side with the parameter's status as the reason. PMG zones use
       level_cluster_atr.
+    * `reach_history` (ATR marks spec) is the history the brief read for
+      this ticker (gcp.premarket_brief.read_plan_reach_history). A session
+      built under the marks records it and prints a count on each plan line
+      from it; handed None it records status reach_history_not_read.
     """
     if not isinstance(params, LevelParams):
         raise TypeError("build_session_levels needs the ticker's LevelParams "
@@ -2568,7 +2592,8 @@ def build_session_levels(
                          atr_basis=params.atr_basis, params=params,
                          rule_version=build_rule_version(params),
                          built_at=pd.Timestamp.now(ET_NAME).isoformat(),
-                         strat_class=daily_strat_class or '')
+                         strat_class=daily_strat_class or '',
+                         plan_reach_history=reach_history)
     df = _normalize_daily(daily_df)
     if len(df):
         df = df[df.index.normalize() < pd.Timestamp(session_date)]
@@ -2645,6 +2670,8 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
         prior_close=base.prior_close, strat_class=base.strat_class,
         pmg_zones=list(base.pmg_zones), atr_rung_rule=base.atr_rung_rule,
         plan_target_rule=base.plan_target_rule,
+        plan_reach_history=(_reach_history_record(base.plan_reach_history, rule)
+                            if plan_target_rule(rule) == TARGET_RULE_ATR_MARKS else None),
     )
     plan_types = None
     if out.plan_target_rule:
@@ -2702,10 +2729,12 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
         candidates = [c for c in candidates if c['cents'] != ref_cents]
     out.long = _pick_side('long', candidates, ref, out.cleared_above, out.atr, out.params,
                           rule_version=rule, prior_close=out.prior_close,
-                          plan_extra=plan_extra, levels=out.levels)
+                          plan_extra=plan_extra, levels=out.levels,
+                          reach_history=out.plan_reach_history)
     out.short = _pick_side('short', candidates, ref, out.cleared_below, out.atr, out.params,
                            rule_version=rule, prior_close=out.prior_close,
-                           plan_extra=plan_extra, levels=out.levels)
+                           plan_extra=plan_extra, levels=out.levels,
+                           reach_history=out.plan_reach_history)
     return out
 
 
@@ -2927,7 +2956,8 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
                rule_version: str = LEVEL_RULE_VERSION,
                prior_close: Optional[float] = None,
                plan_extra: Optional[list] = None,
-               levels: Optional[list] = None) -> SideLevels:
+               levels: Optional[list] = None,
+               reach_history: Optional[dict] = None) -> SideLevels:
     """One side rule, one broken rule, one window.
 
     A candidate is on the long list when its cent is at or above the
@@ -2946,7 +2976,9 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
     side's own window; None keeps the walk on the candidates alone.
 
     `levels` (ATR marks spec) are the session's levels, which a side built
-    under the marks lists as waypoints between its targets.
+    under the marks lists as waypoints between its targets, and
+    `reach_history` the session's reach history, from which each of its
+    targets and waypoints gets a count.
     """
     own = params.param(trigger_window_key(side)) if params is not None else None
     opp_side = 'short' if side == 'long' else 'long'
@@ -3015,6 +3047,7 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
         _plan_mark_targets(out, trig, ref, atr, params, prior_close)
         if out.targets:
             _plan_waypoints(out, levels or [], ref, atr, params, window, prior_close)
+        _plan_reach(out, reach_history, atr)
     elif target_rule == TARGET_RULE_LEVELS:
         extra = None
         if plan_extra is not None:
@@ -3243,6 +3276,48 @@ def _plan_waypoints(out: SideLevels, levels: list, ref: float, atr: float,
         out.plan_waypoints.append(entry)
 
 
+REACH_HISTORY_NOT_READ = 'reach_history_not_read'
+
+
+def _reach_history_record(history: Optional[dict], rule_version: Optional[str] = None) -> dict:
+    """A session's reach history as recorded: what the brief read, or, for
+    a marks session built with none, status reach_history_not_read and no
+    values, so the copy says the history was not read rather than printing
+    counts of nothing."""
+    if isinstance(history, dict):
+        return {'status': history.get('status') or REACH_HISTORY_NOT_READ,
+                'sessions': history.get('sessions'),
+                'rule_version': history.get('rule_version') or rule_version,
+                'long': list(history.get('long') or []),
+                'short': list(history.get('short') or [])}
+    return {'status': REACH_HISTORY_NOT_READ, 'sessions': None, 'rule_version': rule_version,
+            'long': [], 'short': []}
+
+
+def reach_count(values, distance_cents: int, atr: float) -> Tuple[int, int]:
+    """(k, n) for a plan line `distance_cents` past the trigger (Design 4 of
+    the ATR marks spec): n the sessions in the history, k those whose reach
+    before the stop, in ATR, was at least the line's distance in ATR."""
+    distance = distance_cents / (atr * 100)
+    values = list(values)
+    return sum(1 for v in values if v >= distance), len(values)
+
+
+def _plan_reach(out: SideLevels, history: Optional[dict], atr: float) -> None:
+    """Record the history's status on the side's plan and, when it is ok,
+    a `reached` count on each target and waypoint."""
+    if out.plan is None:
+        return
+    status = (history or {}).get('status') or REACH_HISTORY_NOT_READ
+    out.plan['reach_status'] = status
+    if status != PARAM_OK or not out.targets:
+        return
+    values = (history or {}).get(out.side) or []
+    tc = price_cents(out.trigger['price'])
+    for entry in out.targets + (out.plan_waypoints or []):
+        entry['reached'] = list(reach_count(values, abs(entry['cents'] - tc), atr))
+
+
 def _legacy_trigger_dict(s: SideLevels) -> Optional[dict]:
     """A side pick in the {trigger_level, trigger_name, targets, stop, ...}
     shape persisted to premarket_analysis and read by the formatter."""
@@ -3265,17 +3340,24 @@ def _legacy_trigger_dict(s: SideLevels) -> Optional[dict]:
         'reasoning': '',
     }
     if s.plan is not None:
+        # A target built under the ATR marks also carries its mark, share,
+        # the level on its cent and its reach count.
+        extra_keys = ('gap_fill_atr', 'gap_fill_status', 'mark', 'share', 'on_level', 'reached')
         out.update({
             'plan_targets': [{'price': x['price'], 'name': x['name'],
                               'timeframe': x['timeframe'],
-                              **({'gap_fill_atr': x['gap_fill_atr']} if 'gap_fill_atr' in x else {}),
-                              **({'gap_fill_status': x['gap_fill_status']}
-                                 if 'gap_fill_status' in x else {})}
+                              **{k: x[k] for k in extra_keys if k in x}}
                              for x in s.targets],
             'skipped': [{'price': x['price'], 'name': x['name']} for x in s.skipped],
             'target_status': s.target_status,
             'plan': dict(s.plan),
         })
+        if s.plan.get('rule') == TARGET_RULE_ATR_MARKS:
+            out.update({
+                'plan_waypoints': [dict(w) for w in (s.plan_waypoints or [])],
+                'waypoint_zone_status': s.waypoint_zone_status,
+                'reach_status': s.plan.get('reach_status'),
+            })
     return out
 
 
@@ -3553,6 +3635,11 @@ def _plan_block(line: str, side: str, trig: dict, plan: dict, room: Optional[flo
         out.append(f"    Stop: {trig['stop']:.2f} ({_display_level_name(trig['stop_name'])})")
     status = trig.get('target_status') or PARAM_OK
     legs = plan.get('legs')
+    if status == PARAM_OK and legs and plan.get('rule') == TARGET_RULE_ATR_MARKS:
+        out.extend(_mark_plan_lines(trig, plan, atr_basis))
+        if room is not None:
+            out.append(f"    Room to trigger: {room:.2f}%")
+        return out
     spacing = plan.get('spacing_atr')
     spacing_text = (f"{multiple_text(spacing)} x ATR({atr_length(atr_basis)}) = "
                     f"{plan['spacing_price']:.2f}"
@@ -3564,28 +3651,84 @@ def _plan_block(line: str, side: str, trig: dict, plan: dict, room: Optional[flo
         if not targets:
             out.append(f"    No target at least {spacing_text} past the trigger: "
                        f"hold to the close or the stop.")
-        share = f"1/{legs}"
         for i, tg in enumerate(targets, 1):
-            name = _display_level_name(tg['name'])
-            if tg.get('gap_fill_atr') is not None:
-                name += f", gap fill: gap {tg['gap_fill_atr']:.2f} x ATR"
-            elif tg.get('gap_fill_status'):
-                name += f", gap fill flag unavailable ({tg['gap_fill_status']})"
-            text = f"    T{i}: {tg['price']:.2f} ({name}), "
-            left = legs - len(targets)
-            if i < len(targets):
-                text += f"sell {share}"
-            elif left == 0:
-                text += f"sell the last {share}, or hold to the close or the stop"
-            else:
-                text += f"sell {share}, hold the last {left}/{legs} to the close or the stop"
-            out.append(text)
+            name = _display_level_name(tg['name']) + _gap_fill_text(tg)
+            out.append(f"    T{i}: {tg['price']:.2f} ({name}), "
+                       + _leg_sale_text(i, len(targets), legs))
         skipped = trig.get('skipped') or []
         if skipped:
             out.append(f"    Skipped, closer than {spacing_text}: " + ', '.join(
                 f"{s['price']:.2f} ({_display_level_name(s['name'])})" for s in skipped))
     if room is not None:
         out.append(f"    Room to trigger: {room:.2f}%")
+    return out
+
+
+def _gap_fill_text(entry: dict) -> str:
+    """The gap fill note a plan line at the prior close prints."""
+    if entry.get('gap_fill_atr') is not None:
+        return f", gap fill: gap {entry['gap_fill_atr']:.2f} x ATR"
+    if entry.get('gap_fill_status'):
+        return f", gap fill flag unavailable ({entry['gap_fill_status']})"
+    return ''
+
+
+def _leg_sale_text(i: int, n_targets: int, legs: int) -> str:
+    """What target i of n sells: one leg, the last leg (with as many targets
+    as legs), or one leg and the legs with no target held to the close or the
+    stop, as resolve_plan scores them."""
+    share = f"1/{legs}"
+    left = legs - n_targets
+    if i < n_targets:
+        return f"sell {share}"
+    if left == 0:
+        return f"sell the last {share}, or hold to the close or the stop"
+    return f"sell {share}, hold the last {left}/{legs} to the close or the stop"
+
+
+def _mark_plan_lines(trig: dict, plan: dict, atr_basis: Optional[str]) -> list:
+    """Design 7 of the ATR marks spec: the marks line, then each target in
+    order with the waypoints that sit before it, then the waypoints beyond
+    the last target. The percents and the share are formatted from the
+    policy values the plan recorded; the counts come from the reach history."""
+    targets = trig.get('plan_targets') or []
+    waypoints = trig.get('plan_waypoints') or []
+    legs = plan['legs']
+    reach_status = trig.get('reach_status') or plan.get('reach_status')
+
+    def _pct(mark) -> str:
+        return f"{mark * 100:g}%"
+
+    def _names(names) -> str:
+        return ', '.join(_display_level_name(n) for n in names)
+
+    def _reach(entry) -> str:
+        if 'reached' not in entry:
+            return f"reach history unavailable ({reach_status})"
+        k, n = entry['reached']
+        return 'no history yet' if n == 0 else f"reached {k} of {n}"
+
+    def _waypoint(entry) -> str:
+        price = f"{entry['price']:.2f}"
+        if entry.get('zone'):
+            price += f" to {entry['zone']['far_price']:.2f}"
+        where = ('level on the way' if entry['segment'] != 'beyond'
+                 else f"level beyond T{len(targets)}")
+        return (f"      {price} ({_names(entry['names'])}{_gap_fill_text(entry)}): {where}, "
+                f"{entry['distance_atr']:.2f} ATR past the trigger, {_reach(entry)}")
+
+    pcts = [_pct(m) for m in plan.get('marks') or []]
+    marks_text = pcts[-1] if len(pcts) == 1 else ', '.join(pcts[:-1]) + ' and ' + pcts[-1]
+    out = [f"    Targets at {marks_text} of ATR({atr_length(atr_basis)}) = {plan['atr']:.2f} "
+           f"past {trig['trigger_level']:.2f}, sell 1/{legs} at each"]
+    out.extend(_waypoint(w) for w in waypoints if w['segment'] == 'before_t1')
+    for i, tg in enumerate(targets, 1):
+        on = f", on {_names(tg['on_level'])}: the stronger case" if tg.get('on_level') else ''
+        out.append(f"    T{i}: {tg['price']:.2f} ({_pct(tg['mark'])} of ATR{on}"
+                   f"{_gap_fill_text(tg)}), {_leg_sale_text(i, len(targets), legs)}, "
+                   f"{_reach(tg)}")
+        segment = 'beyond' if i == len(targets) else f"t{i}_t{i + 1}"
+        out.extend(_waypoint(w) for w in waypoints if w['segment'] == segment)
     return out
 
 

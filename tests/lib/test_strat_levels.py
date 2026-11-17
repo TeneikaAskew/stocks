@@ -2408,3 +2408,139 @@ class TestPlanWaypoints:
         assert moved.long.trigger['price'] == 279.50
         assert _target_prices(moved.long)[0] == 280.72
         assert 'PDO' not in _named(moved.long.plan_waypoints)
+
+
+# ─── ATR marks spec (2026-11-16), done_when "Brief copy" ──────────────────
+
+# The spec's Design 7 "After" block (r2, lines 541 to 568), character for character.
+SPEC_AFTER_CALLS = """  CALLS above 278.92 (PMK_H) -- only if bias denied, new entries 09:30 to 16:00 ET
+    No entry if the open is at or above 278.92.
+    Stop: 275.86 (PMK_L)
+    Targets at 25%, 50%, 75% and 100% of ATR(14) = 4.87 past 278.92, sell 1/4 at each
+      278.95 to 279.17 (PDO, PDH): level on the way, 0.01 ATR past the trigger, reached 8 of 8
+      279.33 (PMC): level on the way, 0.08 ATR past the trigger, reached 8 of 8
+    T1: 280.14 (25% of ATR), sell 1/4, reached 7 of 8
+    T2: 281.36 (50% of ATR), sell 1/4, reached 5 of 8
+      281.64 (CMO): level on the way, 0.56 ATR past the trigger, reached 5 of 8
+    T3: 282.58 (75% of ATR), sell 1/4, reached 4 of 8
+    T4: 283.79 (100% of ATR, on PWH: the stronger case), sell the last 1/4, or hold to the close or the stop, reached 4 of 8
+      285.26 (PMH): level beyond T4, 1.30 ATR past the trigger, reached 2 of 8
+    Room to trigger: 0.92%"""
+SPEC_AFTER_PUTS = """  PUTS below 275.86 (PMK_L), new entries 09:30 to 16:00 ET
+    No entry if the open is at or below 275.86.
+    Stop: 277.41 (PQL)
+    Targets at 25%, 50%, 75% and 100% of ATR(14) = 4.87 past 275.86, sell 1/4 at each
+      274.67 (PDL, PWL): level on the way, 0.24 ATR past the trigger, reached 6 of 8
+    T1: 274.64 (25% of ATR), sell 1/4, reached 6 of 8
+      274.55 (11/9 Gap Low): level on the way, 0.27 ATR past the trigger, reached 6 of 8
+    T2: 273.42 (50% of ATR), sell 1/4, reached 5 of 8
+    T3: 272.20 (75% of ATR), sell 1/4, reached 4 of 8
+    T4: 270.99 (100% of ATR), sell the last 1/4, or hold to the close or the stop, reached 3 of 8
+      269.88 (PML): level beyond T4, 1.23 ATR past the trigger, reached 3 of 8
+    Room to trigger: 0.19%"""
+# The fixture's difference from the spec's example (the spec: "If the fixture
+# holds a level in range that the owner's example does not name, the golden
+# is the fixture's"): the parent bar is a level of the basis on PDH's and on
+# PDL's cent, so it is named on those two lines.
+FIXTURE_AFTER_CALLS = SPEC_AFTER_CALLS.replace(
+    '278.95 to 279.17 (PDO, PDH):', '278.95 to 279.17 (PDO, PDH, Parent bar high):')
+FIXTURE_AFTER_PUTS = SPEC_AFTER_PUTS.replace(
+    '274.67 (PDL, PWL):', '274.67 (PDL, PWL, Parent bar low):')
+
+
+def _blocks(text: str) -> tuple:
+    """The CALLS and PUTS blocks of a playbook."""
+    calls = text[text.index('  CALLS'):text.index('\n\n  PUTS')]
+    rest = text[text.index('  PUTS'):]
+    puts = rest[:rest.index('\n\n')] if '\n\n' in rest else rest
+    return calls, puts
+
+
+def _marks_text(marks=slh.QUARTER_MARKS, legs=4, history=None, **kw) -> str:
+    b = slh.marks_basis(slh.stored_1116('IWM'), marks, legs,
+                        reach_history=history if history is not None else slh.d7_history(), **kw)
+    return format_levels_for_brief(SessionLevels.from_basis(b).to_level_map(), 'bearish')
+
+
+class TestAtrMarkCopy:
+    def test_seeded_policy_prints_the_base(self):
+        from lib.strat_levels import policy_wide_param
+        b = slh.stored_1116('IWM')
+        pol = {'extra': {'marks': []}, 'effective_from': '2015-01-02', 'method_id': 'policy'}
+        b['params']['plan_target_marks_atr'] = policy_wide_param(
+            'plan_target_marks_atr', pol, 'IWM', 'atr_14').to_basis()
+        text = format_levels_for_brief(SessionLevels.from_basis(b).to_level_map(), 'bearish')
+        assert _blocks(text) == _blocks(slh.main_text_1116('IWM'))
+
+    def test_after_text_is_the_specs(self):
+        calls, puts = _blocks(_marks_text())
+        assert calls == FIXTURE_AFTER_CALLS
+        assert puts == FIXTURE_AFTER_PUTS
+        # Every other line is the spec's, character for character.
+        assert [ln for ln in calls.split('\n') if 'Parent bar' not in ln] == [
+            ln for ln in SPEC_AFTER_CALLS.split('\n') if '(PDO, PDH)' not in ln]
+        assert [ln for ln in puts.split('\n') if 'Parent bar' not in ln] == [
+            ln for ln in SPEC_AFTER_PUTS.split('\n') if '(PDL, PWL)' not in ln]
+
+    def test_three_marks_three_legs(self):
+        calls, _ = _blocks(_marks_text(marks=(0.25, 0.5, 0.75), legs=3))
+        assert 'Targets at 25%, 50% and 75% of ATR(14) = 4.87 past 278.92, sell 1/3 at each' in calls
+        t3 = next(ln for ln in calls.split('\n') if ln.startswith('    T3:'))
+        assert 'sell the last 1/3, or hold to the close or the stop' in t3
+        assert '    T4:' not in calls and '1/4' not in calls
+
+    def test_fewer_marks_than_legs(self):
+        calls, _ = _blocks(_marks_text(marks=(0.25, 0.5), legs=3))
+        t2 = next(ln for ln in calls.split('\n') if ln.startswith('    T2:'))
+        assert 'sell 1/3, hold the last 1/3 to the close or the stop' in t2
+        assert 'sell the last 1/3' not in calls
+        calls, _ = _blocks(_marks_text(marks=(0.25,), legs=4))
+        t1 = next(ln for ln in calls.split('\n') if ln.startswith('    T1:'))
+        assert 'sell 1/4, hold the last 3/4 to the close or the stop' in t1
+        assert 'Targets at 25% of ATR(14) = 4.87 past 278.92, sell 1/4 at each' in calls
+
+    def test_empty_history_prints_no_history_yet(self):
+        calls, puts = _blocks(_marks_text(history=slh.d7_history(long=())))
+        lines = [ln for ln in calls.split('\n') if ln.startswith(('    T', '      '))
+                 and not ln.startswith('    Targets')]
+        assert lines and all(ln.endswith(', no history yet') for ln in lines)
+        assert '0 of 0' not in calls
+        assert 'reached 6 of 8' in puts
+
+    def test_history_not_ok(self):
+        calls, puts = _blocks(_marks_text(history=slh.d7_history(status='input_unavailable')))
+        for block in (calls, puts):
+            lines = [ln for ln in block.split('\n') if ln.startswith(('    T', '      '))
+                     and not ln.startswith('    Targets')]
+            assert lines and all(
+                ln.endswith(', reach history unavailable (input_unavailable)') for ln in lines)
+            assert 'reached' not in block
+        assert '    T1: 280.14 (25% of ATR), sell 1/4, reach history' in calls
+
+    def test_history_not_read(self):
+        b = slh.marks_basis(slh.stored_1116('IWM'), slh.QUARTER_MARKS, 4)
+        sl = SessionLevels.from_basis(b)
+        assert sl.plan_reach_history['status'] == 'reach_history_not_read'
+        calls, _ = _blocks(format_levels_for_brief(sl.to_level_map(), 'bearish'))
+        assert 'reach history unavailable (reach_history_not_read)' in calls
+
+    def test_no_skipped_and_no_atr_levels_line(self):
+        text = _marks_text()
+        base = slh.main_text_1116('IWM')
+        assert 'Skipped, closer than' not in text and 'ATR levels' not in text
+        assert 'ATR levels' in base
+
+        def _tail(t, start):
+            return [ln for ln in t[t.index(start):].split('\n')
+                    if ln.startswith(('    Calls (up):', '    Puts (down):', '  NEXT LEVELS'))
+                    or 'PMG' in ln or 'strength' in ln]
+        assert _tail(text, '  NEXT LEVELS') == _tail(base, '  NEXT LEVELS')
+        assert text[text.index('  PMG ZONES'):] == base[base.index('  PMG ZONES'):]
+
+    def test_marks_not_ok_prints_the_existing_line(self):
+        calls, puts = _blocks(_marks_text(marks_extra={'marks': 'x'}))
+        for block in (calls, puts):
+            assert '    Targets unavailable (input_unavailable): no exit plan for this side.' in block
+            assert '    T1:' not in block and 'Targets at' not in block
+        calls, _ = _blocks(_marks_text(legs=3))
+        assert '    Targets unavailable (input_unavailable): no exit plan for this side.' in calls

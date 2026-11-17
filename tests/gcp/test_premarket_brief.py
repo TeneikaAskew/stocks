@@ -4249,3 +4249,29 @@ def test_brief_rvol_is_relative_volume(monkeypatch, no_network):
     brief = pb.generate_premarket_brief(cfg=cfg)
     assert brief['tickers']['IWM']['rvol'] is None
     assert 'RVOL' not in pb._build_overview_embed(brief)['description']
+
+
+# ── ATR marks spec (2026-11-16), Review Focus 4: the longer playbook ────
+
+def test_the_longer_playbook_splits_whole():
+    """The full IWM 2026-11-16 playbook built under the marks, passed through
+    the Discord field splitter: the fields' code-block bodies rejoin to the
+    text's lines in order, none is over the field limit and none is cut."""
+    import gcp.premarket_brief as brief
+    from lib.strat_levels import SessionLevels, format_levels_for_brief
+    from tests.lib import session_levels_helpers as slh
+
+    b = slh.marks_basis(slh.stored_1116("IWM"), slh.QUARTER_MARKS, 4,
+                        reach_history=slh.d7_history())
+    text = format_levels_for_brief(SessionLevels.from_basis(b).to_level_map(), "bearish")
+    assert "Targets at 25%, 50%, 75% and 100% of ATR(14)" in text
+    fields = brief._playbook_code_fields("IWM", text)
+    assert len(fields) > 1
+    bodies = []
+    for i, f in enumerate(fields):
+        assert len(f["value"]) <= brief.MAX_FIELD_VALUE
+        assert f["value"].startswith(brief._CODE_FENCE_OPEN)
+        assert f["value"].endswith(brief._CODE_FENCE_CLOSE)
+        assert f["name"] == "IWM Playbook" + (brief._CONTINUED if i else "")
+        bodies.append(f["value"][len(brief._CODE_FENCE_OPEN):-len(brief._CODE_FENCE_CLOSE)])
+    assert "\n".join(bodies).split("\n") == text.split("\n")
