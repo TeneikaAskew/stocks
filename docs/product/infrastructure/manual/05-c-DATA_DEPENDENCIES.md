@@ -332,7 +332,6 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/premarket_brief.py`](../../../../gcp/premarket_brief.py) — line [256](../../../../gcp/premarket_brief.py#L256)
 - [`scripts/backfill_and_replay.py`](../../../../scripts/backfill_and_replay.py) — line [324](../../../../scripts/backfill_and_replay.py#L324), [488](../../../../scripts/backfill_and_replay.py#L488)
 - [`scripts/backfill_watchlist_data.py`](../../../../scripts/backfill_watchlist_data.py) — line [233](../../../../scripts/backfill_watchlist_data.py#L233)
-- [`scripts/deep_backfill_ticker.py`](../../../../scripts/deep_backfill_ticker.py) — line [102](../../../../scripts/deep_backfill_ticker.py#L102)
 
 ### `market_data_intraday`
 - [`gcp/backfill_ticker.py`](../../../../gcp/backfill_ticker.py) — line [525](../../../../gcp/backfill_ticker.py#L525)
@@ -688,7 +687,6 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/audit_data_freshness.py`](../../../../scripts/audit_data_freshness.py) — line [964](../../../../scripts/audit_data_freshness.py#L964), [971](../../../../scripts/audit_data_freshness.py#L971), [1095](../../../../scripts/audit_data_freshness.py#L1095), [1103](../../../../scripts/audit_data_freshness.py#L1103)
 - [`scripts/backfill_and_replay.py`](../../../../scripts/backfill_and_replay.py) — line [370](../../../../scripts/backfill_and_replay.py#L370), [542](../../../../scripts/backfill_and_replay.py#L542)
 - [`scripts/backfill_watchlist_data.py`](../../../../scripts/backfill_watchlist_data.py) — line [109](../../../../scripts/backfill_watchlist_data.py#L109)
-- [`scripts/deep_backfill_ticker.py`](../../../../scripts/deep_backfill_ticker.py) — line [127](../../../../scripts/deep_backfill_ticker.py#L127)
 - [`scripts/strat_backtest.py`](../../../../scripts/strat_backtest.py) — line [37](../../../../scripts/strat_backtest.py#L37)
 
 ### `market_data_intraday`
@@ -876,7 +874,7 @@ Tables with two or more writing files. The risk in each case is the same shape: 
 | `insight_reports_history` | 2 | `gcp/insight_pipeline_job.py`, `scripts/backfill_history_tables.py` |
 | `insight_runs` | 4 | `gcp/auto_refresh_top_n.py`, `gcp/discord_interactions/main.py`, `gcp/insight_pipeline_job.py`, `platform/api/routers/insights.py` |
 | `journal_entries` | 2 | `platform/api/routers/journal.py`, `scripts/backfill_journal_embeddings.py` |
-| `market_data_daily` | 9 | `gcp/backfill_ticker.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `scripts/backfill_and_replay.py`, `scripts/backfill_watchlist_data.py`, `scripts/deep_backfill_ticker.py` |
+| `market_data_daily` | 8 | `gcp/backfill_ticker.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `scripts/backfill_and_replay.py`, `scripts/backfill_watchlist_data.py` |
 | `market_data_intraday` | 5 | `gcp/backfill_ticker.py`, `gcp/fetchers/fetch_alphavantage_intraday.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/migrate_to_gcp.py`, `scripts/backfill_and_replay.py` |
 | `news_sentiment` | 5 | `gcp/backfill_ticker.py`, `gcp/fetchers/fetch_news_sentiment.py`, `gcp/fetchers/fetch_rss_news.py`, `scripts/backfill_and_replay.py`, `scripts/backfill_news_sentiment.py` |
 | `premarket_analysis` | 3 | `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/signal_monitor.py` |
