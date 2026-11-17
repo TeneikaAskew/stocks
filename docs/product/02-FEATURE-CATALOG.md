@@ -237,7 +237,7 @@ EW brief retirement Draft [#1837](https://github.com/TeneikaAskew/stocks/pull/18
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation |
+| Status | Production but needs remediation; reach history for the target lines (`plan_excursions`, written by the resolver and a one-off history job, read by `lib/target_reach.py`) under review in [#2062](https://github.com/TeneikaAskew/stocks/pull/2062), not deployed |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
