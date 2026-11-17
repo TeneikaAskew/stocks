@@ -10,7 +10,6 @@ ROOT = Path(__file__).resolve().parents[2]
 CONSUMERS = {
     'gcp/fetchers/_av_realtime_collector.py',
     'gcp/fetchers/compute_earnings_reactions.py',
-    'gcp/fetchers/evaluate_ew_strikes.py',
     'gcp/fetchers/fetch_alphavantage_intraday.py',
     'gcp/fetchers/fetch_av_earnings_options_backfill.py',
     'gcp/fetchers/fetch_av_historical_options.py',
