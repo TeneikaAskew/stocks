@@ -19,7 +19,7 @@ from lib.strat_levels import (
 )
 from lib.strat_levels import build_level_map as _build_level_map
 from tests.lib.level_params_fixtures import fixture_params
-from tests.lib.session_levels_helpers import D8_LEVELS, d8_session
+from tests.lib.session_levels_helpers import D8_LEVELS, d8_session, newer_rule_versions
 
 
 def build_level_map(ticker, df, price, *args, atr=None, **kw):
@@ -1906,3 +1906,64 @@ def test_is_current_pick_rule():
     assert is_current_pick_rule('feat-strat-001.v2') is False
     assert is_current_pick_rule(LEVEL_RULE_V2) is False
     assert is_current_pick_rule('') is False
+
+
+# ── Unknown rule version spec (2026-11-16), Design 1: one classifier (U1) ──
+
+def test_rule_version_status():
+    from lib.strat_levels import PICK_RULE_VERSIONS, rule_version_status
+    from tests.lib.session_levels_helpers import newer_rule_versions
+    assert rule_version_status(None) == 'legacy'
+    assert rule_version_status({}.get('rule_version')) == 'legacy'
+    for v in ('feat-strat-001.v1', 'feat-strat-001.v2'):
+        assert rule_version_status(v) == 'legacy', v
+    for v in PICK_RULE_VERSIONS:
+        assert rule_version_status(v) == 'known', v
+    assert newer_rule_versions() == ('feat-strat-001.v5', 'feat-strat-001.v6', 'feat-strat-001.v99')
+    for v in newer_rule_versions():
+        assert rule_version_status(v) == 'rule_version_newer', v
+    for v in ('', 'feat-strat-001.v0', 'feat-strat-001.v05', 'feat-strat-001.vX',
+              'feat-strat-001.v4 ', 'feat-strat-001.v4\n', 'FEAT-STRAT-001.V4',
+              'feat-strat-002.v9', 'feat-strat-001.v\u0665', 5, 5.0, True):
+        assert rule_version_status(v) == 'rule_version_unreadable', repr(v)
+
+
+def test_a_gap_in_the_known_versions_is_unreadable(monkeypatch):
+    """Design 1 rule 6: a number between two the image knows, that the list
+    does not hold, is neither known nor newer."""
+    import lib.strat_levels as m
+    monkeypatch.setattr(m, 'PICK_RULE_VERSIONS', ('feat-strat-001.v3', 'feat-strat-001.v5'))
+    assert m.rule_version_status('feat-strat-001.v4') == 'rule_version_unreadable'
+    assert m.rule_version_status('feat-strat-001.v5') == 'known'
+    assert m.rule_version_status('feat-strat-001.v6') == 'rule_version_newer'
+    assert m.newest_pick_rule_version() == 'feat-strat-001.v5'
+
+
+# ── Unknown rule version spec, Design 2: the rebuild refuses (U2) ──────
+
+@pytest.mark.parametrize('version', [*newer_rule_versions(), 'feat-strat-001.vX', '', 5])
+def test_from_basis_refuses_a_version_it_does_not_know(version):
+    """A stored basis of a version newer than this image knows, or one it
+    cannot read, raises LevelRuleVersionUnknown naming the status and the
+    stored value; it is never rebuilt under the v2 rule. _assemble refuses
+    an in-memory SessionLevels of the same version instead of relabelling
+    it as the current version."""
+    from lib.strat_levels import LevelRuleVersionUnknown, SessionLevels, rule_version_status
+    from tests.lib.session_levels_helpers import d8_basis
+    basis = {**d8_basis(), 'rule_version': version}
+    with pytest.raises(LevelRuleVersionUnknown) as e:
+        SessionLevels.from_basis(basis)
+    assert e.value.reason == rule_version_status(version)
+    assert e.value.reason in ('rule_version_newer', 'rule_version_unreadable')
+    if isinstance(version, int):
+        assert e.value.recorded is version
+    else:
+        assert e.value.recorded == version
+    assert str(e.value).startswith(e.value.reason)
+
+    sl = SessionLevels.from_basis(d8_basis())
+    sl.rule_version = version
+    with pytest.raises(LevelRuleVersionUnknown) as e:
+        sl.with_reference(250.0)
+    assert e.value.reason == rule_version_status(version)
+    assert e.value.recorded is version

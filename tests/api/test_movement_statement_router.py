@@ -680,3 +680,74 @@ def test_missing_atr_serves_levels_unavailable_not_an_empty_ladder(monkeypatch):
     out_stored = _build_levels(stored, reach, reach, tracked)
     assert out_stored["status"] == "UNAVAILABLE"
     assert out_stored["reason"].startswith("atr_unavailable")
+
+
+# ── Unknown rule version spec (2026-11-16), U6 through the endpoint (Codex
+# review on #2043): the changed response is proved through HTTP and the
+# response model, with the REAL level-map builder and the REAL assembler.
+
+@pytest.mark.parametrize("kind", ["newer", "unreadable"])
+def test_endpoint_reports_a_rule_version_it_does_not_know(monkeypatch, kind):
+    """A live SPY row whose level_basis carries a rule version this image does
+    not know (newest plus 1) or cannot read (''): the builder refuses it
+    (returns None), the assembler issues no reach-rate query, and the endpoint
+    returns 200 with the levels block UNAVAILABLE, naming the reason, the
+    stored version and its status. On the merge base the builder relabels the
+    row under the oldest rule and the levels block reads OK."""
+    import lib.movement_statement as ms  # noqa: PLC0415
+    from tests.lib.session_levels_helpers import newer_rule_versions  # noqa: PLC0415
+    from tests.lib.test_movement_statement_level_basis import (  # noqa: PLC0415
+        SESSION, _stamped_session)
+
+    version, status = ((newer_rule_versions()[0], "rule_version_newer") if kind == "newer"
+                       else ("", "rule_version_unreadable"))
+    db, _ = _stamped_session(version)
+    # The endpoint runs in Starlette's threadpool; give the in-memory SQLite
+    # copy a connection any thread may use.
+    import sqlite3  # noqa: PLC0415
+    shared = sqlite3.connect(":memory:", check_same_thread=False)
+    db.conn.commit()
+    db.conn.backup(shared)
+    db.conn = shared
+    statements = []
+
+    def query(sql, params=None):
+        statements.append(sql)
+        return db.query(sql, params)
+
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "true")
+    monkeypatch.setattr(dashboard_router, "_query_fn", query)
+    monkeypatch.setattr(dashboard_router, "_movement_analysis_date", lambda: SESSION)
+    monkeypatch.setattr(ms, "_build_continuation",
+                        lambda *a, **k: ms._unavailable("not under test"))
+    real_assemble = ms.assemble_movement_statement
+    real_builder = dashboard_router._build_movement_level_map
+    built = []
+
+    def builder(ticker, analysis_date=None):
+        out = real_builder(ticker, analysis_date=analysis_date)
+        built.append(out)
+        return out
+
+    def assemble(ticker, timeframe="15m", **kw):
+        kw.setdefault("query_fn", query)
+        kw.setdefault("gamma_fn", lambda *a, **k: {"available": False})
+        kw.setdefault("engine", object())
+        kw.setdefault("session_date", SESSION)
+        return real_assemble(ticker, timeframe, **kw)
+
+    daily = _synthetic_daily(end=SESSION.isoformat())
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=daily), \
+            patch.object(dashboard_router, "_build_movement_level_map", side_effect=builder), \
+            patch("lib.movement_statement.assemble_movement_statement", side_effect=assemble):
+        r = _get(TestClient(_build_app()), ticker="SPY")
+
+    assert r.status_code == 200, r.text
+    assert built == [None]
+    assert not [s for s in statements if "outcome_resolved_at IS NOT NULL" in s]
+    levels = r.json()["levels"]
+    assert levels["status"] == "UNAVAILABLE", levels
+    assert levels["reason"].startswith(status), levels
+    assert levels["rule_version"] == version
+    assert levels["rule_version_status"] == status
+    assert not [k for k in ("calls", "puts", "current_price") if k in levels]
