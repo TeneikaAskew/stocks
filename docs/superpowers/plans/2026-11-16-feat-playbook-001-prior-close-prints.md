@@ -2,7 +2,7 @@
 feat_id: FEAT-PLAYBOOK-001
 spec: docs/superpowers/specs/2026-11-16-feat-playbook-001-prior-close-prints-r2.md
 branch: feature/feat-playbook-001-prior-close-prints
-pr: null
+pr: 2046
 status: ready
 ---
 
