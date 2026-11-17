@@ -1528,6 +1528,61 @@ def is_current_pick_rule(version) -> bool:
     asks here; only the reach-rate population filters on one exact version."""
     return isinstance(version, str) and version in PICK_RULE_VERSIONS
 
+
+# What a reader makes of a stored level_basis.rule_version (FEAT-STRAT-001,
+# spec 2026-11-16-feat-strat-001-unknown-rule-version, Design 1). A reader
+# rebuilds `legacy` under the v2 rule and `known` under its own recorded rule;
+# it refuses the two statuses in REFUSED_RULE_VERSION_STATUSES by name.
+RULE_VERSION_LEGACY = 'legacy'
+RULE_VERSION_KNOWN = 'known'
+RULE_VERSION_NEWER = 'rule_version_newer'
+RULE_VERSION_UNREADABLE = 'rule_version_unreadable'
+REFUSED_RULE_VERSION_STATUSES = frozenset({RULE_VERSION_NEWER, RULE_VERSION_UNREADABLE})
+
+_RULE_VERSION_NUMBER = re.compile(r'feat-strat-001\.v([1-9][0-9]*)', re.ASCII)
+
+
+def rule_version_number(version) -> Optional[int]:
+    """The N of a `feat-strat-001.vN` string (ASCII digits, no leading zero,
+    nothing before or after), else None. Anything not a `str` is None."""
+    if not isinstance(version, str):
+        return None
+    m = _RULE_VERSION_NUMBER.fullmatch(version)
+    return int(m.group(1)) if m else None
+
+
+def newest_pick_rule_version() -> str:
+    """The member of PICK_RULE_VERSIONS with the largest number, read from the
+    module attribute at call time (so a patched list is what is read)."""
+    return max(PICK_RULE_VERSIONS, key=rule_version_number)
+
+
+def rule_version_status(version) -> str:
+    """Classify a stored level_basis.rule_version, first match wins:
+
+    1. None (key absent or JSON null): `legacy`.
+    2. no `feat-strat-001.vN` number: `rule_version_unreadable`.
+    3. is_current_pick_rule(version): `known`.
+    4. number at or below 2: `legacy`.
+    5. number above the newest in PICK_RULE_VERSIONS: `rule_version_newer`.
+    6. otherwise (between 2 and the newest, not in the list):
+       `rule_version_unreadable`.
+
+    The one place a stored version is classified (spec
+    2026-11-16-feat-strat-001-unknown-rule-version, Design 1)."""
+    if version is None:
+        return RULE_VERSION_LEGACY
+    number = rule_version_number(version)
+    if number is None:
+        return RULE_VERSION_UNREADABLE
+    if is_current_pick_rule(version):
+        return RULE_VERSION_KNOWN
+    if number <= 2:
+        return RULE_VERSION_LEGACY
+    if number > rule_version_number(newest_pick_rule_version()):
+        return RULE_VERSION_NEWER
+    return RULE_VERSION_UNREADABLE
+
 # Trigger candidates in tie-break priority: at one price to the cent the
 # earlier name wins, so a structural level beats the parent bar and both beat
 # a premarket extreme on the same cent.

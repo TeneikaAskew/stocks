@@ -1906,3 +1906,34 @@ def test_is_current_pick_rule():
     assert is_current_pick_rule('feat-strat-001.v2') is False
     assert is_current_pick_rule(LEVEL_RULE_V2) is False
     assert is_current_pick_rule('') is False
+
+
+# ── Unknown rule version spec (2026-11-16), Design 1: one classifier (U1) ──
+
+def test_rule_version_status():
+    from lib.strat_levels import PICK_RULE_VERSIONS, rule_version_status
+    from tests.lib.session_levels_helpers import newer_rule_versions
+    assert rule_version_status(None) == 'legacy'
+    assert rule_version_status({}.get('rule_version')) == 'legacy'
+    for v in ('feat-strat-001.v1', 'feat-strat-001.v2'):
+        assert rule_version_status(v) == 'legacy', v
+    for v in PICK_RULE_VERSIONS:
+        assert rule_version_status(v) == 'known', v
+    assert newer_rule_versions() == ('feat-strat-001.v5', 'feat-strat-001.v6', 'feat-strat-001.v99')
+    for v in newer_rule_versions():
+        assert rule_version_status(v) == 'rule_version_newer', v
+    for v in ('', 'feat-strat-001.v0', 'feat-strat-001.v05', 'feat-strat-001.vX',
+              'feat-strat-001.v4 ', 'feat-strat-001.v4\n', 'FEAT-STRAT-001.V4',
+              'feat-strat-002.v9', 'feat-strat-001.v\u0665', 5, 5.0, True):
+        assert rule_version_status(v) == 'rule_version_unreadable', repr(v)
+
+
+def test_a_gap_in_the_known_versions_is_unreadable(monkeypatch):
+    """Design 1 rule 6: a number between two the image knows, that the list
+    does not hold, is neither known nor newer."""
+    import lib.strat_levels as m
+    monkeypatch.setattr(m, 'PICK_RULE_VERSIONS', ('feat-strat-001.v3', 'feat-strat-001.v5'))
+    assert m.rule_version_status('feat-strat-001.v4') == 'rule_version_unreadable'
+    assert m.rule_version_status('feat-strat-001.v5') == 'known'
+    assert m.rule_version_status('feat-strat-001.v6') == 'rule_version_newer'
+    assert m.newest_pick_rule_version() == 'feat-strat-001.v5'
