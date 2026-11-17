@@ -530,6 +530,95 @@ def _live_level_basis(ticker: str, session_date: date_type) -> Optional[dict]:
     return read_live_level_basis(_query, ticker, session_date)
 
 
+# FEAT-INSIGHT-001 Design 1: the session's brief row is the source of every
+# value the brief already holds. A brief ticker with no live row is reported
+# as brief_row_missing; nothing is rebuilt in its place.
+BRIEF_ROW_MISSING = "brief_row_missing"
+
+BRIEF_ROW_SQL = (
+    "SELECT analysis_date, analysis_ts, run_kind, ticker, price, rsi, sma200, ema9, "
+    "       ema20, atr14, bb_upper, bb_lower, rvol, volatility_20d, vol_regime, "
+    "       macd_cross, above_sma200, strat_candle, strat_combo, strat_setup, "
+    "       ftfc_score, ftfc_direction, ftfc_labels, tf_continuity, "
+    "       tf_continuity_frames, prev_day_high, prev_day_low, level_basis "
+    "FROM premarket_analysis "
+    "WHERE ticker = :ticker AND analysis_date = :d AND run_kind = 'live' "
+    "LIMIT 1"
+)
+
+# The JSONB columns: a driver may hand any of them over as JSON text.
+_BRIEF_JSON_COLUMNS = ("ftfc_labels", "tf_continuity_frames", "level_basis")
+# The values summarize_brief_row returns, each as stored.
+BRIEF_VALUE_COLUMNS = (
+    "price", "rsi", "sma200", "ema9", "ema20", "atr14", "bb_upper", "bb_lower",
+    "rvol", "volatility_20d", "vol_regime", "macd_cross", "above_sma200",
+    "strat_candle", "strat_combo", "strat_setup", "ftfc_score", "ftfc_direction",
+    "ftfc_labels", "tf_continuity", "tf_continuity_frames", "prev_day_high",
+    "prev_day_low", "level_basis",
+)
+
+
+def _brief_cell(column: str, value):
+    """One brief-row cell as stored: a null (None, NaN, NaT) is None, a numpy
+    scalar is its Python value, a JSONB column given as text is parsed. No
+    value is coerced to another (CLAUDE.md 3.7)."""
+    import json as _json
+
+    if value is None or value is pd.NaT or value is pd.NA:
+        return None
+    if isinstance(value, (float, np.floating)) and math.isnan(value):
+        return None
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    if column in _BRIEF_JSON_COLUMNS and isinstance(value, str):
+        return _json.loads(value)
+    return value
+
+
+def _brief_ref(row) -> dict:
+    """Which brief row a report read: its analysis_date (YYYY-MM-DD), its
+    analysis_ts (ISO 8601, UTC) and its run_kind."""
+    raw_date = row.get("analysis_date")
+    analysis_date = (raw_date.isoformat()[:10] if hasattr(raw_date, "isoformat")
+                     else pd.Timestamp(raw_date).date().isoformat())
+    ts = pd.Timestamp(row.get("analysis_ts"))
+    if ts.tz is None:
+        # analysis_ts is TIMESTAMPTZ; a naive value means the reader changed.
+        raise ValueError(f"premarket_analysis.analysis_ts has no time zone: {ts!r}")
+    return {
+        "analysis_date": analysis_date,
+        "analysis_ts": ts.tz_convert("UTC").isoformat().replace("+00:00", "Z"),
+        "run_kind": row.get("run_kind"),
+    }
+
+
+def summarize_brief_row(ticker: str, as_of: Optional[date_type] = None) -> dict:
+    """The session's live premarket_analysis row, in one strict read.
+
+    The session is the as_of date on a replay and the ET date of execution on
+    a live run (`_session_date_for`). Returns {"available": True, <the 24
+    columns of BRIEF_VALUE_COLUMNS, each as stored>, "brief_ref": {...}}, or
+    exactly {"available": False, "reason": "brief_row_missing"} when the
+    session has no live row. A failed read raises: an outage is never a
+    missing row. A row whose level_basis is null is still a row.
+    """
+    session_date = _session_date_for(as_of)
+    df = _query_strict(BRIEF_ROW_SQL, {"ticker": ticker.upper(),
+                                       "d": session_date.isoformat()})
+    if df.empty:
+        return _unavailable(BRIEF_ROW_MISSING)
+    row = df.iloc[0]
+    out: dict[str, Any] = {"available": True}
+    for column in BRIEF_VALUE_COLUMNS:
+        out[column] = _brief_cell(column, row.get(column))
+    out["brief_ref"] = _brief_ref(row)
+    return out
+
+
 def _has_no_level_param_rows(level_params) -> bool:
     """True when the loader found no ticker_level_params row for the
     ticker in any basis: every per-ticker key is params_unavailable (a stored

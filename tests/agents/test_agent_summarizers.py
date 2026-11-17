@@ -1453,3 +1453,99 @@ def test_catalyst_earnings_retire_ew_before_order_and_limit(monkeypatch):
                 json.dumps(baseline[ticker], sort_keys=True).encode()
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# summarize_brief_row (FEAT-INSIGHT-001 D1)
+# ---------------------------------------------------------------------------
+
+
+_BRIEF_VALUE_KEYS = (
+    "price", "rsi", "sma200", "ema9", "ema20", "atr14", "bb_upper", "bb_lower",
+    "rvol", "volatility_20d", "vol_regime", "macd_cross", "above_sma200",
+    "strat_candle", "strat_combo", "strat_setup", "ftfc_score", "ftfc_direction",
+    "ftfc_labels", "tf_continuity", "tf_continuity_frames", "prev_day_high",
+    "prev_day_low", "level_basis",
+)
+
+
+class TestBriefRow:
+    """summarize_brief_row: one strict read of the session's live
+    premarket_analysis row, every value as stored, nothing coerced."""
+
+    @pytest.fixture
+    def recorder(self, monkeypatch):
+        from tests.agents import insight_2026_11_16 as fx
+
+        calls: list[tuple[str, dict]] = []
+        state = {"frame": fx.brief_row("IWM"), "raise": None}
+
+        def no_lenient_read(sql, params=None):
+            raise AssertionError(f"summarize_brief_row used the swallowing reader: {sql}")
+
+        def strict(sql, params=None):
+            calls.append((sql, dict(params or {})))
+            if state["raise"] is not None:
+                raise state["raise"]
+            return state["frame"]
+
+        monkeypatch.setattr(summarizers, "_query", no_lenient_read)
+        monkeypatch.setattr(summarizers, "_query_strict", strict)
+        return calls, state
+
+    def test_one_strict_read_of_the_live_row(self, recorder):
+        calls, _ = recorder
+        summarizers.summarize_brief_row("iwm", date(2026, 11, 16))
+        assert len(calls) == 1
+        sql, params = calls[0]
+        assert "premarket_analysis" in sql
+        assert "run_kind = 'live'" in sql
+        assert params == {"ticker": "IWM", "d": "2026-11-16"}
+
+    def test_returns_every_column_and_brief_ref(self, recorder):
+        import json
+
+        _, state = recorder
+        cell = state["frame"].iloc[0]
+        out = summarizers.summarize_brief_row("IWM", date(2026, 11, 16))
+        assert out["available"] is True
+        assert len(_BRIEF_VALUE_KEYS) == 24
+        for key in _BRIEF_VALUE_KEYS:
+            expected = cell[key]
+            if isinstance(expected, str) and key in ("ftfc_labels", "tf_continuity_frames",
+                                                     "level_basis"):
+                expected = json.loads(expected)
+            assert out[key] == expected, key
+        assert out["brief_ref"] == {
+            "analysis_date": "2026-11-16",
+            "analysis_ts": "2026-11-16T13:31:23.355460Z",
+            "run_kind": "live",
+        }
+        assert out["ftfc_labels"] == {"1d": "2D", "1w": "1", "1mo": "2U"}
+
+    def test_null_column_stays_null(self, recorder):
+        from tests.agents import insight_2026_11_16 as fx
+
+        _, state = recorder
+        state["frame"] = fx.brief_row("IWM", ftfc_score=float("nan"), atr14=float("nan"))
+        out = summarizers.summarize_brief_row("IWM", date(2026, 11, 16))
+        assert out["ftfc_score"] is None
+        assert out["atr14"] is None
+
+    def test_no_row_is_brief_row_missing(self, recorder):
+        _, state = recorder
+        state["frame"] = pd.DataFrame()
+        out = summarizers.summarize_brief_row("IWM", date(2026, 11, 16))
+        assert out == {"available": False, "reason": "brief_row_missing"}
+
+    def test_read_failure_raises(self, recorder):
+        _, state = recorder
+        state["raise"] = ConnectionError("connection refused")
+        with pytest.raises(ConnectionError, match="connection refused"):
+            summarizers.summarize_brief_row("IWM", date(2026, 11, 16))
+
+    def test_live_run_uses_the_eastern_session_date(self, recorder, monkeypatch):
+        calls, _ = recorder
+        monkeypatch.setattr(summarizers, "_session_date_for", lambda as_of: date(2026, 11, 16))
+        summarizers.summarize_brief_row("IWM")
+        assert calls[0][1]["d"] == "2026-11-16"
