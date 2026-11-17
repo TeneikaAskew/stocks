@@ -372,3 +372,146 @@ def test_newest_premarket_bar(index, newest):
         assert got is None
     else:
         assert got.strftime('%Y-%m-%d %H:%M:%S') == newest
+
+
+# ──────────────────────────────────────────────────────────────────────
+# The premarket bars as read (FEAT-DATA-001,
+# docs/superpowers/specs/2026-11-16-feat-data-001-premarket-reads-as-read.md)
+# ──────────────────────────────────────────────────────────────────────
+
+AS_READ_SESSION = date(2026, 11, 16)
+
+
+def _as_read_fetched_at():
+    from datetime import datetime, timezone
+    return datetime(2026, 11, 16, 13, 20, 1, 123456, tzinfo=timezone.utc)
+
+
+def _r1_bars(ticker: str = 'SPY') -> pd.DataFrame:
+    """The spec's four bars (Design 2) as fetch_minute_data returns them."""
+    df = pd.DataFrame(
+        {'Open': [752.5, 752.4, 752.3, 752.2], 'High': [752.6, 752.5, 752.4, 752.3],
+         'Low': [752.4, 752.3, 752.02, 752.1], 'Close': [752.5, 752.4, 752.3, 752.2],
+         'Volume': pd.Series([500, 300, 968, 10], dtype='int64').to_numpy()},
+        index=pd.DatetimeIndex(['2026-11-16 04:00:00', '2026-11-16 04:01:00',
+                                '2026-11-16 04:02:00', '2026-11-16 04:03:00'], name='timestamp'))
+    df['ticker'] = ticker
+    return df
+
+
+def _as_reads(tickers=('SPY', 'QQQ', 'IWM'), fetched_at=None) -> dict:
+    from gcp.fetchers.fetch_market_data import minute_bars_request
+    from gcp.fetchers.premarket_as_read import AsRead
+    at = fetched_at or _as_read_fetched_at()
+    return {t: AsRead(_r1_bars(t), at, minute_bars_request(t, '2026-11')) for t in tickers}
+
+
+def _as_read_name(ticker: str, fetched_at=None) -> str:
+    from gcp.fetchers.premarket_as_read import object_name
+    return object_name(ticker, AS_READ_SESSION, fetched_at or _as_read_fetched_at())
+
+
+def _errors(caplog) -> list[str]:
+    import logging
+    return [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+
+
+def test_the_record_step_is_bounded(caplog):
+    """R5: each write is one attempt (retry None) given what is left of the
+    deadline as its timeout, and once the deadline has passed the remaining
+    tickers fail with reason deadline and no write is attempted."""
+    import logging
+
+    from gcp.fetchers import premarket_as_read as par
+    from tests.fixtures.intraday_bars_bucket import MemoryBucket
+
+    ticks = iter([0.0, 1.0, 4.0, 11.0])     # start, then before SPY, QQQ, IWM
+    bucket = MemoryBucket()
+    with caplog.at_level(logging.INFO):
+        written, failed = par.write_records(lambda: bucket, AS_READ_SESSION, _as_reads(),
+                                            {'SPY': None, 'QQQ': None, 'IWM': None},
+                                            clock=lambda: next(ticks), env={})
+    assert list(ticks) == []                # the clock was read four times, no more
+    assert par.AS_READ_DEADLINE_S == 10
+    assert bucket.timeouts == [9.0, 6.0]
+    assert bucket.retries == [None, None]
+    assert written == [_as_read_name('SPY'), _as_read_name('QQQ')]
+    assert failed == [('IWM', 'deadline')]
+    assert not any('/IWM/' in name for name in bucket.writes)
+    assert _errors(caplog) == ['as_read_failed ticker=IWM reason=deadline']
+
+
+def test_two_runs_on_one_date_keep_both_objects():
+    """The 08:20 and the 09:20 reads of one date are two objects; the second
+    never overwrites the first."""
+    from datetime import timedelta
+
+    from gcp.fetchers import premarket_as_read as par
+    from tests.fixtures.intraday_bars_bucket import MemoryBucket
+
+    bucket = MemoryBucket()
+    first = _as_read_fetched_at()
+    second = first + timedelta(hours=1)
+    env = {'CLOUD_RUN_EXECUTION': 'fetch-premarket-refresh-x1', 'CLOUD_RUN_TASK_ATTEMPT': '0'}
+    for at in (first, second):
+        written, failed = par.write_records(lambda: bucket, AS_READ_SESSION,
+                                            _as_reads(('SPY',), at), {'SPY': None}, env=env)
+        assert (written, failed) == ([_as_read_name('SPY', at)], [])
+    assert set(bucket.objects) == {_as_read_name('SPY', first), _as_read_name('SPY', second)}
+    headers = [par.read_record(bucket.objects[_as_read_name('SPY', at)])[0]
+               for at in (first, second)]
+    assert [h['fetched_at'] for h in headers] == [first.isoformat(), second.isoformat()]
+    assert {(h['execution'], h['task_attempt']) for h in headers} == {
+        ('fetch-premarket-refresh-x1', '0')}
+
+
+def test_write_records_counts_each_failure(caplog):
+    """R4, the bucket half: a raising write, an object already present and a
+    bucket that cannot be built each fail their tickers with the error, the
+    other tickers are still written, and every write is create-only."""
+    import logging
+
+    from gcp.fetchers import premarket_as_read as par
+    from tests.fixtures.intraday_bars_bucket import MemoryBucket
+
+    snapshots = {'SPY': None, 'QQQ': None, 'IWM': None}
+
+    # a write that raises
+    bucket = MemoryBucket()
+    bucket.fail_write = lambda name: OSError('boom') if '/QQQ/' in name else None
+    with caplog.at_level(logging.INFO):
+        written, failed = par.write_records(lambda: bucket, AS_READ_SESSION, _as_reads(),
+                                            snapshots, clock=lambda: 0.0, env={})
+    assert written == [_as_read_name('SPY'), _as_read_name('IWM')]
+    assert failed == [('QQQ', 'OSError: boom')]
+    assert _errors(caplog) == ['as_read_failed ticker=QQQ reason=OSError: boom']
+    assert {p for _, p in bucket.preconditions} == {0}
+
+    # an object already at SPY's name: never overwritten
+    caplog.clear()
+    bucket = MemoryBucket()
+    bucket.put(_as_read_name('SPY'), b'earlier')
+    with caplog.at_level(logging.INFO):
+        written, failed = par.write_records(lambda: bucket, AS_READ_SESSION, _as_reads(),
+                                            snapshots, clock=lambda: 0.0, env={})
+    assert written == [_as_read_name('QQQ'), _as_read_name('IWM')]
+    ((ticker, reason),) = failed
+    assert ticker == 'SPY' and reason.startswith('GenerationMismatch: ')
+    assert bucket.objects[_as_read_name('SPY')] == b'earlier'
+    assert {p for _, p in bucket.preconditions} == {0}
+    assert _errors(caplog) == [f'as_read_failed ticker=SPY reason={reason}']
+
+    # no bucket to write to
+    caplog.clear()
+
+    def no_bucket():
+        raise RuntimeError('GCS_BUCKET is not set: the bar export has no bucket to write to')
+
+    with caplog.at_level(logging.INFO):
+        written, failed = par.write_records(no_bucket, AS_READ_SESSION, _as_reads(),
+                                            snapshots, clock=lambda: 0.0, env={})
+    reason = 'RuntimeError: GCS_BUCKET is not set: the bar export has no bucket to write to'
+    assert written == []
+    assert failed == [('SPY', reason), ('QQQ', reason), ('IWM', reason)]
+    assert _errors(caplog) == [f'as_read_failed ticker={t} reason={reason}'
+                               for t in ('SPY', 'QQQ', 'IWM')]

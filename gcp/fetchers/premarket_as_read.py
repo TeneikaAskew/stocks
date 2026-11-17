@@ -21,12 +21,17 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import logging
+import os
+import time
 from datetime import date, datetime
-from typing import Optional, Sequence
+from typing import Any, Callable, Mapping, NamedTuple, Optional, Sequence
 
 import pandas as pd
 
 from lib.eastern_time import as_utc_instant, require_aware
+
+log = logging.getLogger(__name__)
 
 PREFIX = 'premarket-as-read/v1'
 RECORD_VERSION = 1
@@ -184,3 +189,85 @@ def read_record(data: bytes) -> tuple[dict, pd.DataFrame]:
         'volume': pd.Series([int(row[5]) for row in rows], dtype='int64'),
     })
     return header, bars
+
+
+class AsRead(NamedTuple):
+    """One run's read of one ticker: the frame fetch_minute_data returned,
+    the instant it was fetched (the job's ``pre_fetched_at``) and the request
+    it sent, without the key (``fetch_market_data.minute_bars_request``)."""
+    bars: pd.DataFrame
+    fetched_at: datetime
+    vendor_params: dict
+
+
+def _ordered(tickers) -> list[str]:
+    rank = {ticker: i for i, ticker in enumerate(AS_READ_TICKERS)}
+    return sorted(tickers, key=lambda t: (rank.get(t, len(rank)), t))
+
+
+def write_records(bucket_factory: Callable[[], Any], session_date: date,
+                  reads: dict[str, AsRead], snapshots: dict[str, Optional[dict]], *,
+                  clock: Optional[Callable[[], float]] = None,
+                  deadline_s: float = AS_READ_DEADLINE_S,
+                  env: Mapping[str, str] = os.environ
+                  ) -> tuple[list[str], list[tuple[str, str]]]:
+    """Write one record per read, each once, within one deadline (spec
+    Design 3). Returns the object names written and the ``(ticker, reason)``
+    failures; the caller exits non-zero when there is a failure (R4).
+
+    The clock (``time.monotonic`` when None, looked up per call) is read once
+    before the bucket is built and once before each ticker's write. Each
+    write is one attempt: ``retry=None`` and a ``timeout`` of what is left of
+    *deadline_s*, so a transient error is a failed record and the step cannot
+    run past its deadline. A ticker reached with nothing left fails with
+    reason ``deadline`` and is not written. A write that raises (an object
+    already at the name included: ``if_generation_match=0``, never
+    overwritten) fails that ticker and the next one continues; a bucket that
+    cannot be built fails every ticker.
+    """
+    now = clock if clock is not None else time.monotonic
+    execution = env.get('CLOUD_RUN_EXECUTION')
+    task_attempt = env.get('CLOUD_RUN_TASK_ATTEMPT')
+    tickers = _ordered(reads)
+    written: list[str] = []
+    failed: list[tuple[str, str]] = []
+
+    def fail(ticker: str, reason: str) -> None:
+        failed.append((ticker, reason))
+        log.error('as_read_failed ticker=%s reason=%s', ticker, reason)
+
+    start = now()
+    try:
+        bucket = bucket_factory()
+    except Exception as exc:  # noqa: BLE001 every record fails, by name, and the run exits 1
+        for ticker in tickers:
+            fail(ticker, f'{type(exc).__name__}: {exc}')
+        return written, failed
+
+    for ticker in tickers:
+        read = reads[ticker]
+        try:
+            name = object_name(ticker, session_date, read.fetched_at)
+            record = _record(ticker=ticker, session_date=session_date,
+                             fetched_at=read.fetched_at, bars=read.bars,
+                             vendor_params=read.vendor_params, snapshot=snapshots.get(ticker),
+                             execution=execution, task_attempt=task_attempt)
+            data = _encode(record)
+        except Exception as exc:  # noqa: BLE001 a record that cannot be built is a failed record
+            fail(ticker, f'{type(exc).__name__}: {exc}')
+            continue
+        left = deadline_s - (now() - start)
+        if left <= 0:
+            fail(ticker, 'deadline')
+            continue
+        try:
+            bucket.write(name, data, if_generation_match=0, timeout=left, retry=None)
+        except Exception as exc:  # noqa: BLE001 counted, logged and exits 1 (R4)
+            fail(ticker, f'{type(exc).__name__}: {exc}')
+            continue
+        written.append(name)
+        log.info('as_read_written object=%s bar_count=%d newest_bar=%s bars_sha256=%s',
+                 name, record['bar_count'], record['newest_bar'], record['bars_sha256'])
+    log.info('as_read_records written=%d failed=%d session=%s',
+             len(written), len(failed), session_date.isoformat())
+    return written, failed

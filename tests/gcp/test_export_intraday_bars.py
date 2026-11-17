@@ -436,6 +436,17 @@ def test_gcs_bucket_generation_tells_absent_from_a_failed_read(gcs):
         bucket.generation("x/2025-05.parquet")
 
 
+def test_gcs_bucket_write_passes_timeout_and_retry_only_when_given(gcs):
+    """The export's writes keep the library's own timeout and retry; the
+    premarket as-read record (FEAT-DATA-001, Design 3) passes both, and
+    retry=None (no retry) reaches the upload as None."""
+    bucket = xb.GcsBucket("b")
+    bucket.write("x", b"{}", if_generation_match=0)
+    assert gcs["uploads"][-1][2] == {"if_generation_match": 0}
+    bucket.write("x", b"{}", if_generation_match=0, timeout=3.0, retry=None)
+    assert gcs["uploads"][-1][2] == {"if_generation_match": 0, "timeout": 3.0, "retry": None}
+
+
 # -- Task 3: the manifest entry -------------------------------------------------
 
 ENTRY_KEYS = {"file", "rows", "stored_rows", "dropped_rows", "inferred_rows",
