@@ -62,8 +62,8 @@ def test_fetch_vix_parses_and_upserts(monkeypatch):
     assert list(df["ticker"].unique()) == ["^VIX"]
     assert set(df["date"]) == {"2026-06-17", "2026-06-18"}
     assert df.iloc[-1]["close"] == 18.7
-    # index has no splits/dividends → adjusted_close == close (legitimate, not a fabricated fill)
-    assert (df["adjusted_close"] == df["close"]).all()
+    # As traded only: no adjusted column is written (FEAT-DATA-001).
+    assert "adjusted_close" not in df.columns
     assert (df["data_source"] == "yahoo").all()
 
 
