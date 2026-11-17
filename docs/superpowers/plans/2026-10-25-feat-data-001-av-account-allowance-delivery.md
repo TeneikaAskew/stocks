@@ -3,7 +3,7 @@ feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-10-25-feat-data-001-av-account-allowance-source-proof.md
 branch: fix/feat-data-001-av-account-allowance-delivery
 pr: 1606
-status: ready
+status: done
 ---
 
 # Account allowance and local pacing implementation plan

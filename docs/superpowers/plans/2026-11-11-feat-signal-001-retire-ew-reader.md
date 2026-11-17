@@ -3,7 +3,7 @@ feat_id: FEAT-SIGNAL-001
 spec: docs/superpowers/specs/2026-10-31-feat-signal-001-retire-ew-reader.md
 branch: fix/feat-signal-001-retire-ew-reader
 pr: 1801
-status: ready
+status: done
 ---
 
 # Retire EW signal readers implementation plan
