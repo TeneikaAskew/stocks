@@ -82,6 +82,27 @@ def av_listed_symbol(ticker: str) -> str:
     return AV_SYMBOL_MAP.get(ticker, ticker).replace('.', '-')
 
 
+def minute_bars_request(av_symbol: str, month: str) -> dict:
+    """The TIME_SERIES_INTRADAY request fetch_minute_bars sends for
+    *av_symbol* and *month* (``YYYY-MM``), without the API key, which the
+    caller adds. The premarket as-read record stores this same dict, so the
+    record and the request cannot drift (FEAT-DATA-001)."""
+    return {
+        'function': 'TIME_SERIES_INTRADAY',
+        'symbol': av_symbol,
+        'interval': '1min',
+        'month': month,
+        'outputsize': 'full',
+        'adjusted': 'false',  # as traded, always: the table and every reader are as traded (#1151)
+        # Required to get current-day bars. Without it AV returns
+        # historical-only — `month=2026-04` with default entitlement
+        # gave 0 bars for 2026-04-30 even mid-session.
+        'entitlement': 'realtime',
+        'extended_hours': 'true',
+        'datatype': 'json',
+    }
+
+
 def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
                       adjusted: bool = False) -> tuple[pd.DataFrame, str]:
     """1-minute OHLCV bars from AlphaVantage TIME_SERIES_INTRADAY, with why
@@ -102,21 +123,7 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
 
     # AV TIME_SERIES_INTRADAY uses month=YYYY-MM
     month = fetch_date[:7]  # "2026-02-24" → "2026-02"
-    params = {
-        'function': 'TIME_SERIES_INTRADAY',
-        'symbol': av_symbol,
-        'interval': '1min',
-        'month': month,
-        'outputsize': 'full',
-        'adjusted': 'false',  # as traded, always: the table and every reader are as traded (#1151)
-        # Required to get current-day bars. Without it AV returns
-        # historical-only — `month=2026-04` with default entitlement
-        # gave 0 bars for 2026-04-30 even mid-session.
-        'entitlement': 'realtime',
-        'extended_hours': 'true',
-        'apikey': api_key,
-        'datatype': 'json',
-    }
+    params = {**minute_bars_request(av_symbol, month), 'apikey': api_key}
     try:
         resp = requests.get(AV_BASE_URL, params=params, timeout=60)
         resp.raise_for_status()
