@@ -895,3 +895,79 @@ def test_published_prices_include_the_kept_rungs():
     level_cents = {price_cents(lv.price) for lv in sl.levels}
     dropped_off_level = {r["cents"] for r in sl.atr_rungs_dropped} - level_cents
     assert dropped_off_level and not (dropped_off_level & known)
+
+
+# ── ATR marks spec (2026-11-16), Design 6: the version of a fresh build ──
+#
+# A fresh build records the level rule's version only when the marks row in
+# force is ok with an empty list; a non-empty list, or a row that is missing
+# or not ok, records the marks version, and the mark walk publishes no target
+# with the row's status (no fallback to the level walk, CLAUDE.md 3.7).
+
+MARKS_V6 = "feat-strat-001.v6"
+QUARTERS = '{"marks": [0.25, 0.5, 0.75, 1.0]}'
+
+
+def _fresh_qqq(db, session=SESSION):
+    """QQQ's committed 2026-11-06 inputs built fresh by build_session_levels
+    with the parameters `db` holds in force on `session`."""
+    from datetime import timedelta
+
+    from lib.strat_levels import build_session_levels
+    through = session - timedelta(days=1)
+    daily = fx.daily("QQQ", through=through)
+    pm = fx.session_premarket("QQQ") if session == SESSION else None
+    return build_session_levels("QQQ", session, daily, {"atr_14": fx.prior_atr("QQQ")}, pm,
+                                db.load(["QQQ"], session)["QQQ"])
+
+
+def _qqq_db():
+    from tests.lib.level_params_fixtures import legacy_db
+    return legacy_db(["QQQ"], effective_from=date(2015, 1, 2))
+
+
+def test_fresh_build_version_follows_the_marks_row():
+    seeded = _fresh_qqq(_qqq_db())
+    assert seeded.rule_version == LEVEL_RULE_VERSION == "feat-strat-001.v5"
+    assert seeded.long.targets and seeded.long.target_status == "ok"
+
+    db = _qqq_db()
+    db.set_policy("plan_target_marks_atr", effective_from=SESSION, extra=QUARTERS)
+    db.set_policy("exit_legs", effective_from=SESSION, extra='{"legs": 4}')
+    assert _fresh_qqq(db).rule_version == MARKS_V6
+
+    db = _qqq_db()
+    db.set_policy("plan_target_marks_atr", effective_from=SESSION, extra='{"marks": "x"}')
+    bad = _fresh_qqq(db)
+    assert bad.rule_version == MARKS_V6
+    for side in (bad.long, bad.short):
+        assert side.trigger is not None
+        assert side.targets == [] and side.target_status == "input_unavailable"
+
+    db = _qqq_db()
+    db.conn.execute("DELETE FROM level_param_policy WHERE param_key = 'plan_target_marks_atr'")
+    db.conn.commit()
+    gone = _fresh_qqq(db)
+    assert gone.rule_version == MARKS_V6
+    for side in (gone.long, gone.short):
+        assert side.trigger is not None
+        assert side.targets == [] and side.target_status == "params_unavailable"
+
+
+def test_a_session_before_the_swap_replays_under_the_level_rule():
+    """Review Focus 1: with the seeded rows and the swap rows dated on a
+    later session in one policy table, a build for a session before the swap
+    records the level rule's version and today's targets, and a build on the
+    swap date records the marks version."""
+    from datetime import timedelta
+
+    before = SESSION - timedelta(days=1)
+    plain = _fresh_qqq(_qqq_db(), session=before)
+    db = _qqq_db()
+    db.set_policy("plan_target_marks_atr", effective_from=SESSION, extra=QUARTERS)
+    db.set_policy("exit_legs", effective_from=SESSION, extra='{"legs": 4}')
+    old = _fresh_qqq(db, session=before)
+    assert old.rule_version == LEVEL_RULE_VERSION
+    assert _exit_picks(old) == _exit_picks(plain)
+    assert old.long.targets and old.long.plan.get("rule") is None
+    assert _fresh_qqq(db, session=SESSION).rule_version == MARKS_V6

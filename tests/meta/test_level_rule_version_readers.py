@@ -12,11 +12,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SCANNED = ('lib', 'gcp', 'platform')
-WATCHED = {'LEVEL_RULE_VERSION', 'LEVEL_RULE_V3', 'LEVEL_RULE_V4', 'PICK_RULE_VERSIONS'}
+WATCHED = {'LEVEL_RULE_VERSION', 'LEVEL_RULE_V3', 'LEVEL_RULE_V4', 'PICK_RULE_VERSIONS',
+           'LEVEL_RULE_MARKS', 'LEVEL_PICK_RULE_VERSIONS'}
 
 # (file, enclosing function) -> why the site may hold the name.
 ALLOWED = {
     ('lib/strat_levels.py', 'is_current_pick_rule'): 'the helper, through PICK_RULE_VERSIONS',
+    ('lib/strat_levels.py', 'plan_target_rule'): ('the ATR marks spec\'s helper: which rule picks '
+                                                  'the targets of a version'),
     ('lib/movement_statement.py', '_fetch_reach_rates'): 'the reach population binds one version',
     ('lib/movement_statement.py', '_reach_rate_sql'): 'the reach population filters on one version',
 }
@@ -116,8 +119,9 @@ _LEGACY_CHECK = ("U9: a legacy check against LEVEL_RULE_V2 that keeps a v2 basis
 # (file, enclosing function) -> why it may compare a level rule version.
 LEVEL_RULE_COMPARISONS = {
     ('lib/strat_levels.py', 'is_current_pick_rule'): 'the helper, through PICK_RULE_VERSIONS',
+    ('lib/strat_levels.py', 'plan_target_rule'): ('the ATR marks spec\'s helper: which rule picks '
+                                                  'the targets of a version'),
     ('lib/strat_levels.py', '_assemble'): _LEGACY_CHECK,
-    ('lib/strat_levels.py', '_pick_side'): _LEGACY_CHECK,
     ('gcp/premarket_playbook_resolver.py', 'plan_inputs'): _LEGACY_CHECK,
 }
 
@@ -197,3 +201,22 @@ def test_no_other_site_compares_a_level_rule_version():
     assert seen == set(LEVEL_RULE_COMPARISONS)
     assert ('lib/strat_levels.py', 'rule_version_status') not in seen
     assert ('lib/strat_levels.py', 'newest_pick_rule_version') not in seen
+
+
+# ── ATR marks spec (2026-11-16), Design 6: which rule picks the targets ──
+
+def test_plan_target_rule():
+    from lib.strat_levels import plan_target_rule
+    assert plan_target_rule('feat-strat-001.v2') == 'v2'
+    for v in ('feat-strat-001.v3', 'feat-strat-001.v4', 'feat-strat-001.v5'):
+        assert plan_target_rule(v) == 'levels', v
+    assert plan_target_rule('feat-strat-001.v6') == 'atr_marks'
+    for v in ('feat-strat-001.v1', None, 6):
+        assert plan_target_rule(v) is None, repr(v)
+
+
+def test_marks_version_is_a_pick_rule():
+    from lib.strat_levels import LEVEL_RULE_VERSION, is_current_pick_rule
+    assert is_current_pick_rule('feat-strat-001.v6')
+    # The level rule's version on the merge base (f3b2344c4) does not move.
+    assert LEVEL_RULE_VERSION == 'feat-strat-001.v5'

@@ -1587,18 +1587,60 @@ def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]
 # prior close inside a bar that traded elsewhere no longer sets the premarket
 # high or low (rule prior-close-print-v1), so v5 marks those extremes and v4
 # marks the ones before it.
+# v6 (2026-11-16 ATR mark targets, spec r2): the trigger, the stop and the
+# gate targets are the level rule's; the plan targets sit at the trigger plus
+# (calls) or minus (puts) each mark of the plan_target_marks_atr row x ATR,
+# and the session's levels are printed between them as waypoints. A fresh
+# build records it unless the marks row in force is ok with an empty list
+# (build_rule_version); a stored v6 basis is rebuilt from the marks it
+# recorded. v3, v4 and v5 are the level rule's versions.
 LEVEL_RULE_V2 = 'feat-strat-001.v2'
 LEVEL_RULE_V3 = 'feat-strat-001.v3'
 LEVEL_RULE_V4 = 'feat-strat-001.v4'
 LEVEL_RULE_VERSION = 'feat-strat-001.v5'
-PICK_RULE_VERSIONS = (LEVEL_RULE_V3, LEVEL_RULE_V4, LEVEL_RULE_VERSION)
+LEVEL_RULE_MARKS = 'feat-strat-001.v6'
+LEVEL_PICK_RULE_VERSIONS = (LEVEL_RULE_V3, LEVEL_RULE_V4, LEVEL_RULE_VERSION)
+PICK_RULE_VERSIONS = LEVEL_PICK_RULE_VERSIONS + (LEVEL_RULE_MARKS,)
+
+# Which rule picks a side's plan targets (plan_target_rule): the v2 rule's
+# three gate targets, the level rule's spaced walk, or the ATR marks.
+TARGET_RULE_V2 = 'v2'
+TARGET_RULE_LEVELS = 'levels'
+TARGET_RULE_ATR_MARKS = 'atr_marks'
 
 
 def is_current_pick_rule(version) -> bool:
-    """True when `version` names a rule that picks as the current one does
-    (v3, v4 or v5). Every reader that asks "is this basis under the pick rule"
-    asks here; only the reach-rate population filters on one exact version."""
+    """True when `version` names a rule that picks its trigger, stop and gate
+    targets as the current one does and carries its own plan, cleared mark
+    and version (v3 to v6). Every reader that asks "is this basis under the
+    pick rule" asks here; only the reach-rate population filters on one exact
+    version, and plan_target_rule says which rule picks the plan targets."""
     return isinstance(version, str) and version in PICK_RULE_VERSIONS
+
+
+def plan_target_rule(version) -> Optional[str]:
+    """Which rule picks the plan targets of a basis of `version`:
+    TARGET_RULE_V2 for v2, TARGET_RULE_LEVELS for a level-rule version,
+    TARGET_RULE_ATR_MARKS for the marks version, None for anything else
+    (a value that is not a str included)."""
+    if not isinstance(version, str):
+        return None
+    if version == LEVEL_RULE_V2:
+        return TARGET_RULE_V2
+    if version in LEVEL_PICK_RULE_VERSIONS:
+        return TARGET_RULE_LEVELS
+    if version == LEVEL_RULE_MARKS:
+        return TARGET_RULE_ATR_MARKS
+    return None
+
+
+def build_rule_version(params: 'LevelParams') -> str:
+    """The version a fresh build records: the level rule's when the marks
+    row in force is ok with an empty list, else the marks version. A marks
+    row that is missing or not ok never falls back to the level rule: the
+    mark walk then publishes no target with the row's status (CLAUDE.md 3.7)."""
+    marks = params.param(PLAN_TARGET_MARKS_KEY)
+    return LEVEL_RULE_VERSION if marks.ok and marks.value == 0 else LEVEL_RULE_MARKS
 
 
 # What a reader makes of a stored level_basis.rule_version (FEAT-STRAT-001,
@@ -2515,6 +2557,7 @@ def build_session_levels(
     base = SessionLevels(ticker=ticker, session_date=session_date, atr=atr_v,
                          atr_14=atrs['atr_14'], atr_5=atrs['atr_5'],
                          atr_basis=params.atr_basis, params=params,
+                         rule_version=build_rule_version(params),
                          built_at=pd.Timestamp.now(ET_NAME).isoformat(),
                          strat_class=daily_strat_class or '')
     df = _normalize_daily(daily_df)
@@ -2952,9 +2995,12 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
     out.regime = 'normal'
     out.reason = None
     out.gate_targets = [_rung(c, ref) for c in rungs[1:4]]
-    if rule_version == LEVEL_RULE_V2:
+    target_rule = plan_target_rule(rule_version)
+    if target_rule == TARGET_RULE_V2:
         out.targets = list(out.gate_targets)
-    else:
+    elif target_rule == TARGET_RULE_ATR_MARKS:
+        _plan_mark_targets(out, trig, ref, atr, params, prior_close)
+    elif target_rule == TARGET_RULE_LEVELS:
         extra = None
         if plan_extra is not None:
             tc = trig['cents']
@@ -2962,6 +3008,8 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
                      if (g['cents'] > tc if side == 'long' else g['cents'] < tc)
                      and _within_staleness_window(g['price'], ref, atr, window)]
         _plan_targets(out, rungs, ref, atr, params, prior_close, extra=extra)
+    else:
+        raise LevelRuleVersionUnknown(rule_version_status(rule_version), rule_version)
     stop = next((c for c in other if _within_staleness_window(c['price'], ref, atr, stop_window)), None)
     out.stop = _rung(stop, ref) if stop else None
     out.ladder = [_ladder_entry(c, ref) for c in rungs[:2]]
@@ -3040,6 +3088,37 @@ def _plan_targets(out: SideLevels, rungs: list, ref: float, atr: float,
         out.targets.append(r)
     out.skipped = skipped
     out.target_status = PARAM_OK
+
+
+def _plan_mark_targets(out: SideLevels, trig: dict, ref: float, atr: float,
+                       params: LevelParams, prior_close: Optional[float]) -> None:
+    """Design 2 of the ATR marks spec: the side's plan targets at the
+    trigger plus (calls) or minus (puts) each mark of the marks row x ATR.
+    The marks row, the leg count and the entry cutoff are checked first, in
+    that order; the first that is not ok publishes no target and records its
+    status. There is no fallback to the level walk (CLAUDE.md 3.7)."""
+    missing = params.first_not_ok((PLAN_TARGET_MARKS_KEY, EXIT_LEGS_KEY, ENTRY_CUTOFF_KEY))
+    cutoff = params.param(ENTRY_CUTOFF_KEY)
+    flag = params.param(GAP_FILL_FLAG_KEY)
+    marks = params.plan_target_marks()
+    out.plan = {
+        'rule': TARGET_RULE_ATR_MARKS,
+        'marks': list(marks) if marks is not None else [],
+        'mark_prices': [],
+        'atr': atr,
+        'atr_basis': params.atr_basis,
+        'legs': int(params.value(EXIT_LEGS_KEY)) if params.ok(EXIT_LEGS_KEY) else None,
+        'entry_cutoff_et': (cutoff.extra or {}).get('time_et') if cutoff.ok else None,
+        'entry_cutoff_status': cutoff.status,
+        'gap_fill_flag_atr': flag.value if flag.ok else None,
+        'gap_fill_flag_status': flag.status,
+    }
+    out.targets = []
+    out.skipped = []
+    if missing is not None:
+        out.target_status = missing.status
+        return
+    out.target_status = 'input_unavailable'
 
 
 def _legacy_trigger_dict(s: SideLevels) -> Optional[dict]:

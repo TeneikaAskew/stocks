@@ -1941,11 +1941,14 @@ def test_is_current_pick_rule():
         is_current_pick_rule,
     )
     assert LEVEL_RULE_V3 == V3 and LEVEL_RULE_V4 == 'feat-strat-001.v4'
-    assert PICK_RULE_VERSIONS == (V3, 'feat-strat-001.v4', 'feat-strat-001.v5')
+    # v6 is the ATR marks version (2026-11-16 spec r2): the same trigger,
+    # stop and gate targets, its own plan targets (plan_target_rule).
+    assert PICK_RULE_VERSIONS == (V3, 'feat-strat-001.v4', 'feat-strat-001.v5', 'feat-strat-001.v6')
     assert is_current_pick_rule(V3) and is_current_pick_rule(LEVEL_RULE_VERSION)
     assert is_current_pick_rule('feat-strat-001.v4') and is_current_pick_rule('feat-strat-001.v5')
+    assert is_current_pick_rule('feat-strat-001.v6')
     # A version this code has never seen is not the pick rule.
-    assert is_current_pick_rule('feat-strat-001.v6') is False
+    assert is_current_pick_rule('feat-strat-001.v7') is False
     assert is_current_pick_rule(None) is False
     assert is_current_pick_rule('feat-strat-001.v1') is False
     assert is_current_pick_rule('feat-strat-001.v2') is False
@@ -1964,8 +1967,8 @@ def test_rule_version_status():
         assert rule_version_status(v) == 'legacy', v
     for v in PICK_RULE_VERSIONS:
         assert rule_version_status(v) == 'known', v
-    # v5 is known from the prior-close change on, so the newer versions start at v6.
-    assert newer_rule_versions() == ('feat-strat-001.v6', 'feat-strat-001.v7', 'feat-strat-001.v99')
+    # v6 is known from the ATR marks change on, so the newer versions start at v7.
+    assert newer_rule_versions() == ('feat-strat-001.v7', 'feat-strat-001.v8', 'feat-strat-001.v99')
     for v in newer_rule_versions():
         assert rule_version_status(v) == 'rule_version_newer', v
     for v in ('', 'feat-strat-001.v0', 'feat-strat-001.v05', 'feat-strat-001.vX',
