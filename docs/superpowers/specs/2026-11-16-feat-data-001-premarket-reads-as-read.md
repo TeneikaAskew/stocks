@@ -14,7 +14,7 @@ done_when:
   - "R7 the comparison tool: tests/gcp/test_premarket_as_read.py::test_compare_counts_differing_bars passes on the four as-read bars of R1 and five stored bars written in the test (Design 5): compare_bars returns as_read_bars 4, stored_bars 4, matched 3, only_as_read 1, only_stored 1, differing 2, differ_open 0, differ_high 0, differ_low 1, differ_close 1, differ_volume 1; ::test_compare_cli_is_read_only passes: python -m gcp.fetchers.premarket_as_read compare --as-read <file> --stored-csv <file> prints those counts as one JSON line, exits 2 on a record whose sha256 does not match, and the module imports neither gcp.database nor requests"
   - "R8 size: tests/gcp/test_premarket_as_read.py::test_object_size_is_bounded passes: a record of 330 bars with four-decimal prices is under 16,384 bytes"
   - "R9 close: make test passes on the PR head; the PR body's Capacity section gives the measured object size and the added writes per run; the FEAT-DATA-001 catalog record and the PR traceability entry are updated; the (FEAT-DATA-001, DASHBOARD-01) implementation-source note carries the source identity that scripts/maintenance/doc_source_snapshot.py produce and verify prove on the committed head; python3 scripts/maintenance/docs_audit.py on the branch reports nothing origin/main does not; python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -80,6 +80,8 @@ What that means for the brief:
 - The nightly fetcher and the history fetch are not recorded: their reads are what is stored.
 
 ## Decisions for the owner (recommended pick first)
+
+Owner, 2026-11-17: approved with every decision below taking its recommended pick (the first option listed).
 
 1. **Where the record lives.** Recommended: the existing bucket (`GCS_BUCKET`, already in the job's
    environment: `gcp/deploy.sh:1127` and `:2843`, read), one gzip object a ticker a run under a dated
