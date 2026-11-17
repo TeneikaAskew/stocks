@@ -36,11 +36,11 @@ Rules the owner set for this work. They are not optional:
 | PR | What | State | Next action |
 |---|---|---|---|
 | #2010 | Brief build (FEAT-PLAYBOOK-001) | Ready, auto-merge on. All 13 tasks pushed, head 1d92570d2 (main merged in at 4c49671aa, no conflict). Full body with all 17 boxes ticked posted 2026-11-17 00:10Z; gate re-ran on it. Codex's code review of 1d92570d2 raised one P2 (the from-bars dry run reads the daily row's `pre_filter_params`, not the brief's frozen copy): below the P1 threshold, replied, resolved, tracked in issue #2024. | Wait for CI and the merge. After merge: the owner's steps in the body. Issue #2024 is a later small fix. See 3.1. |
-| #2001 | Bad-print flags build (FEAT-DATA-001) | Ready since 2026-11-17 00:05Z, auto-merge OFF on purpose. Head 7b578659e, CI green, every box ticked with run links. Codex code and security reviews started 00:05Z. | Record both first reviews, fix findings in place. Merge needs the owner's yes (it changes `gcp/schema.sql`). See 3.2. |
+| #2001 | Bad-print flags build (FEAT-DATA-001) | Ready, auto-merge OFF on purpose. Head 7b578659e, CI green, every box ticked with run links. First Codex code and security reviews recorded, no findings; no open threads. | Waits only on the owner's "merge 2001" (it changes `gcp/schema.sql`). After merge: the owner's steps in the body. See 3.2. |
 | #2020 | 09:20 schedule build (FEAT-DEPLOY-001) | Ready, auto-merge on. Head d843cc6c7, body complete with every box ticked. First code and security reviews recorded, no findings. `registry` failed once on a sub-second timing test in the gate suite the PR does not touch; explained on the PR and re-run once (a second failure counts as real). | Wait for the re-run and the merge. If main moves first, the site-source snapshot may go stale: merge main, re-run produce and verify, push. After merge: the owner's three deploys. See 3.3. |
 | #2019 | Targets spec r2 (FEAT-STRAT-001) | Merged (f8f6c6996). | Done. |
 | #2018 | Targets plan | Ready, auto-merge on again. Re-pointed at r2 in cd7bdf779 (main merged at 5e99e6f57): baseline-only driver mode in Task 13, r2's two checks in Task 14 Step 4, the six pinned string counts in Tasks 1 and 12. Both threads answered and resolved; Codex's review of cd7bdf779 found nothing. | Wait for CI and the merge. See 3.4. |
-| #2021 | Prior-close spec r2 (FEAT-PLAYBOOK-001) | Ready, auto-merge on, both reviews clean, CI green at 00:13Z; merging. | After the merge, put the prior-close plan up (re-pointed at r2 locally, not pushed yet). See 3.5. |
+| #2021 | Prior-close spec r2 (FEAT-PLAYBOOK-001) | Merged 2026-11-17 00:14Z. | Done. Next: the prior-close plan PR. See 3.5. |
 | #2009 | Conviction spec (FEAT-INSIGHT-001) | Draft, head 2801e3f45: main merged in, and the measurement's outcome named as the first-target surrogate `cross-fill-t1-v1`, never plan performance (no decision or done_when outcome moved). | Needs the owner's word on one decision. Decision 1's line still says "R earned by the brief's own plan"; rewording it needs the owner. See 3.6. |
 | #2025 | Unknown rule version spec (FEAT-STRAT-001) | Draft, opened 2026-11-17. Every reader refuses, visibly and writing nothing, a level rule version newer than it knows; caller-by-caller tests U1 to U10. | Needs the owner's approval and six decisions (in the PR body). Must be built and deployed to every reader before the first v5 writer (the prior-close build). |
 | #2026 | Premarket reads as read spec (FEAT-DATA-001) | Draft, opened 2026-11-17. `fetch-premarket-refresh` keeps the bars it read, one gzip object a ticker a run in the existing bucket, plus a compare tool; R1 to R9. | Needs the owner's approval and seven decisions (in the PR body). Build after #2010 merges. |
@@ -178,9 +178,12 @@ the insight build (3.7).
 ## 4. Things found today that are not yet in any spec
 
 1. **The vendor revises the day's bars after the close.** The owner asked for an issue (opened
-   2026-11-17 with a Webull comparison; see the issue list for "Premarket one-minute bars differ by
-   source") and said saving the bars each premarket run reads is likely needed. A draft spec for that
-   is on branch `docs/spec-feat-data-001-premarket-reads-as-read` (draft, not yet a PR, not approved).
+   2026-11-17 as issue #2027, with a Webull comparison; its data is on the pushed branch
+   `spike/premarket-sources-2026-11-16`) and said saving the bars each premarket run reads is likely
+   needed. The draft spec for that is PR #2026 (not approved). #2027's main finding: the 08:20 brief
+   read the in-session bars (it reproduces the brief's recorded IWM volume 32,653 and VWAP exactly),
+   the stored bars are a later revision (the QQQ revision appeared between about 14:55 and 17:05 ET),
+   and Webull matches the in-session read, not the revised one.
    Details as first found: Compared bar by bar on 2026-11-16, a read
    at about 15:00 ET against the stored bars: 322 of 327 SPY premarket bars differ in a price or the
    volume, 330 of 330 QQQ, 183 of 199 IWM. Volumes during the session are several times smaller. So
@@ -189,14 +192,17 @@ the insight build (3.7).
    save the bars exactly as the 08:20 and 09:20 runs read them, then re-check the 100 share thin-bar
    line and the prior-close numbers against a few weeks of saved reads. The owner has not yet said
    yes to this.
-2. **An unknown newer rule version is rebuilt under an old rule with no error** (a draft spec is on
-   branch `docs/spec-feat-strat-001-unknown-rule-version`, not yet a PR, not approved) (3.5, step 4). A
+2. **An unknown newer rule version is rebuilt under an old rule with no error** (draft spec PR
+   #2025, not approved) (3.5, step 4). A
    guard that refuses, or marks unavailable, a version newer than the code knows would make deploy
    order safe by construction. Recommended as its own small item. The owner has not yet said yes.
 3. **One-bar junk prints not near the prior close** (QQQ 2026-11-16 08:35, high 680.40 with the
    market at 670.84) set the nightly-stored high under every current rule. That is what the
    bad-print flags (#2001) are for, once something reads them. No consumer spec exists yet.
 4. **GitHub Actions policy**: issue #2008 holds the steps only the owner can do in repo settings.
+5. **The brief's from-bars dry run reads the daily row's filter record** instead of the copy frozen
+   in the brief (Codex P2 on #2010, below the merge threshold). Issue #2024 holds the fix and its
+   test; no effect on the 2026-11-16 replay, whose two records agree.
 
 ## 5. Lessons from today that save a review round
 
@@ -226,19 +232,21 @@ the insight build (3.7).
 
 Both of these are pushed to origin, with no PR open:
 
-- Branch `docs/plan-feat-playbook-001-prior-close-prints`, commit 8daac04cc: the prior-close plan.
+- Branch `docs/plan-feat-playbook-001-prior-close-prints`, commit 8daac04cc: the prior-close plan
+  (a re-point to r2 was being committed locally on 2026-11-17; push it and open the PR).
   Eight tasks: preconditions; the constants, the rule and its record; the calibrated filter on and
   through `premarket_snapshot`; the three writers' rows; the 2026-11-16 session; rule version v5;
   the measurement and the whole suite; the close. Its `spec:` still names r1 and must be re-pointed
   at the r2 file before a PR is opened (3.5, step 2).
 - Branch `feature/feat-insight-001-insight-one-plan-one-voice`, commit 36a91999c: one plan commit.
+- Branch `spike/premarket-sources-2026-11-16`: issue #2027's three-source data and compare script.
 - Branch `spike/atr-quarter-targets`: the experiment harness, its reports and result files, and the
   prior-close measurement's scripts and report. A spike branch never becomes a PR.
 
 Only on the session machine, lost if it is reclaimed:
 
-- `/tmp/build-brief`, `/tmp/build-late-run`: whatever the two close-out tasks had committed and not
-  pushed when the session ended. Check `git log origin/<branch>..HEAD` in each. If the directories
+- `/tmp/build-brief`, `/tmp/build-late-run`: both close-outs are pushed (2026-11-17); anything
+  committed later and not pushed would be here. Check `git log origin/<branch>..HEAD` in each. If the directories
   are gone, redo the close task from the plan; nothing else is lost.
 - The session's scratch directory held the PR body drafts (`pr2010_body.md`, `pr2020_body.md`,
   `pr2010_b11_evidence.md`). If they are gone, regenerate them from the spec's `done_when` list and
