@@ -16,7 +16,9 @@ Spec: docs/superpowers/specs/2026-11-16-feat-data-001-no-adjusted-prices-r2.md
 """
 from __future__ import annotations
 
+import ast
 import datetime as dt
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -317,3 +319,261 @@ def test_experiments_read_the_as_traded_export(tmp_path):
     bars = pd.DataFrame({"Time": pd.to_datetime([])})
     with pytest.raises(ValueError, match="adjusted_close"):
         honest.daily_bars("SPY", bars, daily_dir=str(tmp_path))
+
+
+# ─── Design 7: the guard ─────────────────────────────────────────────────────
+#
+# Over every .py under gcp/, lib/, scripts/ and platform/ (tests and
+# node_modules excluded), by ast, docstrings exempt:
+#   - no string naming a vendor function that ends in _ADJUSTED;
+#   - no string naming an adjusted close or an adjusted daily series, in any
+#     spacing or case;
+#   - no request parameter `adjusted` or `auto_adjust` whose value is not the
+#     literal 'false' or False. A request parameter is a key of a dict literal
+#     that also holds a 'function' key, or a keyword of a call to
+#     requests.get/post/request, to anything reached through a yfinance
+#     import, or to the 1-minute helpers fetch_minute_bars/fetch_minute_data.
+#     The keys of a dict literal unpacked with ** into either count; unpacking
+#     anything else into either is refused, since its keys cannot be read.
+# One allowance: the module-level assignment ADJUSTED_CLOSE_COLUMNS in
+# lib/data_loader.py, which holds the names only to refuse or drop them.
+# Over every .sql under gcp/, by text: the same names only on the two lines
+# of gcp/schema.sql that define market_data_daily.adjusted_close, which the
+# companion data spec removes together with this allowance.
+
+GUARDED_TREES = ("gcp", "lib", "scripts", "platform")
+ADJUSTED_FUNCTION = re.compile(r"\b[A-Z0-9]+(?:_[A-Z0-9]+)*_ADJUSTED\b")
+ADJUSTED_NAME = re.compile(
+    r"adj(?:usted)?[\s_.\-]*close|adjclose|adjusted[\s_.\-]*daily|daily[\s_.\-]*adjusted",
+    re.IGNORECASE)
+REQUEST_FLAGS = ("adjusted", "auto_adjust")
+MINUTE_HELPERS = ("fetch_minute_bars", "fetch_minute_data")
+ALLOWANCE = ("lib/data_loader.py", "ADJUSTED_CLOSE_COLUMNS")
+SQL_ALLOWANCE = ("gcp/schema.sql", (
+    "-- Split/dividend-adjusted close from AlphaVantage TIME_SERIES_DAILY_ADJUSTED",
+    "adjusted_close      DOUBLE PRECISION,",
+))
+
+
+def _docstring_ids(tree: ast.AST) -> set[int]:
+    ids = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = node.body
+            if (body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                ids.add(id(body[0].value))
+    return ids
+
+
+def _allowance_ids(tree: ast.Module, rel: str) -> set[int]:
+    if rel != ALLOWANCE[0]:
+        return set()
+    ids = set()
+    for stmt in tree.body:
+        targets = (stmt.targets if isinstance(stmt, ast.Assign)
+                   else [stmt.target] if isinstance(stmt, ast.AnnAssign) else [])
+        if any(isinstance(t, ast.Name) and t.id == ALLOWANCE[1] for t in targets) and stmt.value:
+            ids.update(id(n) for n in ast.walk(stmt.value) if isinstance(n, ast.Constant))
+    return ids
+
+
+def _root_name(node: ast.AST) -> str | None:
+    while True:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, (ast.Attribute, ast.Subscript)):
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        else:
+            return None
+
+
+def _bindings(tree: ast.AST) -> tuple[set[str], set[str], set[str]]:
+    """(names bound to the requests module, names bound to requests.get,
+    post or request, names reached through a yfinance import)."""
+    requests_mod, requests_fns, yf = set(), set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "requests":
+                    requests_mod.add(alias.asname or "requests")
+                if alias.name == "yfinance" or alias.name.startswith("yfinance."):
+                    yf.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module == "requests":
+                requests_fns.update(a.asname or a.name for a in node.names
+                                    if a.name in ("get", "post", "request"))
+            if node.module == "yfinance" or node.module.startswith("yfinance."):
+                yf.update(a.asname or a.name for a in node.names)
+    # A name assigned from something reached through yfinance (t = yf.Ticker(x))
+    # is reached through it too.
+    for _ in range(2):
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign) and _root_name(node.value) in yf):
+                yf.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return requests_mod, requests_fns, yf
+
+
+def _is_request_call(call: ast.Call, requests_mod, requests_fns, yf) -> bool:
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        if (func.attr in ("get", "post", "request") and isinstance(func.value, ast.Name)
+                and func.value.id in requests_mod):
+            return True
+        if func.attr in MINUTE_HELPERS:
+            return True
+    if isinstance(func, ast.Name) and (func.id in requests_fns or func.id in MINUTE_HELPERS):
+        return True
+    return _root_name(func) in yf
+
+
+def _flag_violation(value: ast.AST) -> bool:
+    """True unless the value is the literal 'false' or False."""
+    return not (isinstance(value, ast.Constant)
+                and (value.value is False or value.value == "false"))
+
+
+def _key(node: ast.AST | None):
+    """A dict key as the guard reads it: None for a ** unpacking, the
+    constant for a literal key, and a marker for a computed one."""
+    if node is None:
+        return None
+    return node.value if isinstance(node, ast.Constant) else "<expr>"
+
+
+def _request_pairs(pairs, out: list[tuple[int, str]], line: int) -> None:
+    """Check (key, value) pairs that are request parameters; a None key is a
+    ** unpacking of `value`."""
+    for key, value in pairs:
+        if key is None:
+            if isinstance(value, ast.Dict):
+                _request_pairs([(_key(k), v) for k, v in zip(value.keys, value.values)],
+                               out, value.lineno)
+            else:
+                out.append((getattr(value, "lineno", line), "request_unpacks_unreadable_keys"))
+        elif key in REQUEST_FLAGS and _flag_violation(value):
+            out.append((getattr(value, "lineno", line), "request_asks_adjusted"))
+
+
+def adjusted_sites(src: str, rel: str) -> list[tuple[int, str]]:
+    """(line, rule) for every violation in one .py text; `rel` is its path
+    from the repo root, which only the allowance reads."""
+    tree = ast.parse(src)
+    exempt = _docstring_ids(tree) | _allowance_ids(tree, rel)
+    requests_mod, requests_fns, yf = _bindings(tree)
+    out: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in exempt:
+            if ADJUSTED_FUNCTION.search(node.value):
+                out.append((node.lineno, "adjusted_vendor_function"))
+            elif ADJUSTED_NAME.search(node.value):
+                out.append((node.lineno, "adjusted_close_name"))
+        elif isinstance(node, ast.Dict):
+            keys = [_key(k) for k in node.keys]
+            if "function" in keys:
+                _request_pairs(list(zip(keys, node.values)), out, node.lineno)
+        elif isinstance(node, ast.Call) and _is_request_call(node, requests_mod, requests_fns, yf):
+            _request_pairs([(kw.arg, kw.value) for kw in node.keywords], out, node.lineno)
+    return sorted(out)
+
+
+def sql_adjusted_lines(text: str, rel: str) -> list[int]:
+    """Line numbers of a .sql text naming an adjusted function or close,
+    the two allowed lines of gcp/schema.sql excepted."""
+    lines = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not (ADJUSTED_FUNCTION.search(line) or ADJUSTED_NAME.search(line)):
+            continue
+        if rel == SQL_ALLOWANCE[0] and line.strip() in SQL_ALLOWANCE[1]:
+            continue
+        lines.append(number)
+    return lines
+
+
+def _guarded_files(root: Path, suffix: str, trees=GUARDED_TREES):
+    for tree in trees:
+        for path in sorted((root / tree).rglob(f"*{suffix}")):
+            rel = path.relative_to(root)
+            if ("tests" in rel.parts or "node_modules" in rel.parts
+                    or path.name.startswith("test_")):
+                continue
+            yield path, rel.as_posix()
+
+
+def tree_sites(root: Path) -> list[tuple[str, int, str]]:
+    """(path, line, rule) for every violation in a checkout's guarded .py files."""
+    return [(rel, line, rule)
+            for path, rel in _guarded_files(root, ".py")
+            for line, rule in adjusted_sites(path.read_text(encoding="utf-8"), rel)]
+
+
+def tree_sql_sites(root: Path) -> list[tuple[str, int]]:
+    """(path, line) for every .sql line under gcp/ naming an adjusted price."""
+    return [(rel, line)
+            for path, rel in _guarded_files(root, ".sql", trees=("gcp",))
+            for line in sql_adjusted_lines(path.read_text(encoding="utf-8"), rel)]
+
+
+def test_nothing_in_the_repo_fetches_stores_or_reads_an_adjusted_price():
+    """On main 4155a10f the same walk reported 31 lines in 12 .py files and
+    the .sql scan one more, gcp/queries/nan_triage.sql:31. A site reported
+    here is one an earlier change missed: fix it there, never widen the
+    guard."""
+    assert tree_sites(REPO) == []
+    assert tree_sql_sites(REPO) == []
+    # The allowance still covers exactly the two schema lines it names.
+    schema = (REPO / "gcp/schema.sql").read_text(encoding="utf-8").splitlines()
+    assert sorted(line.strip() for line in schema
+                  if line.strip() in SQL_ALLOWANCE[1]) == sorted(SQL_ALLOWANCE[1])
+
+
+_YF = "import yfinance as yf\n"
+
+
+@pytest.mark.parametrize("src, rel, n", [
+    # one violation per rule
+    ("f = 'TIME_SERIES_WEEKLY_ADJUSTED'", "gcp/x.py", 1),
+    ("c = 'Adj Close'", "gcp/x.py", 1),
+    ("p = {'function': 'X', 'adjusted': 'true'}", "gcp/x.py", 1),
+    (_YF + "yf.download('SPY', auto_adjust=True)", "scripts/x.py", 1),
+    # what requests nothing, or asks as traded, is allowed
+    ('counts = {"as_traded": 0, "inferred": 0, "adjusted": 0, "odd": 0}',
+     "gcp/fetchers/export_intraday_bars.py", 0),
+    ("p = {'function': 'TIME_SERIES_INTRADAY', 'adjusted': True}", "gcp/x.py", 1),
+    ("p = {'function': 'TIME_SERIES_INTRADAY', 'adjusted': 'false', **{'adjusted': 'true'}}",
+     "gcp/x.py", 1),
+    ("p = {'function': 'TIME_SERIES_INTRADAY', **extra}", "gcp/x.py", 1),
+    ("x.ewm(span=9, adjust=False)", "lib/x.py", 0),
+    ("verdict = 'ADJUSTED'", "gcp/x.py", 0),
+    ("p = {'function': 'TIME_SERIES_INTRADAY', 'adjusted': 'false'}", "gcp/x.py", 0),
+    ('def f():\n    """Once asked TIME_SERIES_DAILY_ADJUSTED for the adjusted close."""\n',
+     "gcp/x.py", 0),
+    ("ADJUSTED_CLOSE_COLUMNS = ('Adj Close', 'adj_close', 'adjusted_close', 'adjclose')",
+     "lib/data_loader.py", 0),
+    ("ADJUSTED_CLOSE_COLUMNS = ('Adj Close', 'adj_close', 'adjusted_close', 'adjclose')",
+     "lib/other.py", 4),
+    ("df['Adj Close']", "lib/data_loader.py", 1),
+    # the keyword rule reaches every request call it names
+    ("import requests\nrequests.get(u, params=p, adjusted='true')", "gcp/x.py", 1),
+    ("import requests\nrequests.get(u, **kw)", "gcp/x.py", 1),
+    ("fetch_minute_bars('SPY', d, k, adjusted=adjusted)", "gcp/x.py", 1),
+    ("fetch_minute_bars('SPY', d, k, adjusted=False)", "gcp/x.py", 0),
+    (_YF + "t = yf.Ticker('SPY')\nt.history(period='1y', auto_adjust=True)", "scripts/x.py", 1),
+    (_YF + "yf.download('SPY', auto_adjust=False)", "scripts/x.py", 0),
+    ("f\"{d}/{t}_daily_adjusted.csv\"", "scripts/x.py", 1),
+])
+def test_the_guard_tells_adjusted_from_everything_else(src, rel, n):
+    assert len(adjusted_sites(src, rel)) == n, adjusted_sites(src, rel)
+
+
+@pytest.mark.parametrize("text, rel, n", [
+    ("SELECT count(*) FILTER (WHERE \"adjusted_close\"='NaN') FROM t;", "gcp/queries/x.sql", 1),
+    ("    -- Split/dividend-adjusted close from AlphaVantage TIME_SERIES_DAILY_ADJUSTED\n"
+     "    adjusted_close      DOUBLE PRECISION,\n", "gcp/schema.sql", 0),
+    ("    adjusted_close      DOUBLE PRECISION,\n", "gcp/other.sql", 1),
+    ("    adj_close NUMERIC,\n", "gcp/schema.sql", 1),
+])
+def test_the_sql_scan_allows_only_the_schema_lines(text, rel, n):
+    assert len(sql_adjusted_lines(text, rel)) == n
