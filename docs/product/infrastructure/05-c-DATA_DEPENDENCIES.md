@@ -101,7 +101,105 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 ### 1b. Live relations, rows and sizes (2026-09-07)
 
 <!-- inventory:dbtables:start -->
-_live table snapshot required (`--db-tables` or the workflow's Cloud SQL step)_
+| Relation (live) | Rows (estimate; — for views) | Size | Declared in |
+|---|---|---|---|
+| `admin_refresh_leases` | 0 | 16 kB | `gcp/schema.sql` |
+| `archive_yahoo_earnings_options_snapshots` | 0 | 24 kB | `gcp/schema.sql` |
+| `archive_yahoo_etf_options_snapshots` | 0 | 40 kB | `gcp/schema.sql` |
+| `archive_yahoo_market_data_daily` | 0 | 24 kB | `gcp/schema.sql` |
+| `archive_yahoo_market_data_intraday` | 0 | 5920 kB | `gcp/schema.sql` |
+| `backtest_reports` | 1 | 144 kB | `gcp/schema.sql` |
+| `backtest_sweeps` | 45 | 96 kB | `gcp/schema.sql` |
+| `backtest_trades` | 149,898 | 48 MB | `gcp/schema.sql` |
+| `backtest_walk_forward_folds` | 0 | 496 kB | `gcp/schema.sql` |
+| `daily_rates` | 2,916 | 424 kB | `gcp/schema.sql` |
+| `daily_vex` | 218 | 936 kB | **runtime-created** (not in schema.sql) |
+| `earnings_calendar` | 60,076 | 24 MB | `gcp/schema.sql` |
+| `earnings_calibration` | 0 | 48 kB | `gcp/schema.sql` |
+| `earnings_event_outcomes` | 0 | 24 kB | `gcp/schema.sql` (materialized view) |
+| `earnings_history` | 132,353 | 41 MB | `gcp/schema.sql` |
+| `earnings_options_snapshots` | 0 | 588 MB | `gcp/schema.sql` |
+| `earnings_options_strategy_insights` | 0 | 104 kB | `gcp/schema.sql` |
+| `earnings_options_strategy_winners` | 0 | 160 kB | `gcp/schema.sql` |
+| `earnings_reactions` | 62,783 | 50 MB | `gcp/schema.sql` |
+| `earnings_ticker_lean` | 0 | 32 kB | `gcp/schema.sql` (materialized view) |
+| `earnings_upcoming_with_history` | 46,320 | 15 MB | `gcp/schema.sql` |
+| `economic_events` | 2,981 | 648 kB | `gcp/schema.sql` |
+| `etf_options_daily_greeks` | 8,042 | 976 kB | `gcp/schema.sql` |
+| `etf_options_snapshots` | 141,113,379 | 74 GB | `gcp/schema.sql` |
+| `exit_config_overrides` | 0 | 48 kB | `gcp/schema.sql` |
+| `gamma_events` | 0 | 3456 kB | **runtime-created** (not in schema.sql) |
+| `gamma_levels_eod` | 102,442 | 31 MB | **runtime-created** (not in schema.sql) |
+| `historical_signals` | 96,376 | 3376 MB | `gcp/schema.sql` |
+| `indicator_correlation` | 3,016 | 1512 kB | `gcp/schema.sql` |
+| `insider_transactions` | 1,708,432 | 594 MB | `gcp/schema.sql` |
+| `insight_reports` | 790 | 4384 kB | `gcp/schema.sql` |
+| `insight_reports_history` | 846 | 3200 kB | `gcp/schema.sql` |
+| `insight_runs` | 948 | 360 kB | `gcp/schema.sql` |
+| `intraday_flow_15m` | 529,920 | 63 MB | `gcp/schema.sql` |
+| `intraday_gex_15m` | 487,540 | 87 MB | `gcp/schema.sql` |
+| `iwm_30m_predictions` | 0 | 352 kB | **runtime-created** (not in schema.sql) |
+| `job_runs` | 14 | 48 kB | `gcp/schema.sql` |
+| `journal_entries` | 2 | 1288 kB | `gcp/schema.sql` |
+| `magnitude_per_bar_predictions` | 15,380 | 4584 kB | **runtime-created** (not in schema.sql) |
+| `magnitude_walk_forward_results` | 1,695 | 1184 kB | **runtime-created** (not in schema.sql) |
+| `market_data_cross_asset` | 0 | 16 kB | **runtime-created** (not in schema.sql) |
+| `market_data_daily` | 5,553,479 | 3895 MB | `gcp/schema.sql` |
+| `market_data_indicators` | 0 | 0 bytes | **runtime-created** (not in schema.sql) (partitioned table) |
+| `market_data_indicators_iwm` | 0 | 2200 kB | **runtime-created** (not in schema.sql) |
+| `market_data_indicators_other` | 0 | 16 kB | **runtime-created** (not in schema.sql) |
+| `market_data_indicators_qqq` | 0 | 2224 kB | **runtime-created** (not in schema.sql) |
+| `market_data_indicators_spy` | 0 | 2232 kB | **runtime-created** (not in schema.sql) |
+| `market_data_intraday` | 0 | 0 bytes | `gcp/schema.sql` (partitioned table) |
+| `market_data_intraday_iwm` | 2,006,813 | 512 MB | `gcp/schema.sql` |
+| `market_data_intraday_other` | 5,653,650 | 67 GB | `gcp/schema.sql` |
+| `market_data_intraday_qqq` | 2,281,849 | 585 MB | `gcp/schema.sql` |
+| `market_data_intraday_spx` | 0 | 2144 kB | `gcp/schema.sql` |
+| `market_data_intraday_spy` | 2,432,886 | 664 MB | `gcp/schema.sql` |
+| `model_routing` | 0 | 24 kB | `gcp/schema.sql` |
+| `news_sentiment` | 212,368 | 298 MB | `gcp/schema.sql` |
+| `options_daily_features` | 8,042 | 1112 kB | `gcp/schema.sql` |
+| `playbook_cards` | 72 | 144 kB | `gcp/schema.sql` |
+| `playbook_cards_staging` | 0 | 16 kB | `gcp/schema.sql` |
+| `premarket_analysis` | 383 | 1208 kB | `gcp/schema.sql` |
+| `premarket_analysis_history` | 702 | 1664 kB | `gcp/schema.sql` |
+| `qqq_30m_predictions` | 0 | 352 kB | **runtime-created** (not in schema.sql) |
+| `ranker_runs` | 93 | 840 kB | `gcp/schema.sql` |
+| `realtime_gex_15m` | 6,321 | 904 kB | `gcp/schema.sql` |
+| `regime_combo_results` | 8,640 | 3872 kB | `gcp/schema.sql` |
+| `sec_filings` | 4,274 | 1560 kB | `gcp/schema.sql` |
+| `signal_alerts` | 3,011 | 2648 kB | `gcp/schema.sql` |
+| `signal_metrics` | 179,485 | 58 MB | `gcp/schema.sql` |
+| `spy_30m_predictions` | 0 | 352 kB | **runtime-created** (not in schema.sql) |
+| `strat_combo_results` | 0 | 32 kB | `gcp/schema.sql` |
+| `strat_features_15m` | 206,458 | 303 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_1m` | 3,105,422 | 4080 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_30m` | 103,261 | 152 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_4h` | 18,542 | 26 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_5m` | 587,853 | 811 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_60m` | 55,619 | 81 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_levels_15m` | 206,661 | 368 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_levels_1m` | 3,087,834 | 8155 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_levels_30m` | 103,261 | 184 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_levels_4h` | 18,542 | 28 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_levels_5m` | 617,241 | 1134 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_levels_60m` | 55,619 | 86 MB | **runtime-created** (not in schema.sql) |
+| `strat_levels` | 13,889 | 3184 kB | `gcp/schema.sql` |
+| `ticker_calibration` | 1 | 48 kB | `gcp/schema.sql` |
+| `ticker_info` | 0 | 24 kB | `gcp/schema.sql` |
+| `top_movers_daily` | 5,760 | 1128 kB | `gcp/schema.sql` |
+| `top_movers_intraday` | 6,380 | 1152 kB | `gcp/schema.sql` |
+| `trades` | 2,968 | 1360 kB | `gcp/schema.sql` |
+| `user_preferences` | 1 | 32 kB | `gcp/schema.sql` |
+| `user_profile` | 0 | 16 kB | `gcp/schema.sql` |
+| `user_roles` | 2 | 48 kB | `gcp/schema.sql` |
+| `user_style_results` | 0 | 24 kB | `gcp/schema.sql` |
+| `v_etf_options_node` | — | 0 bytes | `gcp/schema.sql` (view) |
+| `waitlist_signups` | 1 | 48 kB | `gcp/schema.sql` |
+| `walk_forward_results` | 0 | 264 kB | `gcp/schema.sql` |
+| `watchlists` | 0 | 64 kB | `gcp/schema.sql` |
+
+Declared in `gcp/schema.sql` but absent live: `bar_recompute_ledger`, `level_param_policy`, `schema_apply_history`, `ticker_level_params`, `user_watchlists`, `watched_tickers`, `watchlist_history`, `watchlist_history_origin`
 <!-- inventory:dbtables:end -->
 
 ---
