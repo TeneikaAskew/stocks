@@ -1064,8 +1064,9 @@ STORED_RAW_HIGH_1116 = {"IWM": 278.92, "SPY": 754.3772, "QQQ": 681.022}
 #   rule (a) drops the nine 277.54 prints of 07:35 (high, close), 07:36 (open,
 #   high), 07:39 (open, high), 07:40 (high, close) and 07:43 (high): every one
 #   of those bars has its midpoint 0.75 or more from 277.54.
-#   The 08:05 bar (high 278.92, volume 81) is thin and gives nothing; so are
-#   86 other bars under 100 shares.
+#   No price within 5 cents of 277.54 is left for prior-close-print-v1, which
+#   drops nothing. The 08:05 bar (high 278.92, volume 81) is thin and gives
+#   nothing; so are 86 other bars under 100 shares.
 #   Highs left: 276.97 (04:03), 276.90 (04:01), 276.86 (06:54): second-highest
 #   276.90. Highest open or close left: the 04:03 close, 276.97 (28,705
 #   shares). pre_high = max(276.90, 276.97) = 276.97.
@@ -1076,9 +1077,15 @@ STORED_RAW_HIGH_1116 = {"IWM": 278.92, "SPY": 754.3772, "QQQ": 681.022}
 #   rule (a) drops the sixteen 679.89 prints (twelve highs from 07:01 to
 #   08:07, the 07:39 open, the 07:37, 07:38 and 07:40 closes); no bar that
 #   carries one has its midpoint within 4.8 of 679.89.
-#   Highs left: 681.022 (08:05, 3,253 shares, the stored raw high), 679.8507
-#   (07:00), 675.49 (04:03): second-highest 679.8507. Highest open or close
-#   left: the 04:00 open, 675.29. pre_high = max(679.8507, 675.29) = 679.8507.
+#   prior-close-print-v1 (5 cents, 0.25% = 1.70): the 07:00 high 679.8507 is
+#   67985 in cents, four from 67989, and not the prior close to the cent, so
+#   rule (a) keeps it; its open 672.72, low 672.03 and close 672.66 are all
+#   more than 1.70 away, so this rule drops it (high 1, bars 1). Every other
+#   price within 5 cents of 679.89 is one of rule (a)'s sixteen.
+#   Highs left: 681.022 (08:05, 3,253 shares, the stored raw high), 675.49
+#   (04:03, 141,790 shares), 675.46 (04:26): second-highest 675.49. Highest
+#   open or close left: the 04:00 open, 675.29. pre_high = max(675.49,
+#   675.29) = 675.49 (679.8507 before prior-close-print-v1).
 #   Lows left: 668.28 (07:30), 668.33 (07:29): second-lowest 668.33. Lowest
 #   open or close: the 07:29 close, 668.34. pre_low = min(668.33, 668.34).
 #
@@ -1086,35 +1093,45 @@ STORED_RAW_HIGH_1116 = {"IWM": 278.92, "SPY": 754.3772, "QQQ": 681.022}
 #   rule (a) drops the twelve prints at 754.37 to the cent (ten highs from
 #   07:01 to 08:07, the 07:36 and 07:38 closes). The 07:00 high 754.3772 is
 #   754.38 to the cent, so it is not one of them.
-#   Highs left: 754.3772 (07:00, the stored raw high), 753.01 (04:00), 752.90
-#   (04:01): second-highest 753.01. Highest open or close left: the 04:26
-#   open, 752.75. pre_high = max(753.01, 752.75) = 753.01.
+#   prior-close-print-v1 (5 cents, 0.25% = 1.89): the 07:00 high 754.3772 is
+#   one cent from the prior close; its open 751.151, low 750.679 and close
+#   751.00 are all more than 1.89 away, so this rule drops it (high 1, bars
+#   1). Every other price within 5 cents of 754.37 is one of rule (a)'s twelve.
+#   Highs left: 753.01 (04:00), 752.90 (04:01), 752.78 (04:03): second-highest
+#   752.90. Highest open or close left: the 04:26 open, 752.75. pre_high =
+#   max(752.90, 752.75) = 752.90 (753.01 before prior-close-print-v1).
 #   Lows left: 747.94 (07:30), 747.96 (07:29): second-lowest 747.96. Lowest
 #   open or close: the 07:29 close, 747.9791. pre_low = 747.96.
 #
-# NOT TO BE READ AS CORRECT for QQQ and SPY. QQQ's 679.8507 is one bar's wick
-# four cents under the prior close 679.89, kept because the 08:05 print stands
-# above it: the confirmed high is still a prior-close print, not the market's
-# premarket high (the owner's tape check gave 674.92). SPY's 753.01 holds only
-# on these stored bars: on the vendor's bars as read during the session the
-# 07:00 bar closed at 754.3759 and this rule returned that, the prior close
-# again (tape check 752.44). Prints at or beside the prior close are the
-# subject of docs/superpowers/specs/2026-11-16-feat-playbook-001-prior-close-prints.md
-# and are not handled here. IWM's 276.97 is the corrected value (tape 276.90).
+# Under prior-close-print-v1 (docs/superpowers/specs/
+# 2026-11-16-feat-playbook-001-prior-close-prints-r2.md) neither confirmed high
+# is a print at the prior close any more: before it, QQQ's was the 07:00 wick
+# 679.8507, four cents under the prior close, and SPY's 753.01 stood only
+# because the 07:00 print 754.3772 was a candidate above it. These are the
+# stored bars: the measurement in that spec read the vendor's bars during the
+# session and gave QQQ 675.46 and SPY 752.897 at the 08:20 ET cut (the stored
+# 04:03 QQQ bar and 04:00 SPY bar are not the vendor's).
 CONFIRMED_1116 = {
     #        pre_high   pre_low
     "IWM": (276.97, 275.74),
-    "QQQ": (679.8507, 668.33),   # see the note above: a prior-close print
-    "SPY": (753.01, 747.96),     # see the note above: stored bars only
+    "QQQ": (675.49, 668.33),
+    "SPY": (752.90, 747.96),
 }
 # What each rule dropped, counted by hand in the same reading:
 #   (a) prior-close prints, (b) spikes, thin bars, candidate highs above
-#   pre_high (the two 08:05 and 07:00 raw highs), candidate lows below pre_low
-#   (the two 07:30 lows)
+#   pre_high (QQQ's 08:05 raw high 681.022, SPY's 04:00 high 753.01),
+#   candidate lows below pre_low (the two 07:30 lows)
 RULE_COUNTS_1116 = {
     "IWM": (9, 0, 87, 0, 0),
     "QQQ": (16, 0, 7, 1, 1),
     "SPY": (12, 0, 34, 1, 1),
+}
+# What prior-close-print-v1 dropped, counted by hand in the same reading (the
+# notes above): the QQQ and SPY 07:00 highs; nothing for IWM.
+PRIOR_CLOSE_PRINTS_1116 = {
+    "IWM": {},
+    "QQQ": {"high": 1, "bars": 1},
+    "SPY": {"high": 1, "bars": 1},
 }
 
 
@@ -1162,6 +1179,15 @@ class TestSession20261116:
         assert confirmed["stale_close_reports"] == {
             "rule": "stale-close-report-v1", "high": 0, "low": 0,
             "prior_close": entry["prior_close"]}
+
+    @pytest.mark.parametrize("ticker", sorted(PRIOR_CLOSE_PRINTS_1116))
+    def test_prior_close_prints_of_the_session(self, ticker):
+        _bars, entry = load_premarket_2026_11_16(ticker)
+        pm = _context_1116(ticker)
+        assert pm["confirmed"]["prior_close_prints"] == {
+            "rule": "prior-close-print-v1", "tol_cents": 5, "min_distance_pct": 0.25,
+            "open": 0, "high": 0, "low": 0, "close": 0, "bars": 0,
+            "prior_close": entry["prior_close"], **PRIOR_CLOSE_PRINTS_1116[ticker]}
 
     def test_the_0805_iwm_bar_is_thin(self):
         bars, entry = load_premarket_2026_11_16("IWM")
