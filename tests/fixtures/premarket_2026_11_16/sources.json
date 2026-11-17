@@ -1,0 +1,83 @@
+{
+ "_about": "Read-only exports for FEAT-PLAYBOOK-001 B8 and B11, taken 2026-11-16 with ./scripts/db_query_cr.sh -q (no --commit; every statement rolled back). Each *_bars.csv is the execution's result_NNN.csv byte for byte. Each .json and .json.gz is that statement's entry of the execution's results.json as {columns, rows} (the CSV export writes JSONB columns as Python repr); .json.gz is gzip of the same JSON with mtime 0. rows counts data rows. sha256 is of the committed file.",
+ "files": {
+  "SPY_bars.csv": {
+   "execution": "db-query-jc8mj",
+   "statement": 1,
+   "sql": "SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'SPY' AND interval = '1min' AND ts >= '2026-11-16 09:00:00+00' AND ts < '2026-11-16 14:30:00+00' ORDER BY ts",
+   "rows": 329,
+   "sha256": "b29da0b42a20aee5f129ba40baa41cf7f02848d2152adb89c26e6e47c73ce9be"
+  },
+  "QQQ_bars.csv": {
+   "execution": "db-query-jc8mj",
+   "statement": 2,
+   "sql": "SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'QQQ' AND interval = '1min' AND ts >= '2026-11-16 09:00:00+00' AND ts < '2026-11-16 14:30:00+00' ORDER BY ts",
+   "rows": 330,
+   "sha256": "14ff43c6f3e06d0d3eef36f3310650ce5e24b61411d8febea4a2e5a5ef19d81a"
+  },
+  "IWM_bars.csv": {
+   "execution": "db-query-jc8mj",
+   "statement": 3,
+   "sql": "SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday WHERE ticker = 'IWM' AND interval = '1min' AND ts >= '2026-11-16 09:00:00+00' AND ts < '2026-11-16 14:30:00+00' ORDER BY ts",
+   "rows": 289,
+   "sha256": "e5c62de3d773058621d3f944465276aac3b68a81b88104fcfadabb2c19847cdf"
+  },
+  "brief_rows.json": {
+   "execution": "db-query-jc8mj",
+   "statement": 4,
+   "sql": "SELECT ticker, analysis_ts, run_kind, rvol, ftfc_score, ftfc_labels, level_basis FROM premarket_analysis WHERE analysis_date = '2026-11-16' AND run_kind = 'live' AND ticker IN ('SPY','QQQ','IWM') ORDER BY ticker",
+   "rows": 3,
+   "sha256": "9189d52dfe9a70f9cf5075ef3f4c0e4218c8b95925442bab7a874bfc22d2291e"
+  },
+  "daily_rows.json": {
+   "execution": "db-query-jc8mj",
+   "statement": 5,
+   "sql": "SELECT ticker, date, open, high, low, close, volume, atr_14, atr_5, atr_20, pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr, pre_fetched_at, pre_excluded_stale_prints, pre_excluded_spikes, pre_filter_status, pre_filter_params FROM market_data_daily WHERE ticker IN ('SPY','QQQ','IWM') AND date IN ('2026-11-13','2026-11-16') ORDER BY ticker, date",
+   "rows": 6,
+   "sha256": "c979b13778b947e43b90ff83bac1f47bea71e04d00b703325896ca30cb0b52aa"
+  },
+  "iwm_daily_volumes.json": {
+   "execution": "db-query-jc8mj",
+   "statement": 6,
+   "sql": "SELECT date, volume FROM market_data_daily WHERE ticker = 'IWM' AND date <= '2026-11-13' ORDER BY date DESC LIMIT 21",
+   "rows": 21,
+   "sha256": "b928f1ed8a0b0c2fc362ea8902e21e016ab37eef14714e7fa3ef5c45ceab13de"
+  },
+  "SPY_daily.json.gz": {
+   "execution": "db-query-dh624",
+   "statement": 1,
+   "sql": "SELECT date, open AS \"Open\", high AS \"High\", low AS \"Low\", close AS \"Close\", adjusted_close, volume AS \"Volume\", rsi_14, rsi_9, ema_9, ema_20, ema_50, ma_5, ma_10, ma_20, ma_50, sma_200, atr_14, atr_5, atr_20, macd, macd_signal, macd_histogram, bb_upper, bb_lower, bb_width, bb_pct, stoch_rsi_k AS \"StochRSI_K\", stoch_rsi_d AS \"StochRSI_D\", obv, rvol, volatility_20d, consecutive_up AS \"Consecutive_Up\", consecutive_down AS \"Consecutive_Down\", vwap, price_vs_vwap AS \"Price_vs_VWAP\", price_vs_ema9, price_vs_ema20, strat_candle, strat_combo, strat_setup, ftfc_score, ftfc_direction, pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr, pre_fetched_at, pre_excluded_stale_prints, pre_excluded_spikes, pre_filter_status, pre_filter_params FROM market_data_daily WHERE ticker = 'SPY' ORDER BY date",
+   "rows": 2652,
+   "sha256": "7d211585b0fc47f6b3275e4cabef1d497da3d5ae90c359743f73de79bbff4b0e"
+  },
+  "QQQ_daily.json.gz": {
+   "execution": "db-query-dh624",
+   "statement": 2,
+   "sql": "SELECT date, open AS \"Open\", high AS \"High\", low AS \"Low\", close AS \"Close\", adjusted_close, volume AS \"Volume\", rsi_14, rsi_9, ema_9, ema_20, ema_50, ma_5, ma_10, ma_20, ma_50, sma_200, atr_14, atr_5, atr_20, macd, macd_signal, macd_histogram, bb_upper, bb_lower, bb_width, bb_pct, stoch_rsi_k AS \"StochRSI_K\", stoch_rsi_d AS \"StochRSI_D\", obv, rvol, volatility_20d, consecutive_up AS \"Consecutive_Up\", consecutive_down AS \"Consecutive_Down\", vwap, price_vs_vwap AS \"Price_vs_VWAP\", price_vs_ema9, price_vs_ema20, strat_candle, strat_combo, strat_setup, ftfc_score, ftfc_direction, pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr, pre_fetched_at, pre_excluded_stale_prints, pre_excluded_spikes, pre_filter_status, pre_filter_params FROM market_data_daily WHERE ticker = 'QQQ' ORDER BY date",
+   "rows": 2652,
+   "sha256": "aa5f770dadb86fc7d7054000d25dead95feffceacc5d83f3baf50b01ed3a237f"
+  },
+  "IWM_daily.json.gz": {
+   "execution": "db-query-dh624",
+   "statement": 3,
+   "sql": "SELECT date, open AS \"Open\", high AS \"High\", low AS \"Low\", close AS \"Close\", adjusted_close, volume AS \"Volume\", rsi_14, rsi_9, ema_9, ema_20, ema_50, ma_5, ma_10, ma_20, ma_50, sma_200, atr_14, atr_5, atr_20, macd, macd_signal, macd_histogram, bb_upper, bb_lower, bb_width, bb_pct, stoch_rsi_k AS \"StochRSI_K\", stoch_rsi_d AS \"StochRSI_D\", obv, rvol, volatility_20d, consecutive_up AS \"Consecutive_Up\", consecutive_down AS \"Consecutive_Down\", vwap, price_vs_vwap AS \"Price_vs_VWAP\", price_vs_ema9, price_vs_ema20, strat_candle, strat_combo, strat_setup, ftfc_score, ftfc_direction, pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr, pre_fetched_at, pre_excluded_stale_prints, pre_excluded_spikes, pre_filter_status, pre_filter_params FROM market_data_daily WHERE ticker = 'IWM' ORDER BY date",
+   "rows": 2652,
+   "sha256": "9b0796495a799c556c3720731533e34fc032bbfc50a1877d3bc6d73e79804e6b"
+  },
+  "level_params.json": {
+   "execution": "db-query-dh624",
+   "statement": 4,
+   "sql": "SELECT 'policy' AS row_kind, NULL AS ticker, p.param_key, NULL AS value, NULL AS status, NULL AS atr_basis, p.method_id, p.statistic_q, p.lookback_sessions, p.min_sample, p.extra, p.effective_from, NULL AS policy_effective_from, NULL AS sample_n, NULL AS input_from, NULL AS input_to, NULL AS run_id, NULL AS source FROM level_param_policy p WHERE p.effective_from <= '2026-11-16' UNION ALL SELECT 'ticker' AS row_kind, t.ticker, t.param_key, t.value, t.status, t.atr_basis, t.method_id, NULL AS statistic_q, NULL AS lookback_sessions, NULL AS min_sample, NULL AS extra, t.effective_from, t.policy_effective_from, t.sample_n, t.input_from, t.input_to, t.run_id, t.source FROM (SELECT tp.ticker, tp.param_key, tp.value, tp.status, tp.atr_basis, tp.method_id, tp.effective_from, tp.policy_effective_from, tp.sample_n, tp.input_from, tp.input_to, tp.run_id, tp.source, ROW_NUMBER() OVER (PARTITION BY tp.ticker, tp.param_key, tp.atr_basis ORDER BY tp.effective_from DESC) AS rn FROM ticker_level_params tp WHERE tp.ticker IN ('SPY','QQQ','IWM') AND tp.effective_from <= '2026-11-16') t WHERE t.rn = 1",
+   "rows": 118,
+   "sha256": "97c9addca14960f49b08dbe760327db7f1608aa46d92aab7488d671763a6cb05"
+  },
+  "brief_rows_text.json": {
+   "execution": "db-query-q2vz5",
+   "statement": 1,
+   "sql": "SELECT ticker, analysis_ts, run_kind, llm_overview, ftfc_score, ftfc_direction, ftfc_labels, rvol, calls_trigger_name, calls_trigger_price, calls_stop_name, calls_stop_price, calls_t1_price, calls_t2_price, calls_t3_price, puts_trigger_name, puts_trigger_price, puts_stop_name, puts_stop_price, puts_t1_price, puts_t2_price, puts_t3_price, signal_status, strat_candle, playbook FROM premarket_analysis WHERE analysis_date = '2026-11-16' AND run_kind = 'live' AND ticker IN ('SPY','QQQ','IWM') ORDER BY ticker",
+   "rows": 3,
+   "sha256": "9ddf41b6c07e7ee1713fb3d113a353993111221b0be1bcb2e0eab59a3db78161",
+   "note": "Not in the plan's export list: the stored rows' overview text, trigger columns and playbook, which B11 sets beside the local dry run's."
+  }
+ }
+}

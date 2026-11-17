@@ -132,8 +132,12 @@ def _strip_run_ids(x):
     return x
 
 
-def brief_entries(monkeypatch=None) -> dict:
-    """The brief's ticker entries for BRIEF_TICKERS, as stored (JSON)."""
+def brief_entries(monkeypatch=None, premarket: dict | None = None) -> dict:
+    """The brief's ticker entries for BRIEF_TICKERS, as stored (JSON).
+
+    `premarket` maps a ticker to the pre_high and pre_low its session row
+    holds in place of the values computed from the committed bars: a stored
+    snapshot, as the 08:20 ET writer left it."""
     import pytest
 
     from tests.lib import strat_2026_11_06 as fx
@@ -143,7 +147,11 @@ def brief_entries(monkeypatch=None) -> dict:
     out = {}
     try:
         for t in BRIEF_TICKERS:
-            e = dict(fx.run_brief(mp, t, fx.loader_frame(t)))
+            frame = fx.loader_frame(t)
+            if premarket is not None:
+                for col in ("pre_high", "pre_low"):
+                    frame.loc[frame.index[-1], col] = premarket[t][col]
+            e = dict(fx.run_brief(mp, t, frame))
             e.pop("_persisted_level_maps", None)
             e["level_basis"] = _strip_run_ids(e.get("level_basis"))
             out[t] = json.loads(json.dumps(e, sort_keys=True, default=str))
