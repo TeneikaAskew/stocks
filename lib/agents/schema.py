@@ -345,6 +345,15 @@ class InsightReport(BaseModel):
         default_factory=dict,
         description="Named levels (support, resistance, pivot, etc.)",
     )
+    brief_ref: Optional[dict] = Field(
+        default=None,
+        description=(
+            "The premarket brief row this report read (FEAT-INSIGHT-001): its "
+            "analysis_date, analysis_ts and run_kind. None for a ticker outside "
+            "the brief, whose sections come from the readers and the level "
+            "builder, and for a brief ticker whose row was missing."
+        ),
+    )
     strat_status: StratSnapshot
     catalysts: list[Catalyst] = Field(default_factory=list)
     bull_case: str

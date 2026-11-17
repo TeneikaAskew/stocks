@@ -278,6 +278,7 @@ async def run_insight_pipeline(
     universe: Optional["WatchlistMembership"] = None,
     llm_factory: LLMFactory = _default_factory,
     query_embedding: Optional[list[float]] = None,
+    brief_tickers: Optional[frozenset[str]] = None,
 ) -> InsightReport:
     """Run the full pipeline and return a validated InsightReport.
 
@@ -302,13 +303,18 @@ async def run_insight_pipeline(
         omitted, reflection memory is skipped (the orchestrator does
         not embed the bundle itself to keep this module free of
         Vertex dependencies).
+    brief_tickers :
+        Optional pre-resolved set of the tickers the premarket brief covers,
+        forwarded to build_context_bundle; None reads it there
+        (FEAT-INSIGHT-001 Design 1).
     """
 
     start = time.monotonic()
     tracker = _Tracker()
 
     # 1. Build the grounded context bundle (no LLM yet)
-    bundle = build_context_bundle(ticker, as_of, universe=universe)
+    bundle = build_context_bundle(ticker, as_of, universe=universe,
+                                  brief_tickers=brief_tickers)
 
     # 2. Resolve route snapshot (frozen for the whole run)
     if snapshot is None:
@@ -673,6 +679,7 @@ async def run_insight_pipeline(
         time_horizon=pm.time_horizon,
         level_basis=plan_level_basis,
         key_levels=pm.key_levels,
+        brief_ref=bundle.get("brief_ref"),
         strat_status=strat_status,
         catalysts=catalysts,
         bull_case=pm.bull_case,

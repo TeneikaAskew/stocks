@@ -338,6 +338,7 @@ def test_the_bundle_forwards_the_universe_to_the_backtest_section(monkeypatch):
                             lambda *a, **k: {"available": True})
 
     u = _universe("AMD")
+    monkeypatch.setattr(summarizers, "brief_tickers", lambda: frozenset())  # outside the brief
     summarizers.build_context_bundle("SPY", universe=u)
     assert got.get("universe") is u
 

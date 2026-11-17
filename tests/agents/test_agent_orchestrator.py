@@ -351,6 +351,10 @@ def canned_bundle(monkeypatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
+    # FEAT-INSIGHT-001: build_context_bundle reads the brief's ticker list
+    # through the strict reader, which `_query` above does not cover. These
+    # tickers are outside the brief: the readers and the builder, no database.
+    monkeypatch.setattr(summarizers, "brief_tickers", lambda: frozenset())
 
     # `summarize_strat_status` calls `lib.strat.compute_strat_status`, which
     # loads bars via `DataLoader.load_daily` rather than the `_query` shim
@@ -436,6 +440,26 @@ def test_pipeline_end_to_end_green(canned_bundle, seven_role_snapshot):
     assert report.model_versions["trader"] == "vertex:gemini-2.0-flash"
     # No analyst failures in the happy path
     assert report.failed_sections == []
+
+
+def test_no_fixture_reaches_the_database(canned_bundle, seven_role_snapshot, monkeypatch):
+    """FEAT-INSIGHT-001: the strict reader raises if anything reaches it, and
+    the green-path test above still passes. The brief's ticker list and row
+    are never read here. (Two strict reads the fixture already attempted
+    before this change, the reflection-memory lookup and the gamma flip's
+    daily_rates read, fail inside handlers of their own.)"""
+    import gcp.database
+
+    attempted: list[str] = []
+
+    def refuse(sql, params=None, *args, **kwargs):
+        attempted.append(sql)
+        raise AssertionError("a test fixture reached the database")
+
+    monkeypatch.setattr(gcp.database, "query_to_dataframe_strict", refuse)
+    test_pipeline_end_to_end_green(canned_bundle, seven_role_snapshot)
+    assert not [sql for sql in attempted
+                if "watchlists" in sql or "premarket_analysis" in sql]
 
 
 def test_pipeline_marks_failed_analysts(canned_bundle, seven_role_snapshot):

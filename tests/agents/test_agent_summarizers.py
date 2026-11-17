@@ -456,6 +456,7 @@ def test_build_context_bundle_catches_exceptions(monkeypatch):
     # fails the whole run fails (test_build_context_bundle_raises_on_level_params_unavailable).
     from tests.lib.level_params_fixtures import ParamsDb
     monkeypatch.setattr(summarizers, "_query_strict", ParamsDb().query)
+    monkeypatch.setattr(summarizers, "brief_tickers", lambda: frozenset())  # outside the brief
     bundle = summarizers.build_context_bundle("SPY")
     # Every section should have failed gracefully.
     # `signals` was removed from the bundle on 2026-05-11 to break the
@@ -1028,6 +1029,7 @@ def test_build_context_bundle_forwards_inclusive_today_to_backtest(monkeypatch):
                  "summarize_catalysts", "summarize_news_sentiment"):
         monkeypatch.setattr(summarizers, name,
                             lambda *a, **k: {"available": False, "reason": "stub"})
+    monkeypatch.setattr(summarizers, "brief_tickers", lambda: frozenset())  # outside the brief
     summarizers.build_context_bundle("SPY", inclusive_today=False)
     assert calls["inclusive_today"] is False
 

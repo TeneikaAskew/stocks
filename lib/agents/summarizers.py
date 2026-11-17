@@ -2108,6 +2108,136 @@ def retrieve_similar_journal(
 
 
 # ---------------------------------------------------------------------------
+# The brief's tickers and the three sections read from its row
+# (FEAT-INSIGHT-001 Design 1)
+# ---------------------------------------------------------------------------
+
+
+BRIEF_PLAN_MISSING = "brief_plan_missing"
+
+BRIEF_TICKERS_SQL = (
+    "SELECT ticker FROM watchlists "
+    "WHERE user_id = :u AND removed_at IS NULL AND in_brief = TRUE"
+)
+
+
+def brief_tickers() -> frozenset[str]:
+    """The tickers the premarket brief covers (watchlists rows with
+    in_brief = TRUE for the default owner), upper-cased, in one strict read.
+
+    A failed read raises. gcp.fetchers._watchlist.load_watchlist returns []
+    on a failed query, which here would send every brief ticker down the
+    builder path as if it were outside the brief (CLAUDE.md 3.7)."""
+    df = _query_strict(BRIEF_TICKERS_SQL, {"u": "default"})
+    return frozenset(str(t).upper() for t in df["ticker"]) if not df.empty else frozenset()
+
+
+def _resolve_brief_tickers() -> frozenset[str]:
+    """`brief_tickers()` looked up at call time, so a caller's parameter of
+    the same name does not shadow it."""
+    return brief_tickers()
+
+
+def _brief_market_section(row: dict) -> dict:
+    """The market section from the brief row: the row's values under the
+    section's own key names, nothing computed. Keys the row does not hold
+    (regime, bb_pct, price_vs_ema20_pct, macd, macd_histogram) are absent."""
+    if not row.get("available"):
+        return dict(row)
+    basis = row.get("level_basis")
+    return {
+        "available": True,
+        "source": "brief_row",
+        "date": row["brief_ref"]["analysis_date"],
+        "close": row.get("price"),
+        "rsi_14": row.get("rsi"),
+        "sma_200": row.get("sma200"),
+        "ema_9": row.get("ema9"),
+        "ema_20": row.get("ema20"),
+        "atr_14": row.get("atr14"),
+        "bb_upper": row.get("bb_upper"),
+        "bb_lower": row.get("bb_lower"),
+        "rvol": row.get("rvol"),
+        "volatility_20d": row.get("volatility_20d"),
+        "vol_tag": row.get("vol_regime"),
+        "macd_cross": row.get("macd_cross"),
+        "above_sma_200": row.get("above_sma200"),
+        "premarket": basis.get("premarket") if isinstance(basis, dict) else None,
+    }
+
+
+def _brief_strat_section(row: dict) -> dict:
+    """The strat section from the brief row. No trigger_high or trigger_low:
+    the trigger is the side's, in the session_levels section's level_basis."""
+    if not row.get("available"):
+        return dict(row)
+    return {
+        "available": True,
+        "source": "brief_row",
+        "date": row["brief_ref"]["analysis_date"],
+        "last_candle": row.get("strat_candle"),
+        "in_force_combo": row.get("strat_combo"),
+        "strat_setup": row.get("strat_setup"),
+        "ftfc_score": row.get("ftfc_score"),
+        "ftfc_direction": row.get("ftfc_direction"),
+        "ftfc_labels": row.get("ftfc_labels"),
+        "tf_continuity": row.get("tf_continuity"),
+        "tf_continuity_frames": row.get("tf_continuity_frames"),
+        "prev_day_high": row.get("prev_day_high"),
+        "prev_day_low": row.get("prev_day_low"),
+    }
+
+
+def _brief_session_levels_section(row: dict) -> dict:
+    """The session_levels section from the brief row: the row's level_basis
+    as stored (the same dict, not a SessionLevels round trip). Available only
+    when the basis is a dict whose status is ok; a null basis is
+    brief_plan_missing, any other status is its own reason."""
+    if not row.get("available"):
+        return dict(row)
+    basis = row.get("level_basis")
+    out = {
+        "available": isinstance(basis, dict) and basis.get("status") == "ok",
+        "source": "brief_row",
+        "session_date": row["brief_ref"]["analysis_date"],
+        "premarket_status": basis.get("premarket_status") if isinstance(basis, dict) else None,
+        "level_basis": basis,
+    }
+    if not isinstance(basis, dict):
+        out["reason"] = BRIEF_PLAN_MISSING
+    elif basis.get("status") != "ok":
+        out["reason"] = str(basis.get("status"))
+    return out
+
+
+class _BriefRowOnce:
+    """Reads the session's brief row once for a bundle and hands each of the
+    three sections the same result. A failed read is re-raised to each
+    section, so each is caught by the bundle's handler with the exception's
+    own reason, never as brief_row_missing."""
+
+    def __init__(self, ticker: str, as_of: Optional[date_type]) -> None:
+        self._ticker, self._as_of = ticker, as_of
+        self._read = False
+        self._row: Optional[dict] = None
+        self._error: Optional[BaseException] = None
+
+    def row(self) -> dict:
+        if not self._read:
+            self._read = True
+            try:
+                self._row = summarize_brief_row(self._ticker, self._as_of)
+            except Exception as exc:  # re-raised below, to every section
+                self._error = exc
+        if self._error is not None:
+            raise self._error
+        return self._row  # type: ignore[return-value]
+
+    def brief_ref(self) -> Optional[dict]:
+        return self._row.get("brief_ref") if self._row else None
+
+
+# ---------------------------------------------------------------------------
 # Bundle — one call to collect every section. Failed summaries are
 # captured in `failed_sections` rather than raising.
 # ---------------------------------------------------------------------------
@@ -2117,6 +2247,7 @@ def build_context_bundle(
     ticker: str, as_of: Optional[date_type] = None,
     inclusive_today: bool = False,
     *, universe: Optional["WatchlistMembership"] = None,
+    brief_tickers: Optional[frozenset[str]] = None,
 ) -> dict:
     """Collect all summarizer outputs into one dict for analyst prompts.
 
@@ -2135,15 +2266,39 @@ def build_context_bundle(
     the cross-ticker analog set, forwarded to ``summarize_backtest_metrics``.
     Left at None it is resolved there, on the sparse path only, by the one
     resolver — this parameter is an injection point, not a second source.
+
+    ``brief_tickers`` (FEAT-INSIGHT-001 Design 1): the tickers the premarket
+    brief covers. Left at None it is read by ``brief_tickers()`` before any
+    section, and a failed read raises. For a brief ticker the market, strat
+    and session_levels sections come from the session's brief row, read once
+    (``summarize_brief_row``), with ``source: brief_row``; nothing they hold
+    is recalculated, and a missing row makes all three unavailable with
+    reason brief_row_missing. Any other ticker keeps the readers and the
+    builder (decision 2). The bundle's ``brief_ref`` names the row read, or
+    is None.
     """
+    if brief_tickers is None:
+        brief_tickers = _resolve_brief_tickers()
     bundle = {
         "ticker": ticker.upper(),
         "as_of": str(as_of) if as_of else None,
     }
+    brief: Optional[_BriefRowOnce] = None
+    if ticker.upper() in brief_tickers:
+        brief = _BriefRowOnce(ticker, as_of)
+        market_fn = lambda: _brief_market_section(brief.row())  # noqa: E731
+        strat_fn = lambda: _brief_strat_section(brief.row())  # noqa: E731
+        levels_fn = lambda: _brief_session_levels_section(brief.row())  # noqa: E731
+    else:
+        market_fn = lambda: summarize_market_context(  # noqa: E731
+            ticker, as_of, inclusive_today=inclusive_today)
+        strat_fn = lambda: summarize_strat_status(  # noqa: E731
+            ticker, as_of, inclusive_today=inclusive_today)
+        levels_fn = lambda: summarize_session_levels(ticker, as_of)  # noqa: E731
     sections = {
-        "market": lambda: summarize_market_context(ticker, as_of, inclusive_today=inclusive_today),
-        "strat": lambda: summarize_strat_status(ticker, as_of, inclusive_today=inclusive_today),
-        "session_levels": lambda: summarize_session_levels(ticker, as_of),
+        "market": market_fn,
+        "strat": strat_fn,
+        "session_levels": levels_fn,
         "options": lambda: summarize_options_flow(ticker, as_of, inclusive_today=inclusive_today),
         "gamma": lambda: summarize_gamma_levels(ticker, as_of, inclusive_today=inclusive_today),
         # NOTE: `signals` (signal_alerts history) is deliberately NOT in
@@ -2190,6 +2345,7 @@ def build_context_bundle(
             bundle[name] = {"available": False, "reason": f"exception: {e}"}
             failed.append(name)
             failed_reasons[name] = f"exception: {type(e).__name__}: {e}"
+    bundle["brief_ref"] = brief.brief_ref() if brief is not None else None
     bundle["failed_sections"] = failed
     bundle["failed_section_reasons"] = failed_reasons
     return bundle

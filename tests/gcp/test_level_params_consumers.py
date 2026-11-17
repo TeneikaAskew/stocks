@@ -133,6 +133,9 @@ def _stub_other_sections(monkeypatch):
                  "summarize_news_sentiment"):
         monkeypatch.setattr(summarizers, name, lambda *a, **k: {"available": True})
     monkeypatch.setattr(summarizers, "_query_strict", _broken().query)
+    # FEAT-INSIGHT-001: a ticker outside the brief keeps the level builder and
+    # its parameter read; the brief's own tickers read the brief row instead.
+    monkeypatch.setattr(summarizers, "brief_tickers", lambda: frozenset())
 
 
 def test_build_context_bundle_raises_on_level_params_unavailable(monkeypatch):
