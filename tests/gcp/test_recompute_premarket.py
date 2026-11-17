@@ -44,6 +44,19 @@ def daily_history(last: date, sessions: int = 40) -> pd.DataFrame:
     })
 
 
+# The extreme rules' record of the fixture session (FEAT-PLAYBOOK-001 B8):
+# 330 bars of 1,000 shares between 99.5 and 100.5, each reached by more than
+# one bar, with the prior close 99.0. The writers put it in pre_filter_params.
+RULE_BLOCKS = {
+    "confirmed": {"rule": "two-bars-or-body-v1", "raw_high": 100.5, "raw_low": 99.5,
+                  "high_bars_above": 0, "low_bars_below": 0,
+                  "stale_close_reports": {"rule": "stale-close-report-v1", "high": 0, "low": 0,
+                                          "prior_close": 99.0},
+                  "reason": None},
+    "thin": {"rule": "thin-bar-v1", "min_volume": 100, "bars_excluded": 0},
+}
+
+
 # ── one function for the computation ──────────────────────────────────
 
 
@@ -66,8 +79,11 @@ def test_the_snapshot_is_the_one_place(monkeypatch):
         "pre_excluded_stale_prints": 0,
         "pre_excluded_spikes": 0,
         "pre_filter_status": "ok",
-        "pre_filter_params": premarket_filter_inputs(
-            params, {"atr_14": 2.0, "atr_5": 2.0})["params"],
+        # The threshold record with the extreme rules' record beside it
+        # (FEAT-PLAYBOOK-001 B8; the threshold record alone until then).
+        "pre_filter_params": {
+            **premarket_filter_inputs(params, {"atr_14": 2.0, "atr_5": 2.0})["params"],
+            **RULE_BLOCKS},
     }
 
     # A session before the ticker's first parameter row: unfiltered, and it says so.
@@ -87,7 +103,9 @@ def test_the_snapshot_is_the_one_place(monkeypatch):
     # The run could not read the parameter tables: what the nightly records.
     unread = fmd.premarket_snapshot("SPY", day, premarket_bars(day), PRIOR, None, READ_AT)
     assert unread["pre_filter_status"] == "level_params_unavailable"
-    assert unread["pre_filter_params"] is None
+    # No threshold record; the extreme rules ran and are recorded (None until
+    # FEAT-PLAYBOOK-001 B8).
+    assert unread["pre_filter_params"] == RULE_BLOCKS
 
     empty = premarket_bars(day).iloc[0:0]
     assert fmd.premarket_snapshot("SPY", day, empty, PRIOR, params, READ_AT) is None
@@ -173,8 +191,12 @@ def test_the_nightly_calls_the_snapshot(monkeypatch):
 
 
 def test_the_nightly_keeps_a_stored_price_when_the_new_one_is_none(monkeypatch):
-    """The nightly's own write rule: a price column is set only when the new
-    value is not None; the provenance columns always."""
+    """The nightly's own write rule: pre_vwap, pre_volume and gap_pct are set
+    only when the new value is not None; the provenance columns always. Since
+    FEAT-PLAYBOOK-001 B8 the high, the low and the range are written as
+    computed, None included, so a rejected extreme is cleared and a range no
+    snapshot gives (here: no ATR, the parameters were unreadable) does not
+    stay from an earlier run."""
     day = date(2026, 10, 6)
     history = daily_history(day)
     bars = premarket_bars(day).drop(columns=["inserted_at"])
@@ -189,10 +211,10 @@ def test_the_nightly_keeps_a_stored_price_when_the_new_one_is_none(monkeypatch):
     fmd.compute_and_upsert_daily_indicators("SPY", "2026-10-06", level_params=None)
 
     (row,) = written
-    assert "pre_range_atr" not in row            # None: the stored value is kept
+    assert "pre_range_atr" in row and pd.isna(row["pre_range_atr"])   # None: written, clears
     assert row["pre_filter_status"] == "level_params_unavailable"
     assert row["pre_excluded_spikes"] is None    # provenance: always written
-    assert row["pre_filter_params"] is None
+    assert row["pre_filter_params"] == RULE_BLOCKS
     assert row["pre_high"] == 100.5
 
 
@@ -392,20 +414,25 @@ def premarket_report(tmp_path, run_id: str = RUN_ID):
 
 WINDOW = ("--from", "2026-09-24", "--to", "2026-10-06")
 
-OK_PARAMS = (
+OK_THRESHOLDS = (
     '{"atr": 2.0, "atr_basis": "atr_14", '
     '"pm_spike_atr": {"effective_from": "2026-10-01", "run_id": "' + PARAMS_RUN + '", '
     '"status": "ok", "value": 0.5}, '
     '"pm_stale_print_atr": {"effective_from": "2026-10-01", "run_id": "' + PARAMS_RUN + '", '
     '"status": "ok", "value": 0.1}, "policy_effective_from": "2015-01-02"}'
 )
-UNAVAILABLE_PARAMS = (
+UNAVAILABLE_THRESHOLDS = (
     '{"atr": 2.0, "atr_basis": "atr_14", '
     '"pm_spike_atr": {"effective_from": null, "run_id": null, '
     '"status": "params_unavailable", "value": null}, '
     '"pm_stale_print_atr": {"effective_from": null, "run_id": null, '
     '"status": "params_unavailable", "value": null}, "policy_effective_from": "2015-01-02"}'
 )
+# What the recompute writes: the threshold record with the extreme rules'
+# record beside it (FEAT-PLAYBOOK-001 B8), as the report prints it.
+OK_PARAMS = json.dumps({**json.loads(OK_THRESHOLDS), **RULE_BLOCKS}, sort_keys=True)
+UNAVAILABLE_PARAMS = json.dumps({**json.loads(UNAVAILABLE_THRESHOLDS), **RULE_BLOCKS},
+                                sort_keys=True)
 READ_AT_TEXT = "2026-11-14T12:00:00.123456+00:00"
 
 OLD = {

@@ -96,7 +96,8 @@ def test_brief_basis_is_plain_json_with_what_the_spec_lists(brief_basis):
     assert b["session_date"] == "2026-11-06" and b["last_bar_date"] == "2026-11-05"
     assert b["atr"] == pytest.approx(fx.prior_atr("QQQ"))
     assert b["premarket"]["date"] == "2026-11-06"
-    assert b["premarket"]["pre_low"] == pytest.approx(649.62)
+    # FEAT-PLAYBOOK-001 B7: the confirmed low (649.62 until then, a lone wick).
+    assert b["premarket"]["pre_low"] == pytest.approx(649.65)
     assert {lv["name"] for lv in b["levels"]} >= {"PDH", "PDL", "PDC", "PWH", "PYH", "PMK_L"}
     assert b["long"]["trigger"]["name"] == "PMK_H" and b["short"]["trigger"]["name"] == "PMK_L"
     rebuilt = SessionLevels.from_basis(b)
@@ -397,7 +398,8 @@ def test_each_reader_builds_when_the_column_is_absent(monkeypatch, brief_basis, 
 def test_resolver_reads_live_basis_ignores_replay_and_builds_without_the_column(brief_basis):
     bogus = _bogus(brief_basis)
     built = _resolver_inputs(_AnalysisDb([_row(bogus, "replay")]))
-    assert built["calls_trigger_price"] == pytest.approx(660.398)
+    # FEAT-PLAYBOOK-001 B7: the confirmed high (660.398 until then, a lone wick).
+    assert built["calls_trigger_price"] == pytest.approx(660.29)
     assert built["calls_t1_price"] == pytest.approx(661.14)
     live = _resolver_inputs(_AnalysisDb([_row(bogus, "live")]))
     assert live["calls_t1_price"] != pytest.approx(661.14)        # read the live row
@@ -457,7 +459,7 @@ def _exit_picks(sl):
 def test_v3_basis_records_the_exit_parameters():
     from tests.lib.session_levels_helpers import d8_basis
     stored = json.loads(json.dumps(SessionLevels.from_basis(d8_basis()).to_basis()))
-    assert LEVEL_RULE_VERSION == stored["rule_version"] == "feat-strat-001.v3"
+    assert LEVEL_RULE_VERSION == stored["rule_version"] == "feat-strat-001.v4"
     for key in EXIT_KEYS:
         p = stored["params"][key]
         assert p["status"] == "ok" and p["value"] is not None
