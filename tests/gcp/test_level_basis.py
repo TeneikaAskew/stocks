@@ -765,8 +765,11 @@ def test_a_reader_that_knows_fewer_versions_refuses_then_recovers(monkeypatch):
     assert {k: json.loads(json.dumps(rebuilt))[k] for k in keys} == {k: written[k] for k in keys}
     (updates, reason), engine = _resolve()
     assert reason == "resolved"
-    [(_, bound)] = engine.conn.calls
+    # The outcome update, then the day's plan_excursions write keyed by the
+    # basis's entry rule version (target hit rates r2 spec, Design 4).
+    (_, bound), (excursion_sql, excursion_key) = engine.conn.calls
     assert bound["calls_plan_r_status"] == "ok" and bound["calls_plan_r"] is not None
+    assert "plan_excursions" in excursion_sql and excursion_key["v"] == LEVEL_RULE_VERSION
 
 
 def test_a_replay_with_no_spacing_row_publishes_no_unspaced_target():

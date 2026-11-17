@@ -66,8 +66,8 @@ LEGACY_1753_VALUES = {
 
 
 def schema_statements() -> list[str]:
-    """The two CREATE TABLE statements, the index and the policy seed from
-    gcp/schema.sql, as committed."""
+    """The two parameter CREATE TABLE statements, the index and the policy
+    seed from gcp/schema.sql, as committed, then plan_excursions."""
     text = SCHEMA.read_text()
     out = []
     for pattern in (
@@ -79,6 +79,11 @@ def schema_statements() -> list[str]:
         m = re.search(pattern, text, re.S)
         assert m, f"gcp/schema.sql lacks {pattern[:60]}"
         out.append(m.group(0))
+    # The hit-rate table the brief reads in the same run (target hit rates
+    # spec, Design 2). SQLite has no NOW(), the one change for it here.
+    m = re.search(r"CREATE TABLE IF NOT EXISTS plan_excursions \(.*?\n\);", text, re.S)
+    assert m, "gcp/schema.sql lacks CREATE TABLE IF NOT EXISTS plan_excursions"
+    out.append(m.group(0).replace("DEFAULT NOW()", "DEFAULT CURRENT_TIMESTAMP"))
     return out
 
 

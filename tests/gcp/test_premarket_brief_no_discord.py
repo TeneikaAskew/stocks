@@ -366,8 +366,9 @@ STALE_LAST_BAR = pd.Timestamp('2026-10-30')     # four sessions short of 2026-11
 # read: the level parameters, three RSI calibration reads (cached for the life
 # of the process, so _run clears that cache), three statement timeouts, six
 # options snapshot reads, two earnings reads, the economic events and the
-# earnings analytics.
-DRY_RUN_STATEMENTS = 17
+# earnings analytics, and the one plan_excursions read for the target hit
+# rates (r2 spec, Design 1; one query for every ticker).
+DRY_RUN_STATEMENTS = 18
 
 
 def _stale_playbook_read(monkeypatch, db, ticker: str = STALE_TICKER) -> None:

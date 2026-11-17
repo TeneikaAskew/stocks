@@ -1440,6 +1440,10 @@ class TestAtrRungsDisplayOnly:
             assert hb['plan_target_level_types_status'] == 'ok', t
             assert hparams.pop('plan_target_level_types')['extra'] == {
                 'level_types': ['gap_high', 'gap_low']}, t
+            # Target hit rates r2 spec: the policy-wide row is recorded with
+            # the other parameters; it changes nothing else in the basis.
+            assert hparams.pop('target_reach_rate')['extra'] == {
+                'since': '2022-01-03', 'measure': 'touch_atr'}, t
             assert hparams == bb['params'], t
             # The base is a stored v3 basis; a brief built now records v5
             # (FEAT-PLAYBOOK-001 B8b, then the prior-close print rule). They
@@ -1822,6 +1826,86 @@ class TestPlanGapEdges:
     def test_the_design_8_goldens_are_unchanged(self):
         text = format_levels_for_brief(_gap_session().to_level_map(), 'neutral')
         assert D8_CALLS in text and D8_PUTS in text
+
+
+class TestTargetHitRates:
+    """FEAT-STRAT-001 target hit rates r2 spec, done_when 'Brief copy':
+    format_levels_for_brief takes the reach table and passes it on, and on a
+    basis whose targets the level rule picked its output is the same with
+    or without a table, and equal to main's. So no thirds line ever carries
+    a count; the quarter-target change prints them. IWM 2025-10-22 is the
+    stored v3 basis of that session; the table is the Experiment's 906 IWM
+    trades before it, in ATR (the seeded measure) and in stop distances."""
+
+    @staticmethod
+    def _level_map():
+        import json
+        from pathlib import Path
+        from lib.strat_levels import SessionLevels
+        basis = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
+                            / 'iwm_2025_10_22_level_basis.json').read_text())
+        return SessionLevels.from_basis(basis).to_level_map()
+
+    @staticmethod
+    def _reach(name, key):
+        import json
+        from pathlib import Path
+        from lib.target_reach import ReachTable
+        r = json.loads((Path(__file__).resolve().parents[1] / 'fixtures' / name).read_text())
+        return ReachTable('IWM', r['n'], r['first'], r['last'], tuple(r[key]))
+
+    def _tables(self):
+        from lib.strat_levels import REACH_UNAVAILABLE
+        from lib.target_reach import ReachTable
+        return [self._reach('iwm_reach_atr_before_2025_10_22.json', 'excursion_atr'),
+                self._reach('iwm_reach_before_2025_10_22.json', 'excursion_r'),
+                ReachTable('IWM', 0, None, None, ()), REACH_UNAVAILABLE]
+
+    def test_the_906_trade_table_changes_nothing_on_either_side(self):
+        from lib.strat_levels import format_levels_for_brief
+        lm = self._level_map()
+        base = format_levels_for_brief(lm, 'neutral')
+        assert 'CALLS above' in base and 'PUTS below' in base
+        assert self._tables()[0].n == 906
+        for reach in self._tables():
+            for min_sample in (30, None):
+                assert format_levels_for_brief(lm, 'neutral', reach=reach,
+                                               reach_min_sample=min_sample) == base
+
+    def test_the_d8_goldens_are_unchanged_with_a_table(self):
+        from lib.strat_levels import format_levels_for_brief
+        for reach in self._tables():
+            text = format_levels_for_brief(d8_session().to_level_map(), 'neutral',
+                                           reach=reach, reach_min_sample=30)
+            assert D8_CALLS in text and D8_PUTS in text
+            assert 'reached ' not in text and 'Reached before the stop' not in text
+
+    def test_no_ladder_is_left(self):
+        import lib.strat_levels as m
+        for name in ('combined_ladder', 'hit_rate_lines', 'LADDER_MAX_RUNGS', 'Rung'):
+            assert not hasattr(m, name), name
+
+
+class TestEntryRuleVersion:
+    """FEAT-STRAT-001 target hit rates r2 spec, done_when 'Entry rule
+    version': the rule version whose trigger and stop a basis uses."""
+
+    @pytest.mark.parametrize('version', ['feat-strat-001.v3', 'feat-strat-001.v4',
+                                         'feat-strat-001.v5'])
+    def test_each_pick_rule_version_on_main_is_its_own(self, version):
+        from lib.strat_levels import PICK_RULE_VERSIONS, entry_rule_version
+        assert version in PICK_RULE_VERSIONS
+        assert entry_rule_version(version) == version
+
+    def test_the_current_version_is_its_own(self):
+        from lib.strat_levels import LEVEL_RULE_VERSION, entry_rule_version
+        assert entry_rule_version(LEVEL_RULE_VERSION) == LEVEL_RULE_VERSION
+
+    @pytest.mark.parametrize('version', ['feat-strat-001.v2', 'feat-strat-001.v1',
+                                         'feat-strat-001.v99', '', None, 5])
+    def test_any_other_version_has_none(self, version):
+        from lib.strat_levels import entry_rule_version
+        assert entry_rule_version(version) is None
 
 
 # ── FEAT-PLAYBOOK-001 B8b: the level rule is v4, and v3 reads as before ─

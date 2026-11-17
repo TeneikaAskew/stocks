@@ -125,7 +125,30 @@ def run_brief(monkeypatch, ticker: str, frame: pd.DataFrame, as_of: str = "2026-
     playbook path) offline on `frame` and return the ticker's entry. The
     level parameters come from `params_db` (a level_params_fixtures.ParamsDb)
     through load_level_params's own SQL; by default every key at the #1753
-    values."""
+    values. The hit rates are read from the same database's plan_excursions
+    (empty by default)."""
+    return run_briefs(monkeypatch, {ticker: frame}, as_of, params_db=params_db)[ticker]
+
+
+def run_briefs(monkeypatch, frames: dict, as_of: str = "2026-11-06",
+               *, params_db=None) -> dict:
+    """run_brief for several tickers in ONE brief run: `frames` maps each
+    ticker to its loader frame. Returns every ticker's entry."""
+    from gcp import premarket_brief as pb
+    cfg, persisted = offline_brief_env(monkeypatch, frames, as_of, params_db=params_db)
+    brief = pb.generate_premarket_brief(cfg=cfg)
+    out = {t: brief["tickers"][t] for t in frames}
+    for t in frames:
+        out[t]["_persisted_level_maps"] = [m for m in persisted if m.ticker.upper() == t.upper()]
+    return out
+
+
+def offline_brief_env(monkeypatch, frames: dict, as_of: str = "2026-11-06",
+                      *, params_db=None):
+    """The offline setup run_briefs drives the brief in: no network, the
+    loader returns `frames`, the parameters and hit rates come from
+    `params_db`, and every persist_level_map call is recorded rather than
+    written. Returns (cfg, persisted)."""
     from tests.lib.level_params_fixtures import legacy_db
     import socket
 
@@ -140,12 +163,14 @@ def run_brief(monkeypatch, ticker: str, frame: pd.DataFrame, as_of: str = "2026-
     monkeypatch.setattr(socket.socket, "connect", refuse)
     monkeypatch.setattr(socket, "create_connection", refuse)
     monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: False)
+    tickers = list(frames)
     cfg = AppConfig()
-    cfg.market.tickers = [ticker]
+    cfg.market.tickers = tickers
     for key, value in {"BRIEF_AS_OF": as_of, "BRIEF_AMC_REACTIONS": "0",
-                       "BRIEF_LLM_DISABLE": "1", "BRIEF_TICKERS": ticker}.items():
+                       "BRIEF_LLM_DISABLE": "1", "BRIEF_TICKERS": ",".join(tickers)}.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(DataLoader, "load_daily", lambda *a, **k: frame.copy())
+    monkeypatch.setattr(DataLoader, "load_daily",
+                        lambda self, t, *a, **k: frames[t].copy())
     monkeypatch.setattr(pb, "check_call_conditions", lambda row, **k: (4, []))
     monkeypatch.setattr(pb, "check_put_conditions", lambda row, **k: (3, []))
     monkeypatch.setattr(pb, "load_earnings_for_brief", lambda *a, **k: {"earnings": []})
@@ -153,7 +178,7 @@ def run_brief(monkeypatch, ticker: str, frame: pd.DataFrame, as_of: str = "2026-
     monkeypatch.setattr(pb, "_load_gamma_freshness", lambda *a, **k: dict(
         data_source="unavailable", snapshot_ts=None, snapshot_date=None, days_behind=None))
     monkeypatch.setattr(pb, "_delete_null_close_rows", lambda *a: None)
-    db = params_db if params_db is not None else legacy_db(ticker)
+    db = params_db if params_db is not None else legacy_db(tickers)
     monkeypatch.setattr(pb, "_level_params_query", db.query)
 
     persisted = []
@@ -178,10 +203,7 @@ def run_brief(monkeypatch, ticker: str, frame: pd.DataFrame, as_of: str = "2026-
     monkeypatch.setattr(database, "get_engine", lambda: _Engine())
     monkeypatch.setattr(sl, "persist_level_map",
                         lambda level_map, conn, **k: persisted.append(level_map) or len(level_map.levels))
-    brief = pb.generate_premarket_brief(cfg=cfg)
-    out = brief["tickers"][ticker]
-    out["_persisted_level_maps"] = persisted
-    return out
+    return cfg, persisted
 
 
 def run_planner(monkeypatch, ticker: str, frame: pd.DataFrame, direction: str,
