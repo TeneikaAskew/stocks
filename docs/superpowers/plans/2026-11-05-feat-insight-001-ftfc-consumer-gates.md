@@ -3,7 +3,7 @@ feat_id: FEAT-INSIGHT-001
 spec: docs/superpowers/specs/2026-11-05-feat-insight-001-ftfc-consumer-gates.md
 branch: fix/feat-insight-001-ftfc-aligned-conservative
 pr: 1737
-status: ready
+status: done
 ---
 
 # FTFC consumer gates in lib/agents implementation plan

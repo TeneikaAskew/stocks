@@ -3,7 +3,7 @@ feat_id: FEAT-CATALYST-001
 spec: docs/superpowers/specs/2026-11-03-feat-catalyst-001-retire-ew-source-own-scope.md
 branch: fix/feat-catalyst-001-ew-only-retirement
 pr: 1758
-status: ready
+status: done
 ---
 
 # EarningsWhispers-only retirement implementation plan

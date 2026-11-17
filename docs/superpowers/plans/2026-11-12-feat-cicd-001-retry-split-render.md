@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-31-feat-cicd-001-retry-split-substitution.md
 branch: feature/feat-cicd-001-retry-split-render-recut
 pr: 1836
-status: ready
+status: done
 ---
 
 # Render the declared retry split as a trusted substitution: implementation plan
