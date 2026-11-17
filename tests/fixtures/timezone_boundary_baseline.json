@@ -58,11 +58,6 @@
    "main::date.today()"
   ]
  },
- "gcp/fetchers/fetch_av_indicators.py": {
-  "utc-parse": [
-   "fetch_indicator::pd.to_datetime(df['ts'], utc=True)"
-  ]
- },
  "gcp/fetchers/fetch_market_data.py": {
   "sql-utc-date": [
    "_earnings_tickers_in_window::fstr#1fa2471ddfa5"

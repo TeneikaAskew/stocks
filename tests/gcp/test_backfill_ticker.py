@@ -228,7 +228,7 @@ def stubbed_run(monkeypatch):
     daily = pd.DataFrame({
         "date": [date(2026, 4, 23), date(2026, 4, 24)],
         "open": [1.0, 1.0], "high": [1.0, 1.0], "low": [1.0, 1.0],
-        "close": [1.0, 1.0], "adjusted_close": [1.0, 1.0], "volume": [1, 1],
+        "close": [1.0, 1.0], "volume": [1, 1],
     })
     watch = MagicMock()
     with patch.object(mod, "av_daily_full", return_value=daily), \
@@ -299,11 +299,10 @@ def test_run_fetches_and_writes_no_one_minute_bars(monkeypatch, caplog):
 
     def daily_bar(close):
         return {"1. open": "100.0", "2. high": "101.0", "3. low": "99.0",
-                "4. close": str(close), "5. adjusted close": str(close),
-                "6. volume": "1000"}
+                "4. close": str(close), "5. volume": "1000"}
 
     answers = {
-        "TIME_SERIES_DAILY_ADJUSTED": {"Time Series (Daily)": {
+        "TIME_SERIES_DAILY": {"Time Series (Daily)": {
             "2026-04-23": daily_bar(100.5), "2026-04-24": daily_bar(100.7)}},
         "NEWS_SENTIMENT": {"feed": []},
         "TIME_SERIES_INTRADAY": {"Time Series (1min)": {"2026-04-24 09:30:00": {
@@ -315,8 +314,8 @@ def test_run_fetches_and_writes_no_one_minute_bars(monkeypatch, caplog):
         raise AssertionError(f"add_to_watchlist({ticker!r}) called with the variable set to false")
 
     for include_news, expected in (
-            ("false", ["TIME_SERIES_DAILY_ADJUSTED"]),
-            ("true", ["TIME_SERIES_DAILY_ADJUSTED", "NEWS_SENTIMENT"])):
+            ("false", ["TIME_SERIES_DAILY"]),
+            ("true", ["TIME_SERIES_DAILY", "NEWS_SENTIMENT"])):
         monkeypatch.setenv("BACKFILL_INCLUDE_NEWS", include_news)
         caplog.clear()
         seen: list[str] = []
@@ -669,7 +668,7 @@ def test_premarket_read_failure_fails_the_run(monkeypatch):
         monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", "true")
         daily = pd.DataFrame({
             "date": [D5, D6], "open": [1.0, 1.0], "high": [1.0, 1.0], "low": [1.0, 1.0],
-            "close": [1.0, 1.0], "adjusted_close": [1.0, 1.0], "volume": [1, 1],
+            "close": [1.0, 1.0], "volume": [1, 1],
         })
         watch = MagicMock()
         reads = _premarket_reads(monkeypatch, fail_on_d5)

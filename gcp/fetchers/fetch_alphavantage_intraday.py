@@ -1197,13 +1197,13 @@ def run_verify_months(path: str, limit: Optional[int]) -> int:
 
 # -- Basis check (FEAT-DATA-001, Design C) ------------------------------------
 #
-# Until 2026-11-13 the 1-min requests returned split- and dividend-adjusted
-# prices, adjusted as of the call, so every stored bar sits at the basis of its
+# Until 2026-11-13 the 1-min requests returned prices adjusted for splits and
+# dividends, adjusted as of the call, so every stored bar sits at the basis of its
 # last fetch. A session's basis is read off the daily table: its regular-hours
 # high and low against the daily high and low, which are as traded. Read-only.
 
 # market_data_daily.data_source values whose high and low came from the daily
-# endpoint (TIME_SERIES_DAILY_ADJUSTED's "2. high" / "3. low", as traded). A
+# endpoint (TIME_SERIES_DAILY's "2. high" / "3. low", as traded). A
 # row stamped alphavantage_1min was built from the session's own 1-min bars, so
 # those bars read 1.0 against it whatever basis they are on; a row with any
 # other stamp, or none, has an origin the row cannot tell. Neither is ever a

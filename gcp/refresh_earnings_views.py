@@ -46,6 +46,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from gcp.database import (  # noqa: E402
+    _coerce_int_columns,
     execute_sql,
     get_engine,
     is_cloud_sql_configured,
@@ -351,6 +352,12 @@ def _replace_upcoming_rows(frame: pd.DataFrame, refresh_date: date) -> int:
             {"d": refresh_date})
         table = sa.Table('earnings_upcoming_with_history', sa.MetaData(), autoload_with=conn)
         if not frame.empty:
+            # pandas widens an INTEGER column to float64 when any row holds
+            # None (43 -> 43.0); pg8000 renders that float as '43.0' under
+            # the INTEGER oid and Postgres refuses it (22P02, issue #1983).
+            # upsert_dataframe ran this shared coercion on the frame; the
+            # direct insert must too.
+            frame = _coerce_int_columns(frame, table)
             records = frame.to_dict('records')
             for row in records:
                 for key, value in row.items():

@@ -1510,7 +1510,7 @@ def _history_contract(as_of, price_basis, rule_version, input_identity, *,
     clock = clock.tz_convert(ET_NAME)
     if rule_version not in ('strat-state-v2','legacy-pattern-v1'):
         raise ValueError('explicit supported history rule_version required')
-    if price_basis not in ('synthetic_coherent','av-adjusted-daily-v1'):
+    if price_basis not in ('synthetic_coherent',):
         raise ValueError('unsupported or mixed history price basis')
     if (not isinstance(input_identity,dict) or
         set(input_identity)-{'source_revision','artifact_id','input_sha256'} or

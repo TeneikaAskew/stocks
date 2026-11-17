@@ -9,7 +9,7 @@ stale, so re-running it is a quick no-op once everything's caught up.
 Coverage per ticker:
 
   market_data_daily   — full-history backfill via AV
-                        TIME_SERIES_DAILY_ADJUSTED `outputsize=full`
+                        TIME_SERIES_DAILY `outputsize=full` (as traded)
                         if fewer than 200 rows exist.
   market_data_intraday — last 5 trading days of 1-min bars (for
                         analog matching + backtest signals).
@@ -202,7 +202,7 @@ def backfill_daily(ticker: str) -> bool:
         resp = requests.get(
             "https://www.alphavantage.co/query",
             params={
-                "function": "TIME_SERIES_DAILY_ADJUSTED",
+                "function": "TIME_SERIES_DAILY",
                 "symbol": ticker,
                 "outputsize": "full",
                 "datatype": "json",
@@ -228,8 +228,7 @@ def backfill_daily(ticker: str) -> bool:
             "high": float(v["2. high"]),
             "low": float(v["3. low"]),
             "close": float(v["4. close"]),
-            "adjusted_close": float(v["5. adjusted close"]),
-            "volume": int(v["6. volume"]),
+            "volume": int(v["5. volume"]),
             "data_source": "alphavantage_daily",
         })
     df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
