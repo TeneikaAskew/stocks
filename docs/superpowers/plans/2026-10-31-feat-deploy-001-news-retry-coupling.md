@@ -100,11 +100,8 @@ from the changed retry values, if the docs audit requires them.
   sidecar produced and committed, `verify` reports identity-matched on route declared-note.
 - [x] Docs audit on this branch and on origin/main: no new finding. 2026-11-17: 313 findings on the branch and 313 on main `af1f7e3f5`, 0 new.
 - [x] `python3 scripts/gate/spec_gate.py --pr origin/main`. 2026-11-17: spec gate ok.
-- [x] Record exact historical and current review lineage on the PR; an authorized
+- [ ] Record exact historical and current review lineage on the PR; an authorized
   independent final review, current-head CODE/SEC review and CI before release.
-  2026-11-17: lineage in PR comment 6954142160, Claude's final review in 6953781763,
-  Codex CODE clean on the merged head `de7db056c`, SEC counted from `437d5aba` (same
-  deploy.sh diff), all required checks green; merged as `3e86cc834`.
 
 ## Rollout record
 
