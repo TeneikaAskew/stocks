@@ -1,4 +1,4 @@
-# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 01:05Z
+# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 01:50Z
 
 Keep this note current: whoever finishes a task updates its row in section 2 and its part of
 section 3 in the same PR or a docs PR right after (owner, 2026-11-16).
@@ -33,7 +33,7 @@ Rules the owner set for this work. They are not optional:
 
 ## 2. Every open PR and what it waits on
 
-**Blocker, 2026-11-17 00:51Z: GitHub Actions stopped starting jobs.** Every check on #2025's push
+**Resolved 2026-11-17 about 01:45Z (owner made the repository public): GitHub Actions had stopped starting jobs from 00:51Z.** The refused runs on #2010, #2001, #2023 and #2025 were re-run once at 01:49Z and started. The record of the outage follows. Every check on #2025's push
 855227c1c ended in two seconds with no step run; the annotation reads "The job was not started because
 recent account payments have failed or your spending limit needs to be increased. Please check the
 'Billing & plans' section in your settings." Jobs already running then finished. Only the owner can fix
@@ -50,8 +50,8 @@ was explained on its PR and re-run once.
 
 | PR | What | State | Next action |
 |---|---|---|---|
-| #2010 | Brief build (FEAT-PLAYBOOK-001) | Ready, auto-merge on. All 13 tasks pushed, head 1d92570d2 (main merged in at 4c49671aa, no conflict). Full body with all 17 boxes ticked posted 2026-11-17 00:10Z; gate re-ran on it. Codex's code review of 1d92570d2 raised one P2 (the from-bars dry run reads the daily row's `pre_filter_params`, not the brief's frozen copy): below the P1 threshold, replied, resolved, tracked in issue #2024. | Wait for CI and the merge. After merge: the owner's steps in the body. Issue #2024 is a later small fix. See 3.1. |
-| #2001 | Bad-print flags build (FEAT-DATA-001) | Ready, auto-merge OFF on purpose. Head 7b578659e, CI green, every box ticked with run links. First Codex code and security reviews recorded, no findings; no open threads. | Waits only on the owner's "merge 2001" (it changes `gcp/schema.sql`). After merge: the owner's steps in the body. See 3.2. |
+| #2010 | Brief build (FEAT-PLAYBOOK-001) | Ready, auto-merge on. Main (af5c605c4) merged in 2026-11-17 to clear #2020's snapshot conflict; head a30f684bf (Last reviewed 2026-11-17, note re-bound, snapshot regenerated, verify identity-matched); body updated. Codex reviewed a30f684bf, nothing new; the earlier P2 is tracked in #2024. CI re-run at 01:49Z after the Actions outage. | Wait for CI and the merge (the Cloud Build staging deploy follows on its own since it changes `lib/`). Then the owner's steps in the body. See 3.1. |
+| #2001 | Bad-print flags build (FEAT-DATA-001) | Ready, auto-merge OFF on purpose. Main merged in 2026-11-17 (head 6cd182c3a, snapshot regenerated, verify identity-matched); body updated. Codex reviewed 6cd182c3a, no findings. CI re-run at 01:49Z after the Actions outage. | When CI is green: waits only on the owner's "merge 2001" (it changes `gcp/schema.sql`). See 3.2. |
 | #2020 | 09:20 schedule build (FEAT-DEPLOY-001) | Merged 2026-11-17 00:24Z; plan set `status: done` on this branch. Nothing runs at 09:20 until deployed. | The owner's three deploys, each on the owner's yes, as the PR body lists. Then check the first 09:20 run. See 3.3. |
 | #2019 | Targets spec r2 (FEAT-STRAT-001) | Merged (f8f6c6996). | Done. |
 | #2018 | Targets plan | Merged 2026-11-17 00:55Z, bound to r2. | Done. The build waits on 3.1 and 3.5 being on main. See 3.4. |
