@@ -2,7 +2,7 @@
 feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-11-16-feat-strat-001-unknown-rule-version.md
 branch: feature/feat-strat-001-unknown-rule-version
-pr: null
+pr: 2043
 status: ready
 ---
 
