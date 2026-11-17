@@ -123,6 +123,12 @@ def _export(tickers, months, rows_per_month: int) -> tuple[float, dict]:
         try:
             if "market_data_daily" in sql:
                 return daily_rows(params["first"], params["last"])
+            if "intraday_bar_flag_coverage" in sql:
+                # No month judged: each entry records flags as not_judged.
+                return pd.DataFrame(columns=[
+                    "month", "rule_version", "checked_at", "bars_judged",
+                    "flags_regular_high", "flags_regular_low",
+                    "flags_extended_high", "flags_extended_low"])
             start = params["start"]
             return month_rows(start.year, start.month, rows_per_month)
         finally:

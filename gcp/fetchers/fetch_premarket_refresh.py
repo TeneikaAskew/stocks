@@ -197,7 +197,7 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
     snapshot carries pre_filter_status naming why and NULL excluded counts.
     """
     from gcp.fetchers.fetch_market_data import fetch_minute_data
-    from lib.indicators import calculate_premarket_context
+    from lib.indicators import calculate_premarket_context, premarket_rule_record
 
     iso_date = fetch_date.strftime('%Y-%m-%d')
     df = fetch_minute_data(ticker, iso_date, api_key)
@@ -252,6 +252,8 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         'pre_vwap': pm.get('pre_vwap'),
         'pre_volume': pm.get('pre_volume'),
         'gap_pct': pm.get('gap_pct'),
+        # Follows the high and the low: None when either was rejected.
+        'pre_range_atr': pm.get('pre_range_atr'),
         'excluded_prior_close_prints': pm.get('excluded_prior_close_prints'),
         'excluded_spike_prints': pm.get('excluded_spike_prints'),
         # The provenance columns (FEAT-STRAT-001), written when the table
@@ -264,8 +266,11 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         # and which (Design 8). Not ok: the builder refuses the snapshot.
         'pre_filter_status': 'ok' if pm.get('filtered') else (
             pm_filter['status'] if pm_filter['status'] != 'ok' else 'atr_unavailable'),
-        'pre_filter_params': (json.dumps(pm_filter['params'], sort_keys=True)
-                              if pm_filter['params'] is not None else None),
+        # The threshold record with the extreme rules' record beside it
+        # (FEAT-PLAYBOOK-001 B8); the two rule blocks alone when the
+        # parameters could not be read.
+        'pre_filter_params': json.dumps(
+            {**(pm_filter['params'] or {}), **premarket_rule_record(pm)}, sort_keys=True),
     }
     # How late the vendor's newest premarket bar is at this fetch
     # (FEAT-PLAYBOOK-001: the late brief builds on what this run fetched).
@@ -310,7 +315,11 @@ def upsert_premarket(rows: list[dict]) -> int:
     underlying bad rows from being written in the first place.
 
     For rows that DO have at least one pre_* signal:
-    - If today's row exists (rare at 8:30am), UPDATE pre_* only.
+    - If today's row exists (rare at 8:30am), UPDATE pre_* only. pre_high,
+      pre_low and pre_range_atr are overwritten with the snapshot's own
+      values, NULL included: an extreme the rules rejected is cleared, not
+      kept (FEAT-PLAYBOOK-001 B8). A ticker with no snapshot is not in `rows`
+      and its row is not touched.
     - If it doesn't, INSERT pre_* fields; full OHLC fills tonight at 11pm.
 
     Returns the number of rows touched.
@@ -347,7 +356,7 @@ def upsert_premarket(rows: list[dict]) -> int:
 _PROVENANCE_COLUMNS = ('pre_fetched_at', 'pre_excluded_stale_prints', 'pre_excluded_spikes',
                        'pre_filter_status', 'pre_filter_params')
 _UPSERT_KEYS = ('ticker', 'date', 'pre_high', 'pre_low', 'pre_vwap', 'pre_volume',
-                'gap_pct') + _PROVENANCE_COLUMNS
+                'gap_pct', 'pre_range_atr') + _PROVENANCE_COLUMNS
 
 
 def _has_provenance_columns(eng) -> bool:
@@ -369,13 +378,17 @@ def _has_provenance_columns(eng) -> bool:
 
 
 def _upsert_premarket_sql(with_provenance: bool) -> str:
-    cols = ['pre_high', 'pre_low', 'pre_vwap', 'pre_volume', 'gap_pct']
+    cols = ['pre_high', 'pre_low', 'pre_vwap', 'pre_volume', 'gap_pct', 'pre_range_atr']
     if with_provenance:
         cols += list(_PROVENANCE_COLUMNS)
     # The filter status and its counts describe this snapshot only: they are
     # overwritten, never COALESCEd with an earlier run's, so an unfiltered
     # rerun cannot leave an earlier run's 'ok' beside its unfiltered prices.
-    overwrite = {'pre_excluded_stale_prints', 'pre_excluded_spikes',
+    # The high, the low and the range are overwritten too: a NULL there is an
+    # extreme this snapshot's rules rejected, and COALESCE would keep the
+    # earlier price under the new rule's label.
+    overwrite = {'pre_high', 'pre_low', 'pre_range_atr',
+                 'pre_excluded_stale_prints', 'pre_excluded_spikes',
                  'pre_filter_status', 'pre_filter_params'}
     sets = ',\n            '.join(
         f"{c} = EXCLUDED.{c}" if c in overwrite

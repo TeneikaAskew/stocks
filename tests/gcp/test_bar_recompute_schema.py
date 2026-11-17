@@ -16,6 +16,7 @@ SCHEMA = Path(__file__).resolve().parents[2] / "gcp" / "schema.sql"
 
 # The appended block starts at this comment line and runs to the end of file.
 BLOCK_MARKER = "-- Bar recompute ledger and markers (FEAT-DATA-001)"
+NEXT_SECTION_MARKER = "-- Bar misprint flags (FEAT-DATA-001)"
 
 LEDGER_COLUMNS = (
     "id", "run_id", "target", "action", "ticker", "session_date", "row_key",
@@ -69,5 +70,10 @@ def test_the_action_and_target_columns_hold_their_values():
 def test_the_block_is_four_statements_for_the_applier():
     text = SCHEMA.read_text()
     assert text.count(BLOCK_MARKER) == 1
+    # The block ends where the next section's header comment begins, or at the
+    # end of the file while it is the last section.
     block = text[text.index(BLOCK_MARKER):]
+    following = block.find(NEXT_SECTION_MARKER)
+    if following != -1:
+        block = block[:following]
     assert len(split_statements(block)) == 4

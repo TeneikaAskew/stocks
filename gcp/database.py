@@ -547,6 +547,8 @@ def replace_rows_in_window(
     clear_key: Sequence[str] = ("ticker",),
     cleared: Optional[dict] = None,
     spare_ts: Sequence = (),
+    clear_span_tables: Sequence[str] = (),
+    advisory_locks: Sequence[int] = (),
 ) -> tuple[int, int]:
     """Atomically replace every row of *table* matching *key* with
     ``start <= ts_col < end`` by the rows of *df*. Returns (deleted, inserted).
@@ -596,6 +598,30 @@ def replace_rows_in_window(
     The returned ``deleted``, the locked-rows check and ``max_delete_ratio``
     all count the rows the DELETE removed, so spared rows are in none of them.
     The ``clear_tables`` deletes still cover the whole window.
+
+    ``clear_span_tables``: tables derived from *table* whose rows record, in
+    ``read_start`` and ``read_end``, the span of source rows they were
+    computed from (the bar flags and their coverage, FEAT-DATA-001). A ``ts``
+    clear is not enough for them: a row keyed outside the window can rest on
+    rows inside it. In the SAME transaction, after the ``clear_tables``
+    deletes, their rows of the ``clear_key`` columns whose
+    ``[read_start, read_end)`` overlaps the window are deleted and counted in
+    ``cleared`` with the others. A bad name is refused before the transaction
+    opens and a table that does not exist is skipped, as for ``clear_tables``.
+
+    ``advisory_locks``: 64-bit keys of transaction-scoped advisory locks the
+    swap takes before it locks or changes any row, so that it and a writer of
+    a ``clear_span_tables`` table that takes the same key never interleave
+    (the bar flag pass, issue #1982). Given any, the transaction first sets
+    the 30 s lock timeout, then runs ONE statement that reads the isolation
+    back and takes every key in ascending order, and only then its row lock,
+    ``verify``, DELETE, inserts and clears. The lock is a statement of its
+    own: a statement's snapshot is taken when it starts, so the clears that
+    follow see what a lock holder committed while this waited. That needs
+    READ COMMITTED, so any other isolation raises before a row is locked. A
+    key that is not an ``int`` in the signed 64-bit range raises ValueError
+    before the transaction opens. A lock not granted within the timeout
+    raises inside the transaction and nothing commits.
     """
     import sqlalchemy
     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -606,9 +632,9 @@ def replace_rows_in_window(
             raise ValueError("replace_rows_in_window: start/end must be tz-aware")
     if not key:
         raise ValueError("replace_rows_in_window: key must not be empty")
-    if clear_tables and not set(clear_key) <= set(key):
+    if (clear_tables or clear_span_tables) and not set(clear_key) <= set(key):
         raise ValueError("replace_rows_in_window: clear_key must be a subset of key")
-    for dt in clear_tables:   # interpolated into SQL below
+    for dt in (*clear_tables, *clear_span_tables):   # interpolated into SQL below
         if not _IDENT.match(dt):
             raise ValueError(f"replace_rows_in_window: bad derived table name {dt!r}")
     if not df.empty:
@@ -621,6 +647,13 @@ def replace_rows_in_window(
         for k, v in key.items():
             if k in df.columns and not (df[k] == v).all():
                 raise ValueError(f"replace_rows_in_window({table}): rows with {k} != {v!r}")
+    for k in advisory_locks:
+        # bool is an int to Python and is not a key.
+        if type(k) is not int or not -2**63 <= k < 2**63:
+            raise ValueError(
+                f"replace_rows_in_window: advisory_locks takes ints in the signed "
+                f"64-bit range, not {k!r}")
+    lock_keys = sorted(set(advisory_locks))
     spare = [pd.Timestamp(k) for k in spare_ts]
     if any(k.tzinfo is None for k in spare):
         raise ValueError("replace_rows_in_window: spare_ts must be tz-aware")
@@ -678,8 +711,20 @@ def replace_rows_in_window(
 
     with engine.begin() as conn:
         locked = None
-        if verify is not None:
+        if verify is not None or lock_keys:
             conn.execute(sqlalchemy.text("SET LOCAL lock_timeout = '30s'"))
+        if lock_keys:
+            # Before any row lock: a holder of one of these keys is then never
+            # waited on while this transaction holds a row it needs.
+            taken = conn.execute(sqlalchemy.text(
+                "SELECT current_setting('transaction_isolation'), " + ", ".join(
+                    f"pg_advisory_xact_lock(:k{i})" for i in range(len(lock_keys)))),
+                {f"k{i}": k for i, k in enumerate(lock_keys)}).one()
+            if taken[0] != "read committed":
+                raise RuntimeError(
+                    f"replace_rows_in_window({table} {key}): the transaction isolation is "
+                    f"{taken[0]!r}, not 'read committed'; nothing was locked or changed")
+        if verify is not None:
             locked = int(conn.execute(lock_sql, own_params).scalar_one())
             verify(conn)
         deleted = conn.execute(delete_sql, own_params).rowcount
@@ -701,6 +746,18 @@ def replace_rows_in_window(
             n = conn.execute(sqlalchemy.text(
                 f"DELETE FROM {dt} WHERE {d_where} "
                 f"AND {ts_col} >= :w_start AND {ts_col} < :w_end"), params).rowcount
+            if cleared is not None:
+                cleared[dt] = int(n)
+        for dt in clear_span_tables:
+            exists = conn.execute(sqlalchemy.text("SELECT to_regclass(:t)"), {"t": dt}).scalar()
+            if exists is None:
+                continue
+            d_where = " AND ".join(f"{k} = :k_{k}" for k in clear_key)
+            # Every row whose read span overlaps the swapped window, wherever
+            # its own key lies.
+            n = conn.execute(sqlalchemy.text(
+                f"DELETE FROM {dt} WHERE {d_where} "
+                "AND read_start < :w_end AND read_end > :w_start"), params).rowcount
             if cleared is not None:
                 cleared[dt] = int(n)
     logger.info("replace_rows_in_window(%s %s [%s, %s)): deleted %d, inserted %d%s",
