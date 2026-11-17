@@ -3,7 +3,7 @@ feat_id: FEAT-INSIGHT-001
 spec: docs/superpowers/specs/2026-10-31-feat-insight-001-retire-ew-reader.md
 branch: fix/feat-insight-001-retire-ew-reader
 pr: 1800
-status: ready
+status: done
 ---
 
 # Retire EW insight readers implementation plan

@@ -3,7 +3,7 @@ feat_id: FEAT-SIGNAL-001
 spec: docs/superpowers/specs/2026-10-27-feat-signal-001-historical-score-semantics.md
 branch: feature/feat-signal-001-historical-score-semantics
 pr: 1620
-status: ready
+status: done
 ---
 
 # Historical score semantics implementation plan
