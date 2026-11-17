@@ -63,13 +63,14 @@ def test_daily_fetcher_requests_as_traded_through_both_functions():
     assert p["adjusted"] == "false"
     p = _sent_params(fmd, lambda: fmd.fetch_minute_data("SPY", "2025-11-14", "key"))
     assert p["adjusted"] == "false"
-    p = _sent_params(fmd, lambda: fmd.fetch_minute_bars("SPY", "2025-11-14", "key", adjusted=False))
-    assert p["adjusted"] == "false"
 
 
 def test_asking_for_adjusted_minute_bars_is_refused():
+    """The keyword is gone (FEAT-DATA-001 no-adjusted, Design 4): its only
+    legal value was False, so asking for adjusted bars is a TypeError and
+    nothing is sent."""
     for fn in (fmd.fetch_minute_bars, fmd.fetch_minute_data):
-        with patch.object(fmd.requests, "get") as get, pytest.raises(ValueError, match="as traded only"):
+        with patch.object(fmd.requests, "get") as get, pytest.raises(TypeError):
             fn("SPY", "2025-11-14", "key", adjusted=True)
         get.assert_not_called()
 

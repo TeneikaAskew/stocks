@@ -221,9 +221,10 @@ features omit.
 ## 3. Phase 2 — AlphaVantage indicator enrichment
 
 **Backfill required**: `market_data_indicators` table must contain rows
-from `gcp/fetchers/fetch_av_indicators.py` for IWM/SPY/QQQ × {daily,
-15min}. Until the fetcher runs and rows exist, this phase reports
-**PENDING_BACKFILL**.
+for IWM/SPY/QQQ × {daily, 15min}. Their fetcher,
+`gcp/fetchers/fetch_av_indicators.py`, was retired unused by the
+FEAT-DATA-001 no-adjusted change (#2047), so until another source is
+specified this phase reports **PENDING_BACKFILL**.
 
 **Added features** (joined from `market_data_indicators` — AV's
 pre-computed values, NOT a local substitute):

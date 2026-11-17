@@ -2,8 +2,8 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-16-feat-data-001-no-adjusted-prices-r2.md
 branch: feature/feat-data-001-no-adjusted-prices
-pr: null
-status: ready
+pr: 2047
+status: done
 ---
 
 # Nothing fetches, stores or reads an adjusted price: implementation plan

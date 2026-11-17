@@ -1,4 +1,4 @@
-# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 12:55Z
+# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 16:30Z
 
 Keep this note current: whoever finishes a task updates its row in section 2 and its part of
 section 3 in the same PR or a docs PR right after (owner, 2026-11-16).
@@ -8,9 +8,64 @@ true when written. Before acting on any line, re-read the PR or branch it names:
 in flight.
 
 
-## 0. Update, 2026-11-17 12:55Z: deployed, replay redirected, review blocked
+## 0. Update, 2026-11-17 16:30Z: review unblocked, sidecar queue landing
 
-This section supersedes section 0a (05:20Z) and sections 1 to 7 where they differ.
+This section supersedes section 0a below (12:55Z) where they differ.
+
+### 0.1 Landed since 12:55Z
+
+- Merged: #2047 (no adjusted prices anywhere, plus the SPLITS request failure that could carry the
+  API key in its reason: it now carries only the HTTP status or the exception class), #1985
+  (catalyst upcoming refresh binds INTEGER columns as integers), #1670 (keyword-only
+  `implied_move_invalid` guard), #2055 (this note), #2056 (hit rates r2 plan) and, from the
+  owner's main chat, #2051 (hit rates r2 spec).
+- Live checks from 12:55Z's list, all done: the 13:30Z brief ran on v5 with IWM's prior-close drop
+  recorded; the premarket refresh wrote its as-read objects; the 09:20 ET late run applied.
+- Open: #2066 marks the plans of #2047, #1985 and #1670 `done`. #1671 (zero retries on the three
+  news jobs) is pushed as `affb3f284`, synced with main, sidecar identity-matched, docs audit 313
+  against 313; it waits for Codex's code review of that head and CI, then its done_when 5 is ticked
+  and it merges. It is the last sidecar PR in the queue.
+- Issues opened: #2061 (MODEL-REGISTRY DOC-24 points at moved lines; a feature branch may edit only
+  the registry rows its spec names, so it is fixed on its own branch) and #2064 (05-INFRASTRUCTURE.md
+  still shows the news jobs at retries 1; a `docs/` fix after #1671 merges).
+
+### 0.2 Owner direction, 2026-11-17 afternoon
+
+- While Codex was out of credits, Claude reviewed in its place: #2047, #1985, #1916, #1670 and
+  #1671. None found anything at or above the merge threshold. The owner then reset Codex, so it can
+  be tagged with `@codex review` again; a push to a PR open for review also triggers it.
+- #2050 merged without a Codex review of its last push, by the owner's call.
+
+### 0.3 Do not run
+
+- `./gcp/deploy.sh fetchers` from any main that contains #2047 (main does now) before spec C is
+  deployed: #2047 gives `compute-earnings-reactions` one SPLITS call per ticker with a 30 s timeout
+  and no early stop, so a transport brownout reaches the job's 1,800 s timeout at about 60 tickers
+  and the end-of-run upsert loses every row. Spec C raises that timeout to at least 16,800 s (#2060,
+  with three fix options). The other deploy targets are unaffected.
+- No 09:20 scheduler entries, backfill or history job unless a merged spec covers it and the owner
+  names it. No data change in place anywhere (0a.2).
+
+### 0.4 Waiting on the owner
+
+1. #1916: may its one remaining push also carry the gamma staleness limit (`merge_asof` tolerance of
+   about 6 days, plus a test with a gap of several weeks)? Recommended yes. Its merge is also held
+   until solyra ships the Profiles-tab null fix. Merged with main locally in `/tmp/conflict-1916`.
+2. #2054 (FEAT-REPLAY-001 full-pull replay): ten decisions before it can be approved. A second-round
+   fix commit is local (`856c3d3c5`), to push with the approval.
+3. #2053 (quarter targets r3, the re-cut of #2052, Codex clean on `b65dae82f`): approval. The
+   quarters build (`/tmp/build-quarters`, 13 of 15 tasks, nothing pushed) is re-planned against r3
+   and opened only after #2053 merges. Hit rates r2 is being built in the main chat (#2062, draft).
+4. Older: #1520, #1700 and #1430 questions; whether to re-cut #1914 and #1860.
+
+### 0.5 Scheduled
+
+- 2026-11-18 03:10Z: the first bar-flags nightly check, recorded on #2001.
+
+
+## 0a. Update, 2026-11-17 12:55Z: deployed, replay redirected, review blocked
+
+This section supersedes section 0b (05:20Z) and sections 1 to 7 where they differ.
 
 ### 0.1 Landed and deployed since 05:20Z
 
@@ -68,7 +123,7 @@ Until the owner adds credits:
 - 14:40Z: the first 09:20 ET late run (#2020). 2026-11-18 03:10Z: the first bar-flags nightly
   (#2001).
 
-## 0a. Update, 2026-11-17 05:20Z: what landed, and the order from here
+## 0b. Update, 2026-11-17 05:20Z: what landed, and the order from here
 
 Sections 1 to 7 below were written at 01:50Z. This section supersedes them where they differ. The
 order below was read from each spec's own order section on main (not from memory) and confirmed by

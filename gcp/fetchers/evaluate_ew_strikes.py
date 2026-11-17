@@ -394,7 +394,7 @@ def evaluate_range(start: date, end: date, *, force: bool = False,
         """The session's regular-hours bars for `ticker`, and the vendor's reason."""
         throttle.wait()
         bars, reason = fetch_minute_bars(av_listed_symbol(ticker), session.date.isoformat(),
-                                         api_key, adjusted=False)
+                                         api_key)
         if not bars.empty:
             bars = bars[(bars.index >= session.open_et) & (bars.index < session.close_et)]
         return bars, reason

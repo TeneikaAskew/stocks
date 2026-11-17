@@ -505,7 +505,7 @@ def _normalize_options_df(df: pd.DataFrame, source: str) -> pd.DataFrame:
 # ── AlphaVantage daily backfill ───────────────────────────────────────────────
 
 AV_BASE_URL = 'https://www.alphavantage.co/query'
-# AV symbols for TIME_SERIES_DAILY_ADJUSTED (index symbol differs from yfinance)
+# AV symbols for TIME_SERIES_DAILY (index symbol differs from yfinance)
 AV_DAILY_SYMBOLS = {
     'spy': 'SPY',
     'iwm': 'IWM',
@@ -516,10 +516,10 @@ AV_DAILY_SYMBOLS = {
 
 def migrate_market_data_daily_av(data_dir: Path, dry_run: bool):
     """
-    Backfill market_data_daily with 20+ years of AlphaVantage TIME_SERIES_DAILY_ADJUSTED data.
+    Backfill market_data_daily with 20+ years of AlphaVantage TIME_SERIES_DAILY data, as traded.
 
     - Uses outputsize=full to get the complete history per ticker (4 API calls total).
-    - Upserts into market_data_daily, so existing rows are updated with adjusted_close.
+    - Upserts open, high, low, close, volume and data_source into market_data_daily.
     - Requires ALPHA_VANTAGE_API_KEY environment variable.
     - Rate limit: 150 req/min; waits 1s between calls (4 calls total — well within limit).
     """
@@ -530,7 +530,7 @@ def migrate_market_data_daily_av(data_dir: Path, dry_run: bool):
         log.error("ALPHA_VANTAGE_API_KEY not set — cannot run AV daily backfill")
         return
 
-    log.info("Backfilling market_data_daily from AlphaVantage TIME_SERIES_DAILY_ADJUSTED...")
+    log.info("Backfilling market_data_daily from AlphaVantage TIME_SERIES_DAILY...")
     log.info("  outputsize=full → 20+ years per ticker (4 calls, 1s apart).")
 
     total = 0
@@ -540,7 +540,7 @@ def migrate_market_data_daily_av(data_dir: Path, dry_run: bool):
 
         log.info("  Fetching %s (AV symbol: %s)...", ticker_lower.upper(), av_symbol)
         params = {
-            'function':   'TIME_SERIES_DAILY_ADJUSTED',
+            'function':   'TIME_SERIES_DAILY',
             'symbol':     av_symbol,
             'outputsize': 'full',
             'datatype':   'json',
@@ -566,15 +566,14 @@ def migrate_market_data_daily_av(data_dir: Path, dry_run: bool):
             rows = []
             for date_str, v in ts.items():
                 rows.append({
-                    'ticker':         ticker_lower.upper(),
-                    'date':           date_str,
-                    'open':           float(v['1. open']),
-                    'high':           float(v['2. high']),
-                    'low':            float(v['3. low']),
-                    'close':          float(v['4. close']),
-                    'adjusted_close': float(v['5. adjusted close']),
-                    'volume':         int(v['6. volume']),
-                    'data_source':    'alphavantage_daily',
+                    'ticker':      ticker_lower.upper(),
+                    'date':        date_str,
+                    'open':        float(v['1. open']),
+                    'high':        float(v['2. high']),
+                    'low':         float(v['3. low']),
+                    'close':       float(v['4. close']),
+                    'volume':      int(v['5. volume']),
+                    'data_source': 'alphavantage_daily',
                 })
 
             df = pd.DataFrame(rows)

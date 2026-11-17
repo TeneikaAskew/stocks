@@ -2075,152 +2075,53 @@ class TestInsightsWatchlistAPI:
         list is the default watchlist for every caller (FEAT-INSIGHT-001
         stage A), and a caller's own tickers arrive as ``extras``. Until
         2026-11-13 this test asserted the caller's email, which ranked a
-        per-user row set no job ever read (#1215)."""
-        from api.routers import insights as insights_module
+        per-user row set no job ever read (#1215). The caller signs in
+        through the real firebase middleware, with token verification
+        stubbed to accept one bearer (tests/api/test_platform_auth.py)."""
+        import api.auth
 
+        bearer = {"Authorization": "Bearer good:alice@example.com"}
         called_with = {}
 
         def fake_rank(**kwargs):
             called_with.update(kwargs)
             return _watchlist_payload()
 
+        def fake_verify(request):
+            if (request.headers.get("authorization") or "") == bearer["Authorization"]:
+                return "alice@example.com"
+            return None
+
         monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
-        monkeypatch.setattr(
-            insights_module, "current_user_email", lambda req: "alice@example.com"
-        )
-        client.get("/api/insights/watchlist")
+        monkeypatch.setenv("AUTH_OPEN_SIGNUP", "1")
+        monkeypatch.setattr(api.auth, "AUTH_MODE", "firebase")
+        monkeypatch.setattr(api.auth, "_verify_bearer_email", fake_verify)
+        # The sign-in is live: without the bearer the middleware refuses.
+        assert client.get("/api/insights/watchlist").status_code == 401
+        r = client.get("/api/insights/watchlist", headers=bearer)
+        assert r.status_code == 200, r.text
         assert called_with["user_id"] == "default"
 
 
-# ── Personal watchlist mutations (per-user add / remove) ────────────────────
+# ── Watchlist write routes (retired) ──────────────────────────────────────
 
-# Hermetic: monkeypatches the late-imported `gcp.fetchers._watchlist` helpers
-# and `lib.ticker_info` lookups so no Cloud SQL / AlphaVantage round-trip
-# happens. Asserts the signed-in user's identity is threaded as `user_id`
-# into every write/read so one user can never mutate another's watchlist.
 class TestWatchlistMutationAPI:
     """`POST /api/insights/watchlist/add` and
-    `DELETE /api/insights/watchlist/{ticker}` — must be per-user, mirroring
-    the journal. The data layer already filters by `user_id`; these tests
-    pin that the router forwards the resolved owner."""
+    `DELETE /api/insights/watchlist/{ticker}` are retired (FEAT-INSIGHT-001
+    stage B): both answer 410 for every caller and write nothing. The full
+    coverage (open and firebase callers, the no-write recorders, the empty
+    body, the CORS preflight) is in tests/api/test_watchlist_default_lock.py."""
 
-    def _patch_ticker_info(self, monkeypatch):
-        """Stub the AV/FinViz lookups the add endpoint enriches with."""
-        monkeypatch.setattr("lib.ticker_info.get_ticker_info", lambda t: None)
-        monkeypatch.setattr("lib.ticker_info.get_quote", lambda t: None)
-        monkeypatch.setattr("lib.ticker_info.get_peers", lambda t: [])
-
-    def test_add_threads_default_owner_when_no_auth(self, client, monkeypatch):
-        self._patch_ticker_info(monkeypatch)
-        captured = {}
-
-        def fake_add(ticker, **kwargs):
-            captured["add_user_id"] = kwargs.get("user_id")
-            return True
-
-        def fake_load(**kwargs):
-            captured["load_user_id"] = kwargs.get("user_id")
-            return ["NVDA"]
-
-        monkeypatch.setattr(
-            "gcp.fetchers._watchlist.add_to_watchlist", fake_add
-        )
-        monkeypatch.setattr(
-            "gcp.fetchers._watchlist.load_watchlist", fake_load
-        )
-
-        r = client.post("/api/insights/watchlist/add", json={"ticker": "nvda"})
-        assert r.status_code == 200
-        assert captured["add_user_id"] == "default"
-        assert captured["load_user_id"] == "default"
-
-    def test_add_scopes_to_signed_in_user(self, client, monkeypatch):
+    def test_write_routes_answer_410(self, client):
         from api.routers import insights as insights_module
 
-        self._patch_ticker_info(monkeypatch)
-        captured = {}
-
-        def fake_add(ticker, **kwargs):
-            captured["add_user_id"] = kwargs.get("user_id")
-            return True
-
-        def fake_load(**kwargs):
-            captured["load_user_id"] = kwargs.get("user_id")
-            return ["NVDA"]
-
-        monkeypatch.setattr(
-            "gcp.fetchers._watchlist.add_to_watchlist", fake_add
-        )
-        monkeypatch.setattr(
-            "gcp.fetchers._watchlist.load_watchlist", fake_load
-        )
-        monkeypatch.setattr(
-            insights_module, "current_user_email", lambda req: "bob@example.com"
-        )
-
+        detail = insights_module.WATCHLIST_WRITE_RETIRED_DETAIL
         r = client.post("/api/insights/watchlist/add", json={"ticker": "nvda"})
-        assert r.status_code == 200
-        assert captured["add_user_id"] == "bob@example.com"
-        assert captured["load_user_id"] == "bob@example.com"
-
-    def test_remove_scopes_to_signed_in_user(self, client, monkeypatch):
-        from api.routers import insights as insights_module
-
-        captured = {}
-
-        def fake_remove(ticker, **kwargs):
-            captured["remove_user_id"] = kwargs.get("user_id")
-            return True
-
-        def fake_load(**kwargs):
-            captured["load_user_id"] = kwargs.get("user_id")
-            return []
-
-        monkeypatch.setattr(
-            "gcp.fetchers._watchlist.remove_from_watchlist", fake_remove
-        )
-        monkeypatch.setattr(
-            "gcp.fetchers._watchlist.load_watchlist", fake_load
-        )
-        monkeypatch.setattr(
-            insights_module, "current_user_email", lambda req: "carol@example.com"
-        )
-
+        assert r.status_code == 410, r.text
+        assert r.json()["detail"] == detail
         r = client.delete("/api/insights/watchlist/NVDA")
-        assert r.status_code == 200
-        assert captured["remove_user_id"] == "carol@example.com"
-        assert captured["load_user_id"] == "carol@example.com"
-
-    def test_two_users_do_not_share_watchlist(self, client, monkeypatch):
-        """Two different identities must resolve to two different owners,
-        so the data-layer filter isolates their rows."""
-        from api.routers import insights as insights_module
-
-        self._patch_ticker_info(monkeypatch)
-        seen_owners = []
-
-        def fake_add(ticker, **kwargs):
-            seen_owners.append(kwargs.get("user_id"))
-            return True
-
-        monkeypatch.setattr(
-            "gcp.fetchers._watchlist.add_to_watchlist", fake_add
-        )
-        monkeypatch.setattr(
-            "gcp.fetchers._watchlist.load_watchlist", lambda **k: []
-        )
-
-        monkeypatch.setattr(
-            insights_module, "current_user_email", lambda req: "u1@example.com"
-        )
-        client.post("/api/insights/watchlist/add", json={"ticker": "spy"})
-
-        monkeypatch.setattr(
-            insights_module, "current_user_email", lambda req: "u2@example.com"
-        )
-        client.post("/api/insights/watchlist/add", json={"ticker": "spy"})
-
-        assert seen_owners == ["u1@example.com", "u2@example.com"]
+        assert r.status_code == 410, r.text
+        assert r.json()["detail"] == detail
 
 
 # ── Journal API ─────────────────────────────────────────────────────────────

@@ -23,7 +23,7 @@ def make_bars(n: int, ticker: str = 'X') -> pd.DataFrame:
     return pd.DataFrame({
         'ticker': ticker, 'date': list(dates),
         'open': 1.0, 'high': 1.0, 'low': 1.0, 'close': 1.0,
-        'volume': 100, 'adjusted_close': 1.0,
+        'volume': 100,
     })
 
 
@@ -696,7 +696,7 @@ def _av_json(n, end=_SESSION):
         px = 10.0 + i * 0.1
         ts[d.isoformat()] = {'1. open': str(px), '2. high': str(px + 0.5),
                              '3. low': str(px - 0.5), '4. close': str(px + 0.1),
-                             '6. volume': '1000'}
+                             '5. volume': '1000'}
     return {'Time Series (Daily)': ts}
 
 
