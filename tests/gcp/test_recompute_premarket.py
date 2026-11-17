@@ -47,11 +47,15 @@ def daily_history(last: date, sessions: int = 40) -> pd.DataFrame:
 # The extreme rules' record of the fixture session (FEAT-PLAYBOOK-001 B8):
 # 330 bars of 1,000 shares between 99.5 and 100.5, each reached by more than
 # one bar, with the prior close 99.0. The writers put it in pre_filter_params.
+# No price is within 5 cents of 99.0, so prior-close-print-v1 drops nothing.
 RULE_BLOCKS = {
     "confirmed": {"rule": "two-bars-or-body-v1", "raw_high": 100.5, "raw_low": 99.5,
                   "high_bars_above": 0, "low_bars_below": 0,
                   "stale_close_reports": {"rule": "stale-close-report-v1", "high": 0, "low": 0,
                                           "prior_close": 99.0},
+                  "prior_close_prints": {"rule": "prior-close-print-v1", "tol_cents": 5,
+                                         "min_distance_pct": 0.25, "open": 0, "high": 0,
+                                         "low": 0, "close": 0, "bars": 0, "prior_close": 99.0},
                   "reason": None},
     "thin": {"rule": "thin-bar-v1", "min_volume": 100, "bars_excluded": 0},
 }

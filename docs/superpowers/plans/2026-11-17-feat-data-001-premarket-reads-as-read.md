@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-16-feat-data-001-premarket-reads-as-read.md
 branch: feature/feat-data-001-premarket-reads-as-read
-pr: null
+pr: 2044
 status: ready
 ---
 

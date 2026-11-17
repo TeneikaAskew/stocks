@@ -545,6 +545,19 @@ PM_MIN_EXTREME_VOLUME = 100
 CONFIRMED_RULE = 'two-bars-or-body-v1'
 STALE_CLOSE_RULE = 'stale-close-report-v1'
 THIN_BAR_RULE = 'thin-bar-v1'
+# A print at the prior close inside a bar that traded elsewhere (rule
+# prior-close-print-v1): a price within PM_PRIOR_CLOSE_TOL_CENTS of the prior
+# close, on a bar whose every other price is more than
+# PM_PRIOR_CLOSE_MIN_DISTANCE x the prior close away from it. Both are module
+# constants, not calibrated per-ticker parameters (decision 2 of
+# docs/superpowers/specs/2026-11-16-feat-playbook-001-prior-close-prints-r2.md).
+# Their measurement is that spec's Problem section: 2,650 sessions a ticker of
+# SPY, QQQ and IWM, the result not sensitive to the tolerance from 2 to 10
+# cents, and a distance of 0.10% changing more sessions that had real trading
+# beside the prior close.
+PM_PRIOR_CLOSE_TOL_CENTS = 5
+PM_PRIOR_CLOSE_MIN_DISTANCE = 0.0025
+PRIOR_CLOSE_PRINT_RULE = 'prior-close-print-v1'
 
 
 def calculate_premarket_context(
@@ -611,10 +624,19 @@ def calculate_premarket_context(
          to the cent, is not an extreme candidate. The bar still counts
          through its open and close. It needs prev_close only, so it runs
          when rules (a) and (b) cannot.
-      2. thin-bar-v1: a bar whose volume is a number below
+      2. prior-close-print-v1: on a bar with at least one price within
+         PM_PRIOR_CLOSE_TOL_CENTS of prev_close (whole cents, as rule 1) and
+         at least one other price, every other price more than
+         PM_PRIOR_CLOSE_MIN_DISTANCE x prev_close away from it, no price
+         within the tolerance is an extreme candidate; its other prices
+         stay. A bar with an other price within that distance, or with no
+         other price, is untouched. It reads the bar's own raw four prices,
+         so it does not depend on whether rules (a) and (b) ran, and it
+         needs prev_close only.
+      3. thin-bar-v1: a bar whose volume is a number below
          PM_MIN_EXTREME_VOLUME gives none of its four prices to the
          candidates. A bar with no volume reading stays a candidate.
-      3. two-bars-or-body-v1: pre_high is the greater of the second-highest
+      4. two-bars-or-body-v1: pre_high is the greater of the second-highest
          surviving high and the highest surviving open or close among the
          candidate bars, taking the terms that exist; pre_low mirrors it. One
          bar's lone wick cannot set either. With no term the extreme is None
@@ -625,13 +647,17 @@ def calculate_premarket_context(
         pre_close, gap_pct, pre_range_atr, bar_count, the filter's counts,
         and the two rule records (both None when there is no premarket bar):
           confirmed: {rule, raw_high, raw_low, high_bars_above,
-            low_bars_below, stale_close_reports, reason}. raw_high and raw_low
-            are the extremes the print filter alone gives. high_bars_above
-            counts candidate bars whose surviving high is above pre_high
-            (None when pre_high is None); low_bars_below mirrors it.
-            stale_close_reports is {rule, high, low, prior_close}, or None,
-            never zeros, when there is no prior close. reason is None,
-            'all_bars_thin' or 'unconfirmed'.
+            low_bars_below, stale_close_reports, prior_close_prints, reason}.
+            raw_high and raw_low are the extremes the print filter alone
+            gives. high_bars_above counts candidate bars whose surviving high
+            is above pre_high (None when pre_high is None); low_bars_below
+            mirrors it. stale_close_reports is {rule, high, low,
+            prior_close}, or None, never zeros, when there is no prior close.
+            prior_close_prints is {rule, tol_cents, min_distance_pct, open,
+            high, low, close, bars, prior_close}: the values this rule
+            dropped per field (a value an earlier rule dropped is counted
+            there) and the bars it touched; None, never zeros, when there is
+            no prior close. reason is None, 'all_bars_thin' or 'unconfirmed'.
           thin: {rule, min_volume, bars_excluded}.
 
     Edge cases:
@@ -715,7 +741,51 @@ def calculate_premarket_context(
         stale_reports = {'rule': STALE_CLOSE_RULE, 'high': int(stale_h.sum()),
                          'low': int(stale_l.sum()), 'prior_close': float(prev_close)}
 
-    # 2. Thin bar: under one round lot, none of the bar's prices is a
+    # 2. Prior-close print: a bar with a price within the tolerance of the
+    #    prior close whose every other price is more than the distance away
+    #    gives none of its prices within the tolerance to the candidates. The
+    #    test reads the bar's raw four prices; a value an earlier rule already
+    #    dropped is not counted again here.
+    prior_close_prints = None
+    if _positive(prev_close):
+        from decimal import Decimal  # noqa: PLC0415
+
+        from lib.strat_levels import price_cents  # noqa: PLC0415
+        pc = float(prev_close)
+        pc_cents = price_cents(prev_close)
+        # The distance is compared in decimals on each float's shortest repr,
+        # as price_cents reads a price, so a price exactly 0.25% away is
+        # within it: in binary floats 104.0 - 103.74 is 0.2600000000000051,
+        # over 0.0025 x 104.0 = 0.26, and 0.0025 x 612.68 is
+        # 1.5316999999999998, under 1.5317 (Codex P2 on #2046).
+        pc_dec = Decimal(str(pc))
+        reach = pc_dec * Decimal(str(PM_PRIOR_CLOSE_MIN_DISTANCE))
+
+        def _within_reach(v) -> bool:
+            return v == v and abs(Decimal(str(float(v))) - pc_dec) <= reach
+
+        raw = {'open': pre_o, 'high': pre_h, 'low': pre_l, 'close': pre_c}
+        cands = {'open': cand_o, 'high': cand_h, 'low': cand_l, 'close': cand_c}
+        at = {f: ser.map(lambda v: v == v
+                         and abs(price_cents(v) - pc_cents) <= PM_PRIOR_CLOSE_TOL_CENTS
+                         ).astype(bool)
+              for f, ser in raw.items()}
+        other = {f: raw[f].notna() & ~at[f] for f in raw}
+        near = {f: other[f] & raw[f].map(_within_reach).astype(bool) for f in raw}
+        print_bar = (pd.concat(at.values(), axis=1).any(axis=1)
+                     & pd.concat(other.values(), axis=1).any(axis=1)
+                     & ~pd.concat(near.values(), axis=1).any(axis=1))
+        dropped = {f: at[f] & print_bar & cands[f].notna() for f in cands}
+        for f, ser in cands.items():
+            ser[dropped[f]] = np.nan
+        touched = pd.concat(dropped.values(), axis=1).any(axis=1)
+        prior_close_prints = {
+            'rule': PRIOR_CLOSE_PRINT_RULE, 'tol_cents': PM_PRIOR_CLOSE_TOL_CENTS,
+            'min_distance_pct': PM_PRIOR_CLOSE_MIN_DISTANCE * 100,
+            **{f: int(dropped[f].sum()) for f in ('open', 'high', 'low', 'close')},
+            'bars': int(touched.sum()), 'prior_close': pc}
+
+    # 3. Thin bar: under one round lot, none of the bar's prices is a
     #    candidate. NaN volume is not "below" and stays.
     survives = pd.concat([cand_o, cand_h, cand_l, cand_c], axis=1).notna().any(axis=1)
     thin = pre_v < PM_MIN_EXTREME_VOLUME
@@ -724,7 +794,7 @@ def calculate_premarket_context(
     out['thin'] = {'rule': THIN_BAR_RULE, 'min_volume': PM_MIN_EXTREME_VOLUME,
                    'bars_excluded': int(thin.sum())}
 
-    # 3. Confirmed: a price two bars reached, or a bar opened or closed at.
+    # 4. Confirmed: a price two bars reached, or a bar opened or closed at.
     bodies = pd.concat([cand_o, cand_c]).dropna()
     highs = cand_h.dropna().sort_values(ascending=False)
     lows = cand_l.dropna().sort_values()
@@ -748,6 +818,7 @@ def calculate_premarket_context(
         'low_bars_below': (int((cand_l < out['pre_low']).sum())
                            if out['pre_low'] is not None else None),
         'stale_close_reports': stale_reports,
+        'prior_close_prints': prior_close_prints,
         'reason': reason,
     }
 
