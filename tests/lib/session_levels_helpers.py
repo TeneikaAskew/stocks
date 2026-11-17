@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import lib.strat_levels as _strat_levels
 from lib.strat_levels import ATR_RUNG_KEYS, LEVEL_RULE_VERSION, LevelParams, SessionLevels, SideLevels
 from tests.lib.level_params_fixtures import fixture_params
 
@@ -130,3 +131,16 @@ def d8_session(levels=None, **kw) -> SessionLevels:
     """The Design 8 fixture through SessionLevels.from_basis, the path every
     live consumer uses."""
     return SessionLevels.from_basis(d8_basis(levels, **kw))
+
+
+# ── Unknown rule version spec (2026-11-16), Design 5 ──────────────────
+
+def newer_rule_versions() -> tuple[str, str, str]:
+    """Three rule versions newer than the newest this image knows: the newest
+    member of lib.strat_levels.PICK_RULE_VERSIONS plus 1, plus 2, and v99.
+    Read at call time from the module attribute, so a test that patches
+    PICK_RULE_VERSIONS (a straggler image) gets versions newer than the
+    patched list, and the tests hold after a build adds v5. The numbers are
+    parsed here, not through the classifier under test."""
+    newest = max(int(v.rsplit('.v', 1)[1]) for v in _strat_levels.PICK_RULE_VERSIONS)
+    return (f'feat-strat-001.v{newest + 1}', f'feat-strat-001.v{newest + 2}', 'feat-strat-001.v99')

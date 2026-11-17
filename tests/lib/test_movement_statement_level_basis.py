@@ -278,3 +278,128 @@ def test_reach_rate_sql_pairs_each_price_with_its_own_hit_column():
         sql = ms._reach_rate_sql(side)
         assert f"{side}_t1_price" in sql and f"{side}_t1_hit_ts" in sql
         assert "plan_" not in sql
+
+
+# ── Unknown rule version spec (2026-11-16), Design 3: the movement statement
+# says why (U6). A session row whose level_basis names a version this image
+# does not know, or cannot read, gives an UNAVAILABLE levels block naming the
+# status, with no reach-rate query; a v3, a v4, a v2 and a row with no basis
+# give what they gave on the merge base.
+
+from tests.lib.session_levels_helpers import newer_rule_versions  # noqa: E402
+
+_NOT_TRACKED = {"analysis_date": "2026-11-06", "status": "UNAVAILABLE",
+                "reason": "not a level the premarket playbook tracked on 2026-11-06; "
+                          "no reach-rate applies to this line"}
+
+
+def _no_rows(slot):
+    return {"analysis_date": "2026-11-06", "slot": slot, "status": "UNAVAILABLE",
+            "reason": "no resolved premarket_analysis rows with levels for this side"}
+
+
+def _rate(slot, hits, rate):
+    return {"analysis_date": "2026-11-06", "hits": hits, "low_sample": True,
+            "reach_rate": rate, "sample_n": 5, "slot": slot, "status": "OK"}
+
+
+# out["levels"] on the merge base (the branch before this task's first edit)
+# for the gap-down session row stamped each version, with the level map: the
+# reach_rate of the two calls rungs (PMK_H 101.00, PMH 103.00); every other
+# byte is the same for all four. Without a level map each gave
+# {"status": "UNAVAILABLE", "reason": "level map unavailable"}.
+# The resolved rows of _stamped_session are written by the current code, so they
+# carry LEVEL_RULE_VERSION (v5 from the prior-close change on): a live row of an
+# earlier version (v3, v4) finds no resolved row of its own version.
+MERGE_BASE_CALLS_RATES = {
+    "feat-strat-001.v3": (_no_rows("trigger"), _no_rows("t1")),
+    "feat-strat-001.v4": (_no_rows("trigger"), _no_rows("t1")),
+    "feat-strat-001.v5": (_rate("trigger", 4, 0.8), _rate("t1", 1, 0.2)),
+    "feat-strat-001.v2": (_NOT_TRACKED, _no_rows("trigger")),
+    None: (_NOT_TRACKED, _rate("trigger", 4, 0.8)),
+}
+
+
+def _merge_base_levels(version, with_map: bool) -> dict:
+    if not with_map:
+        return {"status": "UNAVAILABLE", "reason": "level map unavailable"}
+    first, second = MERGE_BASE_CALLS_RATES[version]
+    return {
+        "status": "OK",
+        "current_price": 100.0,
+        "calls": [
+            {"distance_pct": 1.0, "level_type": "high", "name": "PMK_H", "period": "intraday",
+             "price": 101.0, "reach_rate": first},
+            {"distance_pct": 3.0, "level_type": "high", "name": "PMH", "period": "month",
+             "price": 103.0, "reach_rate": second},
+        ],
+        "puts": [
+            {"distance_pct": -0.2, "level_type": "low", "name": "PMK_L", "period": "intraday",
+             "price": 99.8, "reach_rate": _NOT_TRACKED},
+            {"distance_pct": -3.0, "level_type": "low", "name": "PDL", "period": "day",
+             "price": 97.0, "reach_rate": _NOT_TRACKED},
+        ],
+        "reach_rate_note": (
+            "Reach-rates are POPULATION statistics for the playbook slot this line occupies "
+            "(fraction of resolved premarket sessions in which price reached that slot during "
+            "RTH), not per-instance predictions. A line the playbook did not track carries no "
+            "rate. low_sample=True flags n<30."),
+    }
+
+
+def _stamped_session(version):
+    """The gap-down session of test_each_rung_shows_its_own_slots_rate: five
+    resolved rows of its basis, and the session's own live row with its
+    level_basis stamped `version` (None: no basis)."""
+    stored = _session_basis("gap_down")
+    lm = SessionLevels.from_basis(stored).to_level_map()
+    db = _Db()
+    for i in range(5):
+        _resolved(db, d=f"2026-10-{10 + i}", price=stored["prior_close"], lb=stored,
+                  calls=(101.0, 103.0, None, None),
+                  calls_hit=("trigger", "t1") if i == 0 else (("trigger",) if i < 4 else ()))
+    ct = lm.calls_trigger
+    db.add(ticker="SPY", analysis_date=SESSION.isoformat(), run_kind="live",
+           price=stored["prior_close"],
+           level_basis=None if version is None else {**stored, "rule_version": version},
+           calls_trigger_price=ct["trigger_level"], calls_t1_price=ct["targets"][0]["price"])
+    return db, lm
+
+
+REFUSED = [*((v, "rule_version_newer") for v in newer_rule_versions()),
+           ("", "rule_version_unreadable"), ("feat-strat-001.vX", "rule_version_unreadable"),
+           (5, "rule_version_unreadable")]
+READ = [(v, None) for v in MERGE_BASE_CALLS_RATES]
+
+
+@pytest.mark.parametrize("with_map", [True, False])
+@pytest.mark.parametrize("version, status", REFUSED + READ)
+def test_levels_unavailable_for_a_version_the_reader_does_not_know(monkeypatch, version, status,
+                                                                  with_map):
+    db, lm = _stamped_session(version)
+    statements = []
+
+    def q(sql, params=None):
+        statements.append(sql)
+        if "premarket_analysis" in sql:
+            return db.query(sql, params)
+        return pd.DataFrame()
+
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
+    monkeypatch.setattr(ms, "_build_continuation",
+                        lambda *a, **k: ms._unavailable("not under test"))
+    out = ms.assemble_movement_statement(
+        "SPY", "15m", engine=object(), level_map=lm if with_map else None, query_fn=q,
+        gamma_fn=lambda *a, **k: {"available": False}, session_date=SESSION)
+
+    if status is None:
+        assert out["levels"] == _merge_base_levels(version, with_map)
+        return
+    tracked = ms._fetch_tracked_levels("SPY", db.query, SESSION)
+    assert tracked["status"] == "UNAVAILABLE"
+    assert tracked["reason"].startswith(status)
+    assert tracked["rule_version"] == version and type(tracked["rule_version"]) is type(version)
+    assert tracked["rule_version_status"] == status
+    assert not [s for s in statements if "outcome_resolved_at IS NOT NULL" in s]
+    assert out["levels"] == {"status": "UNAVAILABLE", "reason": tracked["reason"],
+                             "rule_version": version, "rule_version_status": status}
