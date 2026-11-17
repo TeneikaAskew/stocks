@@ -205,6 +205,8 @@ def test_preserved_ango_default_producer_to_storage_views_api_and_brief(db, monk
     monkeypatch.setattr(compute,'fetch_earnings_history_for_tickers',lambda tickers:pd.DataFrame(events))
     monkeypatch.setattr(compute,'fetch_calendar_timing_map',lambda tickers:{})
     monkeypatch.setattr(compute,'fetch_daily_windows_for_ticker_dates',lambda *a:windows)
+    # The run reads each ticker's splits from AlphaVantage; no vendor call here.
+    monkeypatch.setattr(compute,'fetch_splits',lambda t,k:compute.Splits.of(t,()))
     with db.begin() as c:c.execute(sa.text("DELETE FROM earnings_reactions WHERE ticker='ANGO'"))
     assert compute.populate_for_tickers(['ANGO'])==4
     with db.begin() as c:

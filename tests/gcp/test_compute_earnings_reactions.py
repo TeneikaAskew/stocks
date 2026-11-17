@@ -1116,6 +1116,7 @@ class TestProductionEventTimingContract:
         monkeypatch.setattr(mod, 'fetch_calendar_timing_map', lambda _: {})
         monkeypatch.setattr(mod, 'fetch_daily_windows_for_ticker_dates', lambda *args: {
             eps['reported_date']: TestComputeReactionAMC()._build_bars()})
+        monkeypatch.setattr(mod, 'fetch_splits', lambda t, k: mod.Splits.of(t, ()))
         monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
         def persist(frame, *args, **kwargs):
             writes.append(frame.to_dict('records'))
@@ -1138,6 +1139,7 @@ class TestProductionEventTimingContract:
         monkeypatch.setattr(mod, 'query_to_dataframe', lambda *args: rows)
         monkeypatch.setattr(mod, 'fetch_daily_windows_for_ticker_dates', lambda *args: {
             eps['reported_date']: TestComputeReactionAMC()._build_bars()})
+        monkeypatch.setattr(mod, 'fetch_splits', lambda t, k: mod.Splits.of(t, ()))
         monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
         monkeypatch.setattr(mod, '_upsert_reaction_frame', lambda df, *args, **kwargs: (writes.extend(df.to_dict('records')) or len(df)))
         assert mod.populate_for_tickers(['TEST']) == 1
@@ -1155,12 +1157,13 @@ def test_native_pre10_prefix_is_qualified_by_actual_producer_not_short_path(monk
     rows=[]
     for i,day in enumerate(days[d-12:d+6]):
         rows.append(dict(date=day,open=100.+i,high=102.+i,low=99.+i,close=101.+i,
-                         adjusted_close=101.+i,data_source='alphavantage_daily'))
+                         data_source='alphavantage_daily'))
     frame=pd.DataFrame(rows)
     frame.loc[frame['date']==date(2026,2,2),['open','high']]=[114.,115.]
     eps=dict(ticker='SYNTH',fiscal_date_ending=date(2025,11,30),reported_date=date(2026,2,2),report_time='BMO')
     monkeypatch.setattr(module,'fetch_earnings_history_for_tickers',lambda *a:pd.DataFrame([eps]))
     monkeypatch.setattr(module,'fetch_calendar_timing_map',lambda *a:{})
+    monkeypatch.setattr(module,'fetch_splits',lambda t,k:module.Splits.of(t,()))
     monkeypatch.setattr(module,'is_cloud_sql_configured',lambda:True)
     captured=[]
     monkeypatch.setattr(module,'_upsert_reaction_frame',lambda f,*a,**k:(captured.extend(f.to_dict('records')) or len(f)))
@@ -1177,14 +1180,14 @@ def test_native_pre10_prefix_is_qualified_by_actual_producer_not_short_path(monk
     assert full['daily_path_v1']['status']==missing['daily_path_v1']['status']=='complete'
     changed=frame.copy()
     start=date.fromisoformat(native['prefix_start_session'])
-    changed.loc[changed['date']==start,['close','adjusted_close','high']]=[104.,104.,105.]
+    changed.loc[changed['date']==start,['close','high']]=[104.,105.]
     monkeypatch.setattr(module,'fetch_daily_windows_for_ticker_dates',lambda *a:{eps['reported_date']:changed})
     module.populate_for_tickers(['SYNTH'])
     corrected=captured[-1]
     assert corrected['daily_path_v1']['per_metric']['native_classifier_inputs']['input_identity']!=native['input_identity']
     assert corrected['daily_path_v1']['input_identity']==full['daily_path_v1']['input_identity']
     # Future malformed non-session bars are removed before validation.
-    future=pd.concat([frame,pd.DataFrame([dict(date=date(2026,2,14),open=float('nan'),high=0,low=0,close=0,adjusted_close=0,data_source='unknown')])],ignore_index=True)
+    future=pd.concat([frame,pd.DataFrame([dict(date=date(2026,2,14),open=float('nan'),high=0,low=0,close=0,data_source='unknown')])],ignore_index=True)
     for sample in (frame,future):
         monkeypatch.setattr(module,'fetch_daily_windows_for_ticker_dates',lambda *a:{eps['reported_date']:sample})
         assert module.populate_for_tickers(['SYNTH'],observation_ts='2026-02-09T21:01:00Z')==1
@@ -1206,6 +1209,7 @@ def test_refusal_receipt_pages_are_bounded_and_unknown_timing_is_event_keyed(mon
     monkeypatch.setattr(module,'fetch_earnings_history_for_tickers',lambda *a:pd.DataFrame([eps]))
     monkeypatch.setattr(module,'fetch_calendar_timing_map',lambda *a:{})
     monkeypatch.setattr(module,'fetch_daily_windows_for_ticker_dates',lambda *a:{})
+    monkeypatch.setattr(module,'fetch_splits',lambda t,k:module.Splits.of(t,()))
     pages=[]
     assert module.populate_for_tickers(['TEST'],receipt_sink=pages.append)==0
     item=pages[0]['events'][0]
@@ -1325,3 +1329,75 @@ def test_fetch_splits_request_and_reply(monkeypatch):
         fetch_splits('SPY', '')
     assert not isinstance(excinfo.value, SplitsUnavailable)
     assert sent == []
+
+
+def _synth_window(**extra):
+    """18 sessions from D-12 for SYNTH reporting BMO on 2026-02-02, as traded."""
+    from lib.earnings_reactions import earnings_session_schedule
+    schedule = earnings_session_schedule(date(2026, 1, 1), date(2026, 2, 20))
+    days = [x.date() for x in schedule.index]
+    d = days.index(date(2026, 2, 2))
+    rows = [dict(date=day, open=100. + i, high=102. + i, low=99. + i, close=101. + i,
+                 data_source='alphavantage_daily', **extra)
+            for i, day in enumerate(days[d - 12:d + 6])]
+    return schedule, pd.DataFrame(rows)
+
+
+def test_price_basis_is_as_traded_and_split_checked():
+    """The gate admits an AlphaVantage daily window on its writer tag and an
+    explicit split check, reads no adjusted close, and names the evidence it
+    used. On main the first window refused with
+    missing_database_price_basis_metadata and the dividend-shaded one with
+    unresolved_adjustment_or_corporate_action."""
+    from lib.earnings_reactions import (
+        Splits, SplitsUnavailable, database_daily_price_evidence)
+
+    schedule, frame = _synth_window()
+    event = dict(ticker='SYNTH', fiscal_date_ending=date(2025, 11, 30),
+                 reported_date=date(2026, 2, 2), reaction_basis='BMO')
+    observed = pd.Timestamp('2026-02-20T21:01:00Z')
+    none = Splits.of('SYNTH', ())
+
+    def gate(rows, splits, native):
+        return database_daily_price_evidence(event, rows, schedule=schedule,
+                                             observed_at=observed, splits=splits,
+                                             native=native)
+
+    for native in (False, True):
+        first = gate(frame, none, native)
+        assert first['available'], first
+        receipt = first['receipt']
+        assert receipt['price_basis_id'] == 'av-as-traded-no-split-v1'
+        assert receipt['source_id'].startswith('current-db-projection:')
+        assert receipt['source_id'].endswith(':splits:' + none.digest)
+        assert receipt['evidence_grade'] == 'current_db_writer_declaration_only'
+
+        old = gate(frame, Splits.of('SYNTH', ((date(2010, 1, 4), 2.0),)), native)
+        assert old['available']
+        assert old['receipt']['source_id'] != receipt['source_id']
+
+        # A stored adjusted close is outside the projection: same receipt.
+        _, shaded = _synth_window()
+        shaded['adjusted_close'] = shaded['close'] * 0.99
+        assert gate(shaded, none, native) == first
+
+        inside = gate(frame, Splits.of('SYNTH', ((date(2026, 2, 2), 2.0),)), native)
+        assert not inside['available'] and inside['reason'] == 'split_in_window'
+
+        down = gate(frame, SplitsUnavailable('Information'), native)
+        assert not down['available'] and down['reason'] == 'split_status_unavailable'
+
+        for tag in (None, 'yfinance'):
+            odd = frame.copy()
+            odd.loc[odd.index[-3], 'data_source'] = tag
+            refused = gate(odd, none, native)
+            assert not refused['available']
+            assert refused['reason'] == 'unrecognized_database_price_writer'
+
+    # A split effective on the first required session leaves every required
+    # bar after it: admitted for the reaction (D-1 first), refused for the
+    # native prefix, whose required sessions start at D-10.
+    on_first = Splits.of('SYNTH', ((date(2026, 1, 30), 2.0),))
+    assert gate(frame, on_first, False)['available']
+    native_first = gate(frame, on_first, True)
+    assert not native_first['available'] and native_first['reason'] == 'split_in_window'

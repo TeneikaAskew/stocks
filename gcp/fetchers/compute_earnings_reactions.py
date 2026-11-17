@@ -28,6 +28,7 @@ import logging
 import math
 import os
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -755,11 +756,18 @@ def fetch_daily_windows_for_ticker_dates(
     return out
 
 
-def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observation_ts=None, receipt_sink=None) -> int:
+def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observation_ts=None,
+                         receipt_sink=None, api_key=None) -> int:
     """Build earnings_reactions rows for the given tickers, upsert.
+
+    Each ticker's splits are read once from AlphaVantage SPLITS (`api_key`,
+    default ALPHA_VANTAGE_API_KEY) and held for the run; the price gate
+    checks every window against them (FEAT-DATA-001, no adjusted prices).
 
     Returns the number of rows produced.
     """
+    if api_key is None:
+        api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     eps_df = fetch_earnings_history_for_tickers(tickers)
     if eps_df.empty:
         log.warning("No earnings_history rows for %s", tickers)
@@ -800,7 +808,19 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
     log.info("processing %d tickers × ~%d earnings rows each",
              n_tickers, len(eps_df) // max(n_tickers, 1))
 
+    split_delay = AlphaVantageConfig().delay_between_calls
     for ti, (ticker, ticker_eps) in enumerate(ticker_groups, start=1):
+        # The ticker's split evidence, one SPLITS call per ticker per run,
+        # paced like every other AlphaVantage consumer. An outage is named
+        # per event below, never read as "no split" (CLAUDE.md 3.7).
+        if ti > 1:
+            time.sleep(split_delay)
+        try:
+            splits = fetch_splits(ticker, api_key)
+        except SplitsUnavailable as exc:
+            log.warning("ticker=%s SPLITS unavailable: %s", ticker, exc.reason)
+            splits = exc
+
         # Collect every reported_date this ticker has, then bulk-fetch
         # the daily bars in one query covering the full date span.
         dates_for_ticker = ticker_eps['reported_date'].tolist()
@@ -841,6 +861,13 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
                     continue
                 daily = daily[daily['date'].map(lambda day: session_closes[day] <= clock)].copy()
                 daily = daily.reset_index(drop=True)
+            if isinstance(splits, SplitsUnavailable):
+                # No split evidence for this ticker this run: nothing is
+                # written, and a stored row stays as it is.
+                ticker_skipped += 1
+                _emit_event_receipts([_event_receipt(eps.to_dict(), 'price_inputs',
+                    'split_status_unavailable', 'write_skipped')], receipt_sink)
+                continue
             result = compute_reaction(eps.to_dict(), daily, basis)
             if result is None:
                 ticker_skipped += 1
@@ -854,14 +881,15 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
             declared = daily.attrs.get('earnings_price_evidence')
             price = ({'available': True, 'receipt': declared} if declared else
                      database_daily_price_evidence(event, daily, schedule=schedule,
-                                                   observed_at=pd.Timestamp.now(tz='UTC')))
+                                                   observed_at=pd.Timestamp.now(tz='UTC'),
+                                                   splits=splits))
             path = compute_daily_path_v1(event, daily, observation_ts=clock,
                         price_evidence=price['receipt'], schedule=schedule)
             if not price['available']:
                 path['payload']['reason'] = price['reason']
             native_price = ({'available':True,'receipt':declared} if declared else
                 database_daily_price_evidence(event,daily,schedule=schedule,
-                    observed_at=pd.Timestamp.now(tz='UTC'),native=True))
+                    observed_at=pd.Timestamp.now(tz='UTC'),splits=splits,native=True))
             native = qualify_native_classifier_inputs(event,daily,observation_ts=clock,
                     price_evidence=native_price['receipt'],schedule=schedule)
             if not native_price['available'] and native['reason'] not in ('missing_native_prefix_session','duplicate_native_prefix_session','native_features_not_mature'):

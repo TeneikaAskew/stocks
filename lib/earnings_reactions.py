@@ -1346,18 +1346,33 @@ class SplitsUnavailable(Exception):
         self.reason = reason
 
 
-def database_daily_price_evidence(event, frame, *, schedule, observed_at, native=False):
+# The market_data_daily.data_source tags of the AlphaVantage daily writers,
+# each of which stores fields 1 to 4 of the daily endpoint, as traded
+# (FEAT-DATA-001, no adjusted prices, Design 6). Any other tag, NULL
+# included, is a writer this gate cannot vouch for.
+AS_TRADED_DAILY_SOURCES = ('alphavantage', 'alphavantage_daily',
+                           'av_daily_backfill', 'av_watched_backfill')
+
+
+def database_daily_price_evidence(event, frame, *, schedule, observed_at, splits,
+                                  native=False):
     """Conservative current-DB declaration, not original provider/PIT proof.
 
-    Only the merged AV raw-OHLC writer tags and explicit equal raw/adjusted
-    closes qualify here. A changed/unclear adjustment factor is unavailable;
-    this never guesses a split threshold, quote currency or issuer equivalence.
+    Only the AlphaVantage daily writer tags (AS_TRADED_DAILY_SOURCES), whose
+    prices are as traded, qualify here, and only after an explicit split
+    check: `splits` is the ticker's Splits from AlphaVantage SPLITS, or the
+    SplitsUnavailable that fetching it raised. A split effective after the
+    first and on or before the last required session refuses the window
+    (split_in_window); unavailable evidence refuses it
+    (split_status_unavailable). No stored adjusted column is read. This never
+    guesses a split threshold, quote currency or issuer equivalence.
     Stronger retained receipts may be supplied by the same producer's caller.
     """
     from datetime import date
     import hashlib
-    import json
-    import pandas as pd
+    if not isinstance(splits, (Splits, SplitsUnavailable)):
+        # This job's own wiring, not the vendor's answer: fail loud.
+        raise TypeError('splits must be Splits or SplitsUnavailable')
     try:
         ev = normalize_local_event_dates(event)
         from datetime import timedelta
@@ -1371,25 +1386,25 @@ def database_daily_price_evidence(event, frame, *, schedule, observed_at, native
         if (native and (d<10 or len(required)!=16)) or (not native and len(required) < (7 if ev.get('reaction_basis') == 'BMO' else 6)):
             raise ValueError('insufficient_canonical_sessions')
         rows = frame[frame['date'].isin(required)].copy()
-        if not {'data_source', 'adjusted_close'} <= set(rows.columns):
+        if 'data_source' not in rows.columns:
             raise ValueError('missing_database_price_basis_metadata')
-        if rows.empty or not rows['data_source'].isin(['alphavantage', 'alphavantage_daily']).all():
+        if rows.empty or not rows['data_source'].isin(AS_TRADED_DAILY_SOURCES).all():
             raise ValueError('unrecognized_database_price_writer')
-        raw = pd.to_numeric(rows['close'], errors='coerce')
-        adjusted = pd.to_numeric(rows['adjusted_close'], errors='coerce')
-        if not (raw.gt(0) & adjusted.gt(0) & raw.eq(adjusted)).all():
-            raise ValueError('unresolved_adjustment_or_corporate_action')
-        projection = rows[['date', 'open', 'high', 'low', 'close',
-                           'adjusted_close', 'data_source']].copy()
+        if isinstance(splits, SplitsUnavailable):
+            raise ValueError('split_status_unavailable')
+        if any(required[0] < effective <= required[-1] for effective, _ in splits.events):
+            raise ValueError('split_in_window')
+        projection = rows[['date', 'open', 'high', 'low', 'close', 'data_source']].copy()
         projection['date'] = projection['date'].map(str)
         digest = hashlib.sha256(projection.to_json(orient='records',
                         double_precision=15).encode()).hexdigest()
         stamp = local_earnings_clock(observed_at).isoformat()
         event_id = f"{ev['ticker']}:{ev['fiscal_date_ending']}:{ev['reported_date']}"
         return {'available': True, 'receipt': {
-            'event_id': event_id, 'source_id': 'current-db-projection:' + digest,
+            'event_id': event_id,
+            'source_id': 'current-db-projection:' + digest + ':splits:' + splits.digest,
             'observed_at': stamp, 'acquired_at': stamp,
-            'price_basis_id': 'db-declared-av-raw-equal-adjusted-v1',
+            'price_basis_id': 'av-as-traded-no-split-v1',
             'evidence_grade': 'current_db_writer_declaration_only'}}
     except (ValueError, TypeError, KeyError, IndexError) as exc:
         return {'available': False, 'reason': str(exc)[:160], 'receipt': None}
