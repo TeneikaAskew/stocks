@@ -70,7 +70,7 @@ flowchart LR
     VAI[Vertex AI Gemini + embeddings]:::ext
 
     SCH[Cloud Scheduler<br/>65 entries live, all America/New_York]:::gcp
-    JOBS[Cloud Run Jobs<br/>76 live / 67 in deploy.sh]:::gcp
+    JOBS[Cloud Run Jobs<br/>66 live / 67 in deploy.sh]:::gcp
     API1[solyra-api-prod<br/>FastAPI, IAP]:::gcp
     API2[solyra-api-staging<br/>FastAPI, public edge + Firebase]:::gcp
     DI[discord-interactions<br/>slash commands]:::gcp
@@ -108,8 +108,8 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 
 | Service | Role | Live 2026-09-07 |
 |---|---|---|
-| Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 95 relations live, of which **26 runtime relations** are created by research and analytics jobs and are not declared in `gcp/schema.sql`; that file declares 77 (74 tables, 2 materialized views, 1 view), a set that overlaps the live one without equalling it (§5) |
-| Cloud Run Jobs | every fetcher, analyzer, backfill, audit and research run | 76 jobs; 68 declared in [`gcp/deploy.sh`](../../../gcp/deploy.sh) |
+| Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 95 relations live, of which **26 runtime relations** are created by research and analytics jobs and are not declared in `gcp/schema.sql`; that file declares 79 (76 tables, 2 materialized views, 1 view), a set that overlaps the live one without equalling it (§5) |
+| Cloud Run Jobs | every fetcher, analyzer, backfill, audit and research run | 66 jobs; 68 declared in [`gcp/deploy.sh`](../../../gcp/deploy.sh) |
 | Cloud Run Services | 3 long-lived HTTP services | `solyra-api-staging`, `discord-interactions` (min-instances 1 only inside the weekday warm window, 0 otherwise — §7.4), `failure-notifier` |
 | Cloud Scheduler | cron triggers, all `America/New_York` | 65 entries, none paused (`evaluate-ew-strikes-daily` deleted 2026-11-12, `signal-quality-report-hourly` 2026-09-07) |
 | Cloud Build | image builds and the API deploy triggers | triggers `deploy-solyra-api-staging` (push to `main`), `deploy-solyra-api-prod` (manual), `apply-schema-on-change` (push to `main`) |
@@ -140,7 +140,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 
 ## 5. Schema catalog
 
-`gcp/schema.sql` declares **77 relations** (74 tables, 2 materialized views, 1 view); the live database holds **95**, of which **26 runtime relations** are live but **not declared in this file** (the `strat_features_*` family, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, the `*_30m_predictions` tables, `market_data_indicators*`, `market_data_cross_asset`). That is a statement about `gcp/schema.sql`, not about where they come from: none is applied by `apply-schema-migrations`, and they are created three different ways.
+`gcp/schema.sql` declares **79 relations** (76 tables, 2 materialized views, 1 view); the live database holds **95**, of which **26 runtime relations** are live but **not declared in this file** (the `strat_features_*` family, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, the `*_30m_predictions` tables, `market_data_indicators*`, `market_data_cross_asset`). That is a statement about `gcp/schema.sql`, not about where they come from: none is applied by `apply-schema-migrations`, and they are created three different ways.
 
 1. **DDL embedded in the job that owns the table**, applied just-in-time on each run — `gamma_levels_eod` ([`gcp/research/p2_build_gamma_levels.py:81`](../../../gcp/research/p2_build_gamma_levels.py#L81)), `gamma_events` ([`gcp/research/p2_outcomes_grid.py:72`](../../../gcp/research/p2_outcomes_grid.py#L72)), `magnitude_walk_forward_results` and `magnitude_per_bar_predictions` ([`gcp/research/magnitude_engine/mag_walk_forward.py:88`](../../../gcp/research/magnitude_engine/mag_walk_forward.py#L88)), and `strat_features_4h` ([`gcp/research/strat_engine/strat_data_builder.py:96`](../../../gcp/research/strat_engine/strat_data_builder.py#L96), executed at [`:906`](../../../gcp/research/strat_engine/strat_data_builder.py#L906), whose comment notes the other timeframes are not its to apply), and all six `strat_features_levels_*` tables, whose DDL is **generated at runtime** from the enrichment columns discovered for that timeframe ([`gcp/research/strat_engine/strat_enrich_levels.py:130`](../../../gcp/research/strat_engine/strat_enrich_levels.py#L130)) and executed as it is built ([`:138`](../../../gcp/research/strat_engine/strat_enrich_levels.py#L138)) — so their column list exists in no file at all.
 2. **A dedicated DDL file under `gcp/queries/`, applied by hand** — [`gcp/queries/p7_schema.sql:7`](../../../gcp/queries/p7_schema.sql#L7) for the five `strat_features_{1m,5m,15m,30m,60m}` tables, and only those, [`gcp/queries/magnitude_engine_schema.sql:3`](../../../gcp/queries/magnitude_engine_schema.sql#L3) for `market_data_indicators*` and `market_data_cross_asset`, [`gcp/queries/p7_vex_cache.sql:9`](../../../gcp/queries/p7_vex_cache.sql#L9) for `daily_vex`. No job runs these. The first two still instruct an operator to dispatch `db-query.yml`, a workflow deleted on 2026-05-30 and replaced by `./scripts/db_query_cr.sh`, so those instructions are stale.
@@ -179,6 +179,8 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 | `insight_reports` | table | [`gcp/schema.sql:1554`](../../../gcp/schema.sql#L1554) |
 | `insight_reports_history` | table | [`gcp/schema.sql:2349`](../../../gcp/schema.sql#L2349) |
 | `insight_runs` | table | [`gcp/schema.sql:1590`](../../../gcp/schema.sql#L1590) |
+| `intraday_bar_flag_coverage` | table | [`gcp/schema.sql:5629`](../../../gcp/schema.sql#L5629) |
+| `intraday_bar_flags` | table | [`gcp/schema.sql:5606`](../../../gcp/schema.sql#L5606) |
 | `intraday_flow_15m` | table | [`gcp/schema.sql:422`](../../../gcp/schema.sql#L422) |
 | `intraday_gex_15m` | table | [`gcp/schema.sql:443`](../../../gcp/schema.sql#L443) |
 | `job_runs` | table | [`gcp/schema.sql:5267`](../../../gcp/schema.sql#L5267) |
@@ -345,12 +347,12 @@ There are **no foreign keys between domain tables** other than `insight_runs.rep
 | `walk_forward_results` | 0 | 264 kB | `gcp/schema.sql` |
 | `watchlists` | 0 | 64 kB | `gcp/schema.sql` |
 
-Declared in `gcp/schema.sql` but absent live: `bar_recompute_ledger`, `level_param_policy`, `schema_apply_history`, `ticker_level_params`, `user_watchlists`, `watched_tickers`, `watchlist_history`, `watchlist_history_origin`
+Declared in `gcp/schema.sql` but absent live: `bar_recompute_ledger`, `intraday_bar_flag_coverage`, `intraday_bar_flags`, `level_param_policy`, `schema_apply_history`, `ticker_level_params`, `user_watchlists`, `watched_tickers`, `watchlist_history`, `watchlist_history_origin`
 <!-- inventory:dbtables:end -->
 
 ## 6. Cloud Run Jobs
 
-76 jobs exist live; 68 are declared by a `deploy_*` function in [`gcp/deploy.sh`](../../../gcp/deploy.sh). 66 names appear on both sides, so 10 of the live jobs have no `deploy_*` function and 2 declared jobs are not deployed. Those 10 were created by hand with `gcloud run jobs create` in May 2026 and are not reproducible from the repo (`backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`; 10 names, none of them scheduled). `p2-build-gamma-levels`, the one hand-made job with a scheduler (`gamma-levels-daily`), was codified as `deploy_p2_build_gamma_levels` in September 2026 (#829, #834). Two declared jobs are not deployed (`compute-spx-greeks-backfill`, `options-exec-backtest`). Retry policy is **`--max-retries 0` for 43 of the 67 declared jobs, `1` for 23 and `2` for one** (each row below says which); five fetchers omit `--task-timeout` and run at the Cloud Run default of 600 s.
+66 jobs exist live; 67 are declared by a `deploy_*` function in [`gcp/deploy.sh`](../../../gcp/deploy.sh). All 66 live names are declared, so no live job lacks a `deploy_*` function, and one declared job is not deployed (`compute-spx-greeks-backfill`; read live 2026-11-16). The 10 jobs that were created by hand with `gcloud run jobs create` in May 2026 and were not reproducible from the repo (`backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`; none of them scheduled) were deleted live on 2026-11-14. `p2-build-gamma-levels`, the one hand-made job with a scheduler (`gamma-levels-daily`), was codified as `deploy_p2_build_gamma_levels` in September 2026 (#829, #834). Retry policy is **`--max-retries 0` for 43 of the 67 declared jobs, `1` for 23 and `2` for one** (each row below says which); five fetchers omit `--task-timeout` and run at the Cloud Run default of 600 s.
 
 <!-- inventory:jobs:start -->
 | Job | Declared | Entrypoint | Memory / CPU / timeout / retries | Image | Last execution (live 2026-09-07) |
@@ -959,6 +961,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/fetchers/fetch_sec_filings.py`](../../../gcp/fetchers/fetch_sec_filings.py) | Cloud Run Job: Poll SEC EDGAR for recent filings (8-K, 10-Q, 10-K) → Cloud SQL. | `fetch-sec-filings` |
 | [`gcp/fetchers/fetch_top_movers.py`](../../../gcp/fetchers/fetch_top_movers.py) | Cloud Run Job: Fetch AV TOP_GAINERS_LOSERS daily snapshot → Cloud SQL. | `fetch-top-movers` |
 | [`gcp/fetchers/fetch_watched_tickers.py`](../../../gcp/fetchers/fetch_watched_tickers.py) | Watched-ticker ingest job (fetch-watched-tickers), v2. | — |
+| [`gcp/fetchers/intraday_bar_flags.py`](../../../gcp/fetchers/intraday_bar_flags.py) | The bar flag pass over the stored 1-minute bars of SPY, QQQ and IWM | — |
 | [`gcp/gcs_utils.py`](../../../gcp/gcs_utils.py) | Google Cloud Storage utility helpers shared across gcp/ modules. | — |
 | [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) | Cloud SQL helpers for the ``historical_signals`` table. | — |
 | [`gcp/indicator_correlation_job.py`](../../../gcp/indicator_correlation_job.py) | Intraday indicator → forward-return correlation / Information Coefficient (Cloud Run Job). | `indicator-correlation` |
@@ -1044,6 +1047,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`lib/agents/vertex_adapter.py`](../../../lib/agents/vertex_adapter.py) | Vertex AI Gemini adapter for LLMClient. | — |
 | [`lib/api_client.py`](../../../lib/api_client.py) | Resilient HTTP client for external API calls. | — |
 | [`lib/backtest.py`](../../../lib/backtest.py) | Event-driven backtesting engine. | — |
+| [`lib/bar_prints.py`](../../../lib/bar_prints.py) | A print isolated from its own minute, in stored 1-minute bars (FEAT-DATA-001). | — |
 | [`lib/broker_import.py`](../../../lib/broker_import.py) | Broker CSV import core — parse, detect, FIFO round-trip pairing. | — |
 | [`lib/chart_voter.py`](../../../lib/chart_voter.py) | Chart-page teaching voter — the July-6 (pre-#700) 5-condition readout. | — |
 | [`lib/combo_mining.py`](../../../lib/combo_mining.py) | Shared, label-agnostic indicator-combination mining. | — |
