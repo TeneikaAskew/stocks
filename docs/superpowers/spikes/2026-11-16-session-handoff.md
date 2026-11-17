@@ -1,4 +1,4 @@
-# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 00:10Z
+# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 00:20Z
 
 Keep this note current: whoever finishes a task updates its row in section 2 and its part of
 section 3 in the same PR or a docs PR right after (owner, 2026-11-16).
@@ -35,13 +35,13 @@ Rules the owner set for this work. They are not optional:
 
 | PR | What | State | Next action |
 |---|---|---|---|
-| #2010 | Brief build (FEAT-PLAYBOOK-001) | Ready, auto-merge on. Tasks 1 to 12 pushed, head 8250bff75, every review clean. | Task 13 (close) was running. Finish it, push, replace the PR body. See 3.1. |
-| #2001 | Bad-print flags build (FEAT-DATA-001) | Draft. Code complete, head 7b578659e, gate, integration and research tests green; Run Tests had not reported at 00:10Z. | When Run Tests passes: tick the three open boxes in the body, mark ready. Merge needs the owner's yes (schema). See 3.2. |
-| #2020 | 09:20 schedule build (FEAT-DEPLOY-001) | Ready, auto-merge on. All 5 tasks pushed, head d843cc6c7, body complete with every box ticked; local gate, verify and audit clean. | Wait for CI and Codex; record first reviews; fix findings in place. If main moves first, the site-source snapshot goes stale: merge main, re-run produce and verify, push. After merge: the owner's three deploys. See 3.3. |
+| #2010 | Brief build (FEAT-PLAYBOOK-001) | Ready, auto-merge on. All 13 tasks pushed, head 1d92570d2 (main merged in at 4c49671aa, no conflict). Full body with all 17 boxes ticked posted 2026-11-17 about 00:15Z. The gate failed once at 00:07Z only because the old body was still up. | Wait for the gate to re-run on the new body, CI and Codex's code review of 1d92570d2; fix findings in place. If main moves first, the site-source snapshot may go stale: merge main, re-run produce and verify, push. After merge: the owner's steps in the body. See 3.1. |
+| #2001 | Bad-print flags build (FEAT-DATA-001) | Ready since 2026-11-17 00:05Z, auto-merge OFF on purpose. Head 7b578659e, CI green, every box ticked with run links. Codex code and security reviews started 00:05Z. | Record both first reviews, fix findings in place. Merge needs the owner's yes (it changes `gcp/schema.sql`). See 3.2. |
+| #2020 | 09:20 schedule build (FEAT-DEPLOY-001) | Ready, auto-merge on. All 5 tasks pushed, head d843cc6c7, body complete with every box ticked; local gate, verify and audit clean. First security review recorded (no findings). `registry` failed once on a sub-second timing test in the gate suite the PR does not touch; explained on the PR and re-run once (a second failure counts as real). | Wait for CI and Codex; record first reviews; fix findings in place. If main moves first, the site-source snapshot goes stale: merge main, re-run produce and verify, push. After merge: the owner's three deploys. See 3.3. |
 | #2019 | Targets spec r2 (FEAT-STRAT-001) | Ready, auto-merge on, both reviews clean. | Wait for CI and the merge. Then re-point #2018. See 3.4. |
 | #2018 | Targets plan | Ready, auto-merge OFF on purpose. Two open review threads. | After #2019 merges: re-point its `spec:` at the r2 file, add the baseline-only mode, answer and resolve the two threads, turn auto-merge on. See 3.4. |
 | #2021 | Prior-close spec r2 (FEAT-PLAYBOOK-001) | Ready, auto-merge on, both reviews clean. | Wait for CI and the merge. Then put the prior-close plan up. See 3.5. |
-| #2009 | Conviction spec (FEAT-INSIGHT-001) | Draft, CI green. | Needs the owner's word on one decision. See 3.6. |
+| #2009 | Conviction spec (FEAT-INSIGHT-001) | Draft, head 2801e3f45: main merged in, and the measurement's outcome named as the first-target surrogate `cross-fill-t1-v1`, never plan performance (no decision or done_when outcome moved). | Needs the owner's word on one decision. Decision 1's line still says "R earned by the brief's own plan"; rewording it needs the owner. See 3.6. |
 
 Merged today, for reference: #1990, #1992, #1993, #1994, #1995, #1998, #1999 (specs); #2002, #2003,
 #2004 (plans); #2013 (targets spec r1, now superseded by r2 once #2019 merges); #2016 (prior-close
@@ -55,11 +55,15 @@ verifier ceiling).
 Branch `feature/feat-playbook-001-brief-says-what-the-data-says`. Plan
 `docs/superpowers/plans/2026-11-16-feat-playbook-001-brief-says-what-the-data-says.md`, 13 tasks.
 
-Left to do (Task 13): merge main in; re-render the inventory docs; catalog record and traceability
-line; the four site-note steps; docs audit against main; `spec_gate.py --pr origin/main`; then
-replace the PR body with every `done_when` item as a box with its evidence, the Capacity section and
-the B11 evidence. The gate has failed on every push so far for exactly these missing pieces; that is
-expected until the close is pushed.
+Task 13 (close) done and pushed 2026-11-17: main merged in (`4c49671aa`, no conflict), catalog
+record and traceability (`0b0d15ef2`), DASHBOARD-01 site note (`26eea7a21`), snapshot regenerated
+(`1d92570d2`, verify printed `identity-matched`), docs audit equal to main's, `spec_gate.py --pr
+origin/main` ok locally with the final body. The body (63,798 characters, under GitHub's 65,536
+limit) lives on the PR; its draft was the session scratch file `pr2010_body.md`. Three ticks rest on
+a stated reading: B2 (a raising gamma read does not propagate today and the code keeps that), B7b
+(ticked on its second half, `lib/bar_prints.py` not on the merge base) and B8 (SPY raw high
+754.3772, the item writes 754.377). Any further commit dated 2026-11-17 makes the gate want Last
+reviewed 2026-11-17 in the catalog record.
 
 After it merges, the owner's steps: deploy with readers of the rule version before or with the brief
 job; then the one-time replay of 2026-11-16. The owner approved overwriting that day's row once,
@@ -75,7 +79,7 @@ Branch `feature/feat-data-001-bar-misprint-flags`. All 14 tasks done. The site-n
 passes now that main has the 16 MiB ceiling. The PR body is complete except three boxes that wait on
 CI (the two real-Postgres test files and the whole suite on the head) and the last box.
 
-Next: when Run Tests on 7b578659e is green, tick those boxes with the run links, mark ready. Do NOT
+Done 2026-11-17 00:05Z: boxes ticked with the run links, marked ready, auto-merge left off. Do NOT
 enable auto-merge. Ask the owner for the merge. After the merge the owner's steps are in the PR body
 (apply schema, deploy fetchers, the history dry run, the committed history).
 
