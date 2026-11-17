@@ -3,7 +3,7 @@ feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-11-15-feat-strat-001-drop-entry-cutoff.md
 branch: fix/feat-strat-001-drop-entry-cutoff
 pr: 1967
-status: ready
+status: done
 ---
 
 # The exits plan drops its 10:00 ET entry cutoff: implementation plan

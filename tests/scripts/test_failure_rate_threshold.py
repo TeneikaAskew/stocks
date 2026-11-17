@@ -42,7 +42,7 @@ def _run_backfill_with_outcomes(monkeypatch, success_tickers, failure_tickers):
             'ticker': [ticker],
             'date': [pd.Timestamp('2026-05-30').date()],
             'open': [100.0], 'high': [101.0], 'low': [99.0], 'close': [100.5],
-            'volume': [1000], 'adjusted_close': [100.5],
+            'volume': [1000],
         })
         return [df]
 

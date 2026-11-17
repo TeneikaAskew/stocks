@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-25-feat-cicd-001-verifier-presence.md
 branch: feature/feat-cicd-001-verifier-presence-bound
 pr: 1597
-status: ready
+status: done
 ---
 
 # Avoid redundant historical SITE content inspection

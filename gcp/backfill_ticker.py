@@ -4,7 +4,7 @@ Backfill historical data for a single ticker — Cloud Run Job.
 Run by hand by an operator, one execution per ticker. Nothing in the repo
 dispatches it. The job:
 
-  1. Calls AV TIME_SERIES_DAILY_ADJUSTED (outputsize=full) and writes
+  1. Calls AV TIME_SERIES_DAILY (outputsize=full, as traded) and writes
      the most recent ``BACKFILL_HISTORY_DAYS`` rows (default 800 ≈ 12
      quarters of earnings reactions + ATR-14 warm-up + D±10 buffer)
      into market_data_daily — enough for compute_earnings_reactions
@@ -100,10 +100,10 @@ def _parse_dates(raw: Optional[str]) -> list[date]:
 # AlphaVantage
 # ──────────────────────────────────────────────────────────────────────
 def av_daily_full(ticker: str, api_key: str) -> pd.DataFrame:
-    """Pull entire daily history (split/dividend-adjusted)."""
+    """Pull entire daily history, as traded (TIME_SERIES_DAILY)."""
     log.info("AV daily-full %s", ticker)
     r = requests.get(AV_BASE, params={
-        "function": "TIME_SERIES_DAILY_ADJUSTED",
+        "function": "TIME_SERIES_DAILY",
         "symbol": ticker, "outputsize": "full",
         "datatype": "json", "apikey": api_key,
     }, timeout=60)
@@ -118,13 +118,12 @@ def av_daily_full(ticker: str, api_key: str) -> pd.DataFrame:
     rows = []
     for d, v in ts.items():
         rows.append({
-            "date":           pd.to_datetime(d).date(),
-            "open":           float(v["1. open"]),
-            "high":           float(v["2. high"]),
-            "low":            float(v["3. low"]),
-            "close":          float(v["4. close"]),
-            "adjusted_close": float(v["5. adjusted close"]),
-            "volume":         int(v["6. volume"]),
+            "date":   pd.to_datetime(d).date(),
+            "open":   float(v["1. open"]),
+            "high":   float(v["2. high"]),
+            "low":    float(v["3. low"]),
+            "close":  float(v["4. close"]),
+            "volume": int(v["5. volume"]),
         })
     df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
     log.info("  → %d daily rows (%s … %s)", len(df), df["date"].iloc[0], df["date"].iloc[-1])
@@ -564,7 +563,7 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
 def run() -> int:
     """Backfill one ticker end-to-end. Four-step sequence:
 
-      1. AV TIME_SERIES_DAILY_ADJUSTED full → ``market_data_daily``
+      1. AV TIME_SERIES_DAILY full (as traded) to ``market_data_daily``
          (last ``BACKFILL_HISTORY_DAYS`` rows; floor 800 ≈ 12 quarters
          of earnings reactions + ATR-14 warm-up + D±10 buffer).
       2. (optional, ``BACKFILL_INCLUDE_NEWS=true``) AV NEWS_SENTIMENT
@@ -627,7 +626,7 @@ def run() -> int:
     daily_rows = [
         {"ticker": ticker, "date": r["date"],
          "open": r["open"], "high": r["high"], "low": r["low"],
-         "close": r["close"], "adjusted_close": r["adjusted_close"],
+         "close": r["close"],
          "volume": int(r["volume"]), "data_source": "alphavantage"}
         for _, r in keep.iterrows()
     ]

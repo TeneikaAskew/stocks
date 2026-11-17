@@ -1,4 +1,4 @@
-# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 05:20Z
+# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 16:30Z
 
 Keep this note current: whoever finishes a task updates its row in section 2 and its part of
 section 3 in the same PR or a docs PR right after (owner, 2026-11-16).
@@ -8,7 +8,122 @@ true when written. Before acting on any line, re-read the PR or branch it names:
 in flight.
 
 
-## 0. Update, 2026-11-17 05:20Z: what landed, and the order from here
+## 0. Update, 2026-11-17 16:30Z: review unblocked, sidecar queue landing
+
+This section supersedes section 0a below (12:55Z) where they differ.
+
+### 0.1 Landed since 12:55Z
+
+- Merged: #2047 (no adjusted prices anywhere, plus the SPLITS request failure that could carry the
+  API key in its reason: it now carries only the HTTP status or the exception class), #1985
+  (catalyst upcoming refresh binds INTEGER columns as integers), #1670 (keyword-only
+  `implied_move_invalid` guard), #2055 (this note), #2056 (hit rates r2 plan) and, from the
+  owner's main chat, #2051 (hit rates r2 spec).
+- Live checks from 12:55Z's list, all done: the 13:30Z brief ran on v5 with IWM's prior-close drop
+  recorded; the premarket refresh wrote its as-read objects; the 09:20 ET late run applied.
+- Open: #2066 marks the plans of #2047, #1985 and #1670 `done`. #1671 (zero retries on the three
+  news jobs) is pushed as `affb3f284`, synced with main, sidecar identity-matched, docs audit 313
+  against 313; it waits for Codex's code review of that head and CI, then its done_when 5 is ticked
+  and it merges. It is the last sidecar PR in the queue.
+- Issues opened: #2061 (MODEL-REGISTRY DOC-24 points at moved lines; a feature branch may edit only
+  the registry rows its spec names, so it is fixed on its own branch) and #2064 (05-INFRASTRUCTURE.md
+  still shows the news jobs at retries 1; a `docs/` fix after #1671 merges).
+
+### 0.2 Owner direction, 2026-11-17 afternoon
+
+- While Codex was out of credits, Claude reviewed in its place: #2047, #1985, #1916, #1670 and
+  #1671. None found anything at or above the merge threshold. The owner then reset Codex, so it can
+  be tagged with `@codex review` again; a push to a PR open for review also triggers it.
+- #2050 merged without a Codex review of its last push, by the owner's call.
+
+### 0.3 Do not run
+
+- `./gcp/deploy.sh fetchers` from any main that contains #2047 (main does now) before spec C is
+  deployed: #2047 gives `compute-earnings-reactions` one SPLITS call per ticker with a 30 s timeout
+  and no early stop, so a transport brownout reaches the job's 1,800 s timeout at about 60 tickers
+  and the end-of-run upsert loses every row. Spec C raises that timeout to at least 16,800 s (#2060,
+  with three fix options). The other deploy targets are unaffected.
+- No 09:20 scheduler entries, backfill or history job unless a merged spec covers it and the owner
+  names it. No data change in place anywhere (0a.2).
+
+### 0.4 Waiting on the owner
+
+1. #1916: may its one remaining push also carry the gamma staleness limit (`merge_asof` tolerance of
+   about 6 days, plus a test with a gap of several weeks)? Recommended yes. Its merge is also held
+   until solyra ships the Profiles-tab null fix. Merged with main locally in `/tmp/conflict-1916`.
+2. #2054 (FEAT-REPLAY-001 full-pull replay): ten decisions before it can be approved. A second-round
+   fix commit is local (`856c3d3c5`), to push with the approval.
+3. #2053 (quarter targets r3, the re-cut of #2052, Codex clean on `b65dae82f`): approval. The
+   quarters build (`/tmp/build-quarters`, 13 of 15 tasks, nothing pushed) is re-planned against r3
+   and opened only after #2053 merges. Hit rates r2 is being built in the main chat (#2062, draft).
+4. Older: #1520, #1700 and #1430 questions; whether to re-cut #1914 and #1860.
+
+### 0.5 Scheduled
+
+- 2026-11-18 03:10Z: the first bar-flags nightly check, recorded on #2001.
+
+
+## 0a. Update, 2026-11-17 12:55Z: deployed, replay redirected, review blocked
+
+This section supersedes section 0b (05:20Z) and sections 1 to 7 where they differ.
+
+### 0.1 Landed and deployed since 05:20Z
+
+- Merged: #2043 (refuse an unknown rule version), #2046 (prior-close prints, rule v5), #2044
+  (premarket reads as read), #2045 and #2048 (records for the no-adjusted change), #2036, #2039 and
+  #2041 (plans and this handoff).
+- Deployed with the owner's approval ("Deploy and replay anything waiting"), from main 862c5e2ea,
+  one chain stopping at the first failure, each exit 0: playbook-resolver 11:44Z, monitor 11:57Z,
+  insights 12:09Z, premarket 12:20Z (brief image live 12:32Z), fetchers 12:32Z to 12:48Z. Every
+  reader knew v5 before the brief that writes it. The API took both through its own trigger (build
+  eebd3b13 of f3b2344c4, revision 00085, serving since 09:54:59Z). Digests before and after are on
+  #2043, #2046 and #2044. Not deployed: `backfill-ticker`, an on-demand writer outside these targets
+  (#2046).
+- The brief spec's 2026-11-16 replay with no write ran on the new image (execution
+  `premarket-brief-mdhf8`): v5 gives SPY 752.90 / 747.96, QQQ 675.49 / 668.33, IWM 276.97 / 275.74;
+  RVOL 0.80 / 0.83 / 0.73; TF bias -0.75; before and after reads identical. Recorded on #2010.
+
+### 0.2 Owner decisions, 2026-11-17
+
+- No data changes in place anywhere. The one-time overwrite of the 2026-11-16 brief rows (#2046
+  close-out step 2) is dropped. As written it could not recompute from bars and would have stamped
+  v5 on the stored 754.3772.
+- Instead: a full-pull replay into a separate store. Draft spec #2054 (FEAT-REPLAY-001), ten
+  decisions for the owner. The code cannot do it today: every replay path that writes, writes live
+  rows. Local experiment, Nov 9 to 16: a fresh Alpha Vantage pull equals the stored bars exactly;
+  the 08:20 read the brief used is not reproducible from any pull in 11 of 12 ticker-sessions (the
+  vendor revised the early bars), so an as-live morning replay needs the as-read objects (#2044,
+  from today).
+- Found and checked: the canonical 2026-11-10 brief rows are `run_kind` replay (a replay_refresh
+  run at 22:30:46Z that day replaced the published rows; the originals are only in
+  `premarket_analysis_history`), and run `fetch-market-data-686d7` recomputed 447 stored premarket
+  rows on 2026-11-15 06:02Z (sessions 2026-04-14 to 11-13).
+- #2050 (52 merged plans to `done`) merges without a Codex review of its last push, by the owner's
+  call. Two verifier plans stay `ready`: the verifier's suite copies one as its template.
+
+### 0.3 Blocked: Codex usage limit
+
+Codex reviews fail with "reached your Codex usage limits" since about 12:03Z (#2047, #2050, #2054).
+Until the owner adds credits:
+- #2047 (no adjusted prices) is ready, CI green on 62b49fd91, all 15 done_when items ticked, and
+  waits for its first Codex review. It holds the sidecar, so it lands before the others.
+- #1985, #1916, #1670 and #1671 are merged with main locally (`/tmp/conflict-<n>`), not pushed: each
+  needs its site note rebound and the sidecar regenerated at push time, and its one allowed Codex
+  round would be lost to the limit. #1916 must first merge its 3 remote commits from 06:03Z.
+  #1985 and #1670 both edit the CATALYSTS-04 note: the second to land combines them.
+- ATR quarter targets: built locally (`/tmp/build-quarters`, 13 of 15 tasks, nothing pushed). Held:
+  the owner's main chat is revising the quarters spec as r3 (#2052) and hit rates as r2 (#2051);
+  the build PR opens only after the owner decides r3.
+
+### 0.4 Still to check today
+
+- 13:30Z: the first live brief on v5 (`confirmed.prior_close_prints` in `pre_filter_params`, #2046
+  step 3); 13:50Z check-in records it.
+- The premarket refresh's as-read objects under `premarket-as-read/v1/<date>/` (#2044).
+- 14:40Z: the first 09:20 ET late run (#2020). 2026-11-18 03:10Z: the first bar-flags nightly
+  (#2001).
+
+## 0b. Update, 2026-11-17 05:20Z: what landed, and the order from here
 
 Sections 1 to 7 below were written at 01:50Z. This section supersedes them where they differ. The
 order below was read from each spec's own order section on main (not from memory) and confirmed by

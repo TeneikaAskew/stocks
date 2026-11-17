@@ -228,7 +228,7 @@ def test_watched_job_pull_for_existing_orphan_keeps_it_a_backfill_target(monkeyp
     written: list[pd.DataFrame] = []
     bars = pd.DataFrame({
         "ticker": "ORPH", "date": list(pd.bdate_range(end="2026-01-30", periods=300).date),
-        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 100, "adjusted_close": 1.0})
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 100})
     monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "fake-key")
     monkeypatch.setenv("AV_BACKFILL_SLEEP_SECS", "0")
     monkeypatch.setattr(fetch_market_data, "is_cloud_sql_configured", lambda: True)

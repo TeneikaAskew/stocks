@@ -93,8 +93,18 @@ def wilder(x, n):
 
 
 def daily_bars(ticker, bars, daily_dir=DAILY_DIR):
-    """Daily OHLC: the AV daily file where it has bars, regular-hours 1-min aggregates after."""
-    D0 = pd.read_csv(f'{daily_dir}/{ticker}_daily_adjusted.csv', parse_dates=['timestamp']).sort_values('timestamp')
+    """Daily OHLC: the AV daily file where it has bars, regular-hours 1-min aggregates after.
+
+    The file is a TIME_SERIES_DAILY export, as traded; one holding an
+    adjusted column is refused (FEAT-DATA-001).
+    """
+    from lib.data_loader import ADJUSTED_CLOSE_COLUMNS
+    path = f'{daily_dir}/{ticker}_daily.csv'
+    D0 = pd.read_csv(path, parse_dates=['timestamp']).sort_values('timestamp')
+    shaded = [c for c in D0.columns if c in ADJUSTED_CLOSE_COLUMNS]
+    if shaded:
+        raise ValueError(f'{path}: column {shaded[0]} is not as traded; export '
+                         f'TIME_SERIES_DAILY instead (FEAT-DATA-001)')
     D0 = D0.rename(columns={'timestamp': 'Date', 'open': 'O', 'high': 'H', 'low': 'L', 'close': 'C'})
     mod = bars['Time'].dt.hour * 60 + bars['Time'].dt.minute
     r = bars[(mod >= 570) & (mod < 960)]

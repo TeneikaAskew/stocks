@@ -3,7 +3,7 @@ feat_id: FEAT-PLAYBOOK-001
 spec: docs/superpowers/specs/2026-11-11-feat-playbook-001-retire-ew-brief-caller-scope.md
 branch: fix/feat-playbook-001-ew-brief-caller-scope
 pr: 1837
-status: ready
+status: done
 ---
 
 # Retire EW from the premarket brief implementation plan

@@ -22,9 +22,9 @@ class _Resp:
     def json(self):
         return {"Time Series (Daily)": {
             "2026-11-04": {"1. open": "10", "2. high": "11", "3. low": "9", "4. close": "10.5",
-                           "5. adjusted close": "10.5", "6. volume": "100"},
+                           "5. volume": "100"},
             LAST.isoformat(): {"1. open": "10.5", "2. high": "11.5", "3. low": "10",
-                               "4. close": "11", "5. adjusted close": "11", "6. volume": "120"},
+                               "4. close": "11", "5. volume": "120"},
         }}
 
 
