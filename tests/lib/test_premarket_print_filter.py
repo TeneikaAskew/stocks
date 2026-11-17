@@ -56,12 +56,17 @@ RAW = {
     "SPY": (765.5267, 730.64),
 }
 # pre_high and pre_low with no ATR (rules (a) and (b) off). The 08:05 highs of
-# RAW are lone wicks, so the high is the next bar high. The lows: QQQ's 647.05
-# is the prior close, which bars also open and close at (a body, kept by the
-# stale rule and by the confirmed rule); IWM's and SPY's are the lone wicks
-# above.
+# RAW are lone wicks, so the high is the next bar high. The lows: IWM's and
+# SPY's are the lone wicks above. QQQ's prior close is 647.05: the 07:35 ET bar
+# (open 657.44, high 657.58, low 647.05, close 647.05, volume 2839) and the
+# 07:38 ET bar (open 657.50, high 658.27, low 647.05, close 647.05, volume
+# 2856) close at it with their open and high more than 0.25% above it, so
+# prior-close-print-v1 drops the close and the low of each (r2 PC2; until that
+# rule they kept 647.05 as a body). The low is then the second-lowest
+# surviving low, 649.62 at 04:04 ET: the lowest, 647.535 at 08:32 ET, is one
+# bar's lone wick, and the lowest surviving body is 652.53.
 RAW_CONFIRMED = {
-    "QQQ": (660.398, 647.05),
+    "QQQ": (660.398, 649.62),
     "IWM": (272.50, 269.36),
     "SPY": (738.04, 730.70),
 }
@@ -333,26 +338,58 @@ class TestStaleCloseReport:
     @pytest.mark.parametrize("side", SIDES)
     @pytest.mark.parametrize("field", ["open", "close"])
     def test_a_bar_that_opens_or_closes_there_keeps_it(self, side, field):
+        """stale-close-report-v1 keeps a high (low) at the prior close on a
+        bar that opens or closes there. Since prior-close-print-v1 (r2 PC2
+        (1)) that bar keeps the extreme only when another of its prices lies
+        within 0.25% of the prior close: until that rule the old bars below,
+        whose other prices are about a dollar away, kept 277.54 too."""
         s = _Side(side, PRIOR_CLOSE)
-        rows = _replace(STALE_ROWS[side], "07:35", **{field: PRIOR_CLOSE})
-        pm = context(rows, prev_close=PRIOR_CLOSE)
+        kept_bar = {"open": dict(open=277.54, high=277.54, low=277.00, close=277.10),
+                    "close": dict(open=277.10, high=277.54, low=277.00, close=277.54)}[field]
+        pm = context(s.rows(_replace(STALE_HIGH_ROWS, "07:35", **kept_bar)), prev_close=PRIOR_CLOSE)
         assert pm[s.extreme] == pytest.approx(PRIOR_CLOSE)
         assert pm["confirmed"]["stale_close_reports"] == {
             "rule": "stale-close-report-v1", "high": 0, "low": 0, "prior_close": 277.54}
+        assert pm["confirmed"]["prior_close_prints"] == PCP_ZERO(277.54)
+        # The bar's other prices more than 0.25% away: the new rule drops its
+        # prices at the prior close, and the shipped rule still counts none.
+        rows = _replace(STALE_ROWS[side], "07:35", **{field: PRIOR_CLOSE})
+        pm = context(rows, prev_close=PRIOR_CLOSE)
+        assert pm[s.extreme] == pytest.approx(STALE_EXPECTED[side])
+        assert pm["confirmed"]["stale_close_reports"] == {
+            "rule": "stale-close-report-v1", "high": 0, "low": 0, "prior_close": 277.54}
+        assert pm["confirmed"]["prior_close_prints"] == {
+            **PCP_ZERO(277.54), s.stale: 1, field: 1, "bars": 1}
 
     @pytest.mark.parametrize("side", SIDES)
     @pytest.mark.parametrize("cents", [0.01, -0.01])
     def test_a_cent_away_is_kept(self, side, cents):
-        """277.55 and 277.53 are not the prior close. Two bars reach the
-        price, so the confirmed rule accepts it."""
+        """277.55 and 277.53 are not the prior close to the cent, so
+        stale-close-report-v1 keeps them and counts none (unchanged). Since
+        prior-close-print-v1 (r2 PC2 (2)) they are within 5 cents of it on
+        bars whose other prices are about a dollar, more than 0.25%, away, so
+        that rule drops both and the extreme is the 07:35 bar's body, as when
+        the report sits on the prior close itself. Two bars reach the same
+        price with their other prices within 0.25% of the prior close: that
+        price is the extreme, dropped by neither rule."""
         s = _Side(side, PRIOR_CLOSE)
         price = round(PRIOR_CLOSE + cents, 2)
         rows = _replace(STALE_ROWS[side], "07:35", **{s.stale: price})
         rows = _replace(rows, "07:31", **{s.stale: price})
         pm = context(rows, prev_close=PRIOR_CLOSE)
+        assert pm["confirmed"]["stale_close_reports"] == {
+            "rule": "stale-close-report-v1", "high": 0, "low": 0, "prior_close": 277.54}
+        assert pm[s.extreme] == pytest.approx(STALE_EXPECTED[side])
+        assert pm["confirmed"]["prior_close_prints"] == {
+            **PCP_ZERO(277.54), s.stale: 2, "bars": 2}
+        near = {s.stale: price, s.other_stale: s.px(277.10),
+                "open": s.px(277.20), "close": s.px(277.30)}
+        rows = _replace(_replace(STALE_ROWS[side], "07:35", **near), "07:31", **near)
+        pm = context(rows, prev_close=PRIOR_CLOSE)
         assert pm[s.extreme] == pytest.approx(price)
         assert pm["confirmed"]["stale_close_reports"] == {
             "rule": "stale-close-report-v1", "high": 0, "low": 0, "prior_close": 277.54}
+        assert pm["confirmed"]["prior_close_prints"] == PCP_ZERO(277.54)
 
     @pytest.mark.parametrize("side", SIDES)
     def test_no_prior_close_runs_nothing(self, side):
@@ -366,6 +403,281 @@ class TestStaleCloseReport:
     def test_vwap_volume_and_gap_are_unchanged(self, side):
         pm = context(STALE_ROWS[side], prev_close=PRIOR_CLOSE)
         assert {k: pm[k] for k in ("pre_vwap", "pre_volume", "gap_pct")} == PINNED_STALE[side]
+
+
+# ---------------------------------------------------------------------------
+# FEAT-PLAYBOOK-001 prior-close-print-v1 (docs/superpowers/specs/
+# 2026-11-16-feat-playbook-001-prior-close-prints-r2.md, PC1, PC2, PC4): a
+# print at the prior close inside a bar that traded elsewhere. The bars are
+# written here; the low side of every case is the high side's bars mirrored
+# about that case's prior close, so the mirrored morning is the gap-up one.
+# ---------------------------------------------------------------------------
+
+QQQ_PRIOR_CLOSE = 679.89  # QQQ's close of Friday 2026-11-13.
+QQQ_0735 = ("07:35", 669.95, 679.89, 669.87, 679.89, 10016)
+QQQ_0739 = ("07:39", 679.89, 679.89, 669.8808, 670.2492, 2121)
+QQQ_0740 = ("07:40", 679.89, 679.89, 669.97, 679.89, 1454)
+# Bars written here, trading 668 to 676. Without the prints: highs 675.46,
+# 675.30, 670.50, 670.40, 670.30 (second-highest 675.30), highest body 675.21,
+# so pre_high 675.30; lowest body 668.50 under the second-lowest low 669.80,
+# so pre_low 668.50.
+QQQ_OTHERS = [
+    ("04:26", 675.21, 675.46, 673.65, 674.11, 3755),
+    ("04:27", 674.11, 675.30, 673.90, 675.00, 4000),
+    ("07:34", 670.10, 670.40, 669.90, 669.95, 5000),
+    ("07:36", 670.00, 670.30, 669.80, 670.20, 5000),
+    ("07:41", 670.25, 670.50, 668.00, 668.50, 5000),
+]
+QQQ_ROWS = sorted(QQQ_OTHERS + [QQQ_0735, QQQ_0739])
+SPY_PRIOR_CLOSE = 754.37  # SPY's close of Friday 2026-11-13, as production passes it (r2 PC1 (ii)).
+# High 754.3772 and close 754.3759 are on cent 75438 under price_cents, one
+# cent from the prior close's 75437: inside 5 cents and off its cent.
+SPY_0700 = ("07:00", 751.12, 754.3772, 750.679, 754.3759, 3259)
+# r2 PC1 (ii)'s second bar: the same open and low, high and close three cents away.
+SPY_0700_3C = ("07:00", 751.12, 754.40, 750.679, 754.40, 3259)
+# Without the print: highs 752.897, 752.60, 751.30, highest body 752.50, so
+# pre_high 752.60.
+SPY_OTHERS = [
+    ("04:00", 752.44, 752.897, 749.70, 752.20, 10622),
+    ("04:01", 752.20, 752.60, 751.90, 752.50, 5000),
+    ("07:01", 751.00, 751.30, 750.50, 750.90, 5000),
+]
+SPY_ROWS = sorted(SPY_OTHERS + [SPY_0700])
+
+# The print filter's inputs of the size the 2026-11-16 QQQ and SPY brief rows
+# record (QQQ ATR 16.338, pm_stale_print_atr 0.03712, pm_spike_atr 1.0725;
+# SPY 11.036, 0.03593, 0.9423), so rules (a) and (b) run.
+QQQ_FILTER = {"atr": 16.34, "stale_print_atr": 0.0371, "spike_atr": 1.0725}
+SPY_FILTER = {"atr": 11.04, "stale_print_atr": 0.0359, "spike_atr": 0.9423}
+# Printed by the unchanged calculate_premarket_context and
+# premarket_print_filter on QQQ_ROWS (prior close 679.89) at the merge base
+# 6243496db, before the rule was added (hermetic pin of "as on the merge base").
+PINNED_PCP = {
+    "high": {"pre_vwap": 672.983089915549, "pre_volume": 34892, "gap_pct": -0.6883},
+    "low": {"pre_vwap": 686.796910084451, "pre_volume": 34892, "gap_pct": 0.6883},
+}
+PINNED_PCP_MASKS = {
+    "high": {
+        "stale": {"open": [0, 0, 0, 0, 0, 1, 0], "high": [0, 0, 0, 1, 0, 1, 0],
+                  "low": [0] * 7, "close": [0, 0, 0, 1, 0, 0, 0]},
+        "spike": {"high": [0] * 7, "low": [0] * 7},
+    },
+    "low": {
+        "stale": {"open": [0, 0, 0, 0, 0, 1, 0], "high": [0] * 7,
+                  "low": [0, 0, 0, 1, 0, 1, 0], "close": [0, 0, 0, 1, 0, 0, 0]},
+        "spike": {"high": [0] * 7, "low": [0] * 7},
+    },
+}
+
+
+def PCP_ZERO(prior_close):
+    """The prior-close-print-v1 record with nothing dropped."""
+    return {"rule": "prior-close-print-v1", "tol_cents": 5, "min_distance_pct": 0.25,
+            "open": 0, "high": 0, "low": 0, "close": 0, "bars": 0, "prior_close": prior_close}
+
+
+def _stale_zero(prior_close):
+    return {"rule": "stale-close-report-v1", "high": 0, "low": 0, "prior_close": prior_close}
+
+
+class TestPriorClosePrint:
+    """The ATR and both thresholds are None, so rules (a) and (b) do not run
+    and the rule stands on its own."""
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_qqq_prints_set_no_extreme(self, side):
+        """PC1 (i) and (iii): the 07:35 bar's high and close and the 07:39
+        bar's open and high are at 679.89 while the rest of each bar traded
+        near 670, so neither bar sets the extreme."""
+        s = _Side(side, QQQ_PRIOR_CLOSE)
+        pm = context(s.rows(QQQ_ROWS), prev_close=QQQ_PRIOR_CLOSE)
+        assert pm["filtered"] is False
+        assert pm[s.extreme] == pytest.approx(s.px(675.30))
+        without = context(s.rows(QQQ_OTHERS), prev_close=QQQ_PRIOR_CLOSE)
+        assert pm[s.extreme] == pytest.approx(without[s.extreme])
+        assert pm[s.other] == pytest.approx(s.px(668.50))
+        assert pm["confirmed"]["prior_close_prints"] == {
+            **PCP_ZERO(679.89), "open": 1, s.stale: 2, "close": 1, "bars": 2}
+        assert pm["confirmed"]["stale_close_reports"] == _stale_zero(679.89)
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_the_0735_bar_still_gives_its_open_and_low(self, side):
+        """PC1 (i): only the prices at the prior close leave the candidates."""
+        s = _Side(side, QQQ_PRIOR_CLOSE)
+        rows = [("07:34", 670.10, 670.40, 670.05, 670.20, 5000), QQQ_0735]
+        pm = context(s.rows(rows), prev_close=QQQ_PRIOR_CLOSE)
+        assert pm["filtered"] is False
+        # The 07:35 open is the lowest body; its low 669.87 is a candidate beyond it.
+        assert pm[s.other] == pytest.approx(s.px(669.95))
+        assert pm["confirmed"]["low_bars_below" if side == "high" else "high_bars_above"] == 1
+        assert pm[s.extreme] == pytest.approx(s.px(670.20))
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize("bar", [SPY_0700, SPY_0700_3C], ids=["one_cent", "three_cents"])
+    def test_spy_print_sets_no_extreme(self, side, bar):
+        """PC1 (ii). Under price_cents the 07:00 bar's high and close are one
+        cent from the prior close (75438 against 75437) and the second bar's
+        three cents: both inside the 5 cent tolerance and off the prior
+        close's cent, where the exact-cent rules do not see them."""
+        s = _Side(side, SPY_PRIOR_CLOSE)
+        pm = context(s.rows(sorted(SPY_OTHERS + [bar])), prev_close=SPY_PRIOR_CLOSE)
+        assert pm["filtered"] is False
+        assert pm[s.extreme] == pytest.approx(s.px(752.60))
+        assert pm["confirmed"]["prior_close_prints"] == {
+            **PCP_ZERO(754.37), s.stale: 1, "close": 1, "bars": 1}
+        assert pm["confirmed"]["stale_close_reports"] == _stale_zero(754.37)
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_a_session_that_sat_at_the_prior_close_is_kept(self, side):
+        """PC1 (iv): every price of the three bars lies within 0.25% of 277.54."""
+        s = _Side(side, PRIOR_CLOSE)
+        rows = [("08:00", 277.20, 277.40, 277.10, 277.35, 5000),
+                ("08:01", 277.35, 277.50, 277.30, 277.54, 5000),
+                ("08:02", 277.50, 277.52, 277.25, 277.30, 5000)]
+        pm = context(s.rows(rows), prev_close=PRIOR_CLOSE)
+        assert pm["filtered"] is False
+        assert pm[s.extreme] == pytest.approx(277.54)
+        assert pm["confirmed"]["prior_close_prints"] == PCP_ZERO(277.54)
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_a_bar_wholly_at_the_prior_close_stays(self, side):
+        """PC1 (v): a bar with no other price is untouched (Design 5, limit 1)."""
+        s = _Side(side, PRIOR_CLOSE)
+        rows = _replace(STALE_HIGH_ROWS, "07:35", high=276.60) + [
+            ("07:40", 277.54, 277.54, 277.54, 277.54, 5000)]
+        pm = context(s.rows(rows), prev_close=PRIOR_CLOSE)
+        assert pm["filtered"] is False
+        assert pm[s.extreme] == pytest.approx(277.54)
+        assert pm["confirmed"]["prior_close_prints"] == PCP_ZERO(277.54)
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_open_and_close_there_with_a_far_wick(self, side):
+        """PC1 (vi): the 07:40 bar opens, closes and peaks at the prior close
+        with its low near 670; none of its three prices there is a candidate."""
+        s = _Side(side, QQQ_PRIOR_CLOSE)
+        pm = context(s.rows(sorted(QQQ_ROWS + [QQQ_0740])), prev_close=QQQ_PRIOR_CLOSE)
+        assert pm["filtered"] is False
+        assert pm[s.extreme] == pytest.approx(s.px(675.30))
+        assert pm["confirmed"]["prior_close_prints"] == {
+            **PCP_ZERO(679.89), "open": 2, s.stale: 3, "close": 2, "bars": 3}
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize("price, dropped", [(277.59, True), (277.60, False)])
+    def test_five_cents_is_at_it_and_six_is_not(self, side, price, dropped):
+        """PC1 (vii): the tolerance is inclusive at 5 cents."""
+        s = _Side(side, PRIOR_CLOSE)
+        rows = _replace(STALE_HIGH_ROWS, "07:35", high=price, close=price)
+        pm = context(s.rows(rows), prev_close=PRIOR_CLOSE)
+        assert pm["filtered"] is False
+        if dropped:
+            assert pm[s.extreme] == pytest.approx(s.px(276.60))
+            assert pm["confirmed"]["prior_close_prints"] == {
+                **PCP_ZERO(277.54), s.stale: 1, "close": 1, "bars": 1}
+        else:
+            assert pm[s.extreme] == pytest.approx(s.px(price))
+            assert pm["confirmed"]["prior_close_prints"] == PCP_ZERO(277.54)
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize("price, kept", [(399.00, True), (398.99, False)])
+    def test_another_price_exactly_a_quarter_percent_away_keeps_the_bar(self, side, price, kept):
+        """PC1 (vii): 0.0025 x 400.0 == 1.0 and abs(399.0 - 400.0) == 1.0
+        exactly in floats, so 399.00 is within the distance and 398.99 is not."""
+        s = _Side(side, 400.00)
+        rows = [("08:00", 398.20, 398.40, 398.10, 398.30, 5000),
+                ("08:01", 398.30, 398.50, 398.20, 398.40, 5000),
+                ("08:02", price, 400.00, price, 400.00, 5000)]
+        pm = context(s.rows(rows), prev_close=400.00)
+        assert pm["filtered"] is False
+        if kept:
+            assert pm[s.extreme] == pytest.approx(400.00)
+            assert pm["confirmed"]["prior_close_prints"] == PCP_ZERO(400.0)
+        else:
+            assert pm[s.extreme] == pytest.approx(s.px(398.99))
+            assert pm["confirmed"]["prior_close_prints"] == {
+                **PCP_ZERO(400.0), s.stale: 1, "close": 1, "bars": 1}
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize("prev", [None, 0.0, -1.0, float("nan")])
+    def test_no_prior_close_runs_nothing(self, side, prev):
+        """PC1 (viii): no usable prior close, no rule, and a record of None,
+        never zeros. The print is then just a body."""
+        s = _Side(side, QQQ_PRIOR_CLOSE)
+        pm = context(s.rows(QQQ_ROWS), prev_close=prev)
+        assert pm["confirmed"]["prior_close_prints"] is None
+        assert pm[s.extreme] == pytest.approx(679.89)
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_vwap_volume_gap_and_filter_masks_are_unchanged(self, side):
+        """PC1 (ix): the rule masks candidates only. The literals were printed
+        by the unchanged calculate_premarket_context and premarket_print_filter
+        on these bars at the merge base."""
+        s = _Side(side, QQQ_PRIOR_CLOSE)
+        rows = s.rows(QQQ_ROWS)
+        pm = context(rows, prev_close=QQQ_PRIOR_CLOSE)
+        assert {k: pm[k] for k in ("pre_vwap", "pre_volume", "gap_pct")} == PINNED_PCP[side]
+        b = bars(rows)
+        filt = premarket_print_filter(b["open"], b["high"], b["low"], b["close"],
+                                      prev_close=QQQ_PRIOR_CLOSE, **QQQ_FILTER)
+        assert {f: [int(x) for x in m] for f, m in filt["stale"].items()} == PINNED_PCP_MASKS[side]["stale"]
+        assert {f: [int(x) for x in m] for f, m in filt["spike"].items()} == PINNED_PCP_MASKS[side]["spike"]
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_the_shipped_rule_keeps_its_name_and_count(self, side):
+        """PC2: a high at the prior close to the cent on a bar whose other
+        prices are within 0.25% is stale-close-report-v1's, counted there and
+        not here."""
+        s = _Side(side, PRIOR_CLOSE)
+        rows = _replace(STALE_HIGH_ROWS, "07:35", open=277.20, high=277.54, low=277.10, close=277.30)
+        pm = context(s.rows(rows), prev_close=PRIOR_CLOSE)
+        assert pm["confirmed"]["stale_close_reports"] == {
+            "rule": "stale-close-report-v1", s.stale: 1, s.other_stale: 0, "prior_close": 277.54}
+        assert set(pm["confirmed"]["stale_close_reports"]) == {"rule", "high", "low", "prior_close"}
+        assert pm["confirmed"]["prior_close_prints"] == PCP_ZERO(277.54)
+        assert pm[s.extreme] == pytest.approx(s.px(277.30))
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_every_bar_a_print_gives_no_extreme(self, side):
+        """Review Focus: a morning whose only candidates at the prior close
+        are prints gives no extreme on that side, never the prior close and
+        never 0; the far prices of the two bars confirm the other side."""
+        s = _Side(side, QQQ_PRIOR_CLOSE)
+        rows = [QQQ_0740, ("07:42", 679.89, 679.89, 670.10, 679.89, 2000)]
+        pm = context(s.rows(rows), prev_close=QQQ_PRIOR_CLOSE)
+        assert pm[s.extreme] is None
+        assert pm["confirmed"]["reason"] == "unconfirmed"
+        assert pm[s.other] == pytest.approx(s.px(670.10))
+        assert pm["confirmed"]["prior_close_prints"] == {
+            **PCP_ZERO(679.89), "open": 2, s.stale: 2, "close": 2, "bars": 2}
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_a_bar_with_a_missing_price(self, side):
+        """Review Focus: a NaN price is neither at the prior close nor another
+        price; the bar is judged by the prices it has."""
+        s = _Side(side, QQQ_PRIOR_CLOSE)
+        rows = _replace(QQQ_ROWS, "07:35", low=float("nan"))
+        pm = context(s.rows(rows), prev_close=QQQ_PRIOR_CLOSE)
+        assert pm[s.extreme] == pytest.approx(s.px(675.30))
+        assert pm["confirmed"]["prior_close_prints"] == {
+            **PCP_ZERO(679.89), "open": 1, s.stale: 2, "close": 1, "bars": 2}
+
+    @pytest.mark.parametrize("side", SIDES)
+    def test_a_thin_print_bar_is_counted_by_both(self, side):
+        """Review Focus: this rule counts the values it dropped and the thin
+        rule still counts the bar by its volume."""
+        s = _Side(side, QQQ_PRIOR_CLOSE)
+        rows = sorted(QQQ_OTHERS + [("07:35", 669.95, 679.89, 669.87, 679.89, 50)])
+        pm = context(s.rows(rows), prev_close=QQQ_PRIOR_CLOSE)
+        assert pm["confirmed"]["prior_close_prints"] == {
+            **PCP_ZERO(679.89), s.stale: 1, "close": 1, "bars": 1}
+        assert pm["thin"]["bars_excluded"] == 1
+        assert pm[s.extreme] == pytest.approx(s.px(675.30))
+
+    def test_the_constants(self):
+        """PC4."""
+        from lib.indicators import (PM_PRIOR_CLOSE_MIN_DISTANCE, PM_PRIOR_CLOSE_TOL_CENTS,
+                                    PRIOR_CLOSE_PRINT_RULE)
+        assert (PM_PRIOR_CLOSE_TOL_CENTS, PM_PRIOR_CLOSE_MIN_DISTANCE, PRIOR_CLOSE_PRINT_RULE) == (
+            5, 0.0025, "prior-close-print-v1")
 
 
 # The 2026-11-16 IWM 08:05 ET bar as Alpha Vantage returned it (volume 1),
@@ -525,8 +837,10 @@ class TestConfirmedExtremes:
         assert confirmed[s.raw] == pytest.approx(s.px(277.90))
         assert confirmed[s.count] == 1
         assert confirmed["reason"] is None
+        # prior_close_prints joined the block with prior-close-print-v1 (r2 PC2 (3)).
         assert set(confirmed) == {"rule", "raw_high", "raw_low", "high_bars_above",
-                                  "low_bars_below", "stale_close_reports", "reason"}
+                                  "low_bars_below", "stale_close_reports",
+                                  "prior_close_prints", "reason"}
         # The other side of the same bars: second-lowest low 276.25, lowest body 276.30.
         assert pm[s.other] == pytest.approx(s.px(276.25))
 
