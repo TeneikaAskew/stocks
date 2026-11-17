@@ -73,7 +73,7 @@ Files: gcp/deploy.sh.
   none on update. Its three news entries now carry `--max-retries 0` on every call, as
   the spec's adaptation clause allows; the pin stays exact and rejects unpatched main.
 - [ ] Run affected deploy/inventory/news suites and the full suite.
-- [ ] Commit: `fix(deploy): zero whole-job retries on the three news jobs`.
+- [x] Commit: `fix(deploy): zero whole-job retries on the three news jobs`.
 
 ## Task 3: Rollout record
 
@@ -94,7 +94,7 @@ implementation-source note); docs/review-evidence/site-source-snapshot.json;
 renderer-owned inventory rows that `scripts/maintenance/doc_inventory.py` derives
 from the changed retry values, if the docs audit requires them.
 
-- [ ] Open one draft PR; set `pr` here in the next commit.
+- [x] Open one draft PR; set `pr` here in the next commit.
 - [ ] Produce the SHARED-07 note from producer preflight's source identity, commit,
   produce and verify the sidecar from the committed HEAD.
 - [ ] Docs audit on this branch and on origin/main: no new finding.
