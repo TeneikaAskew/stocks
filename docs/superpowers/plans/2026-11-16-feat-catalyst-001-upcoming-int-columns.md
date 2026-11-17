@@ -3,7 +3,7 @@ feat_id: FEAT-CATALYST-001
 spec: docs/superpowers/specs/2026-10-25-feat-catalyst-001-model-trace-metadata.md
 branch: fix/feat-catalyst-001-upcoming-int-columns
 pr: 1985
-status: ready
+status: done
 ---
 
 # The daily upcoming refresh binds its INTEGER columns as integers: implementation plan
