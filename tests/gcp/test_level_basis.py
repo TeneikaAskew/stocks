@@ -450,7 +450,11 @@ def test_each_reader_refuses_a_version_it_does_not_know(monkeypatch, caplog, bri
         assert any("QQQ" in m and "rule_version_newer" in m and repr(version) in m
                    for m in errors), errors
     elif reader == "api":
-        pytest.skip("Task 7")
+        with caplog.at_level(logging.ERROR, logger="routers.dashboard"):
+            assert _movement_map(monkeypatch, db) is None
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("QQQ" in m and "rule_version_newer" in m and repr(version) in m
+                   for m in errors), [r.getMessage() for r in caplog.records]
     else:
         with pytest.raises(LevelRuleVersionUnknown) as e:
             _resolver_inputs(db)

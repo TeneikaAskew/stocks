@@ -18,7 +18,7 @@ from api.schemas import (
 )
 from lib.eastern_time import is_session, market_today, session_count
 from lib.infra_errors import is_backend_outage, is_infrastructure_error
-from lib.strat_levels import LevelParamsUnavailable
+from lib.strat_levels import LevelParamsUnavailable, LevelRuleVersionUnknown
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -525,6 +525,14 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
         # The parameter tables cannot be read: INTERNAL (CLAUDE.md 3.7), not
         # a data gap folded into the UNAVAILABLE envelope.
         raise
+    except LevelRuleVersionUnknown as exc:
+        # The session's level_basis names a rule version this image does not
+        # know or cannot read: refused by name, never rebuilt under an older
+        # rule (unknown rule version spec, Design 3). No map, so the levels
+        # block is UNAVAILABLE.
+        logger.error("movement-statement level map for %s refused: %s (stored rule_version %r)",
+                     ticker, exc.reason, exc.recorded)
+        return None
     except Exception as exc:  # data gap → None → levels UNAVAILABLE (Rule 3.7)
         # A backend OUTAGE is not a data gap. It propagates to the route
         # guard, which answers 503 for it; swallowed here it became a None
