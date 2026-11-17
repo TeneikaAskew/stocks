@@ -7,10 +7,10 @@ site_source_notes: [DASHBOARD-01]
 done_when:
   - "R1 the record is exact and reproducible: tests/gcp/test_premarket_as_read.py::test_record_is_exact_and_deterministic passes on four bars written in the test (2026-11-16 04:00 to 04:03, the values of Design 2): bars_csv is the text written in the test, bars_sha256 is 538f5b83f2e52f65f93758d5e15b787eb939c7fcb42227e1794b03cdae660ee5, the object bytes are identical when the same bars are passed in reverse order and on a second call, and read_record returns the same bars and raises ValueError, returning no rows, when one byte of bars_csv is changed"
   - "R2 the record carries the request as sent: tests/gcp/test_premarket_as_read.py::test_record_carries_the_request_as_sent passes: fetch_minute_bars calls requests.get with gcp.fetchers.fetch_market_data.minute_bars_request(symbol, month) plus apikey and nothing else, the record's vendor_params equal that dict with entitlement 'realtime', adjusted 'false' and extended_hours 'true', and no key or value of the record holds the API key"
-  - "R3 each run records what the three tickers read: tests/gcp/test_fetch_premarket_refresh.py::test_run_records_what_each_of_the_three_tickers_read passes with the universe SPY, QQQ, IWM and AAPL against tests/fixtures/intraday_bars_bucket.MemoryBucket: exactly three objects exist, premarket-as-read/v1/<session date>/<TICKER>/<fetched_at>.json.gz, none for AAPL; each was written with if_generation_match 0 and after upsert_premarket returned; each record's fetched_at is the pre_fetched_at bound for that ticker and its snapshot equals the values bound for that ticker; the rows bound to upsert_premarket equal the rows of the same run with no bucket"
+  - "R3 each run records what the three tickers read: tests/gcp/test_fetch_premarket_refresh.py::test_run_records_what_each_of_the_three_tickers_read passes with the universe SPY, QQQ, IWM and AAPL against tests/fixtures/intraday_bars_bucket.MemoryBucket: exactly three objects exist, premarket-as-read/v1/<session date>/<TICKER>/<fetched_at>.json.gz, none for AAPL; each was written with if_generation_match 0 and after upsert_premarket returned; each record's fetched_at is the pre_fetched_at bound for that ticker and its snapshot equals the values bound for that ticker; the rows bound to upsert_premarket equal the rows of the same run with no bucket; ::test_a_failed_prior_session_lookup_is_still_recorded passes: in the same run with QQQ's prior-session lookup raising, QQQ's object exists, written with if_generation_match 0 after upsert_premarket returned, holding the bars QQQ's fetch returned and snapshot null, and no row for QQQ is bound to upsert_premarket"
   - "R4 a failed record never passes silently and never stops the brief's data: tests/gcp/test_fetch_premarket_refresh.py::test_a_failed_record_write_fails_the_run_after_the_upsert passes: with the bucket failing the QQQ write, with GCS_BUCKET unset, and with a write that finds the object already present, upsert_premarket has run for every ticker, the other tickers' objects exist, one ERROR line names each failed ticker and the error, and main() exits 1; no path exits 0 with a record missing"
-  - "R5 the record step is bounded: tests/gcp/test_fetch_premarket_refresh.py::test_the_record_step_is_bounded passes with an injected clock: every write is given a timeout no larger than what is left of AS_READ_DEADLINE_S (10), and once the deadline has passed the remaining tickers are counted failed with reason deadline and no write is attempted"
-  - "R6 a zero-bar read is on file: tests/gcp/test_premarket_as_read.py::test_a_read_with_no_bars_is_recorded passes: an empty frame gives a record with bar_count 0, bars_csv of the header line alone and snapshot null, and read_record returns an empty frame for it"
+  - "R5 the record step is bounded: tests/gcp/test_fetch_premarket_refresh.py::test_the_record_step_is_bounded passes with an injected clock: every write is given retry None and a timeout no larger than what is left of AS_READ_DEADLINE_S (10), and once the deadline has passed the remaining tickers are counted failed with reason deadline and no write is attempted; ::test_a_retryable_upload_error_stays_inside_the_deadline passes through the real gcp.fetchers.export_intraday_bars.GcsBucket.write on a google.cloud.storage client with anonymous credentials whose HTTP session advances the injected clock by the timeout each request is given and then answers 503, with time.sleep and time.monotonic on the same clock: SPY's upload is attempted once and nothing sleeps, SPY is counted failed, QQQ and IWM are counted failed with reason deadline, the clock reads no more than AS_READ_DEADLINE_S after the step began, and main() exits 1"
+  - "R6 a zero-bar read is on file: tests/gcp/test_premarket_as_read.py::test_a_read_with_no_bars_is_recorded passes: an empty frame gives a record with bar_count 0, bars_csv of the header line alone and snapshot null, and read_record returns an empty frame for it; tests/gcp/test_fetch_premarket_refresh.py::test_an_empty_fetch_is_still_recorded passes: in a run of SPY, QQQ and IWM against the MemoryBucket with SPY's fetch returning an empty frame, SPY's object exists, written with if_generation_match 0 after upsert_premarket returned, with bar_count 0 and snapshot null, and no row for SPY is bound to upsert_premarket"
   - "R7 the comparison tool: tests/gcp/test_premarket_as_read.py::test_compare_counts_differing_bars passes on the four as-read bars of R1 and five stored bars written in the test (Design 5): compare_bars returns as_read_bars 4, stored_bars 4, matched 3, only_as_read 1, only_stored 1, differing 2, differ_open 0, differ_high 0, differ_low 1, differ_close 1, differ_volume 1; ::test_compare_cli_is_read_only passes: python -m gcp.fetchers.premarket_as_read compare --as-read <file> --stored-csv <file> prints those counts as one JSON line, exits 2 on a record whose sha256 does not match, and the module imports neither gcp.database nor requests"
   - "R8 size: tests/gcp/test_premarket_as_read.py::test_object_size_is_bounded passes: a record of 330 bars with four-decimal prices is under 16,384 bytes"
   - "R9 close: make test passes on the PR head; the PR body's Capacity section gives the measured object size and the added writes per run; the FEAT-DATA-001 catalog record and the PR traceability entry are updated; the (FEAT-DATA-001, DASHBOARD-01) implementation-source note carries the source identity that scripts/maintenance/doc_source_snapshot.py produce and verify prove on the committed head; python3 scripts/maintenance/docs_audit.py on the branch reports nothing origin/main does not; python3 scripts/gate/spec_gate.py --pr origin/main passes"
@@ -28,6 +28,15 @@ branch, which is 8250bff75, the head of
 `origin/feature/feat-playbook-001-brief-says-what-the-data-says` (PR #2010, not merged). "Read" means
 read at that commit; "run" means run by this spec's author in a scratch checkout, removed afterwards.
 No production system and no vendor was read.
+
+## Review changes, 2026-11-17
+
+Two Codex findings on PR #2026, each checked first (google-cloud-storage 3.17.1 run here; the refresh
+job read on main at 3a59299ba). Changed for re-approval: Design 3 and R5 (each write passes
+`retry=None` and a timeout inside the remaining deadline, and a test through the real GCS adapter
+with a transport answering 503 shows the step ends inside the deadline), and Design 1, R3 and R6 (an
+empty fetch and a failed prior-session lookup are each recorded through the refresh job with a null
+snapshot). No decision changed.
 
 ## Capability
 
@@ -126,7 +135,8 @@ ticker a run in the existing bucket (chosen).
 `compute_premarket_for_ticker` already holds the frame and the instant (`df` at `:203`, `fetched_at`
 at `:205`). It gains an optional `on_read(ticker, df, fetched_at)` callback, called once right after
 the fetch and before any early return, so an empty read and a read whose prior-session lookup failed
-are seen too. `main()` passes a collector that keeps the frames of `AS_READ_TICKERS = ('SPY', 'QQQ',
+are seen too (the returns at `:206-208` and `:210-215`; R6 and R3 run each through `main()`).
+`main()` passes a collector that keeps the frames of `AS_READ_TICKERS = ('SPY', 'QQQ',
 'IWM')`. After `upsert_premarket` returns (`:455`), `main()` builds and writes one record per collected
 ticker, then exits 1 if any failed or if the level parameters failed, as today.
 
@@ -164,10 +174,20 @@ request cannot drift (R2). Not run: the function does not exist yet.
 
 ### 3. A failed write
 
-Each write is one `GcsBucket.write` call; `write` gains an optional `timeout` passed to the upload
-(`upload_from_string` has `timeout=60` by default; signature run here on google-cloud-storage 3.17.1,
-the image's version was not read). The whole record step has one deadline, `AS_READ_DEADLINE_S = 10`
-(R5). A write that raises, a missing `GCS_BUCKET`, an object already present, or the deadline: one
+Each write is one `GcsBucket.write` call; `write` gains an optional `timeout` and an optional
+`retry`, both passed to the upload and left at the library's own defaults when not given, so the
+export's writes are unchanged (`upload_from_string` has `timeout=60` and `retry=DEFAULT_RETRY` by
+default; signature run here on google-cloud-storage 3.17.1, the image's version was not read). The
+whole record step has one deadline, `AS_READ_DEADLINE_S = 10` (R5). `timeout` bounds one request, not
+the library's retries: run here with `if_generation_match=0`, `timeout=5` and an HTTP session that
+answers 503 to every request, on a simulated clock, the upload was attempted 9 to 19 times over 99 to
+210 s of backoff in five runs and ended in `RetryError: Timeout of 120.0s exceeded`; with
+`retry=None` it was attempted once and raised `ServiceUnavailable`. So the record step passes
+`retry=None` and a `timeout` no larger than what is left of the deadline: each write is one attempt,
+and a transient error is a failed record (R4) that the job's one retry runs again (decision 2). A
+retry built from the remaining budget was not chosen: `google.api_core` checks its timeout only before
+starting another attempt, so the last attempt can run a whole request timeout past it.
+A write that raises, a missing `GCS_BUCKET`, an object already present, or the deadline: one
 ERROR line `as_read_failed ticker=... reason=...`, the other tickers continue, and the run exits 1
 after the last one (R4). On success one INFO line per ticker gives the object name, `bar_count`,
 `newest_bar` and `bars_sha256`, and one line gives the count written.
@@ -247,8 +267,8 @@ scheduled morning: three objects under that date's prefix and the three INFO lin
   was made. No as-read object exists yet, so the tool has run only on bars written by hand.
 - The live bucket: its lifecycle configuration, whether the job's service account may write
   `premarket-as-read/`, and whether the bucket copy of the stored bars (#1943) is deployed.
-- The library's default retry for an upload with `if_generation_match`, the per-upload latency, and
-  the google-cloud-storage version in the image (`requirements-gcp.txt:51` says `>=2.14.0`).
+- The per-upload latency and the google-cloud-storage version in the image (`requirements-gcp.txt:51`
+  says `>=2.14.0`). The default retry was run on 3.17.1 only (Design 3).
 - Whether Cloud Run sets `CLOUD_RUN_TASK_ATTEMPT` for this job: the code on main reads
   `CLOUD_RUN_EXECUTION` (12 lines under `gcp/`, `lib/` and `scripts/`) and never the attempt.
 - PR #2020's branch was read for the 09:20 entries only; PR #2010's changes to
