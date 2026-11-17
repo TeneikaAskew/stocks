@@ -4,7 +4,7 @@ The apply-schema build runs gcp/schema.sql on every push to main that
 touches it, so the plan_excursions table and the target_reach_rate policy row
 must apply a second time without error and change nothing; the source CHECK
 refuses any writer but the resolver and the history job
-(docs/superpowers/specs/2026-11-16-feat-strat-001-target-hit-rates.md)."""
+(docs/superpowers/specs/2026-11-17-feat-strat-001-target-hit-rates-r2.md)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,8 +16,8 @@ REPO = Path(__file__).resolve().parents[2]
 
 ROW = dict(ticker='ZZPX', session_date='2025-10-22', rule_version='feat-strat-001.v3',
            side='puts', trigger_price=245.66, stop_price=246.99, fill_price=245.66,
-           fill_ts='2025-10-22T13:31:00+00:00', stop_ts=None, excursion_r=2.9,
-           excursion_held5_r=None, source='history', resolver_version='2026-11-16.v5')
+           fill_ts='2025-10-22T13:31:00+00:00', stop_ts=None, atr=4.48, excursion_r=2.9,
+           excursion_held5_r=None, excursion_atr=0.86, excursion_held5_atr=None, source='history', resolver_version='2026-11-17.v5')
 
 
 def _insert(conn, **over):
@@ -64,6 +64,20 @@ def test_the_source_check_refuses_another_writer(clean):
             _insert(conn, source='other')
 
 
+@pytest.mark.parametrize('atr', [0.0, -1.0])
+def test_the_atr_check_refuses_an_atr_that_is_not_positive(clean, atr):
+    with pytest.raises(sa.exc.DBAPIError, match="plan_excursions_"):
+        with clean.begin() as conn:
+            _insert(conn, atr=atr)
+
+
+def test_a_null_atr_is_stored(clean):
+    with clean.begin() as conn:
+        _insert(conn, atr=None, excursion_atr=None)
+        assert conn.execute(sa.text(
+            "SELECT atr FROM plan_excursions WHERE ticker = 'ZZPX'")).scalar() is None
+
+
 def test_one_row_per_ticker_session_and_rule_version(clean):
     with clean.begin() as conn:
         _insert(conn)
@@ -83,7 +97,7 @@ def test_history_job_reads_one_month_per_query_and_writes_only_its_rows(clean, m
 
     from gcp import backfill_plan_excursions as job
     from gcp.premarket_playbook_resolver import PLAN_OK, PlanInputs
-    from lib.strat_levels import LEVEL_RULE_VERSION
+    from lib.strat_levels import LEVEL_RULE_VERSION, entry_rule_version
 
     engine = clean
     sessions = [date(2025, 11, 26), date(2025, 11, 28), date(2025, 12, 1)]  # 11-28 closes 13:00
@@ -111,6 +125,7 @@ def test_history_job_reads_one_month_per_query_and_writes_only_its_rows(clean, m
         return PlanInputs(trigger_price=None, stop_price=None, target_status='not_entered')
 
     monkeypatch.setattr(job, 'plan_inputs', plan_inputs)
+    monkeypatch.setattr(job, 'basis_atr', lambda basis: 2.0)
     statements = []
 
     def record(conn, cursor, statement, params, context, executemany):
@@ -121,7 +136,7 @@ def test_history_job_reads_one_month_per_query_and_writes_only_its_rows(clean, m
         (stats,) = job.run(engine, ['ZZPX'], sessions[0], sessions[-1], resume=False,
                            basis_fn=lambda t, s: {'rule_version': LEVEL_RULE_VERSION},
                            log=lambda _l: None)
-        assert job.last_written(engine, 'ZZPX', LEVEL_RULE_VERSION) == sessions[-1]
+        assert job.last_written(engine, 'ZZPX', entry_rule_version(LEVEL_RULE_VERSION)) == sessions[-1]
     finally:
         sa.event.remove(engine, 'before_cursor_execute', record)
     with engine.begin() as conn:

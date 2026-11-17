@@ -1,6 +1,6 @@
 """FEAT-STRAT-001 target hit rates, done_when 'Table': gcp/schema.sql creates
 plan_excursions idempotently, with Design 2's columns, key and checks
-(docs/superpowers/specs/2026-11-16-feat-strat-001-target-hit-rates.md)."""
+(docs/superpowers/specs/2026-11-17-feat-strat-001-target-hit-rates-r2.md)."""
 from __future__ import annotations
 
 import re
@@ -38,8 +38,11 @@ def test_the_table_is_created_if_not_exists():
     ("fill_price", "DOUBLE PRECISION NOT NULL"),
     ("fill_ts", "TIMESTAMPTZ NOT NULL"),
     ("stop_ts", "TIMESTAMPTZ,"),
+    ("atr", "DOUBLE PRECISION CHECK (atr IS NULL OR atr > 0),"),
     ("excursion_r", "DOUBLE PRECISION,"),
     ("excursion_held5_r", "DOUBLE PRECISION,"),
+    ("excursion_atr", "DOUBLE PRECISION,"),
+    ("excursion_held5_atr", "DOUBLE PRECISION,"),
     ("source", "VARCHAR(10) NOT NULL CHECK (source IN ('resolver', 'history'))"),
     ("resolver_version", "VARCHAR(40) NOT NULL"),
     ("written_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
@@ -48,9 +51,10 @@ def test_every_column_with_its_type_and_nullability(body, column, decl):
     assert f" {column} {decl}" in f" {body}"
 
 
-def test_fourteen_columns_and_the_key(body):
+def test_seventeen_columns_and_the_key(body):
     cols = re.findall(r"(?:^|, )([a-z_][a-z0-9_]*) (?:VARCHAR|DATE|DOUBLE|TIMESTAMPTZ)", body.strip())
     assert cols == ["ticker", "session_date", "rule_version", "side", "trigger_price",
-                    "stop_price", "fill_price", "fill_ts", "stop_ts", "excursion_r",
-                    "excursion_held5_r", "source", "resolver_version", "written_at"]
+                    "stop_price", "fill_price", "fill_ts", "stop_ts", "atr", "excursion_r",
+                    "excursion_held5_r", "excursion_atr", "excursion_held5_atr", "source",
+                    "resolver_version", "written_at"]
     assert body.strip().endswith("PRIMARY KEY (ticker, session_date, rule_version)")

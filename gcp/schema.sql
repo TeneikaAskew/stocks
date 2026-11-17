@@ -2317,39 +2317,44 @@ INSERT INTO level_param_policy (
     -- plan's spaced target walk may use. An empty list turns gap edges off.
     ('plan_target_level_types', 'policy', NULL, NULL, NULL, '{"level_types": ["gap_high", "gap_low"]}', '2015-01-02',
      'level types, beyond the trigger candidates, the exits plan''s spaced target walk may use'),
-    -- Target hit rates (docs/superpowers/specs/2026-11-16-feat-strat-001-target-hit-rates.md).
-    -- Policy-wide: the past trades a ladder rung's hit rate is read from
+    -- Target hit rates (docs/superpowers/specs/2026-11-17-feat-strat-001-target-hit-rates-r2.md).
+    -- Policy-wide: the past trades a target line's count is read from
     -- (plan_excursions, since a date or the last lookback_sessions), the
-    -- stored measure (touch or held_5m), and the least trade count printed
-    -- as a rate.
-    ('target_reach_rate', 'plan_excursion_share', NULL, NULL, 30, '{"since": "2022-01-03", "measure": "touch"}',
-     '2015-01-02', 'trades a target hit rate is read from: since a date or the last lookback_sessions, touch or held_5m, at least min_sample')
+    -- stored measure (touch_atr, held_5m_atr, touch or held_5m), and the
+    -- least trade count printed with a percent.
+    ('target_reach_rate', 'plan_excursion_share', NULL, NULL, 30, '{"since": "2022-01-03", "measure": "touch_atr"}',
+     '2015-01-02', 'trades a target count is read from: since a date or the last lookback_sessions, measured as touch_atr, held_5m_atr, touch or held_5m, a percent from min_sample')
 ON CONFLICT (param_key, effective_from) DO NOTHING;
 
--- FEAT-STRAT-001 target hit rates (docs/superpowers/specs/2026-11-16-feat-strat-001-target-hit-rates.md).
+-- FEAT-STRAT-001 target hit rates (docs/superpowers/specs/2026-11-17-feat-strat-001-target-hit-rates-r2.md).
 -- One row per ticker-day that had a trade: the side that filled first
--- (a same-bar fill of both sides, or no entry, has no row). excursion_r is
+-- (a same-bar fill of both sides, or no entry, has no row), keyed by the
+-- entry rule version (lib.strat_levels.entry_rule_version). excursion_r is
 -- the furthest the high (calls) or low (puts) went past the trigger on the
 -- bars after the fill bar and before the stop bar, in stop distances;
--- excursion_held5_r the same for five consecutive closes. Written by
+-- excursion_atr the same in the basis's ATR (atr); the held5 columns the
+-- same for five consecutive closes. Written by
 -- gcp.premarket_playbook_resolver (source resolver) and the one-off
 -- gcp.backfill_plan_excursions (source history); read by lib.target_reach
--- for the brief's per-rung hit rates. Display only.
+-- for the counts on the target lines. Display only.
 CREATE TABLE IF NOT EXISTS plan_excursions (
-    ticker             VARCHAR(10)      NOT NULL,
-    session_date       DATE             NOT NULL,
-    rule_version       VARCHAR(40)      NOT NULL,
-    side               VARCHAR(5)       NOT NULL CHECK (side IN ('calls', 'puts')),
-    trigger_price      DOUBLE PRECISION NOT NULL,
-    stop_price         DOUBLE PRECISION NOT NULL,
-    fill_price         DOUBLE PRECISION NOT NULL,
-    fill_ts            TIMESTAMPTZ      NOT NULL,
-    stop_ts            TIMESTAMPTZ,
-    excursion_r        DOUBLE PRECISION,
-    excursion_held5_r  DOUBLE PRECISION,
-    source             VARCHAR(10)      NOT NULL CHECK (source IN ('resolver', 'history')),
-    resolver_version   VARCHAR(40)      NOT NULL,
-    written_at         TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    ticker               VARCHAR(10)      NOT NULL,
+    session_date         DATE             NOT NULL,
+    rule_version         VARCHAR(40)      NOT NULL,
+    side                 VARCHAR(5)       NOT NULL CHECK (side IN ('calls', 'puts')),
+    trigger_price        DOUBLE PRECISION NOT NULL,
+    stop_price           DOUBLE PRECISION NOT NULL,
+    fill_price           DOUBLE PRECISION NOT NULL,
+    fill_ts              TIMESTAMPTZ      NOT NULL,
+    stop_ts              TIMESTAMPTZ,
+    atr                  DOUBLE PRECISION CHECK (atr IS NULL OR atr > 0),
+    excursion_r          DOUBLE PRECISION,
+    excursion_held5_r    DOUBLE PRECISION,
+    excursion_atr        DOUBLE PRECISION,
+    excursion_held5_atr  DOUBLE PRECISION,
+    source               VARCHAR(10)      NOT NULL CHECK (source IN ('resolver', 'history')),
+    resolver_version     VARCHAR(40)      NOT NULL,
+    written_at           TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
     PRIMARY KEY (ticker, session_date, rule_version)
 );
 
