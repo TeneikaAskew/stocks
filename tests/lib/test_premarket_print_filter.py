@@ -469,6 +469,24 @@ PINNED_PCP_MASKS = {
     },
 }
 
+# The masks the unchanged premarket_print_filter returned at the merge base
+# 6243496db for the calibrated cases of TestPriorClosePrint::
+# test_with_calibrated_filter (bars, prior close and inputs as there).
+_Z8 = [0] * 8
+PINNED_CALIBRATED_MASKS = {
+    "qqq_rule_a": PINNED_PCP_MASKS,
+    "qqq_0740": {
+        "high": {"stale": {"open": [0, 0, 0, 0, 0, 1, 0, 0], "high": [0, 0, 0, 1, 0, 1, 0, 0],
+                           "low": _Z8, "close": [0, 0, 0, 1, 0, 0, 0, 0]},
+                 "spike": {"high": _Z8, "low": _Z8}},
+        "low": {"stale": {"open": [0, 0, 0, 0, 0, 1, 0, 0], "high": _Z8,
+                          "low": [0, 0, 0, 1, 0, 1, 0, 0], "close": [0, 0, 0, 1, 0, 0, 0, 0]},
+                "spike": {"high": _Z8, "low": _Z8}},
+    },
+    "spy": {side: {"stale": {f: [0] * 4 for f in ("open", "high", "low", "close")},
+                   "spike": {"high": [0] * 4, "low": [0] * 4}} for side in ("high", "low")},
+}
+
 
 def PCP_ZERO(prior_close):
     """The prior-close-print-v1 record with nothing dropped."""
@@ -678,6 +696,46 @@ class TestPriorClosePrint:
                                     PRIOR_CLOSE_PRINT_RULE)
         assert (PM_PRIOR_CLOSE_TOL_CENTS, PM_PRIOR_CLOSE_MIN_DISTANCE, PRIOR_CLOSE_PRINT_RULE) == (
             5, 0.0025, "prior-close-print-v1")
+
+    # PC1b: rules (a) and (b) run. The masks were printed by the unchanged
+    # premarket_print_filter on these bars and inputs at the merge base
+    # 6243496db, where pre_high was 679.89 (qqq_0740), 754.3759 (spy) and
+    # 675.30 (qqq_rule_a, which fails there only on the record key).
+    CALIBRATED = {
+        # case: (rows, prior close, filter, pre_high, record counts (high side),
+        #        excluded_prior_close_prints)
+        "qqq_0740": (sorted(QQQ_ROWS + [QQQ_0740]), QQQ_PRIOR_CLOSE, QQQ_FILTER, 675.30,
+                     {"open": 1, "high": 1, "close": 1, "bars": 1}, 4),
+        "spy": (SPY_ROWS, SPY_PRIOR_CLOSE, SPY_FILTER, 752.60,
+                {"high": 1, "close": 1, "bars": 1}, 0),
+        "qqq_rule_a": (QQQ_ROWS, QQQ_PRIOR_CLOSE, QQQ_FILTER, 675.30, {}, 4),
+    }
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize("case", sorted(CALIBRATED))
+    def test_with_calibrated_filter(self, side, case):
+        """PC1b. qqq_0740: the 07:40 bar's open-close midpoint is at the prior
+        close, so rule (a) cannot drop it. spy: the 07:00 high and close are
+        one cent off the prior close's cent, so rule (a) cannot drop them.
+        qqq_rule_a: rule (a) already drops the four values at 679.89 of the
+        07:35 and 07:39 bars, counted once, there, and this rule counts none."""
+        rows, prior, filt, extreme, counts, excluded = self.CALIBRATED[case]
+        s = _Side(side, prior)
+        mapped = {(s.stale if f == "high" else f): n for f, n in counts.items()}
+        pm = context(s.rows(rows), prev_close=prior, **filt)
+        assert pm["filtered"] is True
+        assert pm[s.extreme] == pytest.approx(s.px(extreme))
+        assert pm["confirmed"]["prior_close_prints"] == {**PCP_ZERO(prior), **mapped}
+        assert pm["excluded_prior_close_prints"] == excluded
+        off = context(s.rows(rows), prev_close=prior)
+        assert off["filtered"] is False
+        assert off[s.extreme] == pytest.approx(pm[s.extreme])
+        b = bars(s.rows(rows))
+        masks = premarket_print_filter(b["open"], b["high"], b["low"], b["close"],
+                                       prev_close=prior, **filt)
+        pinned = PINNED_CALIBRATED_MASKS[case][side]
+        assert {f: [int(x) for x in m] for f, m in masks["stale"].items()} == pinned["stale"]
+        assert {f: [int(x) for x in m] for f, m in masks["spike"].items()} == pinned["spike"]
 
 
 # The 2026-11-16 IWM 08:05 ET bar as Alpha Vantage returned it (volume 1),

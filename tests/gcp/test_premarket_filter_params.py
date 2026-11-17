@@ -464,6 +464,40 @@ def test_written_row_holds_the_rule_blocks(monkeypatch, writer):
     assert rec["atr_basis"] == "atr_14"
 
 
+def test_snapshot_drops_a_prior_close_print():
+    """FEAT-PLAYBOOK-001 prior-close-print-v1, PC1b, through
+    gcp.fetchers.fetch_market_data.premarket_snapshot, the path the nightly
+    and the 08:20 refresh take: the QQQ bars of 2026-11-16 written in
+    tests/lib/test_premarket_print_filter.py, with the 07:40 ET bar whose
+    open-close midpoint is at the prior close, under thresholds that are ok.
+    On the merge base 6243496db pre_high is 679.89 there."""
+    from datetime import datetime, time, timezone
+
+    from gcp.fetchers import fetch_market_data as fmd
+    from lib.eastern_time import eastern_bounds_utc
+    from tests.lib.test_premarket_print_filter import QQQ_0740, QQQ_ROWS
+
+    day = date(2026, 11, 16)
+
+    def utc(hhmm):
+        at = time(*map(int, hhmm.split(":")))
+        return eastern_bounds_utc(day, at, at)[0]
+
+    bars = pd.DataFrame([
+        {"ts": utc(t), "open": o, "high": h, "low": lo, "close": c, "volume": v}
+        for (t, o, h, lo, c, v) in sorted(QQQ_ROWS + [QQQ_0740])])
+    lp = legacy_db(["QQQ"], overrides={"pm_stale_print_atr": 0.0371, "pm_spike_atr": 1.0725}).load(
+        ["QQQ"], day)["QQQ"]
+    snapshot = fmd.premarket_snapshot(
+        "QQQ", day, bars, {"close": 679.89, "open": 679.89, "atr_14": 16.34, "atr_5": 16.34}, lp,
+        datetime(2026, 11, 16, 13, 20, tzinfo=timezone.utc))
+    assert snapshot["pre_filter_status"] == "ok"
+    assert snapshot["pre_high"] == pytest.approx(675.30)
+    rec = snapshot["pre_filter_params"]
+    rec = json.loads(rec) if isinstance(rec, str) else rec
+    assert rec["confirmed"]["prior_close_prints"]["bars"] == 1
+
+
 @pytest.mark.parametrize("writer", WRITERS)
 def test_unreadable_parameters_leave_the_rule_blocks_alone(monkeypatch, writer):
     """With the parameter tables unreadable there is no threshold record; the
