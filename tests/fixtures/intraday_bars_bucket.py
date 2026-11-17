@@ -12,9 +12,9 @@ bucket.
 """
 from __future__ import annotations
 
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
-from gcp.fetchers.export_intraday_bars import GenerationMismatch
+from gcp.fetchers.export_intraday_bars import LIBRARY_DEFAULT, GenerationMismatch
 
 
 class MemoryBucket:
@@ -24,7 +24,9 @@ class MemoryBucket:
     ``reads``, ``writes`` and ``checks`` hold the object names in call order
     (a write that failed included; ``checks`` are the ``generation`` calls);
     ``preconditions`` holds ``(name, if_generation_match)`` for each write
-    call. ``objects`` maps a name to its bytes and ``generations`` to its
+    call, and ``timeouts`` and ``retries`` the ``timeout`` and ``retry`` each
+    write call was given (None and ``LIBRARY_DEFAULT`` when not given).
+    ``objects`` maps a name to its bytes and ``generations`` to its
     current generation, which counts that object's writes from 1.
 
     Two hooks, both unset by default:
@@ -42,6 +44,8 @@ class MemoryBucket:
         self.writes: list[str] = []
         self.checks: list[str] = []
         self.preconditions: list[tuple[str, Optional[int]]] = []
+        self.timeouts: list[Optional[float]] = []
+        self.retries: list[Any] = []
         self.fail_write: Optional[Callable[[str], Optional[Exception]]] = None
         self.before_write: Optional[Callable[[str], None]] = None
 
@@ -64,9 +68,12 @@ class MemoryBucket:
         return self.generations.get(name)
 
     def write(self, name: str, data: bytes,
-              if_generation_match: Optional[int] = None) -> int:
+              if_generation_match: Optional[int] = None,
+              timeout: Optional[float] = None, retry: Any = LIBRARY_DEFAULT) -> int:
         self.writes.append(name)
         self.preconditions.append((name, if_generation_match))
+        self.timeouts.append(timeout)
+        self.retries.append(retry)
         if self.before_write is not None:
             self.before_write(name)
         if self.fail_write is not None:
