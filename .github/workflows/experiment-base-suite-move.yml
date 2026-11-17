@@ -1,0 +1,45 @@
+name: experiment-base-suite-move
+# EXPERIMENT ONLY (FEAT-CICD-001 base-suite move, stage 0): the base-suite job as the approved
+# spec designs it, on plain pull_request, run on a throwaway draft PR. Never merged.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  moved-base-suite-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: proposed-head
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/gate/spec_gate.py
+            scripts/gate/export_model_registry.py
+          sparse-checkout-cone-mode: false
+      - name: Base suites against the proposed gate and exporter
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          cp proposed-head/scripts/gate/spec_gate.py scripts/gate/spec_gate.py
+          cp proposed-head/scripts/gate/export_model_registry.py scripts/gate/export_model_registry.py
+          # experiment evidence only: what the head checkout held, and that no token stayed behind
+          (cd proposed-head && git rev-parse HEAD && git ls-files && git config --get-regexp 'http.*extraheader' || echo "no extraheader in proposed-head")
+          git config --get-regexp 'http.*extraheader' || echo "no extraheader in base checkout"
+          rm -rf proposed-head
+          sha256sum scripts/gate/spec_gate.py scripts/gate/export_model_registry.py
+          grep -n 'FEAT-CICD-001 base-suite move experiment marker' scripts/gate/spec_gate.py
+          python3 -m pip install --quiet pytest pyyaml pytest-xdist==3.8.0
+          python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest -n 4
+          python3 -m pytest tests/scripts/test_export_model_registry.py -q -p no:cacheprovider --noconftest

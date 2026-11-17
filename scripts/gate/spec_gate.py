@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# FEAT-CICD-001 base-suite move experiment marker (throwaway draft PR, not for merge)
 """Spec gate: refuses code changes that have no FEAT-ID, approved spec, and plan.
 
 Usage:
