@@ -30,7 +30,7 @@ from lib.strat_levels import (
     read_session_premarket,
 )
 from tests.lib import strat_2026_11_06 as fx
-from tests.lib.session_levels_helpers import basis
+from tests.lib.session_levels_helpers import basis, newer_rule_versions
 
 SESSION = fx.SESSION
 
@@ -275,10 +275,10 @@ def test_read_live_level_basis_ignores_a_replay_row(brief_basis):
     assert {lv["name"]: lv["price"] for lv in got["levels"]}["PDH"] != 999.99
 
 
-def _planner_section(monkeypatch, db):
-    from lib.agents import summarizers
-    frame = fx.loader_frame("QQQ")
-    snap = fx.premarket_snapshot_row(frame)
+def _planner_query(db):
+    """The planner's `_query`: premarket_analysis from `db`, the session's
+    premarket snapshot from the QQQ fixture, nothing else."""
+    snap = fx.premarket_snapshot_row(fx.loader_frame("QQQ"))
 
     def q(sql, params=None):
         if "premarket_analysis" in sql:
@@ -286,16 +286,28 @@ def _planner_section(monkeypatch, db):
         if "pre_high" in sql:
             return snap
         return pd.DataFrame()
+    return q
+
+
+def _planner_section(monkeypatch, db):
+    from lib.agents import summarizers
+    frame = fx.loader_frame("QQQ")
 
     class _L:
         def load_daily(self, *a, **k):
             return frame.copy()
 
-    monkeypatch.setattr(summarizers, "_query", q)
+    monkeypatch.setattr(summarizers, "_query", _planner_query(db))
     return summarizers.summarize_session_levels("QQQ", as_of=SESSION, loader=_L())
 
 
 def _monitor_session(monkeypatch, db):
+    return _monitor(monkeypatch, db).session_levels["QQQ"]
+
+
+def _monitor(monkeypatch, db):
+    """A SignalMonitor on the 2026-11-06 replay clock after one level
+    refresh of QQQ against `db`."""
     import gcp.database as database
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -316,7 +328,7 @@ def _monitor_session(monkeypatch, db):
 
     monkeypatch.setattr("lib.data_loader.DataLoader", _L)
     monitor.refresh_level_map("QQQ")
-    return monitor.session_levels["QQQ"]
+    return monitor
 
 
 def _movement_map(monkeypatch, db):
@@ -408,6 +420,83 @@ def test_resolver_reads_live_basis_ignores_replay_and_builds_without_the_column(
 
 
 # ── A failed read is never "no premarket" (Codex review on #1753) ──────────
+
+
+# ── Unknown rule version spec (2026-11-16), Design 3: every reader refuses
+# by name (U5). The live QQQ 2026-11-06 basis with only rule_version changed.
+
+@pytest.mark.parametrize("version", newer_rule_versions())
+@pytest.mark.parametrize("reader", ["planner", "signal_monitor", "api", "resolver_derive"])
+def test_each_reader_refuses_a_version_it_does_not_know(monkeypatch, caplog, brief_basis,
+                                                       reader, version):
+    import logging
+
+    from lib.strat_levels import LevelRuleVersionUnknown
+    db = _AnalysisDb([_row({**brief_basis, "rule_version": version})])
+    if reader == "planner":
+        with pytest.raises(LevelRuleVersionUnknown) as e:
+            _planner_section(monkeypatch, db)
+        assert (e.value.reason, e.value.recorded) == ("rule_version_newer", version)
+    elif reader == "signal_monitor":
+        with caplog.at_level(logging.ERROR, logger="gcp.signal_monitor"):
+            monitor = _monitor(monkeypatch, db)
+        assert monitor.level_maps.get("QQQ") is None
+        assert "QQQ" not in monitor.session_levels
+        assert "QQQ" not in monitor.level_map_atr
+        assert monitor.level_refresh_rule_version_unknown_count["QQQ"] == 1
+        assert monitor.level_refresh_exception_count.get("QQQ", 0) == 0
+        assert monitor.level_refresh_success_count.get("QQQ", 0) == 0
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert any("QQQ" in m and "rule_version_newer" in m and repr(version) in m
+                   for m in errors), errors
+    elif reader == "api":
+        pytest.skip("Task 7")
+    else:
+        with pytest.raises(LevelRuleVersionUnknown) as e:
+            _resolver_inputs(db)
+        assert (e.value.reason, e.value.recorded) == ("rule_version_newer", version)
+
+
+@pytest.mark.parametrize("version, reason", [(newer_rule_versions()[0], "rule_version_newer"),
+                                             ("", "rule_version_unreadable")])
+def test_the_insight_run_fails_for_the_ticker_on_a_version_it_does_not_know(
+        monkeypatch, brief_basis, version, reason):
+    """Decision 4: the refusal escapes build_context_bundle's section loop
+    (its except Exception would make it an unavailable section, which the
+    planner reads as no levels), and the ticker's run fails with no report
+    written. Every other section is stubbed available; the parameters read
+    from the autouse fixture, so the version is the only failure."""
+    import asyncio
+
+    from gcp import insight_pipeline_job as job
+    from lib.agents import summarizers
+    from lib.strat_levels import LevelRuleVersionUnknown
+    from tests.gcp.test_level_params_consumers import _refuse_network
+
+    _refuse_network(monkeypatch)
+    for name in ("summarize_market_context", "summarize_strat_status", "summarize_options_flow",
+                 "summarize_gamma_levels", "summarize_backtest_metrics", "summarize_catalysts",
+                 "summarize_news_sentiment"):
+        monkeypatch.setattr(summarizers, name, lambda *a, **k: {"available": True})
+    db = _AnalysisDb([_row({**brief_basis, "rule_version": version})])
+    monkeypatch.setattr(summarizers, "_query", _planner_query(db))
+    monkeypatch.setattr("lib.data_loader.DataLoader",
+                        lambda *a, **k: pytest.fail("a stored basis loads no daily bars"))
+
+    with pytest.raises(LevelRuleVersionUnknown) as e:
+        summarizers.build_context_bundle("QQQ", SESSION)
+    assert e.value.reason == reason
+
+    transitions = []
+    monkeypatch.setattr(job, "_transition",
+                        lambda run_id, status, **k: transitions.append((status, k)) or True)
+    monkeypatch.setattr(job, "load_routes_snapshot", lambda: object())
+    monkeypatch.setattr(job, "_insert_report_history",
+                        lambda *a, **k: pytest.fail("no report on a failed run"))
+    monkeypatch.setattr(job, "_upsert_report", lambda *a, **k: pytest.fail("no report on a failed run"))
+    assert asyncio.run(job._run_one("run-1", "QQQ", as_of=SESSION)) is False
+    assert [s for s, _ in transitions] == ["running", "failed"]
+    assert transitions[-1][1]["error"].startswith(reason)
 
 
 def _raising(exc):
