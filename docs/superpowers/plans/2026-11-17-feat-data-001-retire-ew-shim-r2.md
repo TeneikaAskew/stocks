@@ -52,7 +52,7 @@ Spec: done_when items 1 to 3, 5 to 6; Sequencing with #1546.
 
 Spec: done_when items 4 to 5, 7 to 8; Source identity and close-out.
 
-- [ ] Mark MODEL-EWV-001 Retired / REMOVE with date, retain history; add retirement header, exact historical counts and preserved-test pointers to its model document. Regenerate model export and run model-pointer/vocabulary checks.
+- [x] Mark MODEL-EWV-001 Retired / REMOVE with date, retain history; add retirement header, exact historical counts and preserved-test pointers to its model document. Regenerate model export and run model-pointer/vocabulary checks.
 - [ ] Refresh only FEAT-DATA catalog, own lineage, and declared SHARED-07 note; preserve previous own prose and all foreign SITE bytes. Use supported generated-inventory renderer and fixed-bound source producer/verifier, with the sidecar written whole by the producer as one record.
 - [ ] Run matched main/head documentation audits, unchanged source/audit suites, normal commit and PR gates. Record full counts, failures and boundaries. Name P-J docs/ew-retirement-product-docs as separate follow-up, never alter 06-DATA-ARCHITECTURE here.
 - [ ] Publish Draft only after prerequisite receipts and shared-file coordination, bind the number, then spend the first complete review on the final qualified head. Preserve the two-round limit and #1914's review history; no reset is claimed.
@@ -109,3 +109,18 @@ Task 1, on base d35d9ce2:
   gzip-mtime parameter ids of `tests/gcp/test_av_realtime_transport_cli.py`, whose count is unchanged.
 - `python -m tests.meta.test_timezone_boundaries --write-baseline` removed exactly the two
   `scoring_session` entries; `tests/meta/test_timezone_boundaries.py`: 6 passed.
+
+Task 2, model records:
+
+- `docs/product/07-MODEL-REGISTRY.md`: only the MODEL-EWV-001 row changes (1 line; Status Retired, Rec
+  REMOVE, operational retirement date 2026-11-13 kept); no history row or blockquote is touched. The row
+  and `docs/models/MODEL-EWV-001.md` were unchanged on main since #1914's base, so #1914's edits applied
+  cleanly; the model document's counts now state this branch's collection.
+- `python3 scripts/gate/export_model_registry.py` regenerated `docs/product/generated/model-registry.json`;
+  `--check` printed `model-registry.json is current` and exited 0.
+- `tests/meta/test_model_registry_consistency.py`: 68 passed, after the carried receipt
+  `docs/review-evidence/ew-module-shim/node-disposition.json` was added (before it, the dead-path check
+  failed on that citation, as it should).
+- `docs/review-evidence/ew-module-shim/node-disposition.json` and `preservation.json` are #1914's files,
+  carried unchanged (blobs 5d1e1429 and c833f2a3, equal to #1914's): no tool in the repository generates
+  them, so they are not regenerated. They describe #1914's bases; this branch's receipts are in this plan.
