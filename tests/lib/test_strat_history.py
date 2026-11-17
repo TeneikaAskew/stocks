@@ -205,7 +205,9 @@ class TestHistoryObservationContract:
         from lib.data_loader import DataLoader
         monkeypatch.setattr(DataLoader,'__init__',lambda *a,**k:pytest.fail('unqualified source load'))
         args=self.contract();args['price_basis']='av-adjusted-daily-v1'
-        with pytest.raises(ValueError,match='basis.*unavailable'):
+        # FEAT-DATA-001: no adjusted basis exists; the label is refused as
+        # unsupported, at the check that refuses every unknown label.
+        with pytest.raises(ValueError,match='unsupported or mixed history price basis'):
             compute_strat_history('TEST',**args)
 
     def test_no_contract_is_descriptive_and_never_comparable(self,monkeypatch):

@@ -291,3 +291,29 @@ def test_retired_adjusted_sources_are_gone():
     indicators computed on adjusted closes (spec Problem 5)."""
     assert not (REPO / "scripts/deep_backfill_ticker.py").exists()
     assert not (REPO / "gcp/fetchers/fetch_av_indicators.py").exists()
+
+
+# ─── Decision 7: the offline experiments read the as-traded export ──────────
+
+
+def test_experiments_read_the_as_traded_export(tmp_path):
+    """Both experiments read {T}_daily.csv, a TIME_SERIES_DAILY export, and
+    refuse a file holding an adjusted column instead of silently using it."""
+    from scripts.analysis import brief_rsi_band_experiment as brief
+    from scripts.analysis import honest_scoring_experiment as honest
+
+    path = tmp_path / "SPY_daily.csv"
+    path.write_text("timestamp,open,high,low,close,volume\n"
+                    "2026-11-12,670.00,672.50,667.90,671.80,70111222\n"
+                    "2026-11-13,671.11,675.38,668.12,673.27,81234567\n")
+    frame = brief.load_daily(str(tmp_path), "SPY")
+    assert list(frame.columns) == ["Open", "High", "Low", "Close", "Volume", "Time"]
+    assert frame["Close"].tolist() == [671.80, 673.27]
+
+    path.write_text("timestamp,open,high,low,close,adjusted_close,volume\n"
+                    "2026-11-13,671.11,675.38,668.12,673.27,671.00,81234567\n")
+    with pytest.raises(ValueError, match="adjusted_close"):
+        brief.load_daily(str(tmp_path), "SPY")
+    bars = pd.DataFrame({"Time": pd.to_datetime([])})
+    with pytest.raises(ValueError, match="adjusted_close"):
+        honest.daily_bars("SPY", bars, daily_dir=str(tmp_path))
