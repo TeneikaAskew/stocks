@@ -72,7 +72,7 @@ Files: gcp/deploy.sh.
   tests/gcp/test_deploy_flag_syntax.py (`MERGE_BASE_CALLS`) with retries 1 on create and
   none on update. Its three news entries now carry `--max-retries 0` on every call, as
   the spec's adaptation clause allows; the pin stays exact and rejects unpatched main.
-- [ ] Run affected deploy/inventory/news suites and the full suite.
+- [x] Run affected deploy/inventory/news suites and the full suite. 2026-11-17 on `c087a02e8`: affected deploy, news and generated-docs suites 346 passed, 7 skipped; full hermetic suite (`pytest tests/ --ignore=tests/integration`) 11475 passed, 58 skipped, on the branch synced with main before #1670; CI's Run Tests repeats the full suite on the pushed head.
 - [x] Commit: `fix(deploy): zero whole-job retries on the three news jobs`.
 
 ## Task 3: Rollout record
@@ -95,10 +95,11 @@ renderer-owned inventory rows that `scripts/maintenance/doc_inventory.py` derive
 from the changed retry values, if the docs audit requires them.
 
 - [x] Open one draft PR; set `pr` here in the next commit.
-- [ ] Produce the SHARED-07 note from producer preflight's source identity, commit,
-  produce and verify the sidecar from the committed HEAD.
-- [ ] Docs audit on this branch and on origin/main: no new finding.
-- [ ] `python3 scripts/gate/spec_gate.py --pr origin/main`.
+- [x] Produce the SHARED-07 note from producer preflight's source identity, commit,
+  produce and verify the sidecar from the committed HEAD. 2026-11-17: note rebound,
+  sidecar produced and committed, `verify` reports identity-matched on route declared-note.
+- [x] Docs audit on this branch and on origin/main: no new finding. 2026-11-17: 312 and 312, 0 new.
+- [x] `python3 scripts/gate/spec_gate.py --pr origin/main`. 2026-11-17: spec gate ok.
 - [ ] Record exact historical and current review lineage on the PR; an authorized
   independent final review, current-head CODE/SEC review and CI before release.
 
