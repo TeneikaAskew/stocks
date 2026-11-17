@@ -334,7 +334,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `market_data_daily`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [388](../../../gcp/backfill_ticker.py#L388), [557](../../../gcp/backfill_ticker.py#L557), [635](../../../gcp/backfill_ticker.py#L635)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [387](../../../gcp/backfill_ticker.py#L387), [556](../../../gcp/backfill_ticker.py#L556), [634](../../../gcp/backfill_ticker.py#L634)
 - [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) — line [416](../../../gcp/fetchers/backfill_daily_indicators.py#L416)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [642](../../../gcp/fetchers/fetch_market_data.py#L642), [717](../../../gcp/fetchers/fetch_market_data.py#L717), [765](../../../gcp/fetchers/fetch_market_data.py#L765), [1175](../../../gcp/fetchers/fetch_market_data.py#L1175)
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [398](../../../gcp/fetchers/fetch_premarket_refresh.py#L398)
@@ -366,7 +366,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`lib/agents/model_routing.py`](../../../lib/agents/model_routing.py) — line [193](../../../lib/agents/model_routing.py#L193)
 
 ### `news_sentiment`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [652](../../../gcp/backfill_ticker.py#L652)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [651](../../../gcp/backfill_ticker.py#L651)
 - [`gcp/fetchers/fetch_news_sentiment.py`](../../../gcp/fetchers/fetch_news_sentiment.py) — line [376](../../../gcp/fetchers/fetch_news_sentiment.py#L376)
 - [`gcp/fetchers/fetch_rss_news.py`](../../../gcp/fetchers/fetch_rss_news.py) — line [710](../../../gcp/fetchers/fetch_rss_news.py#L710)
 - [`scripts/backfill_news_sentiment.py`](../../../scripts/backfill_news_sentiment.py) — line [101](../../../scripts/backfill_news_sentiment.py#L101)
@@ -474,7 +474,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `watchlists`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [299](../../../gcp/backfill_ticker.py#L299), [303](../../../gcp/backfill_ticker.py#L303)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [298](../../../gcp/backfill_ticker.py#L298), [302](../../../gcp/backfill_ticker.py#L302)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [657](../../../gcp/discord_interactions/main.py#L657), [693](../../../gcp/discord_interactions/main.py#L693)
 - [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [539](../../../gcp/fetchers/_watchlist.py#L539), [543](../../../gcp/fetchers/_watchlist.py#L543), [544](../../../gcp/fetchers/_watchlist.py#L544), [576](../../../gcp/fetchers/_watchlist.py#L576)
 <!-- inventory:writes:end -->
@@ -688,7 +688,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1258](../../../lib/strat_levels.py#L1258)
 
 ### `market_data_daily`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [347](../../../gcp/backfill_ticker.py#L347), [425](../../../gcp/backfill_ticker.py#L425)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [346](../../../gcp/backfill_ticker.py#L346), [424](../../../gcp/backfill_ticker.py#L424)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [80](../../../gcp/build_intraday_gex.py#L80)
 - [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [79](../../../gcp/calibrate_level_params.py#L79)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [320](../../../gcp/discord_interactions/main.py#L320)
@@ -728,7 +728,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/strat_backtest.py`](../../../scripts/strat_backtest.py) — line [37](../../../scripts/strat_backtest.py#L37)
 
 ### `market_data_intraday`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [485](../../../gcp/backfill_ticker.py#L485)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [484](../../../gcp/backfill_ticker.py#L484)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [107](../../../gcp/build_intraday_gex.py#L107)
 - [`gcp/build_realtime_gex.py`](../../../gcp/build_realtime_gex.py) — line [101](../../../gcp/build_realtime_gex.py#L101)
 - [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [84](../../../gcp/calibrate_level_params.py#L84)

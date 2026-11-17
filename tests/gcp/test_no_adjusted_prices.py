@@ -122,9 +122,41 @@ def _writer_av_get_full_daily_series(monkeypatch):
     assert frame.volume.tolist() == [70111222, 81234567]
 
 
+def _writer_backfill_ticker(monkeypatch):
+    import gcp.backfill_ticker as mod
+    get, sent = _recording_get({"TIME_SERIES_DAILY": DAILY_REPLY})
+    upsert, calls = _recording_upsert()
+    monkeypatch.setattr(mod.requests, "get", get)
+    monkeypatch.setattr("gcp.database.upsert_dataframe", upsert)
+    monkeypatch.setattr(mod, "compute_indicators_for_full_range", lambda ticker: 0)
+    monkeypatch.setattr(mod, "compute_indicators_for_dates", lambda ticker, dates: None)
+    for name, value in (("BACKFILL_TICKER", "SPY"), ("ALPHA_VANTAGE_API_KEY", "k"),
+                        ("BACKFILL_INCLUDE_NEWS", "false"),
+                        ("BACKFILL_ADD_TO_WATCHLIST", "false"),
+                        ("BACKFILL_DATES", "2026-11-13")):
+        monkeypatch.setenv(name, value)
+
+    daily = mod.av_daily_full("SPY", "k")
+    assert [p["function"] for p in sent] == ["TIME_SERIES_DAILY"]
+    assert not (set(daily.columns) & ADJ), sorted(daily.columns)
+    assert daily["volume"].tolist() == [70111222, 81234567]
+
+    sent.clear()
+    assert mod.run() == 0
+    assert [p["function"] for p in sent] == ["TIME_SERIES_DAILY"]
+    frames = _daily_frames(calls)
+    assert len(frames) == 1
+    frame = frames[0]
+    assert not (set(frame.columns) & ADJ), sorted(frame.columns)
+    assert set(frame["data_source"]) == {"alphavantage"}
+    row = frame[frame["date"] == dt.date(2026, 11, 13)].iloc[0]
+    assert row["volume"] == 81234567
+
+
 WRITERS = {
     "fetch_daily_from_av": _writer_fetch_daily_from_av,
     "_av_get_full_daily_series": _writer_av_get_full_daily_series,
+    "backfill_ticker": _writer_backfill_ticker,
 }
 
 
