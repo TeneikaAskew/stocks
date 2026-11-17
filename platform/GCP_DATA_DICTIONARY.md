@@ -212,8 +212,8 @@ previously said the opposite — see the correction in §0.1.
 /api/insights/ticker/{t}/peers  → lib.ticker_info.get_peers        → FinViz (cached)
 /api/live/quote/{t}             → routers/live.py                  → AlphaVantage GLOBAL_QUOTE
 /api/live/history/{t}           → routers/live.py                  → AlphaVantage TIME_SERIES_INTRADAY (1min ×100)
-/api/market/data/{t}/{d}        → main.py::_load_date_data         → Cloud SQL market_data_intraday  (GCS parquet fallback)
-/api/market/reference/{t}/{d}   → main.py::get_reference_levels    → AV TIME_SERIES_DAILY (≤30d) ELSE Cloud SQL market_data_daily
+/api/market/data/{t}/{d}        → main.py::_load_date_data         → Cloud SQL market_data_intraday only (404 or 503 otherwise; bucket parquet only when Cloud SQL is not configured)
+/api/market/reference/{t}/{d}   → main.py::get_reference_levels    → Cloud SQL market_data_daily, one query (no AlphaVantage call)
 ```
 GCP hops: **Cloud Run svc** → **AlphaVantage / FinViz** (external) and/or **Cloud SQL**
 (`market_data_intraday`, `market_data_daily`, `ticker_info`). Populating Jobs behind the

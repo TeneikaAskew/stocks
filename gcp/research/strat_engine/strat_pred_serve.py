@@ -39,6 +39,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
+from lib.eastern_time import market_today
+
 from gcp.research.strat_engine.strat_config import (
     LABEL_CLASSES,
     GCS_BUCKET_DEFAULT,
@@ -369,7 +371,7 @@ def predict_one(
         engine, ticker, tf,
         # Cap the lookback to the most recent ~30 days of bars for
         # efficiency. We only need the latest bar (or as_of).
-        since=(pd.Timestamp.utcnow() - pd.Timedelta(days=30)).date().isoformat(),
+        since=(market_today() - pd.Timedelta(days=30)).isoformat(),
         require_strat_candle=True,
         include_levels=True,
     )

@@ -33,7 +33,7 @@ from typing import Any, Optional, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from lib.eastern_time import ET_NAME
+from lib.eastern_time import ET_NAME, market_today
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from lib.strat_levels import PREMARKET_UNFILTERED_NOTE, LevelParamsUnavailable
 
@@ -149,7 +149,7 @@ def _check_chain_freshness(
     """
     if isinstance(chain_date, datetime):
         chain_date = chain_date.date()
-    target = target_date if target_date else date_type.today()
+    target = target_date if target_date else market_today()
     if isinstance(target, datetime):
         target = target.date()
     trading_days = int(np.busday_count(chain_date, target))
@@ -532,11 +532,13 @@ def _live_level_basis(ticker: str, session_date: date_type) -> Optional[dict]:
 
 def _has_no_level_param_rows(level_params) -> bool:
     """True when the loader found no ticker_level_params row for the
-    ticker in any basis: every key is params_unavailable (a stored row never
-    carries that status)."""
-    from lib.strat_levels import PARAMS_UNAVAILABLE
+    ticker in any basis: every per-ticker key is params_unavailable (a stored
+    row never carries that status). The policy-wide keys (exit_legs,
+    entry_cutoff_et) come from level_param_policy, not from a ticker row,
+    so they do not count."""
+    from lib.strat_levels import PARAMS_UNAVAILABLE, POLICY_WIDE_KEYS
 
-    params = list(level_params.params.values())
+    params = [p for k, p in level_params.params.items() if k not in POLICY_WIDE_KEYS]
     return bool(params) and all(p.status == PARAMS_UNAVAILABLE for p in params)
 
 
@@ -847,7 +849,7 @@ def summarize_gamma_levels(
         # Tier the EOD snapshot into eod_fallback / stale_fallback /
         # hard-stale based on trading-day gap.
         chain_date = _chain_snapshot_date(df)
-        target = as_of if as_of else date_type.today()
+        target = as_of if as_of else market_today()
         if isinstance(target, datetime):
             target = target.date()
         days_behind = int(np.busday_count(chain_date, target))

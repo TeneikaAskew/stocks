@@ -25,11 +25,11 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import date
 from functools import lru_cache
 from typing import Optional
 
 from lib.config import ExitConfig, SignalConfig
+from lib.eastern_time import market_today
 
 log = logging.getLogger(__name__)
 
@@ -142,7 +142,7 @@ def _latest_overrides(ticker: str) -> Optional[dict]:
         return None
 
     row = df.iloc[0].to_dict()
-    age_days = (date.today() - row["calibration_date"]).days
+    age_days = (market_today() - row["calibration_date"]).days
     if age_days > _STALE_DAYS:
         log.warning(
             "exit_config_overrides: stale for %s (%dd old) — Tier-B fallback",

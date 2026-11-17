@@ -3,7 +3,7 @@ feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-13-feat-data-001-intraday-as-traded.md
 branch: fix/feat-data-001-intraday-as-traded
 pr: 1874
-status: ready
+status: done
 ---
 
 # Every AlphaVantage 1-min request asks for as-traded prices implementation plan

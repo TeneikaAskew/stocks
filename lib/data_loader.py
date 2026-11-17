@@ -22,7 +22,7 @@ from typing import Optional, Dict
 import warnings
 
 from lib.eastern_time import (ET_NAME, eastern_index_to_utc, stored_intraday_to_eastern,
-                              session_schedule, eastern_now)
+                              session_schedule, eastern_now, market_today)
 
 
 def _eastern_bound(value) -> Optional[pd.Timestamp]:
@@ -256,7 +256,7 @@ def _check_staleness(df: pd.DataFrame, ticker: str, *,
     if df is None or df.empty:
         return
     if today is None:
-        today = date.today()
+        today = market_today()
 
     # Filter out placeholder rows where the value column is NaN. The
     # check should reflect the most recent USABLE bar, not the most

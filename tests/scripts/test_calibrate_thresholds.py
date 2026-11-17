@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from lib.eastern_time import market_today
 from scripts.calibrate_thresholds import (
     CLEAN_ATR_MULT,
     NOISE_ATR_MULT,
@@ -268,10 +269,9 @@ def test_calibrate_ticker_with_as_of_overrides_calibration_date():
 
 def test_calibrate_ticker_without_as_of_uses_today():
     """Default (no as_of) is today — preserves existing live cadence."""
-    from datetime import date as _date
     bars = synthetic_bars(n=2000)
     cal = calibrate_ticker("TEST", bars, lookback_days=60)
-    assert cal["calibration_date"] == _date.today()
+    assert cal["calibration_date"] == market_today()
 
 
 def test_parse_as_of_accepts_valid_iso_date():
@@ -296,19 +296,18 @@ def test_parse_as_of_rejects_future_date():
     """Future dates would calibrate against bars that don't exist —
     the script must refuse so the backfill can't accidentally
     write a row with calibration_date > today."""
-    from datetime import date as _date, timedelta as _td
+    from datetime import timedelta as _td
     from scripts.calibrate_thresholds import _parse_as_of
-    future = (_date.today() + _td(days=7)).isoformat()
+    future = (market_today() + _td(days=7)).isoformat()
     with pytest.raises(SystemExit, match="in the future"):
         _parse_as_of(future)
 
 
 def test_parse_as_of_accepts_today_boundary():
     """Today is allowed (cadence parity with no-flag run)."""
-    from datetime import date as _date
     from scripts.calibrate_thresholds import _parse_as_of
-    today_str = _date.today().isoformat()
-    assert _parse_as_of(today_str) == _date.today()
+    today_str = market_today().isoformat()
+    assert _parse_as_of(today_str) == market_today()
 
 
 # ── #250 Drift guard ─────────────────────────────────────────────────────

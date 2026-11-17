@@ -521,3 +521,108 @@ def test_replay_trades_endpoint_404_when_no_rows_match(client, monkeypatch):
         "ticker": "SPY", "trade_ids": ["nope"],
     })
     assert resp.status_code == 404
+
+
+# -- an outage is a 503, a defect a 500 (FEAT-REPLAY-001) -----------------------
+#
+# The journal read used to go through the swallowing query helper, so a
+# database outage read as "no matching trades found" (404). Both reads now
+# raise; api.http_errors.unavailable answers 503 for an outage and re-raises
+# a defect.
+
+_JOURNAL_DOWN = "Could not read journal trades for IWM: the database is unavailable."
+_BARS_DOWN = "Could not read 1-min bars for IWM: the database is unavailable."
+
+
+def _replay_with_failing_read(client, monkeypatch, failure, *, fails_on):
+    """POST replay-trades for IWM with one read raising `failure`:
+    `fails_on` is "journal" (the journal read through
+    gcp.database.query_to_dataframe_strict) or "bars" (the bar loader, with
+    the journal read answered). Returns (response, _style_exec calls)."""
+    from gcp import database
+    from api.routers import backtest as backtest_router
+
+    def journal(sql, params=None, timeout_s=None):
+        if fails_on == "journal":
+            raise failure
+        return _journal_rows_df()
+
+    def bars(ticker_lower, date):
+        if fails_on == "bars":
+            raise failure
+        return _make_raw_loader_frame("2026-06-02", {})
+
+    written = []
+    monkeypatch.setattr(backtest_router, "_HAS_CLOUD_SQL", True, raising=False)
+    monkeypatch.setattr(database, "query_to_dataframe_strict", journal)
+    monkeypatch.setattr(backtest_router, "_replay_bar_loader", bars)
+    monkeypatch.setattr(backtest_router, "_style_exec",
+                        lambda *a, **k: written.append((a, k)))
+    resp = client.post("/api/backtest/replay-trades",
+                       json={"ticker": "IWM", "trade_ids": ["row-1"]})
+    return resp, written
+
+
+def test_replay_trades_outage_is_503(client, monkeypatch):
+    for fails_on, detail in (("journal", _JOURNAL_DOWN), ("bars", _BARS_DOWN)):
+        resp, written = _replay_with_failing_read(
+            client, monkeypatch, ConnectionError("connection refused"), fails_on=fails_on)
+        assert resp.status_code == 503, fails_on
+        assert resp.json() == {"detail": detail}
+        assert "connection refused" not in resp.text
+        assert written == []
+
+
+def test_replay_trades_defect_is_500(client, monkeypatch):
+    from starlette.testclient import TestClient
+    loud = TestClient(client.app, raise_server_exceptions=False)
+    for fails_on in ("journal", "bars"):
+        resp, written = _replay_with_failing_read(
+            loud, monkeypatch, KeyError("close"), fails_on=fails_on)
+        assert resp.status_code == 500, fails_on
+        assert written == []
+
+
+def _replay_through_the_real_loader(client, monkeypatch, failure):
+    """POST replay-trades for IWM with nothing stubbed between the handler
+    and the table read: the real `_replay_bar_loader` calls the real
+    `_load_date_data`, and its strict query wrapper `_bars_query` raises
+    `failure`. Returns (response, _style_exec calls)."""
+    import api.main as main_module
+    from gcp import database
+    from api.routers import backtest as backtest_router
+
+    def bars_query(sql, params=None):
+        raise failure
+
+    written = []
+    monkeypatch.setattr(backtest_router, "_HAS_CLOUD_SQL", True, raising=False)
+    monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
+    monkeypatch.setattr(main_module, "_CLOUD_SQL_UNCONFIGURED", False)
+    monkeypatch.setattr(database, "query_to_dataframe_strict",
+                        lambda sql, params=None, timeout_s=None: _journal_rows_df())
+    monkeypatch.setattr(main_module, "_bars_query", bars_query)
+    monkeypatch.setattr(backtest_router, "_style_exec",
+                        lambda *a, **k: written.append((a, k)))
+    resp = client.post("/api/backtest/replay-trades",
+                       json={"ticker": "IWM", "trade_ids": ["row-1"]})
+    return resp, written
+
+
+def test_replay_trades_table_outage_reaches_the_route_as_503(client, monkeypatch):
+    """The two tests above stub `_replay_bar_loader`. This one drives the
+    strict read inside `_load_date_data` through the route."""
+    resp, written = _replay_through_the_real_loader(
+        client, monkeypatch, ConnectionError("connection refused"))
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": _BARS_DOWN}
+    assert "connection refused" not in resp.text
+    assert written == []
+
+
+def test_replay_trades_table_defect_reaches_the_route_as_500(client, monkeypatch):
+    from starlette.testclient import TestClient
+    loud = TestClient(client.app, raise_server_exceptions=False)
+    resp, written = _replay_through_the_real_loader(loud, monkeypatch, KeyError("close"))
+    assert resp.status_code == 500
+    assert written == []

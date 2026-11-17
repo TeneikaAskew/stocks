@@ -189,9 +189,11 @@ def test_compute_returns_metrics_when_premarket_bars_present(monkeypatch):
     assert result is not None
     assert result['ticker'] == 'AAPL'
     assert result['date'] == date(2026, 4, 30)
-    # Highest of the pre-market highs
-    assert result['pre_high'] == 184.0
-    assert result['pre_low']  == 179.5
+    # FEAT-PLAYBOOK-001 B7: 184.0 and 179.5 are one bar's lone wick each, so
+    # the extremes are the highest and lowest open or close (the 08:15 close
+    # and the 04:00 open), which lie beyond the second bar high and low.
+    assert result['pre_high'] == 183.5
+    assert result['pre_low'] == 180.0
     # gap_pct = (180.0 - 175.0) / 175.0 * 100 ≈ +2.86%
     assert result['gap_pct'] is not None
     assert abs(result['gap_pct'] - 2.857) < 0.01
@@ -284,3 +286,89 @@ class TestUpsertFiltering:
         ])
         assert n == 1
         assert {e['ticker'] for e in executed} == {'GOOD'}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# The newest premarket bar per ticker (FEAT-PLAYBOOK-001, the late slot)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _minute_bars(first: str, last: str) -> pd.DataFrame:
+    """One-minute bars of 2026-04-30 from `first` through `last`, in the
+    vendor's naive Eastern wall time."""
+    idx = pd.date_range(f'2026-04-30 {first}', f'2026-04-30 {last}', freq='1min')
+    return pd.DataFrame({'Open': 180.0, 'High': 181.0, 'Low': 179.5, 'Close': 180.5,
+                         'Volume': 1_000}, index=idx)
+
+
+def test_compute_logs_the_newest_premarket_bar(monkeypatch, caplog):
+    """How late the vendor's newest bar is at the fetch is what the late
+    brief's levels depend on, and nothing recorded it. One INFO record per
+    ticker names the premarket bar count, the newest premarket bar (the
+    vendor's own Eastern wall time) and the fetch time in America/New_York.
+    Nothing is stored."""
+    import logging
+    from datetime import datetime, timezone
+
+    from gcp.fetchers import fetch_market_data
+    from gcp.fetchers import fetch_premarket_refresh as fpr
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 4, 30, 13, 20, 41, tzinfo=timezone.utc).astimezone(tz)
+
+    monkeypatch.setattr(fpr, 'datetime', FrozenDatetime)
+    monkeypatch.setattr(fpr, '_prior_session_from_db',
+                        lambda tk, d: {'close': 178.0, 'atr_14': 10.0})
+    frames = {}
+    monkeypatch.setattr(fetch_market_data, 'fetch_minute_data', lambda tk, d, k: frames['bars'])
+
+    def record():     # the INFO records of the module that name a bar time
+        return [r.getMessage() for r in caplog.records
+                if r.name == 'gcp.fetchers.fetch_premarket_refresh'
+                and r.levelno == logging.INFO and 'newest_bar=' in r.getMessage()]
+
+    with caplog.at_level(logging.INFO, logger='gcp.fetchers.fetch_premarket_refresh'):
+        # 04:00 through 09:19: 320 premarket bars
+        frames['bars'] = _minute_bars('04:00', '09:19')
+        snapshot = fpr.compute_premarket_for_ticker('AAPL', date(2026, 4, 30), 'key')
+        assert snapshot is not None
+        (line,) = record()
+        assert 'AAPL' in line and 'bars=320' in line and 'newest_bar=09:19 ET' in line
+        assert 'fetched_at=09:20:41 ET' in line
+        # the record stores nothing: the snapshot is what it was
+        assert snapshot['pre_fetched_at'] == datetime(2026, 4, 30, 13, 20, 41, tzinfo=timezone.utc)
+        assert not any('newest' in key for key in snapshot)
+
+        # 04:00 through 15:59: the newest premarket bar is 09:29, not the last bar of the day
+        caplog.clear()
+        frames['bars'] = _minute_bars('04:00', '15:59')
+        assert fpr.compute_premarket_for_ticker('AAPL', date(2026, 4, 30), 'key') is not None
+        (line,) = record()
+        assert 'bars=330' in line and 'newest_bar=09:29 ET' in line
+
+        # one bar at 10:00: no premarket bar, no record
+        caplog.clear()
+        frames['bars'] = _minute_bars('10:00', '10:00')
+        assert fpr.compute_premarket_for_ticker('AAPL', date(2026, 4, 30), 'key') is None
+        assert record() == []
+
+
+@pytest.mark.parametrize('index,newest', [
+    (pd.DatetimeIndex(['2026-04-30 03:59:00', '2026-04-30 04:00:00', '2026-04-30 09:29:00',
+                       '2026-04-30 09:30:00']), '2026-04-30 09:29:00'),
+    # a zone-aware index is read in Eastern: 13:19Z is 09:19 EDT
+    (pd.DatetimeIndex(['2026-04-30 08:00:00', '2026-04-30 13:19:00', '2026-04-30 13:30:00'],
+                      tz='UTC'), '2026-04-30 09:19:00'),
+    (pd.DatetimeIndex(['2026-04-30 03:59:00', '2026-04-30 09:30:00']), None),
+    (pd.DatetimeIndex([]), None),
+])
+def test_newest_premarket_bar(index, newest):
+    from gcp.fetchers import fetch_premarket_refresh as fpr
+
+    got = fpr._newest_premarket_bar(index)
+    if newest is None:
+        assert got is None
+    else:
+        assert got.strftime('%Y-%m-%d %H:%M:%S') == newest

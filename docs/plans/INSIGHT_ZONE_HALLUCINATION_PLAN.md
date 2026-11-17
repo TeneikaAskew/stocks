@@ -164,12 +164,12 @@ No other site uses Python pandas filtering for the `as_of` cutoff. Every other s
 
 ## 7. Verification (re-run the 7 replays after the fix lands)
 
-The replay script ([`scripts/backfill_and_replay.py`](../../scripts/backfill_and_replay.py)) uses `--skip-backfill` to avoid re-fetching AV data. Once the fix is deployed to Cloud Run:
+The replay script ([`scripts/backfill_and_replay.py`](../../scripts/backfill_and_replay.py)) fetches nothing: it reads the bars the tables already hold and refuses a date they lack (the `--skip-backfill` flag these commands used to carry was removed with the backfill step, FEAT-REPLAY-001). Once the fix is deployed to Cloud Run:
 
 ```bash
-python -m scripts.backfill_and_replay --ticker AMD --dates 2026-04-23,2026-04-24 --skip-backfill --skip-discord
-python -m scripts.backfill_and_replay --ticker CARS --dates 2026-03-31 --skip-backfill --skip-discord
-python -m scripts.backfill_and_replay --ticker ARM --dates 2026-04-20,2026-04-21,2026-04-22,2026-04-23 --skip-backfill --skip-discord
+python -m scripts.backfill_and_replay --ticker AMD --dates 2026-04-23,2026-04-24 --skip-discord
+python -m scripts.backfill_and_replay --ticker CARS --dates 2026-03-31 --skip-discord
+python -m scripts.backfill_and_replay --ticker ARM --dates 2026-04-20,2026-04-21,2026-04-22,2026-04-23 --skip-discord
 ```
 
 Acceptance: `trigger_high` in every produced report should equal the prior-bar high *as of the replay date*, never a future-dated high. Specifically:

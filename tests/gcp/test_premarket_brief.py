@@ -1227,9 +1227,13 @@ class TestResolveAnalysisDate:
     """`_resolve_analysis_date` reads BRIEF_AS_OF for historical replay."""
 
     def test_default_returns_today(self, monkeypatch):
+        # Sunday 21:00 Eastern is Monday 02:00 UTC: "today" is the
+        # exchange's Sunday, not the host's Monday.
         monkeypatch.delenv("BRIEF_AS_OF", raising=False)
+        _freeze_exchange_clock(
+            monkeypatch, TestLiveDateIsTheExchangeDate._eastern('2026-11-15 21:00'))
         from gcp.premarket_brief import _resolve_analysis_date
-        assert _resolve_analysis_date() == date.today()
+        assert _resolve_analysis_date() == date(2026, 11, 15)
 
     def test_explicit_past_date_honoured(self, monkeypatch):
         monkeypatch.setenv("BRIEF_AS_OF", "2026-04-23")
@@ -1238,8 +1242,10 @@ class TestResolveAnalysisDate:
 
     def test_blank_falls_back_to_today(self, monkeypatch):
         monkeypatch.setenv("BRIEF_AS_OF", "   ")
+        _freeze_exchange_clock(
+            monkeypatch, TestLiveDateIsTheExchangeDate._eastern('2026-11-15 21:00'))
         from gcp.premarket_brief import _resolve_analysis_date
-        assert _resolve_analysis_date() == date.today()
+        assert _resolve_analysis_date() == date(2026, 11, 15)
 
     def test_future_date_rejected(self, monkeypatch):
         from datetime import timedelta
@@ -2816,12 +2822,13 @@ class TestCalibrationOptionsLoaderObservable:
 
 
 class TestBuildGammaFooter:
-    """`_build_gamma_footer` aggregates per-ticker gamma_data_source.
+    """`_build_gamma_footer` describes the oldest snapshot in the brief.
 
-    The brief embed uses worst-case-across-tickers severity to drive
-    the user-visible footer wording, so a single ticker on stale data
-    can demote a brief where the other two are live.
+    The text is `format_gamma_footer`'s, so a single ticker on an older
+    chain is what the reader is told about, by its own date.
     """
+
+    SESSION = date(2026, 5, 22)
 
     def _brief_with(self, **per_ticker_kwargs) -> dict:
         """Build a minimal brief dict with the gamma metadata fields
@@ -2833,8 +2840,9 @@ class TestBuildGammaFooter:
                 'gamma_snapshot_ts': kwargs.get('ts'),
                 'gamma_snapshot_date': kwargs.get('sd'),
                 'gamma_days_behind': kwargs.get('days'),
+                'gamma_market_session': kwargs.get('ms'),
             }
-        return {'tickers': tickers}
+        return {'analysis_date': self.SESSION, 'tickers': tickers}
 
     def test_returns_none_when_no_tickers_have_gamma(self):
         from gcp.premarket_brief import _build_gamma_footer
@@ -2856,9 +2864,9 @@ class TestBuildGammaFooter:
     def test_all_realtime_renders_green_live_line(self):
         from gcp.premarket_brief import _build_gamma_footer
         brief = self._brief_with(
-            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
-            IWM={'ds': 'realtime', 'ts': '2026-05-22T19:50:00+00:00'},
-            QQQ={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            SPY={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:50:00+00:00'},
+            QQQ={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:55:00+00:00'},
         )
         out = _build_gamma_footer(brief)
         assert out is not None
@@ -2866,81 +2874,173 @@ class TestBuildGammaFooter:
         # Green circle marker so phone-only readers see status at a
         # glance (matches the existing 📊 freshness-line convention).
         assert '🟢' in out
+        # The oldest of the three session snapshots is the one named.
+        assert out == '🟢 Live gamma · 15:50 ET'
 
-    def test_any_eod_fallback_demotes_to_amber(self):
-        """One EOD fallback among realtime peers → footer reflects
-        worst case (EOD), not the cheerful 'Live' wording."""
+    def test_an_eod_chain_among_live_peers_is_the_one_named(self):
+        """One ticker on yesterday's close among live peers: the footer
+        names that chain by its date, not the cheerful 'Live' wording."""
         from gcp.premarket_brief import _build_gamma_footer
         brief = self._brief_with(
-            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
-            IWM={'ds': 'eod_fallback', 'ts': '2026-05-21T20:00:00+00:00', 'days': 1},
-            QQQ={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            SPY={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'eod_fallback', 'ms': 'EOD', 'ts': '2026-05-21T20:00:00+00:00', 'days': 1},
+            QQQ={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:55:00+00:00'},
         )
         out = _build_gamma_footer(brief)
-        assert out is not None
-        assert '⚠️' in out
-        assert 'EOD gamma' in out
-        assert "realtime fetcher missed today's session" in out
+        assert out == 'Gamma as of Thu 05/21 close'
+        assert 'Live' not in out
 
-    def test_any_stale_fallback_demotes_to_red(self):
-        """Stale (3-5 trading days) beats EOD beats realtime in severity."""
+    def test_an_older_chain_carries_its_age_and_the_warning_mark(self):
+        """The oldest snapshot wins over newer ones, with its age in sessions."""
         from gcp.premarket_brief import _build_gamma_footer
         brief = self._brief_with(
-            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
-            IWM={'ds': 'eod_fallback', 'ts': '2026-05-21T20:00:00+00:00', 'days': 1},
-            QQQ={'ds': 'stale_fallback', 'ts': '2026-05-15T20:00:00+00:00', 'days': 4},
+            SPY={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:55:00+00:00'},
+            IWM={'ds': 'eod_fallback', 'ms': 'EOD', 'ts': '2026-05-21T20:00:00+00:00', 'days': 1},
+            QQQ={'ds': 'stale_fallback', 'ms': 'EOD', 'ts': '2026-05-15T20:00:00+00:00', 'days': 5},
         )
         out = _build_gamma_footer(brief)
-        assert out is not None
-        assert '⚠️' in out
-        assert 'Stale gamma' in out
-        assert '4 trading days old' in out
+        assert out == '⚠️ Gamma as of Fri 05/15 close (5 sessions old)'
 
     def test_unavailable_alongside_realtime_still_renders_live(self):
-        """An UNAVAILABLE ticker shouldn't drag the footer down when
-        live data exists for others — the unavailable one is recorded
-        but the live ticker's data is still useful to the reader."""
+        """An UNAVAILABLE ticker has no snapshot to describe, so the
+        footer describes the tickers that have one."""
         from gcp.premarket_brief import _build_gamma_footer
         brief = self._brief_with(
-            SPY={'ds': 'realtime', 'ts': '2026-05-22T19:55:00+00:00'},
+            SPY={'ds': 'realtime', 'ms': 'REALTIME', 'ts': '2026-05-22T19:55:00+00:00'},
             IWM={'ds': 'unavailable'},
         )
-        # Per the severity table, 'unavailable' currently outranks
-        # 'realtime' so the footer is suppressed. This documents the
-        # current behavior; revisit if the user wants partial-coverage
-        # footers (e.g. "Live gamma · SPY only").
+        assert _build_gamma_footer(brief) == '🟢 Live gamma · 15:55 ET'
+
+
+class TestGammaFooter:
+    """The footer names the snapshot it describes (FEAT-PLAYBOOK-001 B1, B2)."""
+
+    MON = date(2026, 11, 16)
+    REALTIME_TS = pd.Timestamp('2026-11-13 20:55:30', tz='UTC')
+    EOD_TS = pd.Timestamp('2026-11-13 23:00:00', tz='UTC')
+
+    def test_same_session_snapshot_is_live(self):
+        from gcp.premarket_brief import format_gamma_footer
+        assert format_gamma_footer('2026-11-16T14:35:00+00:00', 'REALTIME',
+                                   date(2026, 11, 16)) == 'Live gamma · 09:35 ET'
+
+    def test_earlier_realtime_snapshot_names_its_day(self):
+        from gcp.premarket_brief import format_gamma_footer
+        out = format_gamma_footer('2026-11-13T20:55:30+00:00', 'REALTIME', date(2026, 11, 16))
+        assert out == 'Gamma as of Fri 11/13 15:55 ET'
+        assert 'Live' not in out
+
+    @pytest.mark.parametrize('market_session', ['EOD', None])
+    def test_eod_snapshot_reads_close(self, market_session):
+        from gcp.premarket_brief import format_gamma_footer
+        assert format_gamma_footer('2026-11-13T23:00:00+00:00', market_session,
+                                   date(2026, 11, 16)) == 'Gamma as of Fri 11/13 close'
+
+    def test_older_snapshot_gives_its_age_in_sessions(self):
+        from gcp.premarket_brief import format_gamma_footer
+        assert format_gamma_footer('2026-11-12T23:00:00+00:00', 'EOD', date(2026, 11, 16)) == (
+            'Gamma as of Thu 11/12 close (2 sessions old)')
+
+    def test_a_holiday_is_not_a_missed_session(self):
+        from gcp.premarket_brief import format_gamma_footer
+        # Wednesday's chain read on Friday, Thanksgiving between: one session back.
+        assert format_gamma_footer('2026-11-25T23:00:00+00:00', 'EOD', date(2026, 11, 27)) == (
+            'Gamma as of Wed 11/25 close')
+
+    def _probe(self, monkeypatch, *, realtime, eod, raises=None):
+        """Answer the two probe statements by whether the text holds 'REALTIME'."""
+        import gcp.database as database
+        from gcp import premarket_brief as pb
+        issued = []
+
+        class _Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def execute(self, statement, *a, **k):
+                return None
+
+        class _Engine:
+            def connect(self):
+                return _Conn()
+
+        def read_sql(statement, conn, params=None):
+            text = str(statement)
+            issued.append(text)
+            if raises is not None:
+                raise raises
+            row = realtime if "'REALTIME'" in text else eod
+            if row is None:
+                return pd.DataFrame(columns=['snapshot_ts', 'snapshot_date'])
+            return pd.DataFrame([{'snapshot_ts': row, 'snapshot_date': date(2026, 11, 13)}])
+
+        monkeypatch.setattr(database, 'get_engine', lambda: _Engine())
+        monkeypatch.setattr(pb.pd, 'read_sql', read_sql)
+        return pb, issued
+
+    def test_probe_takes_the_newest_snapshot(self, monkeypatch):
+        pb, issued = self._probe(monkeypatch, realtime=self.REALTIME_TS, eod=self.EOD_TS)
+        out = pb._load_gamma_freshness('IWM', self.MON)
+        assert out['market_session'] == 'EOD'
+        assert pd.Timestamp(out['snapshot_ts']) == self.EOD_TS
+        assert out['days_behind'] == 1
+        assert out['data_source'] == 'eod_fallback'
+        # Two statements a ticker: the Capacity figure.
+        assert len(issued) == 2
+        assert sum("'REALTIME'" in s for s in issued) == 1
+
+        pb, issued = self._probe(monkeypatch, realtime=self.REALTIME_TS, eod=None)
+        out = pb._load_gamma_freshness('IWM', self.MON)
+        assert out['market_session'] == 'REALTIME'
+        assert pd.Timestamp(out['snapshot_ts']) == self.REALTIME_TS
+        assert out['days_behind'] == 1
+        assert out['data_source'] == 'realtime'
+        assert len(issued) == 2
+        assert sum("'REALTIME'" in s for s in issued) == 1
+
+    def test_probe_failure_is_unavailable_as_today(self, monkeypatch, caplog):
+        import logging
+        pb, _issued = self._probe(monkeypatch, realtime=None, eod=None,
+                                  raises=RuntimeError('probe down'))
+        with caplog.at_level(logging.WARNING, logger=pb.logger.name):
+            out = pb._load_gamma_freshness('IWM', self.MON)
+        assert out == {'data_source': 'unavailable', 'snapshot_ts': None,
+                       'snapshot_date': None, 'days_behind': None}
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert 'gamma freshness probe failed' in warnings[0].getMessage()
+
+    @staticmethod
+    def _ticker(ts, market_session='EOD', ds='eod_fallback', days=1):
+        return {'gamma_data_source': ds, 'gamma_snapshot_ts': ts,
+                'gamma_market_session': market_session, 'gamma_days_behind': days}
+
+    def test_footer_describes_the_oldest_snapshot(self):
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = {'analysis_date': self.MON, 'tickers': {
+            'SPY': self._ticker('2026-11-13T23:00:00+00:00'),
+            'QQQ': self._ticker('2026-11-12T23:00:00+00:00', days=2),
+            'IWM': self._ticker('2026-11-13T23:00:00+00:00')}}
         out = _build_gamma_footer(brief)
-        assert out is None
+        assert out.endswith('Gamma as of Thu 11/12 close (2 sessions old)')
+        dark = {'gamma_data_source': 'unavailable', 'gamma_snapshot_ts': None,
+                'gamma_days_behind': None}
+        assert _build_gamma_footer({'analysis_date': self.MON, 'tickers': {
+            'SPY': dict(dark), 'QQQ': dict(dark), 'IWM': dict(dark)}}) is None
 
+    def test_naive_timestamp_is_utc(self):
+        from gcp.premarket_brief import format_gamma_footer
+        assert format_gamma_footer('2026-11-13 20:55:30', 'REALTIME', date(2026, 11, 16)) == (
+            'Gamma as of Fri 11/13 15:55 ET')
 
-class TestFmtGammaTs:
-    """`_fmt_gamma_ts` converts ISO timestamps for the footer."""
-
-    def test_formats_utc_iso_as_et_short(self):
-        from gcp.premarket_brief import _fmt_gamma_ts
-        # 2026-05-22 19:55 UTC = 15:55 ET (EDT, UTC-4). Within RTH so
-        # we expect HH:MM ET format (no weekday prefix).
-        out = _fmt_gamma_ts('2026-05-22T19:55:00+00:00')
-        assert out == '15:55 ET'
-
-    def test_overnight_timestamp_gets_weekday_prefix(self):
-        from gcp.premarket_brief import _fmt_gamma_ts
-        # 2026-05-22 03:00 UTC = 23:00 ET previous day (Thu) — out-of-RTH
-        # hours get a weekday prefix so the reader doesn't mistake an
-        # overnight EOD timestamp for an intraday one.
-        out = _fmt_gamma_ts('2026-05-22T03:00:00+00:00')
-        # Either 'Thu 23:00 ET' or 'Fri 23:00 ET' depending on what the
-        # helper picks; assert the format shape rather than the literal.
-        assert 'ET' in out
-        assert ':' in out
-
-    def test_handles_none_and_invalid_gracefully(self):
-        from gcp.premarket_brief import _fmt_gamma_ts
-        assert _fmt_gamma_ts(None) == ''
-        assert _fmt_gamma_ts('') == ''
-        # Garbage input falls through to the original string rather
-        # than crashing the brief embed builder.
-        assert _fmt_gamma_ts('not-an-iso-string') == 'not-an-iso-string'
+    def test_unparseable_timestamp_gives_no_footer(self):
+        from gcp.premarket_brief import _build_gamma_footer
+        brief = {'analysis_date': self.MON, 'tickers': {
+            'IWM': self._ticker('not-an-iso-string')}}
+        assert _build_gamma_footer(brief) is None
 
 
 class TestDeleteNullCloseRows:
@@ -3247,6 +3347,54 @@ class TestTfBiasAndFtfcRender:
         fields = _build_ticker_fields({'tickers': {'QQQ': base}})
         return next(f['value'] for f in fields if f['name'] == 'QQQ Strat').split('\n')
 
+    def test_score_prints_two_decimals(self):
+        """B3: the three render sites print the stored score, -0.30 / 0.40,
+        as -0.75; one decimal printed it as -0.7."""
+        import ast
+        import inspect
+        from gcp import brief_explanations, premarket_brief
+        from gcp.brief_explanations import format_tf_bias
+        from gcp.premarket_brief import _build_overview_embed, _build_ticker_fields
+
+        score = -0.30 / 0.40
+        assert format_tf_bias(score) == '-0.75'
+        assert format_tf_bias(None) == 'unavailable'
+        assert format_tf_bias(0.75) == '+0.75'
+        # Review Focus: the edges.
+        assert format_tf_bias(float('nan')) == 'unavailable'
+        assert format_tf_bias(0.0) == '+0.00'
+
+        d = TestTickerFieldsLayout()._ticker_data(
+            strat_combo='none', ftfc_score=score, ftfc_direction='bearish',
+            ftfc_labels={'1d': '2D', '1w': '1', '1mo': '2U'}, vol_regime='Normal')
+        brief = {'date': 'Mon Nov 16, 2026', 'tickers': {'IWM': d}}
+        assert 'IWM: bearish (-0.75)' in _build_overview_embed(brief)['description']
+        strat = next(f['value'] for f in _build_ticker_fields(brief) if f['name'] == 'IWM Strat')
+        assert 'TF bias: -0.75 (bearish)' in strat.split('\n')
+        assert brief_explanations._tf_bias(d) == '-0.75 (bearish)'
+
+        # No render site formats ftfc_score to one decimal, directly or
+        # through a local name assigned from it.
+        offenders = []
+        for module in (brief_explanations, premarket_brief):
+            tree = ast.parse(inspect.getsource(module))
+            for func in ast.walk(tree):
+                if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                score_names = set()
+                for node in ast.walk(func):
+                    if isinstance(node, ast.Assign) and 'ftfc_score' in ast.unparse(node.value):
+                        score_names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+                for node in ast.walk(func):
+                    if not isinstance(node, ast.FormattedValue) or node.format_spec is None:
+                        continue
+                    if '+.1f' not in ast.unparse(node.format_spec):
+                        continue
+                    value = ast.unparse(node.value)
+                    if 'ftfc_score' in value or value in score_names:
+                        offenders.append(f'{module.__name__}:{node.lineno} {value}')
+        assert offenders == []
+
     def test_tf_bias_labels_and_ftfc_lines_in_order(self):
         lines = self._strat(
             ftfc_score=0.5, ftfc_direction='bullish',
@@ -3254,7 +3402,7 @@ class TestTfBiasAndFtfcRender:
             tf_continuity='bearish',
             tf_continuity_frames={'1q': _frame('red', 742.51), '1mo': _frame('red', 695.315),
                                   '1w': _frame('red', 695.315)})
-        assert lines == ['Daily: 2U', 'TF bias: +0.5 (bullish)', '1D:2U 1W:2D 1M:2D',
+        assert lines == ['Daily: 2U', 'TF bias: +0.50 (bullish)', '1D:2U 1W:2D 1M:2D',
                          'FTFC: bearish (Q red, M red, W red)']
 
     def test_mixed_and_at_open(self):
@@ -3328,7 +3476,7 @@ class TestTfBiasAndFtfcRender:
         embed = _build_overview_embed({'date': 'Thu Nov 05, 2026', 'tickers': {
             'QQQ': {'price': 691.95, 'change_pct': 1.0, 'rsi': 50, 'ftfc_direction': 'bullish',
                     'ftfc_score': 0.5, 'vol_regime': 'Normal'}}})
-        assert '**TF bias:** QQQ: bullish (+0.5)' in embed['description']
+        assert '**TF bias:** QQQ: bullish (+0.50)' in embed['description']
         assert '**FTFC:**' not in embed['description']
 
 
@@ -3473,9 +3621,9 @@ class TestExplanationInputsReadTfBias:
         asyncio.run(be.explain_ticker('QQQ', self._qqq()))
         asyncio.run(be.explain_playbook('QQQ', self._qqq(), '5m'))
         overview, ticker, playbook = (user for _, user in seen)
-        assert 'QQQ: TF bias +0.5 (bullish); FTFC bearish (1q red, 1mo red, 1w red)' in overview
-        assert 'TF bias +0.5 (bullish) | FTFC bearish (1q red, 1mo red, 1w red)' in ticker
-        assert 'TF bias: +0.5 (bullish)\nFTFC: bearish (1q red, 1mo red, 1w red)' in playbook
+        assert 'QQQ: TF bias +0.50 (bullish); FTFC bearish (1q red, 1mo red, 1w red)' in overview
+        assert 'TF bias +0.50 (bullish) | FTFC bearish (1q red, 1mo red, 1w red)' in ticker
+        assert 'TF bias: +0.50 (bullish)\nFTFC: bearish (1q red, 1mo red, 1w red)' in playbook
         assert 'FTFC=' not in overview and 'FTFC +0.5' not in ticker
         assert "only when the FTFC state is bullish or bearish" in seen[0][0]
 
@@ -3628,12 +3776,11 @@ def _assert_pipeline_without_ew(monkeypatch, real_brief_sql, as_of, *, live=Fals
     monkeypatch.setenv('BRIEF_LLM_DISABLE', '1')
     monkeypatch.setenv('BRIEF_AMC_REACTIONS', '1')
     if live:
+        # A live run reads the exchange's clock: 08:30 Eastern on the
+        # parameter's date, with the host date the UTC date of that instant.
         monkeypatch.delenv('BRIEF_AS_OF', raising=False)
-        class Clock(date):
-            @classmethod
-            def today(cls):
-                return today
-        monkeypatch.setattr(pb, 'date', Clock)
+        _freeze_exchange_clock(
+            monkeypatch, TestLiveDateIsTheExchangeDate._eastern(f'{as_of} 08:30'))
     else:
         monkeypatch.setenv('BRIEF_AS_OF', as_of)
     def forbidden(*args, **kwargs):
@@ -3776,3 +3923,329 @@ def test_long_non_ew_output_keeps_complete_financial_rows():
             assert 'EM $5.67' in line
         assert line.count('**') % 2 == 0
     assert 'Whispers' not in desc and 'EW picks' not in desc
+
+
+# ── FEAT-PLAYBOOK-001 (2026-11-14 spec): the live date is the exchange's ────
+
+
+def _freeze_exchange_clock(monkeypatch, eastern):
+    """Fix the exchange clock at `eastern` (an aware America/New_York
+    datetime) and the host date at the UTC date of the same instant, which is
+    what the job's container reads: from 20:00 Eastern (19:00 in winter) the
+    two dates differ."""
+    from datetime import timezone
+
+    import lib.eastern_time as eastern_time
+    import lib.strat as strat
+    from gcp import premarket_brief as pb
+
+    host_today = eastern.astimezone(timezone.utc).date()
+
+    class HostDate(date):
+        @classmethod
+        def today(cls):
+            return host_today
+
+    monkeypatch.setattr(eastern_time, 'eastern_now', lambda: eastern)
+    monkeypatch.setattr(strat, 'eastern_now', lambda: eastern)
+    monkeypatch.setattr(pb, 'date', HostDate)
+
+
+class TestLiveDateIsTheExchangeDate:
+    """With BRIEF_AS_OF unset the brief is dated by the exchange's clock.
+
+    The job's container runs on UTC, and `premarket-brief-sunday` fires Sunday
+    21:00 America/New_York, which is Monday 01:00 or 02:00 UTC. Dated by the
+    host, that run wrote Monday's canonical row with no premarket snapshot,
+    Monday's 08:30 run then skipped the canonical write, and the Sunday run
+    never selected the week-ahead view. Each test runs `main([])` against
+    in-memory tables with the exchange clock and the host date both fixed.
+    """
+
+    TICKERS = ('IWM', 'SPY')
+
+    @staticmethod
+    def _eastern(text):
+        from datetime import datetime
+
+        from lib.eastern_time import ET
+        return datetime.fromisoformat(text).replace(tzinfo=ET)
+
+    @staticmethod
+    def _tables():
+        return {'premarket_analysis': {}, 'premarket_analysis_history': []}
+
+    @staticmethod
+    def _bars(last_bar, premarket_day=None):
+        """320 daily bars ending `last_bar` in the DataLoader's shape, plus,
+        when `premarket_day` is given, that session's own row as
+        fetch-premarket-refresh leaves it at 08:20 ET: premarket columns and
+        no prices."""
+        import numpy as np
+
+        from lib.indicators import calculate_atr
+        idx = pd.bdate_range(end=pd.Timestamp(last_bar), periods=320)
+        step = np.arange(len(idx), dtype=float)
+        close = 100.0 + 6.0 * np.sin(step / 9.0) + 0.01 * step
+        df = pd.DataFrame({'Open': close - 0.3, 'High': close + 1.0, 'Low': close - 1.0,
+                           'Close': close, 'Volume': 1_000_000.0}, index=idx)
+        df['ATR14'] = calculate_atr(df['High'], df['Low'], df['Close'], 14)
+        df['ATR5'] = calculate_atr(df['High'], df['Low'], df['Close'], 5)
+        for col in ('pre_high', 'pre_low', 'pre_vwap', 'gap_pct'):
+            df[col] = float('nan')
+        df['pre_filter_status'] = None
+        if premarket_day is not None:
+            last = float(close[-1])
+            nan = float('nan')
+            row = pd.DataFrame(
+                {'Open': [nan], 'High': [nan], 'Low': [nan], 'Close': [nan], 'Volume': [nan],
+                 'ATR14': [nan], 'ATR5': [nan], 'pre_high': [last + 0.6], 'pre_low': [last - 0.6],
+                 'pre_vwap': [last + 0.1], 'gap_pct': [0.1], 'pre_filter_status': ['ok']},
+                index=pd.DatetimeIndex([pd.Timestamp(premarket_day)]))
+            df = pd.concat([df, row])
+        df.index.name = 'Time'
+        df['Time'] = df.index
+        return df
+
+    def _run(self, monkeypatch, tables, eastern, entry, last_bar, premarket_day=None):
+        """One scheduled run of `main([])` at exchange clock `eastern`,
+        triggered by scheduler entry `entry`. Returns the brief and what the
+        loaders were asked for."""
+        import socket
+
+        import gcp.database as database
+        import lib.strat_levels as sl
+        import lib.strategies.calibration as calibration
+        from gcp import premarket_brief as pb
+        from lib.data_loader import DataLoader
+        from tests.lib.level_params_fixtures import legacy_db
+
+        _freeze_exchange_clock(monkeypatch, eastern)
+        for key in ('BRIEF_AS_OF', 'BRIEF_UPDATE', 'BRIEF_POST_TO_DISCORD', 'BRIEF_AMC_REACTIONS',
+                    'DISCORD_WEBHOOK_URL', 'DISCORD_WEBHOOK_EARNINGS_URL',
+                    'BRIEF_POST_EXISTING_TICKER', 'BRIEF_POST_EXISTING_DATE'):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv('BRIEF_TICKERS', ','.join(self.TICKERS))
+        monkeypatch.setenv('BRIEF_LLM_DISABLE', '1')
+        monkeypatch.setenv('BRIEF_TRIGGERED_BY', f'cloud-scheduler:{entry}')
+
+        def refuse(*_a, **_k):
+            raise AssertionError('external I/O attempted in a hermetic brief run')
+
+        monkeypatch.setattr(socket.socket, 'connect', refuse)
+        monkeypatch.setattr(socket, 'create_connection', refuse)
+        monkeypatch.setattr(pb, 'send_to_discord', refuse)
+
+        frame = self._bars(last_bar, premarket_day)
+        monkeypatch.setattr(DataLoader, 'load_daily', lambda *a, **k: frame.copy())
+        monkeypatch.setattr(pb, '_load_gamma_freshness', lambda *a, **k: dict(
+            data_source='unavailable', snapshot_ts=None, snapshot_date=None, days_behind=None))
+        monkeypatch.setattr(pb, '_delete_null_close_rows', lambda *a: None)
+        monkeypatch.setattr(pb, '_level_params_query', legacy_db(list(self.TICKERS)).query)
+        monkeypatch.setattr(calibration, '_latest_calibration', lambda *a, **k: None)
+
+        seen = {'earnings': [], 'windows': [], 'amc': [], 'events': []}
+
+        # The real earnings loader runs, so its Monday-to-Friday arithmetic is
+        # what the window assertion reads; the calendar itself is empty.
+        real_earnings = getattr(pb.load_earnings_for_brief, '__wrapped__', pb.load_earnings_for_brief)
+
+        def earnings(today, weekly=False, top_n=25):
+            seen['earnings'].append((today, weekly))
+            return real_earnings(today, weekly=weekly, top_n=top_n)
+
+        earnings.__wrapped__ = real_earnings
+
+        def amc(today, top_n=5):
+            seen['amc'].append(today)
+            return []
+
+        def events(today, days_ahead=5):
+            seen['events'].append((today, days_ahead))
+            return {'today': [], 'week': []}
+
+        monkeypatch.setattr(pb, 'load_earnings_for_brief', earnings)
+        monkeypatch.setattr(pb, 'load_yesterday_amc_reactions', amc)
+        monkeypatch.setattr(pb, 'load_economic_events', events)
+
+        def query(sql, params=None):
+            params = dict(params or {})
+            if 'FROM earnings_calendar ec' in sql and 'start' in params:
+                seen['windows'].append((params['start'], params['end']))
+            return pd.DataFrame()
+
+        def row_exists(table, where):
+            return any(all(str(row.get(k)) == str(v) for k, v in where.items())
+                       for row in tables[table].values())
+
+        def upsert(df, table, keys):
+            for row in df.to_dict('records'):
+                tables[table][tuple(str(row[k]) for k in keys)] = {**row, 'analysis_ts': eastern}
+            return len(df)
+
+        def bulk_insert(df, table):
+            tables[table].extend({**row, 'written_at': eastern} for row in df.to_dict('records'))
+            return len(df)
+
+        class _Conn:
+            class connection:  # noqa: N801
+                @staticmethod
+                def commit():
+                    return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Engine:
+            def connect(self):
+                return _Conn()
+
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(database, 'query_to_dataframe', query)
+        monkeypatch.setattr(database, 'query_to_dataframe_strict', refuse)
+        monkeypatch.setattr(database, 'get_engine', lambda: _Engine())
+        monkeypatch.setattr(database, 'row_exists', row_exists)
+        monkeypatch.setattr(database, 'upsert_dataframe', upsert)
+        monkeypatch.setattr(database, 'bulk_insert_dataframe', bulk_insert)
+        monkeypatch.setattr(sl, 'persist_level_map',
+                            lambda level_map, conn, **k: len(level_map.levels))
+
+        real_generate = getattr(pb.generate_premarket_brief, '__wrapped__',
+                                pb.generate_premarket_brief)
+        out = {}
+
+        def generate(*a, **k):
+            out['brief'] = real_generate(*a, **k)
+            return out['brief']
+
+        generate.__wrapped__ = real_generate
+        monkeypatch.setattr(pb, 'generate_premarket_brief', generate)
+        pb.main([])
+        return out['brief'], seen
+
+    @pytest.mark.parametrize('sunday_evening,last_bar,monday,friday', [
+        # 21:00 EST is 02:00 UTC on Monday; 21:00 EDT is 01:00 UTC on Monday.
+        ('2026-11-15 21:00', '2026-11-13', date(2026, 11, 16), date(2026, 11, 20)),
+        ('2026-07-12 21:00', '2026-07-10', date(2026, 7, 13), date(2026, 7, 17)),
+    ], ids=['winter-est', 'summer-edt'])
+    def test_sunday_evening_run_is_dated_sunday(self, monkeypatch, sunday_evening, last_bar,
+                                                monday, friday):
+        eastern = self._eastern(sunday_evening)
+        sunday = eastern.date()
+        tables = self._tables()
+        brief, seen = self._run(monkeypatch, tables, eastern, 'premarket-brief-sunday', last_bar)
+
+        assert brief['analysis_date'] == sunday
+        # The week-ahead view: the weekly loader for Monday to Friday, no
+        # prior-day reaction query, a seven-day event window.
+        assert seen['earnings'] == [(sunday, True)]
+        assert seen['windows'] == [(monday, friday)]
+        assert seen['amc'] == []
+        assert seen['events'] == [(sunday, 7)]
+
+        history = tables['premarket_analysis_history']
+        assert sorted(row['ticker'] for row in history) == list(self.TICKERS)
+        assert {row['analysis_date'] for row in history} == {sunday}
+        assert {row['triggered_by'] for row in history} == {'cloud-scheduler:premarket-brief-sunday'}
+        # Owner's decision (a): the Sunday run writes a canonical row like
+        # any other run, dated Sunday. Nothing in either table is Monday's.
+        canonical = tables['premarket_analysis']
+        assert sorted(canonical) == [(str(sunday), ticker) for ticker in self.TICKERS]
+        assert {row['run_kind'] for row in canonical.values()} == {'live'}
+
+    def test_monday_run_after_sunday_writes_the_monday_row(self, monkeypatch, caplog):
+        import logging
+
+        tables = self._tables()
+        self._run(monkeypatch, tables, self._eastern('2026-11-15 21:00'),
+                  'premarket-brief-sunday', '2026-11-13')
+        monday = self._eastern('2026-11-16 08:30')
+        with caplog.at_level(logging.WARNING, logger='gcp.premarket_brief'):
+            brief, _ = self._run(monkeypatch, tables, monday, 'premarket-brief-daily',
+                                 '2026-11-13', premarket_day='2026-11-16')
+
+        assert brief['analysis_date'] == date(2026, 11, 16)
+        canonical = tables['premarket_analysis']
+        written_monday = sorted(key for key, row in canonical.items()
+                                if row['analysis_ts'] == monday)
+        assert written_monday == [('2026-11-16', ticker) for ticker in self.TICKERS]
+        for ticker in self.TICKERS:
+            row = canonical[('2026-11-16', ticker)]
+            assert row['run_kind'] == 'live'
+            assert row['level_basis']['premarket_status'] == 'ok'
+        assert 'row already exists' not in caplog.text
+
+    def test_future_check_and_fallback_use_the_exchange_date(self, monkeypatch):
+        from gcp import database
+        from gcp import premarket_brief as pb
+
+        _freeze_exchange_clock(monkeypatch, self._eastern('2026-11-15 21:00'))
+        monkeypatch.setenv('BRIEF_AS_OF', '2026-11-16')
+        try:
+            pb._resolve_analysis_date()
+            monday_replay = 'accepted'
+        except ValueError as exc:
+            monday_replay = 'refused' if 'future' in str(exc) else repr(exc)
+        monkeypatch.setenv('BRIEF_AS_OF', '2026-11-15')
+        sunday_replay = pb._resolve_analysis_date()
+
+        monkeypatch.delenv('BRIEF_AS_OF')
+        history = []
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(database, 'bulk_insert_dataframe',
+                            lambda df, table: history.extend(df.to_dict('records')) or len(df))
+        monkeypatch.setattr(database, 'upsert_dataframe', lambda df, table, keys: len(df))
+        monkeypatch.setattr(database, 'row_exists', lambda table, where: False)
+        pb.persist_to_cloud_sql({'tickers': {'IWM': {'price': 100.0}}},
+                                run_kind='scheduled', triggered_by='test')
+        fallback_dates = {row['analysis_date'] for row in history}
+
+        # One comparison, so a failure shows all three results.
+        assert (monday_replay, sunday_replay, fallback_dates) == (
+            'refused', date(2026, 11, 15), {date(2026, 11, 15)})
+
+    def test_weekday_morning_run_is_unchanged(self, monkeypatch):
+        tuesday = self._eastern('2026-11-10 08:30')
+        tables = self._tables()
+        brief, seen = self._run(monkeypatch, tables, tuesday, 'premarket-brief-daily',
+                                '2026-11-09', premarket_day='2026-11-10')
+
+        assert brief['analysis_date'] == date(2026, 11, 10)
+        assert seen['earnings'] == [(date(2026, 11, 10), False)]
+        assert seen['amc'] == [date(2026, 11, 10)]
+        assert seen['events'] == [(date(2026, 11, 10), 5)]
+        assert sorted(tables['premarket_analysis']) == [
+            ('2026-11-10', ticker) for ticker in self.TICKERS]
+
+
+def _volume_frame(rows):
+    """A daily frame ending 2026-10-08 whose volumes all differ."""
+    index = pd.bdate_range(end='2026-10-08', periods=rows)
+    frame = pd.DataFrame({'Open': 100.0, 'High': 110.0, 'Low': 90.0, 'Close': 105.0},
+                         index=index)
+    frame['Volume'] = [float(1_000_000 + 37_000 * ((i * 7) % 11)) for i in range(rows)]
+    frame.iloc[-1, frame.columns.get_loc('Volume')] = 700_000.0
+    return frame
+
+
+def test_brief_rvol_is_relative_volume(monkeypatch, no_network):
+    """FEAT-PLAYBOOK-001 B6: the brief's rvol is lib.indicators.relative_volume."""
+    from lib.indicators import relative_volume
+    from tests.gcp.test_strat_snapshot_parity import _brief
+
+    frame = _volume_frame(25)
+    pb, cfg = _brief(monkeypatch, frame)
+    rvol = pb.generate_premarket_brief(cfg=cfg)['tickers']['IWM']['rvol']
+    assert rvol == relative_volume(frame['Volume'], 20).iloc[-1]
+    assert rvol == 700_000.0 / frame['Volume'].iloc[-21:-1].mean()
+    old = frame['Volume'].iloc[-1] / frame['Volume'].rolling(20).mean().iloc[-1]
+    assert rvol != old
+
+    short = _volume_frame(15)
+    pb, cfg = _brief(monkeypatch, short)
+    brief = pb.generate_premarket_brief(cfg=cfg)
+    assert brief['tickers']['IWM']['rvol'] is None
+    assert 'RVOL' not in pb._build_overview_embed(brief)['description']
