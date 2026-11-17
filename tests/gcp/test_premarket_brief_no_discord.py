@@ -1103,3 +1103,37 @@ class TestPremarketFromBars:
         for ticker in dry.TICKERS:
             pm = run.premarket_of(ticker)
             assert (pm['pre_high'], pm['pre_low']) == run.stored[ticker]
+
+
+# ── Unknown rule version spec (2026-11-16), Design 3: the brief's dry run
+# keeps the stored premarket values when the session's live basis names a
+# rule version this image does not know (U8). No bars are read.
+
+def test_premarket_from_bars_keeps_the_stored_values_for_an_unknown_rule_version():
+    from gcp import premarket_brief as pb
+    from tests.lib.level_params_fixtures import fixture_params
+    from tests.lib.session_levels_helpers import newer_rule_versions
+
+    version = newer_rule_versions()[0]
+    loaded = fixture_params('TST', BARS_SESSION,
+                            overrides={'pm_stale_print_atr': 0.10, 'pm_spike_atr': 1.50})
+    seen = []
+
+    def query(sql, params=None):
+        seen.append(sql)
+        if BARS_SQL in sql:
+            return _minute_bars(TestPremarketFromBars.BASE, TestPremarketFromBars.WICK)
+        return pd.DataFrame([{'ticker': 'TST', 'level_basis': {
+            'rule_version': version, 'premarket': {'fetched_at': BRIEF_CUTOFF}}}])
+
+    stored = {'pre_high': 101.25, 'pre_low': 99.10, 'pre_fetched_at': REWRITTEN_AT,
+              'pre_filter_status': 'ok',
+              'pre_filter_params': _recorded_params(4.875, stale=0.0329, spike=0.542)}
+    snap, line = pb._premarket_from_bars('TST', BARS_SESSION, TestPremarketFromBars.PRIOR,
+                                         loaded, query, stored=stored)
+    assert snap is None
+    for part in ('rule version unavailable', version, 'rule_version_newer',
+                 'stored high=101.2500', 'stored low=99.1000'):
+        assert part in line, (part, line)
+    assert line.endswith('(kept)')
+    assert not any(BARS_SQL in sql for sql in seen)
