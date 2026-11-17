@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-16-feat-data-001-bar-misprint-flags-r2.md
 branch: feature/feat-data-001-bar-misprint-flags
-pr: null
+pr: 2001
 status: ready
 ---
 
