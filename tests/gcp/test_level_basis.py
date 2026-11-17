@@ -629,6 +629,53 @@ def test_known_versions_round_trip():
         assert _exit_picks(rebuilt) == v2_picks
 
 
+def test_a_reader_that_knows_fewer_versions_refuses_then_recovers(monkeypatch):
+    """Unknown rule version spec, U7: a straggler or rolled-back reader
+    (PICK_RULE_VERSIONS patched to v3 only) meets a real basis written by
+    the unpatched code. It refuses by name and writes nothing; with the
+    patch removed the same stored row rebuilds as written and resolves."""
+    from datetime import date as _date
+
+    import gcp.premarket_playbook_resolver as mod
+    import lib.strat_levels as strat_levels
+    from lib.strat_levels import LEVEL_RULE_V3, LevelRuleVersionUnknown
+    from tests.gcp.test_premarket_playbook_resolver import (
+        V3_PLAN_COLUMNS, _RecordingEngine, _session_bars,
+    )
+    from tests.lib.session_levels_helpers import d8_basis
+
+    written = json.loads(json.dumps(SessionLevels.from_basis(d8_basis()).to_basis()))
+    assert written["rule_version"] == LEVEL_RULE_VERSION
+    day = _date(2026, 11, 16)
+    keys = ("rule_version", "long", "short")
+
+    def _resolve(outcome_resolved_at=None, force=False):
+        row = pd.DataFrame([{**V3_PLAN_COLUMNS, "level_basis": json.dumps(written),
+                             "outcome_resolved_at": outcome_resolved_at}])
+        reads = iter([row, _session_bars(day)])
+        monkeypatch.setattr(mod.pd, "read_sql", lambda *a, **k: next(reads))
+        engine = _RecordingEngine()
+        return mod.resolve_one(day, "TST", engine, force=force), engine
+
+    with monkeypatch.context() as mp:
+        mp.setattr(strat_levels, "PICK_RULE_VERSIONS", (LEVEL_RULE_V3,))
+        with pytest.raises(LevelRuleVersionUnknown) as e:
+            SessionLevels.from_basis(written)
+        assert e.value.reason == "rule_version_newer" and e.value.recorded == LEVEL_RULE_VERSION
+        out, engine = _resolve()
+        assert out == (None, "rule_version_newer") and engine.conn.calls == []
+        # A row resolved before the rollback is not rewritten under force.
+        out, engine = _resolve(outcome_resolved_at="2026-11-16T21:15:00Z", force=True)
+        assert out == (None, "rule_version_newer") and engine.conn.calls == []
+
+    rebuilt = SessionLevels.from_basis(written).to_basis()
+    assert {k: json.loads(json.dumps(rebuilt))[k] for k in keys} == {k: written[k] for k in keys}
+    (updates, reason), engine = _resolve()
+    assert reason == "resolved"
+    [(_, bound)] = engine.conn.calls
+    assert bound["calls_plan_r_status"] == "ok" and bound["calls_plan_r"] is not None
+
+
 def test_a_replay_with_no_spacing_row_publishes_no_unspaced_target():
     """A session the history run did not cover for the exits keys reads
     target_min_spacing_atr as params_unavailable: the side keeps its

@@ -1487,3 +1487,120 @@ def test_main_exits_non_zero_on_a_refused_row_on_a_past_date(monkeypatch, caplog
     done = [r.getMessage() for r in caplog.records
             if r.levelno == logging.INFO and r.getMessage().startswith('done 2026-11-16:')]
     assert len(done) == 1 and '1 refused' in done[0], done
+
+
+# ── Unknown rule version spec, Design 4: recovery goes through the scheduled
+# run (U7b). Today is 2026-11-17, the default lookback 14 days (floor
+# 2026-11-03), PLAYBOOK_RESOLVE_DATE unset unless a case says so. A straggler
+# image knows v3 only; a compatible one knows what this tree knows.
+
+class TestScheduledRecovery:
+    STRAGGLER = ('feat-strat-001.v3',)
+    V3 = 'feat-strat-001.v3'
+
+    @staticmethod
+    def _kept(row: dict) -> dict:
+        return {c: row[c] for c in ('outcome_resolved_at', *PLAN_COLUMNS)}
+
+    @staticmethod
+    def _v4():
+        from lib.strat_levels import LEVEL_RULE_VERSION
+        return LEVEL_RULE_VERSION
+
+    def _straggler_run(self, monkeypatch, table, **env) -> int:
+        with monkeypatch.context() as mp:
+            return _run_main(mp, table, pick=self.STRAGGLER, **env)
+
+    def test_a_straggler_resolves_the_row_it_knows_and_leaves_the_other(self, monkeypatch):
+        aaa = _table_row(_date(2026, 11, 16), 'AAA', self.V3)
+        bbb = _table_row(_date(2026, 11, 16), 'BBB', self._v4())
+        before = self._kept(bbb)
+        table = _ResolverTable([aaa, bbb], _session_bars)
+
+        rc = self._straggler_run(monkeypatch, table)
+        assert self._kept(bbb) == before
+        assert [b['t'] for _, b in table.writes] == ['AAA']
+        assert aaa['outcome_resolved_at'] is not None
+        assert aaa['calls_plan_r_status'] == 'ok'
+        assert rc == 1
+
+    def test_a_compatible_image_resolves_it_unforced(self, monkeypatch):
+        aaa = _table_row(_date(2026, 11, 16), 'AAA', self.V3)
+        bbb = _table_row(_date(2026, 11, 16), 'BBB', self._v4())
+        table = _ResolverTable([aaa, bbb], _session_bars)
+        assert self._straggler_run(monkeypatch, table) == 1
+
+        assert _run_main(monkeypatch, table) == 0
+        assert table.pending_answers[-1] == [_date(2026, 11, 16)]
+        assert bbb['outcome_resolved_at'] is not None
+        assert bbb['calls_plan_r_status'] == 'ok'
+        assert [b['t'] for _, b in table.writes] == ['AAA', 'BBB']
+
+    def test_the_lookback_boundary(self, monkeypatch):
+        inside = _table_row(_date(2026, 11, 3), 'TST', self._v4())
+        outside = _table_row(_date(2026, 11, 2), 'TST', self._v4())
+        before = self._kept(outside)
+        table = _ResolverTable([inside, outside], _session_bars)
+
+        assert _run_main(monkeypatch, table) == 0
+        assert table.pending_answers == [[_date(2026, 11, 3)]]
+        assert [b['d'] for _, b in table.writes] == ['2026-11-03']
+        assert inside['calls_plan_r_status'] == 'ok'
+        assert self._kept(outside) == before
+
+    def test_after_age_out(self, monkeypatch):
+        row = _table_row(_date(2026, 11, 2), 'TST', self._v4())
+        table = _ResolverTable([row], _session_bars)
+
+        assert self._straggler_run(monkeypatch, table) == 0
+        assert table.pending_answers == [[]]
+        assert not any('2026-11-02' in sql or '2026-11-02' in map(str, bound.values())
+                       for sql, bound in table.statements)
+        assert table.writes == []
+
+        assert _run_main(monkeypatch, table, PLAYBOOK_RESOLVE_DATE='2026-11-02') == 0
+        assert [b['d'] for _, b in table.writes] == ['2026-11-02']
+        assert row['calls_plan_r_status'] == 'ok'
+
+    def test_a_row_an_older_reader_stamped(self, monkeypatch):
+        def _stamped():
+            return _table_row(_date(2026, 11, 16), 'TST', self._v4(),
+                              outcome_resolved_at=datetime(2026, 11, 16, 21, 15),
+                              calls_plan_r_status='targets_unavailable',
+                              puts_plan_r_status='targets_unavailable', calls_plan_r=None)
+        row = _stamped()
+        table = _ResolverTable([row], _session_bars)
+
+        assert _run_main(monkeypatch, table) == 0
+        assert _run_main(monkeypatch, table, PLAYBOOK_RESOLVE_FORCE='true') == 0
+        assert table.writes == []
+        assert _run_main(monkeypatch, table, PLAYBOOK_RESOLVE_DATE='2026-11-16',
+                         PLAYBOOK_RESOLVE_FORCE='true') == 0
+        assert len(table.writes) == 1
+        assert row['calls_plan_r_status'] == 'ok'
+
+        fresh = _stamped()
+        before = self._kept(fresh)
+        table = _ResolverTable([fresh], _session_bars)
+        rc = self._straggler_run(monkeypatch, table, PLAYBOOK_RESOLVE_DATE='2026-11-16',
+                                 PLAYBOOK_RESOLVE_FORCE='true')
+        assert table.writes == []
+        assert self._kept(fresh) == before
+        assert rc == 1
+
+    def test_an_unreadable_version_is_refused_by_every_image(self, monkeypatch, caplog):
+        import gcp.premarket_playbook_resolver as mod
+
+        rows = [_table_row(_date(2026, 11, 16), t, v)
+                for t, v in (('UA', ''), ('UB', 'feat-strat-001.vX'), ('UC', 5))]
+        before = [self._kept(r) for r in rows]
+        table = _ResolverTable(rows, _session_bars)
+
+        with caplog.at_level(logging.INFO, logger=mod.logger.name):
+            rc = _run_main(monkeypatch, table)
+        assert [b['t'] for _, b in table.writes] == []
+        assert [self._kept(r) for r in rows] == before
+        assert rc == 1
+        for t in ('UA', 'UB', 'UC'):
+            lines = [line for line in _error_lines(caplog) if line.startswith(f'{t} ')]
+            assert len(lines) == 1 and 'rule_version_unreadable' in lines[0], (t, lines)
