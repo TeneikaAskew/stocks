@@ -38,7 +38,12 @@ Rules the owner set for this work. They are not optional:
 recent account payments have failed or your spending limit needs to be increased. Please check the
 'Billing & plans' section in your settings." Jobs already running then finished. Only the owner can fix
 it (billing). Until then: no new CI on any PR, so hold pushes that would turn a green PR red, and the
-staging deploy a merge to main starts (a workflow) does not run. After it is fixed, re-run #2025's checks.
+manual workflows (`deploy-staging.yml` is manual-only) cannot run. The routine staging API deploy is
+not an Actions job: the Cloud Build trigger `deploy-solyra-api-staging` fires on a push to main touching
+`platform/`, `lib/`, `requirements.txt` or `gcp/database.py`
+(`gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml:1-8`), so a merge such as #2010 (which
+changes `lib/`) still deploys the API to staging during the outage. Whether a given Cloud Build run
+succeeded was not read. After billing is fixed, re-run #2025's and #2023's checks.
 
 **Separate CI noise:** three wall-clock tests failed on PRs that do not touch them (issue #2030); each
 was explained on its PR and re-run once.
