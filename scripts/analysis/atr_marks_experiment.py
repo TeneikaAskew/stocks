@@ -28,7 +28,11 @@ Subcommands, each of which calls require_local_db first:
 The harness check runs this file from the PR head with the working directory
 and PYTHONPATH set to a detached worktree of 97190ef41, so every gcp and lib
 import is that commit's. The module-level imports below are only names that
-commit has; what only the head has is imported inside score and report.
+commit has; what only the head has is imported inside score and report. The
+bucket copy's reader (gcp.fetchers.export_intraday_bars.read_bars) is imported
+only inside `load`, the by-hand step that reads the operator's download of it
+into the local template: no replay or scoring path can reach the copy
+(CLAUDE.md 3.7.1).
 """
 from __future__ import annotations
 
@@ -45,7 +49,6 @@ import pandas as pd
 import sqlalchemy
 
 from gcp.database import get_engine
-from gcp.fetchers.export_intraday_bars import read_bars
 from gcp.premarket_brief import main as brief_main
 from gcp.premarket_playbook_resolver import PlanOutcome, plan_inputs, resolve_plan
 from lib.eastern_time import session_close, sessions_between
@@ -182,6 +185,8 @@ def load(export_dir: str, bars_dir: str, first_month: str = '2015-01',
     text in pfp_text) and result_002.csv (ticker_calibration), and each
     ticker's bucket bars through read_bars, into DB_NAME. A column the local
     schema lacks is named and left out."""
+    from gcp.fetchers.export_intraday_bars import read_bars  # noqa: PLC0415  (by hand only)
+
     require_local_db()
     engine = get_engine()
     daily = pd.read_csv(Path(export_dir) / 'result_001.csv', dtype=str, keep_default_na=False)

@@ -157,7 +157,6 @@ BASELINE_IMPORTS = {
     ("subprocess", None), ("sys", None), ("pathlib", "Path"), ("typing", "Optional"),
     ("numpy", None), ("pandas", None), ("sqlalchemy", None),
     ("gcp.database", "get_engine"),
-    ("gcp.fetchers.export_intraday_bars", "read_bars"),
     ("gcp.premarket_brief", "main"),
     ("gcp.premarket_playbook_resolver", "PlanOutcome"),
     ("gcp.premarket_playbook_resolver", "plan_inputs"),

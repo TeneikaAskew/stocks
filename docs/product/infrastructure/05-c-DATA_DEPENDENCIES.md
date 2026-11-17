@@ -339,7 +339,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/backfill_journal_embeddings.py`](../../../scripts/backfill_journal_embeddings.py) — line [79](../../../scripts/backfill_journal_embeddings.py#L79)
 
 ### `level_param_policy`
-- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [120](../../../scripts/analysis/atr_marks_experiment.py#L120)
+- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [123](../../../scripts/analysis/atr_marks_experiment.py#L123)
 
 ### `market_data_daily`
 - [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [388](../../../gcp/backfill_ticker.py#L388), [557](../../../gcp/backfill_ticker.py#L557), [635](../../../gcp/backfill_ticker.py#L635)
@@ -348,14 +348,14 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [408](../../../gcp/fetchers/fetch_premarket_refresh.py#L408)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [170](../../../gcp/migrate_to_gcp.py#L170), [589](../../../gcp/migrate_to_gcp.py#L589)
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [328](../../../gcp/premarket_brief.py#L328)
-- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [220](../../../scripts/analysis/atr_marks_experiment.py#L220), [164](../../../scripts/analysis/atr_marks_experiment.py#L164)
+- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [225](../../../scripts/analysis/atr_marks_experiment.py#L225), [167](../../../scripts/analysis/atr_marks_experiment.py#L167)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [236](../../../scripts/backfill_watchlist_data.py#L236)
 - [`scripts/deep_backfill_ticker.py`](../../../scripts/deep_backfill_ticker.py) — line [102](../../../scripts/deep_backfill_ticker.py#L102)
 
 ### `market_data_intraday`
 - [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [331](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L331)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [673](../../../gcp/fetchers/fetch_market_data.py#L673)
-- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [164](../../../scripts/analysis/atr_marks_experiment.py#L164)
+- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [167](../../../scripts/analysis/atr_marks_experiment.py#L167)
 
 ### `market_data_intraday_iwm`
 - _no writer found in gcp/, lib/, scripts/, platform/api_
@@ -429,7 +429,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [4009](../../../lib/strat_levels.py#L4009)
 
 ### `ticker_calibration`
-- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [164](../../../scripts/analysis/atr_marks_experiment.py#L164)
+- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [167](../../../scripts/analysis/atr_marks_experiment.py#L167)
 - [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [497](../../../scripts/calibrate_thresholds.py#L497)
 
 ### `ticker_info`
@@ -739,7 +739,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [150](../../../platform/api/routers/dashboard.py#L150), [285](../../../platform/api/routers/dashboard.py#L285)
 - [`platform/api/routers/live.py`](../../../platform/api/routers/live.py) — line [546](../../../platform/api/routers/live.py#L546)
 - [`platform/api/routers/me_watchlist.py`](../../../platform/api/routers/me_watchlist.py) — line [38](../../../platform/api/routers/me_watchlist.py#L38)
-- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [225](../../../scripts/analysis/atr_marks_experiment.py#L225)
+- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [230](../../../scripts/analysis/atr_marks_experiment.py#L230)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1228](../../../scripts/audit_data_freshness.py#L1228), [1235](../../../scripts/audit_data_freshness.py#L1235), [1359](../../../scripts/audit_data_freshness.py#L1359), [1367](../../../scripts/audit_data_freshness.py#L1367), [666](../../../scripts/audit_data_freshness.py#L666), [667](../../../scripts/audit_data_freshness.py#L667), [826](../../../scripts/audit_data_freshness.py#L826)
 - [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [141](../../../scripts/backfill_and_replay.py#L141), [222](../../../scripts/backfill_and_replay.py#L222)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [109](../../../scripts/backfill_watchlist_data.py#L109)
@@ -766,7 +766,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/features/intraday_flow.py`](../../../lib/features/intraday_flow.py) — line [125](../../../lib/features/intraday_flow.py#L125)
 - [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [599](../../../lib/options_intraday.py#L599)
 - [`platform/api/main.py`](../../../platform/api/main.py) — line [626](../../../platform/api/main.py#L626), [762](../../../platform/api/main.py#L762), [1293](../../../platform/api/main.py#L1293), [1721](../../../platform/api/main.py#L1721)
-- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [84](../../../scripts/analysis/atr_marks_experiment.py#L84)
+- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [87](../../../scripts/analysis/atr_marks_experiment.py#L87)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [208](../../../scripts/analysis/per_ticker_calibration.py#L208), [205](../../../scripts/analysis/per_ticker_calibration.py#L205)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [893](../../../scripts/audit_data_freshness.py#L893), [1792](../../../scripts/audit_data_freshness.py#L1792), [666](../../../scripts/audit_data_freshness.py#L666), [667](../../../scripts/audit_data_freshness.py#L667), [826](../../../scripts/audit_data_freshness.py#L826)
 - [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [133](../../../scripts/backfill_and_replay.py#L133)
@@ -833,7 +833,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [3365](../../../lib/strat_levels.py#L3365)
 - [`lib/strategies/brief_bias.py`](../../../lib/strategies/brief_bias.py) — line [83](../../../lib/strategies/brief_bias.py#L83)
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [107](../../../platform/api/routers/dashboard.py#L107), [116](../../../platform/api/routers/dashboard.py#L116)
-- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [79](../../../scripts/analysis/atr_marks_experiment.py#L79)
+- [`scripts/analysis/atr_marks_experiment.py`](../../../scripts/analysis/atr_marks_experiment.py) — line [82](../../../scripts/analysis/atr_marks_experiment.py#L82)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [666](../../../scripts/audit_data_freshness.py#L666), [667](../../../scripts/audit_data_freshness.py#L667), [826](../../../scripts/audit_data_freshness.py#L826)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [104](../../../scripts/backfill_history_tables.py#L104), [127](../../../scripts/backfill_history_tables.py#L127), [128](../../../scripts/backfill_history_tables.py#L128)
 - [`scripts/validation/validate_brief_accuracy.py`](../../../scripts/validation/validate_brief_accuracy.py) — line [351](../../../scripts/validation/validate_brief_accuracy.py#L351)

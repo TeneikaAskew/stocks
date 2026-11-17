@@ -1220,6 +1220,7 @@ FETCH_MODULE = "gcp/fetchers/fetch_alphavantage_intraday.py"
 # read-only compare command reads the copy by hand (spec Design 5).
 REFRESH_MODULE = "gcp/fetchers/fetch_premarket_refresh.py"
 AS_READ_MODULE = "gcp/fetchers/premarket_as_read.py"
+EXPERIMENT_MODULE = "scripts/analysis/atr_marks_experiment.py"
 TREE_ROOTS = ("gcp", "lib", "scripts", "platform")
 TREE_SKIP = {"__pycache__", "node_modules", ".venv", "venv"}
 # ``read_bars`` in a string, as a whole name (``"m.read_bars"`` is one;
@@ -1326,6 +1327,10 @@ def test_nothing_in_the_tree_reads_the_copy():
     assert refresh <= {"imports-module"}, refresh     # it writes; it never reads back
     as_read = uses.pop(AS_READ_MODULE, set())
     assert as_read <= {"imports-module", "names-read_bars"}, as_read
+    # The ATR marks experiment's by-hand `load` reads the operator's download
+    # of the copy into a local database (the next-but-one test confines it).
+    experiment = uses.pop(EXPERIMENT_MODULE, set())
+    assert experiment <= {"imports-module", "names-read_bars"}, experiment
     assert uses == {}
 
 
@@ -1348,6 +1353,20 @@ def test_the_as_read_record_reaches_the_copy_only_in_its_command():
     assert reach_outside_command(command) == set()
     assert reach_outside_command(job_path) == {"imports-module", "names-read_bars"}
     assert reach_outside_command((REPO / AS_READ_MODULE).read_text(encoding="utf-8")) == set()
+
+
+def test_the_atr_marks_experiment_reaches_the_copy_only_in_load():
+    # FEAT-STRAT-001 ATR marks experiment: only its by-hand `load`, which reads
+    # the operator's download of the copy into a local template database, may
+    # name the reader; its replay, scoring and report never reach the copy.
+    tree = ast.parse((REPO / EXPERIMENT_MODULE).read_text(encoding="utf-8"))
+    found: set[str] = set()
+    for top in tree.body:
+        if isinstance(top, ast.FunctionDef) and top.name == "load":
+            assert copy_uses(ast.unparse(top)) == {"imports-module", "names-read_bars"}
+            continue
+        found |= copy_uses(ast.unparse(top))
+    assert found == set()
 
 
 # -- Task 6: the nightly run exports after its fetch ----------------------------
