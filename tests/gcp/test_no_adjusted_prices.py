@@ -280,3 +280,14 @@ def test_no_writer_emits_adjusted_close(monkeypatch):
     frames = _daily_frames(calls)
     assert len(frames) == 1
     assert not (set(frames[0].columns) & ADJ), sorted(frames[0].columns)
+
+
+# ─── Designs 2 and 3: the two unused adjusted sources are retired ───────────
+
+
+def test_retired_adjusted_sources_are_gone():
+    """scripts/deep_backfill_ticker.py asked the adjusted endpoint and nothing
+    ran it; gcp/fetchers/fetch_av_indicators.py fetched AlphaVantage
+    indicators computed on adjusted closes (spec Problem 5)."""
+    assert not (REPO / "scripts/deep_backfill_ticker.py").exists()
+    assert not (REPO / "gcp/fetchers/fetch_av_indicators.py").exists()

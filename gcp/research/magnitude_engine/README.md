@@ -182,10 +182,15 @@ NULL, never a placeholder, when unavailable.
 | phase4 | VIX delta/z, UST10Y/DXY deltas, oil/gold z   | `market_data_cross_asset` (PR) | ❌ needs backfill |
 | phase5 | gamma exposure features (deferred)            | `etf_options_snapshots`        | ⏭ deferred    |
 
-Phase 2 + 4 need their fetcher backfills run first (see
-`gcp/fetchers/fetch_av_indicators.py` + `fetch_cross_asset.py`). Until
-those land, those phases will report `PENDING_BACKFILL` in the results
-doc instead of a passing/failing verdict.
+Phase 2's indicators no longer have a fetcher: the AlphaVantage indicator
+fetcher was retired (FEAT-DATA-001, 2026-11-17) because AlphaVantage computes
+them on split- and dividend-shaded closes (BBANDS measured, spec
+`docs/superpowers/specs/2026-11-16-feat-data-001-no-adjusted-prices-r2.md`,
+Problem 5). A return of phase 2 computes them in `lib/indicators.py` from
+as-traded bars, which is a research decision. Phase 4 needs its fetcher
+backfill run first (see `fetch_cross_asset.py`). Until then, both phases
+report `PENDING_BACKFILL` in the results doc instead of a passing/failing
+verdict.
 
 ## Success bar (PRE-SET, IMMUTABLE)
 

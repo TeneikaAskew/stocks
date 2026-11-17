@@ -13,7 +13,6 @@ CONSUMERS = {
     'gcp/fetchers/fetch_alphavantage_intraday.py',
     'gcp/fetchers/fetch_av_earnings_options_backfill.py',
     'gcp/fetchers/fetch_av_historical_options.py',
-    'gcp/fetchers/fetch_av_indicators.py',
     'gcp/fetchers/fetch_av_realtime_options.py',
     'gcp/fetchers/fetch_earnings_history.py',
     'gcp/fetchers/fetch_insider_transactions.py',
