@@ -1883,6 +1883,12 @@ class SideLevels:
     # The plan: spacing (multiple and price), legs and the entry cutoff,
     # recorded so the copy and the resolver read one source.
     plan: Optional[dict] = None
+    # ATR marks spec (2026-11-16): a side built under the marks lists the
+    # session's levels past its trigger as waypoints between the targets
+    # (_plan_waypoints), and whether close ones were grouped into zones
+    # (ok, or the level_cluster_atr status). None on a level-rule side.
+    plan_waypoints: Optional[list] = None
+    waypoint_zone_status: Optional[str] = None
 
     @property
     def rungs(self) -> list:
@@ -1898,6 +1904,9 @@ class SideLevels:
             'distance_atr': self.distance_atr, 'window': self.window,
             'gate_targets': self.gate_targets, 'skipped': self.skipped,
             'target_status': self.target_status, 'plan': self.plan,
+            **({'plan_waypoints': self.plan_waypoints,
+                'waypoint_zone_status': self.waypoint_zone_status}
+               if self.plan_waypoints is not None else {}),
         }
 
 
@@ -2693,10 +2702,10 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
         candidates = [c for c in candidates if c['cents'] != ref_cents]
     out.long = _pick_side('long', candidates, ref, out.cleared_above, out.atr, out.params,
                           rule_version=rule, prior_close=out.prior_close,
-                          plan_extra=plan_extra)
+                          plan_extra=plan_extra, levels=out.levels)
     out.short = _pick_side('short', candidates, ref, out.cleared_below, out.atr, out.params,
                            rule_version=rule, prior_close=out.prior_close,
-                           plan_extra=plan_extra)
+                           plan_extra=plan_extra, levels=out.levels)
     return out
 
 
@@ -2917,7 +2926,8 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
                atr: Optional[float], params: Optional[LevelParams], *,
                rule_version: str = LEVEL_RULE_VERSION,
                prior_close: Optional[float] = None,
-               plan_extra: Optional[list] = None) -> SideLevels:
+               plan_extra: Optional[list] = None,
+               levels: Optional[list] = None) -> SideLevels:
     """One side rule, one broken rule, one window.
 
     A candidate is on the long list when its cent is at or above the
@@ -2934,6 +2944,9 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
     `plan_extra` (gap-edge plan targets spec) are extra rungs the plan's
     spaced walk may also use, kept when beyond the trigger and inside the
     side's own window; None keeps the walk on the candidates alone.
+
+    `levels` (ATR marks spec) are the session's levels, which a side built
+    under the marks lists as waypoints between its targets.
     """
     own = params.param(trigger_window_key(side)) if params is not None else None
     opp_side = 'short' if side == 'long' else 'long'
@@ -3000,6 +3013,8 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
         out.targets = list(out.gate_targets)
     elif target_rule == TARGET_RULE_ATR_MARKS:
         _plan_mark_targets(out, trig, ref, atr, params, prior_close)
+        if out.targets:
+            _plan_waypoints(out, levels or [], ref, atr, params, window, prior_close)
     elif target_rule == TARGET_RULE_LEVELS:
         extra = None
         if plan_extra is not None:
@@ -3072,22 +3087,31 @@ def _plan_targets(out: SideLevels, rungs: list, ref: float, atr: float,
         else:
             skipped.append({**_rung(c, ref),
                             'distance_atr': round(abs(c['cents'] - prev['cents']) / 100.0 / atr, 3)})
-    gap_atr = (abs(ref - prior_close) / atr) if prior_close is not None else None
     pdc_cents = price_cents(prior_close) if prior_close is not None else None
     out.targets = []
     for c in targets:
         r = _rung(c, ref)
         is_pdc = c['name'] == 'PDC' or 'PDC' in c['aliases'] or c['cents'] == pdc_cents
-        if is_pdc and not flag.ok:
-            # No silent fallback (CLAUDE.md 3.7, Codex P1 on #1832): a prior
-            # close target whose gap-fill flag cannot be read says so rather
-            # than printing as an ordinary PDC.
-            r['gap_fill_status'] = flag.status
-        elif (is_pdc and gap_atr is not None and gap_atr >= flag.value):
-            r['gap_fill_atr'] = round(gap_atr, 2)
+        if is_pdc:
+            _gap_fill_note(r, ref, atr, flag, prior_close)
         out.targets.append(r)
     out.skipped = skipped
     out.target_status = PARAM_OK
+
+
+def _gap_fill_note(entry: dict, ref: float, atr: float, flag: 'LevelParam',
+                   prior_close: Optional[float]) -> None:
+    """The gap fill note of a plan line at the prior close (exits spec): the
+    gap in ATR when it is at least the ticker's gap_fill_flag_atr, or the
+    flag's status when it cannot be read. No silent fallback (CLAUDE.md 3.7,
+    Codex P1 on #1832): a prior close whose flag cannot be read says so
+    rather than printing as an ordinary PDC."""
+    if not flag.ok:
+        entry['gap_fill_status'] = flag.status
+        return
+    gap_atr = (abs(ref - prior_close) / atr) if prior_close is not None else None
+    if gap_atr is not None and gap_atr >= flag.value:
+        entry['gap_fill_atr'] = round(gap_atr, 2)
 
 
 def _plan_mark_targets(out: SideLevels, trig: dict, ref: float, atr: float,
@@ -3137,6 +3161,86 @@ def _plan_mark_targets(out: SideLevels, trig: dict, ref: float, atr: float,
                     'mark': m, 'share': share, 'source': 'atr_mark'}
                    for k, (m, c) in enumerate(zip(marks, cents), 1)]
     out.target_status = PARAM_OK
+
+
+def _plan_waypoints(out: SideLevels, levels: list, ref: float, atr: float,
+                    params: LevelParams, window: Optional[float],
+                    prior_close: Optional[float]) -> None:
+    """Design 3 of the ATR marks spec: the session's levels strictly past
+    the trigger on the side's own side, one entry a cent with every name on
+    that cent, in price order outward, out to the last target and past it
+    only inside the side's own window. A level on a target's own cent is not
+    a waypoint: the target records it as `on_level`. Each entry names its
+    segment (before T1, between two targets, or beyond the last) and its
+    distance from the trigger in ATR. Within one segment a level joins the
+    open group when it is within level_cluster_atr x ATR, to the cent, of the
+    group's first member, so close levels print as one zone; with that key
+    not ok every level is its own entry and the side records the status. A
+    waypoint or target at the prior close carries the plan's gap fill note."""
+    sign = 1 if out.side == 'long' else -1
+    tc = price_cents(out.trigger['price'])
+    targets = out.targets
+    last = targets[-1]['cents']
+    names_by_cent: Dict[int, list] = {}
+    for lv in levels:
+        c = price_cents(lv.price)
+        if (c - tc) * sign <= 0:
+            continue
+        if (c - last) * sign > 0 and not _within_staleness_window(lv.price, ref, atr, window):
+            continue
+        names = names_by_cent.setdefault(c, [])
+        if lv.name not in names:
+            names.append(lv.name)
+    # At one cent the candidate names come first, in name priority, then the
+    # other levels in the order the session lists them.
+    unranked = len(_CANDIDATE_ORDER)
+    for c, names in names_by_cent.items():
+        names.sort(key=lambda n: _CANDIDATE_PRIORITY.get(n, unranked))
+    flag = params.param(GAP_FILL_FLAG_KEY)
+    pdc_cents = price_cents(prior_close) if prior_close is not None else None
+
+    def _at_prior_close(cents_list) -> bool:
+        return any(c == pdc_cents or 'PDC' in names_by_cent[c] for c in cents_list)
+
+    for t in targets:
+        if t['cents'] in names_by_cent:
+            t['on_level'] = names_by_cent[t['cents']]
+            if _at_prior_close([t['cents']]):
+                _gap_fill_note(t, ref, atr, flag, prior_close)
+            del names_by_cent[t['cents']]
+
+    def _segment(c: int) -> str:
+        k = sum(1 for t in targets if (c - t['cents']) * sign > 0)
+        if k == 0:
+            return 'before_t1'
+        return 'beyond' if k == len(targets) else f't{k}_t{k + 1}'
+
+    cluster = params.param(LEVEL_CLUSTER_KEY)
+    reach = price_cents(cluster.value * atr) if cluster.ok else None
+    out.waypoint_zone_status = cluster.status
+    groups: list = []
+    for c in sorted(names_by_cent, key=lambda c: (c - tc) * sign):
+        seg = _segment(c)
+        g = groups[-1] if groups else None
+        if (g is not None and reach is not None and g['segment'] == seg
+                and abs(c - g['cents'][0]) <= reach):
+            g['cents'].append(c)
+        else:
+            groups.append({'segment': seg, 'cents': [c]})
+    out.plan_waypoints = []
+    for g in groups:
+        first = g['cents'][0]
+        entry = {'price': first / 100.0, 'cents': first,
+                 'names': [n for c in g['cents'] for n in names_by_cent[c]],
+                 'segment': g['segment'],
+                 'distance_atr': abs(first - tc) / (atr * 100)}
+        if len(g['cents']) > 1:
+            entry['zone'] = {'far_price': g['cents'][-1] / 100.0,
+                             'members': [{'price': c / 100.0, 'names': names_by_cent[c]}
+                                         for c in g['cents']]}
+        if _at_prior_close(g['cents']):
+            _gap_fill_note(entry, ref, atr, flag, prior_close)
+        out.plan_waypoints.append(entry)
 
 
 def _legacy_trigger_dict(s: SideLevels) -> Optional[dict]:

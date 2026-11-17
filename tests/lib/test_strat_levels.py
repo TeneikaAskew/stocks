@@ -2223,3 +2223,188 @@ class TestAtrMarkTargets:
         assert sl.rule_version == 'feat-strat-001.v3'
         assert slh.side_records(sl) == {'long': main['long'], 'short': main['short']}
         assert format_levels_for_brief(sl.to_level_map(), 'bearish') == slh.main_text_1116(ticker)
+
+
+# ─── ATR marks spec (2026-11-16), done_when "Waypoints and the stronger case" ──
+
+def _expected_waypoints(stored: dict, side: str, sl) -> list:
+    """The waypoint list computed from the fixture alone: every level of the
+    basis strictly past the trigger on the side's own side, one entry a cent,
+    out to the last target and past it only inside the side's window, the
+    cents on a target left out, grouped within one segment while within the
+    level_cluster_atr distance of the group's first member. Names are sorted
+    here; their order is pinned by name in the tests below."""
+    sign = 1 if side == 'long' else -1
+    atr = stored[stored['atr_basis']]
+    ref = stored['reference']
+    window = stored[side]['window']['value']
+    s = sl.side(side)
+    tc = price_cents(s.trigger['price'])
+    targets = [price_cents(t['price']) for t in s.targets]
+    by_cent = {}
+    for lv in stored['levels']:
+        c = price_cents(lv['price'])
+        if (c - tc) * sign <= 0 or c in targets:
+            continue
+        if (c - targets[-1]) * sign > 0 and abs(lv['price'] - ref) > window * atr:
+            continue
+        by_cent.setdefault(c, set()).add(lv['name'])
+
+    def segment(c):
+        k = sum((c - t) * sign > 0 for t in targets)
+        return 'before_t1' if k == 0 else ('beyond' if k == len(targets) else f't{k}_t{k + 1}')
+
+    reach = price_cents(stored['params']['level_cluster_atr']['value'] * atr)
+    groups = []
+    for c in sorted(by_cent, key=lambda c: (c - tc) * sign):
+        g = groups[-1] if groups else None
+        if g and g['segment'] == segment(c) and abs(c - g['cents'][0]) <= reach:
+            g['cents'].append(c)
+        else:
+            groups.append({'segment': segment(c), 'cents': [c]})
+    out = []
+    for g in groups:
+        first = g['cents'][0]
+        e = {'price': first / 100, 'names': sorted(n for c in g['cents'] for n in by_cent[c]),
+             'segment': g['segment'], 'distance_atr': round(abs(first - tc) / (atr * 100), 9)}
+        if len(g['cents']) > 1:
+            e['far_price'] = g['cents'][-1] / 100
+        out.append(e)
+    return out
+
+
+def _waypoint_view(entries) -> list:
+    out = []
+    for e in entries:
+        v = {'price': e['price'], 'names': sorted(e['names']), 'segment': e['segment'],
+             'distance_atr': round(e['distance_atr'], 9)}
+        if 'zone' in e:
+            v['far_price'] = e['zone']['far_price']
+        out.append(v)
+    return out
+
+
+def _with_levels(stored: dict, extra: dict) -> dict:
+    b = json.loads(json.dumps(stored))
+    for name, price in extra.items():
+        b['levels'].append({'name': name, 'price': price, 'timeframe': 'day',
+                            'level_type': 'pivot', 'period_label': ''})
+    return b
+
+
+def _named(entries) -> dict:
+    """{name: (price, segment)} over every name of every entry."""
+    return {n: (e['price'], e['segment']) for e in entries for n in e['names']}
+
+
+class TestPlanWaypoints:
+    @pytest.mark.parametrize('ticker', slh.TICKERS_1116)
+    def test_waypoints_are_the_fixtures_levels(self, ticker):
+        stored = slh.stored_1116(ticker)
+        sl = _marks_session(ticker)
+        for side in ('long', 'short'):
+            assert sl.side(side).plan_waypoints is not None, (ticker, side)
+            assert (_waypoint_view(sl.side(side).plan_waypoints)
+                    == _expected_waypoints(stored, side, sl)), (ticker, side)
+            assert sl.side(side).waypoint_zone_status == 'ok'
+
+    def test_iwm_calls_by_name(self):
+        named = _named(_marks_session('IWM').long.plan_waypoints)
+        assert named['PDO'] == (278.95, 'before_t1')
+        assert named['PDH'] == (278.95, 'before_t1')      # in PDO's zone, 279.17
+        assert named['PMC'] == (279.33, 'before_t1')
+        assert named['CMO'] == (281.64, 't2_t3')
+        assert named['PMH'] == (285.26, 'beyond')
+        assert 'PQH' not in named                          # 305.18, outside the window
+
+    def test_iwm_puts_by_name(self):
+        wps = _marks_session('IWM').short.plan_waypoints
+        named = _named(wps)
+        assert named['PDL'] == (274.67, 'before_t1')
+        assert named['PWL'] == (274.67, 'before_t1')
+        assert named['GAP_L_2026-11-09'] == (274.55, 't1_t2')
+        assert named['PML'] == (269.88, 'beyond')
+        assert wps[0]['names'][:2] == ['PDL', 'PWL']
+        assert 'PYH' not in named                          # 258.20, outside the window
+
+    def test_a_target_on_a_level_is_the_stronger_case(self):
+        sl = _marks_session('IWM')
+        t4 = sl.long.targets[3]
+        assert t4['price'] == 283.79 and t4['on_level'] == ['PWH']
+        assert all(e['cents'] != 28379 for e in sl.long.plan_waypoints)
+        assert all('on_level' not in t for t in sl.long.targets[:3])
+        assert all('on_level' not in t for t in sl.short.targets)
+
+    def test_one_cent_away_is_a_waypoint(self):
+        b = slh.marks_basis(_with_levels(slh.stored_1116('IWM'), {'TST_A': 280.13}),
+                            slh.QUARTER_MARKS, 4)
+        sl = SessionLevels.from_basis(b)
+        assert 'on_level' not in sl.long.targets[0]
+        assert _named(sl.long.plan_waypoints)['TST_A'] == (280.13, 'before_t1')
+
+    def test_zones(self):
+        sl = _marks_session('IWM')
+        first = sl.long.plan_waypoints[0]
+        assert first['names'][0] == 'PDO' and 'PDH' in first['names']
+        assert first['zone']['far_price'] == 279.17
+        assert [m['price'] for m in first['zone']['members']] == [278.95, 279.17]
+        pmc = next(e for e in sl.long.plan_waypoints if 'PMC' in e['names'])
+        assert pmc['names'] == ['PMC'] and 'zone' not in pmc
+
+        stored = slh.stored_1116('IWM')
+        reach = price_cents(stored['params']['level_cluster_atr']['value'] * stored['atr_14'])
+        assert reach == 25
+        # Between T1 280.14 and T2 281.36: a level exactly `reach` cents from
+        # the group's first member joins, one a cent farther does not.
+        for far, joined in ((280.75, True), (280.76, False)):
+            b = slh.marks_basis(_with_levels(stored, {'TST_A': 280.50, 'TST_B': far}),
+                                slh.QUARTER_MARKS, 4)
+            wps = [e for e in SessionLevels.from_basis(b).long.plan_waypoints
+                   if e['segment'] == 't1_t2']
+            if joined:
+                assert len(wps) == 1 and wps[0]['names'] == ['TST_A', 'TST_B']
+                assert wps[0]['zone']['far_price'] == far
+            else:
+                assert [e['names'] for e in wps] == [['TST_A'], ['TST_B']]
+        # Two levels either side of T1, ten cents apart, are never one zone.
+        b = slh.marks_basis(_with_levels(stored, {'TST_A': 280.10, 'TST_B': 280.20}),
+                            slh.QUARTER_MARKS, 4)
+        named = _named(SessionLevels.from_basis(b).long.plan_waypoints)
+        assert named['TST_A'] == (280.10, 'before_t1') and named['TST_B'] == (280.20, 't1_t2')
+
+    def test_cluster_not_ok(self):
+        b = slh.marks_basis(slh.stored_1116('IWM'), slh.QUARTER_MARKS, 4)
+        b['params']['level_cluster_atr'].update(status='params_unavailable', value=None)
+        sl = SessionLevels.from_basis(b)
+        assert sl.long.waypoint_zone_status == 'params_unavailable'
+        assert all('zone' not in e for e in sl.long.plan_waypoints + sl.short.plan_waypoints)
+        assert [e['price'] for e in sl.long.plan_waypoints][:3] == [278.95, 279.17, 279.33]
+
+    @pytest.mark.parametrize('ticker', slh.TICKERS_1116)
+    def test_level_rule_side_has_no_waypoint_key(self, ticker):
+        b = SessionLevels.from_basis(slh.stored_1116(ticker)).to_basis()
+        for side in ('long', 'short'):
+            assert 'plan_waypoints' not in b[side] and 'waypoint_zone_status' not in b[side]
+
+    def test_derived_builds(self):
+        """Review Focus 2: the planner's newer snapshot and the signal
+        monitor's put re-anchor rebuild the marks from the new trigger and the
+        waypoints against it, and leave gate_targets as the level rule gives."""
+        marks = _marks_session('IWM')
+        level = SessionLevels.from_basis(slh.stored_1116('IWM'))
+        snap = {'date': '2026-11-16', 'pre_high': 279.50, 'pre_low': 275.00,
+                'pre_vwap': 277.00, 'pre_filter_status': 'ok'}
+        for derive in (lambda s: s.with_premarket(snap), lambda s: s.with_reference(277.00)):
+            m, lv = derive(marks), derive(level)
+            assert m.rule_version == 'feat-strat-001.v6'
+            for side, sign in (('long', 1), ('short', -1)):
+                ms, ls = m.side(side), lv.side(side)
+                assert ms.trigger == ls.trigger and ms.gate_targets == ls.gate_targets
+                tc = price_cents(ms.trigger['price'])
+                assert [t['cents'] for t in ms.targets] == [
+                    tc + sign * price_cents(k * m.atr) for k in slh.QUARTER_MARKS]
+                assert all((e['cents'] - tc) * sign > 0 for e in ms.plan_waypoints)
+        moved = marks.with_premarket(snap)
+        assert moved.long.trigger['price'] == 279.50
+        assert _target_prices(moved.long)[0] == 280.72
+        assert 'PDO' not in _named(moved.long.plan_waypoints)
