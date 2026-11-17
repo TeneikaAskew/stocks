@@ -328,38 +328,41 @@ def test_plan_target_level_types_reads_its_extra(extra, status, value):
 
 
 def test_schema_seeds_the_target_reach_rate_row():
-    """Target hit rates spec, done_when 'Policy': one policy-wide row, ok with
+    """Target hit rates r2 spec, done_when 'Policy': one policy-wide row, ok with
     value equal to min_sample (30) on the seeded policy, the window and the
     measure carried on the param."""
     policy = seeded_policy()
     row = policy["target_reach_rate"]
     assert row["method_id"] == "plan_excursion_share" and row["effective_from"] == "2015-01-02"
     assert row["min_sample"] == 30 and row["lookback_sessions"] is None
-    assert row["extra"] == {"since": "2022-01-03", "measure": "touch"}
+    assert row["extra"] == {"since": "2022-01-03", "measure": "touch_atr"}
     p = policy_wide_param("target_reach_rate", row, "SPY", "atr_14")
     assert (p.status, p.value, p.source) == ("ok", 30.0, "policy")
     assert p.min_sample == 30 and p.lookback_sessions is None
-    assert p.extra == {"since": "2022-01-03", "measure": "touch"}
+    assert p.extra == {"since": "2022-01-03", "measure": "touch_atr"}
     schema = (Path(__file__).resolve().parents[2] / "gcp" / "schema.sql").read_text()
     block = schema[schema.index("('target_reach_rate'"):]
     assert block.index("ON CONFLICT (param_key, effective_from) DO NOTHING") < block.index(";")
 
 
 _REACH_OK = {"min_sample": 30, "lookback_sessions": None,
-             "extra": {"since": "2022-01-03", "measure": "touch"}}
+             "extra": {"since": "2022-01-03", "measure": "touch_atr"}}
 
 
 @pytest.mark.parametrize("change, status, value", [
     ({}, "ok", 30.0),
     ({"lookback_sessions": 500}, "ok", 30.0),
+    ({"extra": {"since": "2022-01-03", "measure": "held_5m_atr"}}, "ok", 30.0),
+    ({"extra": {"since": "2022-01-03", "measure": "touch"}}, "ok", 30.0),
     ({"extra": {"since": "2022-01-03", "measure": "held_5m"}}, "ok", 30.0),
+    ({"extra": {"since": "2022-01-03", "measure": "atr"}}, "input_unavailable", None),
     ({"min_sample": 0}, "input_unavailable", None),
     ({"min_sample": None}, "input_unavailable", None),
     ({"min_sample": True}, "input_unavailable", None),
     ({"lookback_sessions": 0}, "input_unavailable", None),
     ({"lookback_sessions": -1}, "input_unavailable", None),
-    ({"extra": {"since": "2022-13-01", "measure": "touch"}}, "input_unavailable", None),
-    ({"extra": {"measure": "touch"}}, "input_unavailable", None),
+    ({"extra": {"since": "2022-13-01", "measure": "touch_atr"}}, "input_unavailable", None),
+    ({"extra": {"measure": "touch_atr"}}, "input_unavailable", None),
     ({"extra": {"since": "2022-01-03", "measure": "close"}}, "input_unavailable", None),
     ({"extra": {"since": "2022-01-03"}}, "input_unavailable", None),
 ])
