@@ -129,8 +129,8 @@ class GammaSummary:
     gamma_balance_levels: list[Level]
     window_pct: float
     warnings: list[str] = field(default_factory=list)
-    # Machine-readable partial-chain reason (puts_missing | calls_missing |
-    # empty_chain); None on every both-sided summary.
+    # Machine-readable partial-chain reason (puts_missing | calls_missing) on a
+    # one-sided chain; None on every both-sided or empty-chain summary.
     reason: str | None = None
 
     def to_dict(self) -> dict:
@@ -203,8 +203,8 @@ class GammaGridSummary:
     strikes: list[float]      # ascending — row headers
     window_pct: float
     warnings: list[str] = field(default_factory=list)
-    # Machine-readable partial-chain reason (puts_missing | calls_missing |
-    # empty_chain); None on every both-sided summary.
+    # Machine-readable partial-chain reason (puts_missing | calls_missing) on a
+    # one-sided chain; None on every both-sided or empty-chain summary.
     reason: str | None = None
 
     def to_dict(self) -> dict:
