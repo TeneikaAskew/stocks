@@ -551,7 +551,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/fetch_earnings_calendar.py`](../../../scripts/fetch_earnings_calendar.py) — line [360](../../../scripts/fetch_earnings_calendar.py#L360)
 
 ### `earnings_calibration`
-- [`lib/earnings_reactions.py`](../../../lib/earnings_reactions.py) — line [110](../../../lib/earnings_reactions.py#L110), [437](../../../lib/earnings_reactions.py#L437)
+- [`lib/earnings_reactions.py`](../../../lib/earnings_reactions.py) — line [110](../../../lib/earnings_reactions.py#L110), [449](../../../lib/earnings_reactions.py#L449)
 - [`platform/api/routers/earnings.py`](../../../platform/api/routers/earnings.py) — line [327](../../../platform/api/routers/earnings.py#L327)
 
 ### `earnings_event_outcomes`
@@ -582,7 +582,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/earnings_reactions_brief.py`](../../../gcp/earnings_reactions_brief.py) — line [332](../../../gcp/earnings_reactions_brief.py#L332), [395](../../../gcp/earnings_reactions_brief.py#L395)
 - [`gcp/fetchers/compute_earnings_reactions.py`](../../../gcp/fetchers/compute_earnings_reactions.py) — line [1082](../../../gcp/fetchers/compute_earnings_reactions.py#L1082)
 - [`gcp/fetchers/fetch_av_earnings_options_backfill.py`](../../../gcp/fetchers/fetch_av_earnings_options_backfill.py) — line [232](../../../gcp/fetchers/fetch_av_earnings_options_backfill.py#L232)
-- [`lib/earnings_reactions.py`](../../../lib/earnings_reactions.py) — line [543](../../../lib/earnings_reactions.py#L543), [707](../../../lib/earnings_reactions.py#L707)
+- [`lib/earnings_reactions.py`](../../../lib/earnings_reactions.py) — line [555](../../../lib/earnings_reactions.py#L555), [719](../../../lib/earnings_reactions.py#L719)
 - [`scripts/backtest_playability.py`](../../../scripts/backtest_playability.py) — line [78](../../../scripts/backtest_playability.py#L78)
 
 ### `earnings_ticker_lean`
@@ -726,7 +726,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [56](../../../lib/agents/ranker/signals.py#L56), [134](../../../lib/agents/ranker/signals.py#L134), [310](../../../lib/agents/ranker/signals.py#L310), [357](../../../lib/agents/ranker/signals.py#L357), [360](../../../lib/agents/ranker/signals.py#L360)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [231](../../../lib/agents/summarizers.py#L231), [269](../../../lib/agents/summarizers.py#L269), [1120](../../../lib/agents/summarizers.py#L1120), [1585](../../../lib/agents/summarizers.py#L1585)
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [186](../../../lib/data_loader.py#L186), [593](../../../lib/data_loader.py#L593), [836](../../../lib/data_loader.py#L836)
-- [`lib/earnings_reactions.py`](../../../lib/earnings_reactions.py) — line [597](../../../lib/earnings_reactions.py#L597)
+- [`lib/earnings_reactions.py`](../../../lib/earnings_reactions.py) — line [609](../../../lib/earnings_reactions.py#L609)
 - [`lib/features/experimental/cross_asset.py`](../../../lib/features/experimental/cross_asset.py) — line [45](../../../lib/features/experimental/cross_asset.py#L45)
 - [`lib/features/experimental/vol_regime.py`](../../../lib/features/experimental/vol_regime.py) — line [52](../../../lib/features/experimental/vol_regime.py#L52)
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [2169](../../../lib/strat_levels.py#L2169)
