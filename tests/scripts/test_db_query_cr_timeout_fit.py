@@ -113,3 +113,64 @@ def test_non_positive_integer_timeout_is_refused(stub_gcloud, bad):
     assert r.returncode == 2, r.stdout + r.stderr
     assert "positive whole number" in r.stderr
     assert "run jobs execute" not in (calls.read_text() if calls.exists() else "")
+
+
+# ---------------------------------------------------------------------------
+# Later finding on #1886 (owner, 2026-11-17): the digit regex admitted values
+# Bash arithmetic does not read as bounded decimal seconds. (( )) treats a
+# leading 0 as octal ("0900" is "value too great for base") and wraps at 2^64,
+# so (( 18446744073709551617 > 540 )) is false. Both reached dispatch.
+# ---------------------------------------------------------------------------
+
+WAIT_PATHS = [[], ["--wait-timeout", "720"]]
+
+
+def _dispatched(calls):
+    return "run jobs execute" in (calls.read_text() if calls.exists() else "")
+
+
+@pytest.mark.parametrize("wait", WAIT_PATHS, ids=["default-wait", "explicit-wait"])
+@pytest.mark.parametrize("huge", [
+    "18446744073709551617",                 # 2^64 + 1: wraps to 1 in Bash arithmetic
+    "99999999999999999999999999999999999",  # far past any machine word
+    "0900",                                 # leading zero: octal parse error, not a bound
+    "0541",                                 # leading zero on the first refused value
+])
+def test_out_of_budget_digit_strings_are_refused_before_dispatch(stub_gcloud, huge, wait):
+    bindir, calls = stub_gcloud
+    r = _run(bindir, "-q", "SELECT 1", "--timeout", huge, *wait)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "does not fit the db-query job's 600s task timeout" in r.stderr
+    assert "value too great" not in r.stderr
+    assert not _dispatched(calls)
+
+
+@pytest.mark.parametrize("wait", WAIT_PATHS, ids=["default-wait", "explicit-wait"])
+@pytest.mark.parametrize("zero", ["00", "000", "00000"])
+def test_all_zero_strings_are_refused_as_non_positive(stub_gcloud, zero, wait):
+    bindir, calls = stub_gcloud
+    r = _run(bindir, "-q", "SELECT 1", "--timeout", zero, *wait)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "positive whole number" in r.stderr
+    assert not _dispatched(calls)
+
+
+def test_leading_zero_boundary_value_dispatches_canonical_seconds(stub_gcloud):
+    """`0540` is 540 seconds; the job must receive the canonical decimal, not the octal-looking string."""
+    bindir, calls = stub_gcloud
+    r = _run(bindir, "-q", "SELECT 1", "--timeout", "0" + str(MAX_TIMEOUT_S))
+    assert "does not fit" not in r.stderr, r.stderr
+    assert "value too great" not in r.stderr
+    recorded = calls.read_text()
+    assert f"DB_QUERY_TIMEOUT_SECONDS={MAX_TIMEOUT_S}|" in recorded
+    assert f"DB_QUERY_TIMEOUT_SECONDS=0{MAX_TIMEOUT_S}" not in recorded
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "-30", "", "18446744073709551617"])
+def test_wait_timeout_is_validated_before_dispatch(stub_gcloud, bad):
+    """--wait-timeout feeds `$(( ... + WAIT_MAX_S ))` after dispatch; a bad value used to dispatch, then die."""
+    bindir, calls = stub_gcloud
+    r = _run(bindir, "-q", "SELECT 1", "--wait-timeout", bad)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "--wait-timeout" in r.stderr
+    assert not _dispatched(calls)

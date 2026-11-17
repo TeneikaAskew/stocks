@@ -61,6 +61,7 @@ TASK_TIMEOUT_S="600"
 OVERHEAD_S="60"
 MAX_TIMEOUT_S=$(( TASK_TIMEOUT_S - OVERHEAD_S ))
 WAIT_MAX_S=""      # defaults to TIMEOUT_S + 180 once args are parsed
+WAIT_GIVEN="false"
 QUIET="false"
 
 while [[ $# -gt 0 ]]; do
@@ -69,7 +70,7 @@ while [[ $# -gt 0 ]]; do
         -f) SQL_FILE="$2"; shift 2 ;;
         --commit) COMMIT="true"; shift ;;
         --timeout) TIMEOUT_S="$2"; shift 2 ;;
-        --wait-timeout) WAIT_MAX_S="$2"; shift 2 ;;
+        --wait-timeout) WAIT_MAX_S="$2"; WAIT_GIVEN="true"; shift 2 ;;
         --quiet) QUIET="true"; shift ;;
         -h|--help) usage ;;
         *) echo "unknown arg: $1" >&2; usage ;;
@@ -85,11 +86,32 @@ done
 # This bounds ONE statement. statement_timeout applies per statement, so a
 # multi-statement batch can still exceed the task budget in total; that case is
 # reported by Cloud Run as it happens, not predicted here.
-if ! [[ "$TIMEOUT_S" =~ ^[0-9]+$ ]] || (( TIMEOUT_S == 0 )); then
-    echo "error: --timeout takes a positive whole number of seconds, got '${TIMEOUT_S}'" >&2
-    exit 2
-fi
-if (( TIMEOUT_S > MAX_TIMEOUT_S )); then
+#
+# Validate as a STRING before any arithmetic reads the value. Bash arithmetic is
+# not a decimal parser: a leading 0 makes it octal ("0900" is "value too great
+# for base", a failed test rather than a refusal) and it wraps at 2^64, so
+# (( 18446744073709551617 > 540 )) is false. Both reached dispatch on #1886
+# until the owner reproduced them. So: digits only, strip leading zeros, refuse
+# zero, bound by digit count, and only then compare the (now short) number.
+canonical_seconds() {
+    # $1 flag name, $2 raw value, $3 name of the variable to receive the
+    # canonical decimal. Exits 2 on anything that is not a positive whole number.
+    local flag="$1" raw="$2" v="$2"
+    local -n out="$3"
+    if ! [[ "$raw" =~ ^[0-9]+$ ]]; then
+        echo "error: ${flag} takes a positive whole number of seconds, got '${raw}'" >&2
+        exit 2
+    fi
+    while [[ ${#v} -gt 1 && "$v" == 0* ]]; do v="${v#0}"; done
+    if [[ "$v" == "0" ]]; then
+        echo "error: ${flag} takes a positive whole number of seconds, got '${raw}'" >&2
+        exit 2
+    fi
+    out="$v"
+}
+
+canonical_seconds --timeout "$TIMEOUT_S" TIMEOUT_S
+if (( ${#TIMEOUT_S} > ${#MAX_TIMEOUT_S} )) || (( TIMEOUT_S > MAX_TIMEOUT_S )); then
     echo "error: --timeout ${TIMEOUT_S}s does not fit the db-query job's ${TASK_TIMEOUT_S}s task timeout." >&2
     echo "       Cloud Run kills the task at ${TASK_TIMEOUT_S}s, so a statement_timeout above" >&2
     echo "       ${MAX_TIMEOUT_S}s never fires and the run returns no results at all." >&2
@@ -102,7 +124,22 @@ fi
 
 # Container start + query + result upload all happen inside the wait window,
 # so give the statement timeout meaningful headroom rather than racing it.
-: "${WAIT_MAX_S:=$(( TIMEOUT_S + 180 ))}"
+# An explicit --wait-timeout feeds `$(( ... + WAIT_MAX_S ))` only AFTER dispatch,
+# so a bad value used to dispatch the job and then die in that arithmetic.
+# No execution outlives the task timeout by more than Cloud Run's scheduling
+# delay, so a wait longer than a day is a typo, and past 2^64 the deadline
+# arithmetic below would wrap. Bound by digit count first, as for --timeout.
+WAIT_CEILING_S="86400"
+if [[ "$WAIT_GIVEN" == "true" ]]; then
+    canonical_seconds --wait-timeout "$WAIT_MAX_S" WAIT_MAX_S
+    if (( ${#WAIT_MAX_S} > ${#WAIT_CEILING_S} )) || (( WAIT_MAX_S > WAIT_CEILING_S )); then
+        echo "error: --wait-timeout ${WAIT_MAX_S}s is longer than any db-query execution can live" >&2
+        echo "       (the job's task timeout is ${TASK_TIMEOUT_S}s); use at most ${WAIT_CEILING_S}." >&2
+        exit 2
+    fi
+else
+    WAIT_MAX_S=$(( TIMEOUT_S + 180 ))
+fi
 
 if [[ -z "$SQL" && -z "$SQL_FILE" ]]; then
     echo "error: provide -q SQL or -f SQL_FILE" >&2
