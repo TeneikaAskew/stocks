@@ -332,8 +332,11 @@ import sqlite3  # noqa: E402
 
 from tests.gcp.test_premarket_filter_callers import _sql_param  # noqa: E402
 
-# gcp/schema.sql as it was before this task (sha256 of the file's bytes).
-SCHEMA_SHA256 = "b017fbd2fadb5dbfd39b20953451c5a90f46720c4c860c3ae9b00e66afcba55f"
+# gcp/schema.sql as FEAT-DATA-001 bar flags (PR #2001) leaves it, the brief build
+# (PR #2010) having changed nothing in it (sha256 of the file's bytes; it was
+# b017fbd2fadb5dbfd39b20953451c5a90f46720c4c860c3ae9b00e66afcba55f before #2001
+# added the bar flag columns). A schema change moves this pin on purpose.
+SCHEMA_SHA256 = "4467b253db2db684c9ecf5d3364aee4f9c123a3d33ebc989c86431bd74c99967"
 
 # What an earlier run left in the session's market_data_daily row.
 STORED = {"pre_high": 660.398, "pre_low": 649.62, "pre_range_atr": 0.9876, "pre_vwap": 655.0,
