@@ -2089,3 +2089,137 @@ class TestStored20261116:
         text = slh.main_text_1116('IWM')
         assert SPEC_TODAY_CALLS in text
         assert SPEC_TODAY_PUTS in text
+
+
+# ─── ATR marks spec (2026-11-16), done_when "ATR marks are the targets" ──
+
+from lib.strat_levels import price_cents  # noqa: E402
+
+IWM_CALLS_Q = [280.14, 281.36, 282.58, 283.79]
+IWM_PUTS_Q = [274.64, 273.42, 272.20, 270.99]
+
+
+def _marks_session(ticker, marks=slh.QUARTER_MARKS, legs=4, **kw):
+    return SessionLevels.from_basis(slh.marks_basis(slh.stored_1116(ticker), marks, legs, **kw))
+
+
+def _target_prices(side):
+    return [t['price'] for t in side.targets]
+
+
+def _tiny_basis(levels, *, atr, premarket, marks, legs=4, ref_close):
+    """A synthetic basis (d8_basis style) built under the marks."""
+    from tests.lib.session_levels_helpers import basis, d8_params
+    b = basis(levels, prior_close=ref_close, atr=atr, premarket=premarket, params=d8_params())
+    return slh.marks_basis(b, marks, legs)
+
+
+class TestAtrMarkTargets:
+    def test_iwm_quarters(self):
+        sl = _marks_session('IWM')
+        assert sl.rule_version == 'feat-strat-001.v6'
+        assert _target_prices(sl.long) == IWM_CALLS_Q
+        assert _target_prices(sl.short) == IWM_PUTS_Q
+        assert sl.long.target_status == sl.short.target_status == 'ok'
+
+    @pytest.mark.parametrize('ticker', slh.TICKERS_1116)
+    def test_every_side_is_trigger_plus_or_minus_the_offset(self, ticker):
+        fixture = slh.stored_1116(ticker)
+        atr = fixture[fixture['atr_basis']]
+        main = slh.main_1116(ticker)
+        sl = _marks_session(ticker)
+        for side, sign in (('long', 1), ('short', -1)):
+            trig = price_cents(main[side]['trigger']['price'])
+            want = [trig + sign * price_cents(m * atr) for m in slh.QUARTER_MARKS]
+            assert [t['cents'] for t in sl.side(side).targets] == want, (ticker, side)
+            assert [price_cents(t['price']) for t in sl.side(side).targets] == want
+
+    def test_each_target_records_mark_share_and_source(self):
+        for t in slh.TICKERS_1116:
+            sl = _marks_session(t)
+            for side in (sl.long, sl.short):
+                assert [x['mark'] for x in side.targets] == list(slh.QUARTER_MARKS)
+                assert {x['share'] for x in side.targets} == {'1/4'}
+                assert {x['source'] for x in side.targets} == {'atr_mark'}
+
+    @pytest.mark.parametrize('ticker', slh.TICKERS_1116)
+    def test_trigger_stop_and_gate_targets_are_the_bases(self, ticker):
+        main = slh.main_1116(ticker)
+        rec = slh.side_records(_marks_session(ticker))
+        for side in ('long', 'short'):
+            for key in ('trigger', 'stop', 'gate_targets'):
+                assert rec[side][key] == main[side][key], (ticker, side, key)
+
+    def test_iwm_trigger_and_stop_by_name(self):
+        sl = _marks_session('IWM')
+        assert (sl.long.trigger['price'], sl.long.trigger['name']) == (278.92, 'PMK_H')
+        assert (sl.long.stop['price'], sl.long.stop['name']) == (275.86, 'PMK_L')
+        assert (sl.short.trigger['price'], sl.short.trigger['name']) == (275.86, 'PMK_L')
+        assert (sl.short.stop['price'], sl.short.stop['name']) == (277.41, 'PQL')
+
+    def test_no_target_is_moved_onto_a_level(self):
+        sl = _marks_session('IWM')
+        assert sl.short.targets[0]['price'] == 274.64
+        assert all(t['price'] != 274.67 for s in (sl.long, sl.short) for t in s.targets)
+
+    def test_skipped_is_empty(self):
+        for t in slh.TICKERS_1116:
+            sl = _marks_session(t)
+            assert sl.long.skipped == [] and sl.short.skipped == []
+            assert sl.long.targets and sl.short.targets
+
+    def test_three_marks_three_legs(self):
+        sl = _marks_session('IWM', marks=(0.25, 0.5, 0.75), legs=3)
+        assert _target_prices(sl.long) == IWM_CALLS_Q[:3]
+        assert _target_prices(sl.short) == IWM_PUTS_Q[:3]
+        assert {x['share'] for x in sl.long.targets} == {'1/3'}
+
+    def test_fewer_marks_than_legs_is_a_plan(self):
+        sl = _marks_session('IWM', marks=(0.25, 0.5), legs=3)
+        assert _target_prices(sl.long) == IWM_CALLS_Q[:2] and sl.long.target_status == 'ok'
+        assert sl.long.plan['legs'] == 3
+
+    def test_no_target_cases(self):
+        def _none(sl, status):
+            for side in (sl.long, sl.short):
+                assert side.trigger is not None
+                assert side.targets == [] and side.target_status == status
+
+        # More marks than legs.
+        _none(_marks_session('IWM', legs=3), 'input_unavailable')
+        # A marks record that is not ok: its status is carried.
+        _none(_marks_session('IWM', marks_extra={'marks': 'x'}), 'input_unavailable')
+        b = slh.marks_basis(slh.stored_1116('IWM'), slh.QUARTER_MARKS, 4)
+        b['params']['plan_target_marks_atr'].update(status='params_basis_mismatch', value=None)
+        _none(SessionLevels.from_basis(b), 'params_basis_mismatch')
+        # A mark whose offset is zero cents (0.0001 x 4.87 is under half a cent).
+        _none(_marks_session('IWM', marks=(0.0001,)), 'input_unavailable')
+
+        levels = {'PDH': 101.00, 'PDL': 99.00, 'PWH': 102.00, 'PWL': 98.00}
+        pm = {'pre_high': 100.50, 'pre_low': 99.50, 'pre_vwap': 100.00}
+        # Two marks on one cent: 0.25 and 0.2501 of an ATR of 1.00 are both 25 cents.
+        sl = SessionLevels.from_basis(_tiny_basis(levels, atr=1.0, premarket=pm,
+                                                  marks=(0.25, 0.2501), ref_close=100.0))
+        assert sl.rule_version == 'feat-strat-001.v6'
+        _none(sl, 'input_unavailable')
+        # A puts target at or below zero cents: trigger 1.00, mark 1.0 on an ATR of 2.00.
+        sl = SessionLevels.from_basis(_tiny_basis(
+            {'PDH': 2.00, 'PDL': 1.00}, atr=2.0,
+            premarket={'pre_high': 1.60, 'pre_low': 1.00, 'pre_vwap': 1.50},
+            marks=(1.0,), ref_close=1.50))
+        assert sl.short.trigger['price'] == 1.00
+        assert sl.short.targets == [] and sl.short.target_status == 'input_unavailable'
+        assert sl.long.target_status == 'ok' and _target_prices(sl.long) == [3.60]
+
+    @pytest.mark.parametrize('ticker', slh.TICKERS_1116)
+    def test_seeded_empty_list_is_the_base(self, ticker):
+        from lib.strat_levels import policy_wide_param
+        b = slh.stored_1116(ticker)
+        pol = {'extra': {'marks': []}, 'effective_from': '2015-01-02', 'method_id': 'policy'}
+        b['params']['plan_target_marks_atr'] = policy_wide_param(
+            'plan_target_marks_atr', pol, ticker, b['atr_basis']).to_basis()
+        sl = SessionLevels.from_basis(b)
+        main = slh.main_1116(ticker)
+        assert sl.rule_version == 'feat-strat-001.v3'
+        assert slh.side_records(sl) == {'long': main['long'], 'short': main['short']}
+        assert format_levels_for_brief(sl.to_level_map(), 'bearish') == slh.main_text_1116(ticker)

@@ -424,7 +424,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `strat_levels`
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [3744](../../../lib/strat_levels.py#L3744)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [3762](../../../lib/strat_levels.py#L3762)
 
 ### `ticker_calibration`
 - [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [497](../../../scripts/calibrate_thresholds.py#L497)
@@ -825,7 +825,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3563](../../../gcp/premarket_brief.py#L3563), [4078](../../../gcp/premarket_brief.py#L4078), [4315](../../../gcp/premarket_brief.py#L4315)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [684](../../../gcp/premarket_playbook_resolver.py#L684), [933](../../../gcp/premarket_playbook_resolver.py#L933), [1049](../../../gcp/premarket_playbook_resolver.py#L1049)
 - [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [346](../../../lib/movement_statement.py#L346), [427](../../../lib/movement_statement.py#L427)
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [3161](../../../lib/strat_levels.py#L3161)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [3179](../../../lib/strat_levels.py#L3179)
 - [`lib/strategies/brief_bias.py`](../../../lib/strategies/brief_bias.py) — line [83](../../../lib/strategies/brief_bias.py#L83)
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [107](../../../platform/api/routers/dashboard.py#L107), [116](../../../platform/api/routers/dashboard.py#L116)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [666](../../../scripts/audit_data_freshness.py#L666), [667](../../../scripts/audit_data_freshness.py#L667), [826](../../../scripts/audit_data_freshness.py#L826)

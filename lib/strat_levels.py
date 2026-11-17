@@ -3118,7 +3118,25 @@ def _plan_mark_targets(out: SideLevels, trig: dict, ref: float, atr: float,
     if missing is not None:
         out.target_status = missing.status
         return
-    out.target_status = 'input_unavailable'
+    legs = out.plan['legs']
+    sign = 1 if out.side == 'long' else -1
+    # Each offset is rounded to the cent once (the one rounding rule) and
+    # added to the trigger's cents, as the ATR rungs are placed.
+    offsets = [price_cents(m * atr) for m in marks]
+    cents = [trig['cents'] + sign * o for o in offsets]
+    # No marks, more marks than legs (resolve_plan would cut the extra ones
+    # without a word), two marks on one cent, an offset of zero cents or a
+    # target at or below zero cents is not a plan.
+    if (not marks or len(marks) > legs or len(set(offsets)) != len(offsets)
+            or min(offsets) <= 0 or min(cents) <= 0):
+        out.target_status = 'input_unavailable'
+        return
+    share = f"1/{legs}"
+    out.plan['mark_prices'] = [c / 100.0 for c in cents]
+    out.targets = [{'price': c / 100.0, 'cents': c, 'name': f'T{k}', 'timeframe': '',
+                    'mark': m, 'share': share, 'source': 'atr_mark'}
+                   for k, (m, c) in enumerate(zip(marks, cents), 1)]
+    out.target_status = PARAM_OK
 
 
 def _legacy_trigger_dict(s: SideLevels) -> Optional[dict]:

@@ -195,3 +195,30 @@ def side_records(sl: SessionLevels) -> dict:
     """Each side's MAIN_SIDE_KEYS from sl.to_basis(), the shape <T>.main.json holds."""
     b = sl.to_basis()
     return {side: {k: b[side][k] for k in MAIN_SIDE_KEYS} for side in ("long", "short")}
+
+
+MARKS_VERSION = "feat-strat-001.v6"
+
+
+def marks_basis(stored: dict, marks, legs: int, *, marks_extra: dict | None = None) -> dict:
+    """A copy of a stored basis rebuilt as the ATR marks version would be:
+    its params record plan_target_marks_atr with `marks` (or `marks_extra`)
+    and exit_legs with `legs`, each as policy_wide_param builds them, its
+    rule_version is the marks version, and its long and short records are
+    removed so nothing stored is trusted."""
+    from lib.strat_levels import policy_wide_param
+
+    out = copy.deepcopy(stored)
+    for key, extra in (("plan_target_marks_atr",
+                        marks_extra if marks_extra is not None else {"marks": list(marks)}),
+                       ("exit_legs", {"legs": legs})):
+        pol = {"extra": extra, "effective_from": "2026-12-01", "method_id": "policy"}
+        out["params"][key] = policy_wide_param(key, pol, out.get("ticker") or "",
+                                               out.get("atr_basis") or "atr_14").to_basis()
+    out["rule_version"] = MARKS_VERSION
+    out.pop("long", None)
+    out.pop("short", None)
+    return out
+
+
+QUARTER_MARKS = (0.25, 0.5, 0.75, 1.0)
