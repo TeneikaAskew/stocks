@@ -748,10 +748,22 @@ def calculate_premarket_context(
     #    dropped is not counted again here.
     prior_close_prints = None
     if _positive(prev_close):
+        from decimal import Decimal  # noqa: PLC0415
+
         from lib.strat_levels import price_cents  # noqa: PLC0415
         pc = float(prev_close)
         pc_cents = price_cents(prev_close)
-        reach = PM_PRIOR_CLOSE_MIN_DISTANCE * pc
+        # The distance is compared in decimals on each float's shortest repr,
+        # as price_cents reads a price, so a price exactly 0.25% away is
+        # within it: in binary floats 104.0 - 103.74 is 0.2600000000000051,
+        # over 0.0025 x 104.0 = 0.26, and 0.0025 x 612.68 is
+        # 1.5316999999999998, under 1.5317 (Codex P2 on #2046).
+        pc_dec = Decimal(str(pc))
+        reach = pc_dec * Decimal(str(PM_PRIOR_CLOSE_MIN_DISTANCE))
+
+        def _within_reach(v) -> bool:
+            return v == v and abs(Decimal(str(float(v))) - pc_dec) <= reach
+
         raw = {'open': pre_o, 'high': pre_h, 'low': pre_l, 'close': pre_c}
         cands = {'open': cand_o, 'high': cand_h, 'low': cand_l, 'close': cand_c}
         at = {f: ser.map(lambda v: v == v
@@ -759,7 +771,7 @@ def calculate_premarket_context(
                          ).astype(bool)
               for f, ser in raw.items()}
         other = {f: raw[f].notna() & ~at[f] for f in raw}
-        near = {f: other[f] & ((raw[f] - pc).abs() <= reach) for f in raw}
+        near = {f: other[f] & raw[f].map(_within_reach).astype(bool) for f in raw}
         print_bar = (pd.concat(at.values(), axis=1).any(axis=1)
                      & pd.concat(other.values(), axis=1).any(axis=1)
                      & ~pd.concat(near.values(), axis=1).any(axis=1))

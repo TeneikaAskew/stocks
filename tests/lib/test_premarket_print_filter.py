@@ -614,6 +614,68 @@ class TestPriorClosePrint:
             assert pm["confirmed"]["prior_close_prints"] == {
                 **PCP_ZERO(400.0), s.stale: 1, "close": 1, "bars": 1}
 
+    # Codex P2 on #2046: the prior close and another price exactly 0.25% from
+    # it, in decimals, where binary floats put the price further away. In
+    # floats 104.0 - 103.74 is 0.2600000000000051 against 0.0025 x 104.0 =
+    # 0.26; 680.0 - 678.30 is 1.7000000000000455 against 1.7; and
+    # 612.68 - 611.1483 is 1.5317000000000007 against 1.5316999999999998, the
+    # product itself under the decimal 1.5317. The mirrored prices (104.26,
+    # 681.70, 614.2117) are as far over in floats. Each case is one 5,000-share
+    # bar (other, prior close, other, prior close).
+    DECIMAL_QUARTER = [(104.0, 103.74), (680.0, 678.30), (612.68, 611.1483)]
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize("prior, other", DECIMAL_QUARTER)
+    def test_a_price_a_quarter_percent_away_in_decimals_keeps_the_bar(self, side, prior, other):
+        """PC1 (vii), inclusive in decimals: the other price is within the
+        distance, so the bar is untouched and its close at the prior close is
+        the extreme."""
+        s = _Side(side, prior)
+        # The case is one floats get wrong: the plain comparison drops the bar.
+        assert abs(s.px(other) - prior) > 0.0025 * prior
+        pm = context(s.rows([("07:00", other, prior, other, prior, 5000)]), prev_close=prior)
+        assert pm["filtered"] is False
+        assert pm[s.extreme] == prior
+        assert pm[s.other] == s.px(other)
+        assert pm["confirmed"]["prior_close_prints"] == PCP_ZERO(prior)
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize("prior, other", DECIMAL_QUARTER)
+    def test_a_ten_thousandth_further_drops_the_print(self, side, prior, other):
+        """The boundary does not widen: the same bar with its other price one
+        ten-thousandth further from the prior close is a print bar, and its
+        high (low) and close at the prior close are dropped."""
+        s = _Side(side, prior)
+        further = round(other - 0.0001, 4)
+        pm = context(s.rows([("07:00", further, prior, further, prior, 5000)]), prev_close=prior)
+        assert pm["filtered"] is False
+        assert pm[s.extreme] == s.px(further)
+        assert pm["confirmed"]["prior_close_prints"] == {
+            **PCP_ZERO(prior), s.stale: 1, "close": 1, "bars": 1}
+
+    @pytest.mark.parametrize("side", SIDES)
+    @pytest.mark.parametrize("price, dropped", [(128.30, True), (128.31, False)])
+    def test_the_cent_tolerance_is_inclusive_in_decimals(self, side, price, dropped):
+        """The rule's other comparison, the 5 cent tolerance, is in whole
+        cents under lib.strat_levels.price_cents, so it does not depend on
+        float subtraction: 128.30 - 128.25 and 128.25 - 128.20 are both
+        0.05000000000001137 in floats, and 128.30 (128.20 mirrored) is still
+        five cents from the prior close 128.25. The bar's other prices are a
+        dollar away, more than 0.25% (0.32)."""
+        prior = 128.25
+        s = _Side(side, prior)
+        if dropped:
+            assert abs(s.px(price) - prior) > 0.05
+        pm = context(s.rows([("07:00", 127.25, price, 127.25, price, 5000)]), prev_close=prior)
+        assert pm["filtered"] is False
+        if dropped:
+            assert pm[s.extreme] == s.px(127.25)
+            assert pm["confirmed"]["prior_close_prints"] == {
+                **PCP_ZERO(prior), s.stale: 1, "close": 1, "bars": 1}
+        else:
+            assert pm[s.extreme] == s.px(price)
+            assert pm["confirmed"]["prior_close_prints"] == PCP_ZERO(prior)
+
     @pytest.mark.parametrize("side", SIDES)
     @pytest.mark.parametrize("prev", [None, 0.0, -1.0, float("nan")])
     def test_no_prior_close_runs_nothing(self, side, prev):
