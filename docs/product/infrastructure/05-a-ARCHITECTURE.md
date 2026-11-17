@@ -962,6 +962,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/fetchers/fetch_top_movers.py`](../../../gcp/fetchers/fetch_top_movers.py) | Cloud Run Job: Fetch AV TOP_GAINERS_LOSERS daily snapshot → Cloud SQL. | `fetch-top-movers` |
 | [`gcp/fetchers/fetch_watched_tickers.py`](../../../gcp/fetchers/fetch_watched_tickers.py) | Watched-ticker ingest job (fetch-watched-tickers), v2. | — |
 | [`gcp/fetchers/intraday_bar_flags.py`](../../../gcp/fetchers/intraday_bar_flags.py) | The bar flag pass over the stored 1-minute bars of SPY, QQQ and IWM | — |
+| [`gcp/fetchers/premarket_as_read.py`](../../../gcp/fetchers/premarket_as_read.py) | The SPY, QQQ and IWM premarket bars as each refresh run read them. | — |
 | [`gcp/gcs_utils.py`](../../../gcp/gcs_utils.py) | Google Cloud Storage utility helpers shared across gcp/ modules. | — |
 | [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) | Cloud SQL helpers for the ``historical_signals`` table. | — |
 | [`gcp/indicator_correlation_job.py`](../../../gcp/indicator_correlation_job.py) | Intraday indicator → forward-return correlation / Information Coefficient (Cloud Run Job). | `indicator-correlation` |

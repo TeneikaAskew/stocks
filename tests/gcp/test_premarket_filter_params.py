@@ -77,7 +77,7 @@ def test_refresh_fetcher_reads_the_parameters_once_per_run(monkeypatch):
     seen = {}
     monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "k")
     monkeypatch.setattr(fpr, "compute_premarket_for_ticker",
-                        lambda t, d, k, *, level_params=None: seen.__setitem__(t, level_params))
+                        lambda t, d, k, *, level_params=None, on_read=None: seen.__setitem__(t, level_params))
     monkeypatch.setattr(fpr, "upsert_premarket", lambda rows: len(rows))
     monkeypatch.setattr(sys, "argv", ["fpr", "--tickers", "SPY", "QQQ", "IWM",
                                       "--date", SESSION.isoformat()])
@@ -110,7 +110,7 @@ def test_unreadable_tables_write_unfiltered_snapshots_and_exit_non_zero(monkeypa
     else:
         monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "k")
         monkeypatch.setattr(fpr, "compute_premarket_for_ticker",
-                            lambda t, d, k, *, level_params=None: seen.__setitem__(t, level_params))
+                            lambda t, d, k, *, level_params=None, on_read=None: seen.__setitem__(t, level_params))
         written = []
         monkeypatch.setattr(fpr, "upsert_premarket", lambda rows: written.append(rows) or 0)
         monkeypatch.setattr(sys, "argv", ["fpr", "--tickers", "SPY", "QQQ",
