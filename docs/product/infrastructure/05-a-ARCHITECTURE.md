@@ -644,9 +644,11 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 | `orb-30m-alert` | `0 10 * * 1-5` | `signal-monitor` | --mode=orb-snapshot --window=30m | ENABLED | 2026-09-04 |
 | `phase6-playbook-daily` | `30 4 * * 1-5` | `phase6-playbook` |  | ENABLED |  |
 | `premarket-brief-daily` | `30 8 * * 1-5` | `premarket-brief` |  | ENABLED | 2026-09-04 |
+| `premarket-brief-late` | `20 9 * * 1-5` | `premarket-brief` | BRIEF_RUN_SLOT=late | **not live** (declared in deploy.sh) |  |
 | `premarket-brief-sunday` | `0 21 * * 0` | `premarket-brief` |  | ENABLED | 2026-09-07 |
 | `premarket-playbook-resolver-daily` | `15 21 * * 1-5` | `premarket-playbook-resolver` |  | ENABLED | 2026-09-05 |
 | `premarket-refresh-daily` | `20 8 * * 1-5` | `fetch-premarket-refresh` |  | ENABLED | 2026-09-04 |
+| `premarket-refresh-late` | `20 9 * * 1-5` | `fetch-premarket-refresh` |  | **not live** (declared in deploy.sh) |  |
 | `realtime-gex-daily` | `0 17 * * 1-5` | `build-realtime-gex` |  | ENABLED | 2026-09-04 |
 | `reconcile-failure-notifier-hourly` | `0 * * * *` | `https://failure-notifier-5sjtb3yl7a-ue.a.run.app/reconcile` |  | ENABLED | 2026-09-07 |
 | `refresh-earnings-views-daily` | `30 7 * * 1-5` | `refresh-earnings-views` | --mode=daily | ENABLED | 2026-09-04 |
@@ -883,12 +885,12 @@ Backup and restore procedures are in [CLAUDE.md → Backup and disaster recovery
 ## 15. Live-vs-repo reconciliation
 
 <!-- inventory:reconcile:start -->
-Live read 2026-09-07T04:35:16Z. Repo declares 67 jobs / 65 schedulers; live has 76 / 65. <!-- verify-docs-ok: repo-declared and live counts side by side -->
+Live read 2026-09-07T04:35:16Z. Repo declares 67 jobs / 67 schedulers; live has 76 / 65. <!-- verify-docs-ok: repo-declared and live counts side by side -->
 
 **Jobs live but not in deploy.sh** (11): `backtest-playability`, `compare-tier-fires`, `evaluate-ew-strikes`, `exec-backtest`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`
 **Jobs in deploy.sh but not live** (2): `compute-spx-greeks-backfill`, `options-exec-backtest`
 **Schedulers live but not in deploy.sh** (1): `evaluate-ew-strikes-daily`
-**Schedulers in deploy.sh but not live** (1): `earnings-sweep-sunday`
+**Schedulers in deploy.sh but not live** (3): `earnings-sweep-sunday`, `premarket-brief-late`, `premarket-refresh-late`
 **Schedulers paused** (0): none
 **Live schedulers targeting a missing job** (0): none
 **deploy.sh schedulers targeting a job deploy.sh never creates** (0): none
