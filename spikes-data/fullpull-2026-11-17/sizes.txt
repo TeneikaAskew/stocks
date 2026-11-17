@@ -1,0 +1,115 @@
+## ✅ DB Query Results: `trading` (5 statements)
+
+### ✅ Statement 1/5 ↩️ rolled_back
+
+- **Duration**: 38 ms
+- **Rows**: 11
+- **Row-cap strategy**: `server_limit`
+
+**SQL**
+```sql
+SELECT c.relname, c.reltuples::bigint AS est_rows, pg_total_relation_size(c.oid) AS total_bytes FROM pg_class c WHERE c.relname IN ('market_data_intraday_spy','market_data_intraday_qqq','market_data_intraday_iwm','market_data_daily','premarket_analysis','premarket_analysis_history','insight_reports','insight_reports_history','strat_levels','intraday_bar_flags','intraday_bar_flag_coverage') ORDER BY c.relname;
+```
+
+**Result preview** (first 11 rows)
+
+| relname                    |   est_rows |   total_bytes |
+|:---------------------------|-----------:|--------------:|
+| insight_reports            |        938 |       7028736 |
+| insight_reports_history    |       1011 |       4816896 |
+| intraday_bar_flag_coverage |        384 |       1679360 |
+| intraday_bar_flags         |      16494 |       5087232 |
+| market_data_daily          |    5851472 |    4211417088 |
+| market_data_intraday_iwm   |    2029231 |     762503168 |
+| market_data_intraday_qqq   |    2334773 |     876036096 |
+| market_data_intraday_spy   |    2503499 |     911327232 |
+| premarket_analysis         |        527 |       2023424 |
+| premarket_analysis_history |        877 |       2392064 |
+| strat_levels               |      17355 |       4284416 |
+
+---
+
+### ✅ Statement 2/5 ↩️ rolled_back
+
+- **Duration**: 57 ms
+- **Rows**: 3
+- **Row-cap strategy**: `server_limit`
+
+**SQL**
+```sql
+SELECT ticker, count(*) AS n, round(avg(cost_usd)::numeric, 4) AS avg_cost_usd, round(max(cost_usd)::numeric, 4) AS max_cost_usd, round(avg(latency_ms)::numeric, 0) AS avg_latency_ms FROM insight_reports WHERE ticker IN ('SPY','QQQ','IWM') AND as_of >= '2026-10-17' GROUP BY ticker ORDER BY ticker;
+```
+
+**Result preview** (first 3 rows)
+
+| ticker   |   n |   avg_cost_usd |   max_cost_usd |   avg_latency_ms |
+|:---------|----:|---------------:|---------------:|-----------------:|
+| IWM      |  23 |         0.0122 |         0.0184 |            32588 |
+| QQQ      |  22 |         0.0125 |         0.0182 |            36501 |
+| SPY      |  21 |         0.0128 |         0.0182 |            43244 |
+
+---
+
+### ✅ Statement 3/5 ↩️ rolled_back
+
+- **Duration**: 6444 ms
+- **Rows**: 3
+- **Row-cap strategy**: `server_limit`
+
+**SQL**
+```sql
+SELECT ticker, min(ts)::text AS first_ts, max(ts)::text AS last_ts FROM market_data_intraday WHERE ticker IN ('SPY','QQQ','IWM') AND interval = '1min' GROUP BY ticker;
+```
+
+**Result preview** (first 3 rows)
+
+| ticker   | first_ts               | last_ts                |
+|:---------|:-----------------------|:-----------------------|
+| IWM      | 2015-01-02 11:29:00+00 | 2026-11-17 01:00:00+00 |
+| QQQ      | 2015-01-02 09:36:00+00 | 2026-11-17 00:59:00+00 |
+| SPY      | 2015-01-02 09:05:00+00 | 2026-11-17 01:00:00+00 |
+
+---
+
+### ✅ Statement 4/5 ↩️ rolled_back
+
+- **Duration**: 30 ms
+- **Rows**: 2
+- **Row-cap strategy**: `server_limit`
+
+**SQL**
+```sql
+SELECT run_kind, count(*) AS n, min(analysis_date)::text AS first_date, max(analysis_date)::text AS last_date FROM premarket_analysis GROUP BY run_kind ORDER BY run_kind;
+```
+
+**Result preview** (first 2 rows)
+
+| run_kind   |   n | first_date   | last_date   |
+|:-----------|----:|:-------------|:------------|
+| live       | 394 | 2026-04-12   | 2026-11-16  |
+| replay     | 142 | 2026-02-18   | 2026-11-14  |
+
+---
+
+### ✅ Statement 5/5 ↩️ rolled_back
+
+- **Duration**: 24 ms
+- **Rows**: 3
+- **Row-cap strategy**: `server_limit`
+
+**SQL**
+```sql
+SELECT run_kind, count(*) AS n FROM insight_reports GROUP BY run_kind ORDER BY run_kind
+```
+
+**Result preview** (first 3 rows)
+
+| run_kind   |   n |
+|:-----------|----:|
+| backfill   |  85 |
+| live       | 973 |
+| replay     |   3 |
+
+---
+
+_Workflow run:_ cloud-run-job/db-query-w4l46

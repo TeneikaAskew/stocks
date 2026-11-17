@@ -1,0 +1,35 @@
+[
+ {
+  "ticker": "SPY",
+  "month": "2026-11",
+  "reason": "success",
+  "requested_at": "2026-11-17T12:20:33.944869+00:00",
+  "answered_at": "2026-11-17T12:20:34.805519+00:00",
+  "rows": 10767,
+  "first_ts": "2026-11-02 04:00:00",
+  "last_ts": "2026-11-17 07:20:00",
+  "file": "/tmp/claude-0/-home-user/fa186a7b-7434-50ad-97db-844fe591fc0f/scratchpad/fullpull/fresh/SPY_2026-11.csv"
+ },
+ {
+  "ticker": "QQQ",
+  "month": "2026-11",
+  "reason": "success",
+  "requested_at": "2026-11-17T12:20:35.857678+00:00",
+  "answered_at": "2026-11-17T12:20:36.702289+00:00",
+  "rows": 10761,
+  "first_ts": "2026-11-02 04:00:00",
+  "last_ts": "2026-11-17 07:20:00",
+  "file": "/tmp/claude-0/-home-user/fa186a7b-7434-50ad-97db-844fe591fc0f/scratchpad/fullpull/fresh/QQQ_2026-11.csv"
+ },
+ {
+  "ticker": "IWM",
+  "month": "2026-11",
+  "reason": "success",
+  "requested_at": "2026-11-17T12:20:37.742033+00:00",
+  "answered_at": "2026-11-17T12:20:38.435364+00:00",
+  "rows": 9691,
+  "first_ts": "2026-11-02 04:00:00",
+  "last_ts": "2026-11-17 07:19:00",
+  "file": "/tmp/claude-0/-home-user/fa186a7b-7434-50ad-97db-844fe591fc0f/scratchpad/fullpull/fresh/IWM_2026-11.csv"
+ }
+]
