@@ -1,0 +1,73 @@
+ticker,session,written_et,leg,name,published,same_rule_revised_bars,v5_revised_bars,verdict
+SPY,2026-11-09,08:31,calls trigger,PDH,742.2104,,,not a premarket level
+SPY,2026-11-09,08:31,calls stop,PDO,734.82,,,not a premarket level
+SPY,2026-11-09,08:31,puts trigger,PDO,734.82,,,not a premarket level
+SPY,2026-11-09,08:31,puts stop,PDH,742.2104,,,not a premarket level
+SPY,2026-11-10,08:31,calls trigger,PDH,755.42,,,not a premarket level
+SPY,2026-11-10,08:31,calls stop,PML,750.36,,,not a premarket level
+SPY,2026-11-10,08:31,puts trigger,PML,750.36,,,not a premarket level
+SPY,2026-11-10,08:31,puts stop,PDH,755.42,,,not a premarket level
+SPY,2026-11-11,08:31,calls trigger,PMK_H,757.39,757.41,757.29,rule change and revision
+SPY,2026-11-11,08:31,calls stop,PMC,755.72,,,not a premarket level
+SPY,2026-11-11,08:31,puts trigger,PMK_L,753.99,753.97,753.99,v5 equal
+SPY,2026-11-11,08:31,puts stop,PMK_H,757.39,757.41,757.29,rule change and revision
+SPY,2026-11-12,08:31,calls trigger,PMK_H,759.8261,759.8261,757.53,rule change only
+SPY,2026-11-12,08:31,calls stop,PDL,754.9,,,not a premarket level
+SPY,2026-11-12,08:31,puts trigger,PMK_L,749.92,749.92,749.92,v5 equal
+SPY,2026-11-12,08:31,puts stop,PMC,755.72,,,not a premarket level
+SPY,2026-11-13,08:30,calls trigger,PMK_H,759.737,759.86,759.75,rule change and revision
+SPY,2026-11-13,08:30,calls stop,PDC,757.12,,,not a premarket level
+SPY,2026-11-13,08:30,puts trigger,PMK_L,755.73,755.73,755.73,v5 equal
+SPY,2026-11-13,08:30,puts stop,PMK_H,759.737,759.86,759.75,rule change and revision
+SPY,2026-11-16,08:31,calls trigger,PMK_H,754.3772,754.3772,752.9,rule change only
+SPY,2026-11-16,08:31,calls stop,PMK_L,747.95,747.94,747.96,rule change and revision
+SPY,2026-11-16,08:31,puts trigger,PMK_L,747.95,747.94,747.96,rule change and revision
+SPY,2026-11-16,08:31,puts stop,PML,750.36,,,not a premarket level
+QQQ,2026-11-09,08:31,calls trigger,PDO,658.35,,,not a premarket level
+QQQ,2026-11-09,08:31,calls stop,PDL,653.99,,,not a premarket level
+QQQ,2026-11-09,08:31,puts trigger,PDL,653.99,,,not a premarket level
+QQQ,2026-11-09,08:31,puts stop,PDO,658.35,,,not a premarket level
+QQQ,2026-11-10,08:31,calls trigger,PDH,682.48,,,not a premarket level
+QQQ,2026-11-10,08:31,calls stop,CWO,662.64,,,not a premarket level
+QQQ,2026-11-10,08:31,puts trigger,CWO,662.64,,,not a premarket level
+QQQ,2026-11-10,08:31,puts stop,PDH,682.48,,,not a premarket level
+QQQ,2026-11-11,08:31,calls trigger,PMK_H,688.38,688.4,688.34,rule change and revision
+QQQ,2026-11-11,08:31,calls stop,PML,683.45,,,not a premarket level
+QQQ,2026-11-11,08:31,puts trigger,PMK_L,683.09,683.05,683.09,v5 equal
+QQQ,2026-11-11,08:31,puts stop,PMK_H,688.38,688.4,688.34,rule change and revision
+QQQ,2026-11-12,08:31,calls trigger,PDC,690.38,,,not a premarket level
+QQQ,2026-11-12,08:31,calls stop,PMK_L,679.14,674.76,674.76,data revision only
+QQQ,2026-11-12,08:31,puts trigger,PMK_L,679.14,674.76,674.76,data revision only
+QQQ,2026-11-12,08:31,puts stop,PML,683.45,,,not a premarket level
+QQQ,2026-11-13,08:30,calls trigger,PMK_H,691.9401,691.9401,690.399,rule change only
+QQQ,2026-11-13,08:30,calls stop,PMK_L,684.998,684.94,684.998,v5 equal
+QQQ,2026-11-13,08:30,puts trigger,PMK_L,684.998,684.94,684.998,v5 equal
+QQQ,2026-11-13,08:30,puts stop,PDC,688.17,,,not a premarket level
+QQQ,2026-11-16,08:31,calls trigger,PMK_H,681.022,681.022,675.49,rule change only
+QQQ,2026-11-16,08:31,calls stop,PDL,671.681,,,not a premarket level
+QQQ,2026-11-16,08:31,puts trigger,PMK_L,668.3,668.28,668.33,rule change and revision
+QQQ,2026-11-16,08:31,puts stop,PDC,679.89,,,not a premarket level
+IWM,2026-11-09,08:31,calls trigger,PDH,274.55,,,not a premarket level
+IWM,2026-11-09,08:31,calls stop,PDO,271.98,,,not a premarket level
+IWM,2026-11-09,08:31,puts trigger,PDO,271.98,,,not a premarket level
+IWM,2026-11-09,08:31,puts stop,PDH,274.55,,,not a premarket level
+IWM,2026-11-10,08:31,calls trigger,PDH,283.79,,,not a premarket level
+IWM,2026-11-10,08:31,calls stop,CMO,281.64,,,not a premarket level
+IWM,2026-11-10,08:31,puts trigger,CMO,281.64,,,not a premarket level
+IWM,2026-11-10,08:31,puts stop,PDH,283.79,,,not a premarket level
+IWM,2026-11-11,08:31,calls trigger,PMK_H,283.2354,283.2354,283.23,rule change only
+IWM,2026-11-11,08:31,calls stop,PMK_L,281.61,281.51,281.61,v5 equal
+IWM,2026-11-11,08:31,puts trigger,PMK_L,281.61,281.51,281.61,v5 equal
+IWM,2026-11-11,08:31,puts stop,PMK_H,283.2354,283.2354,283.23,rule change only
+IWM,2026-11-12,08:31,calls trigger,PMK_H,283.18,283.38,283.18,v5 equal
+IWM,2026-11-12,08:31,calls stop,PDL,281.48,,,not a premarket level
+IWM,2026-11-12,08:31,puts trigger,PMK_L,280.55,280.55,280.59,rule change only
+IWM,2026-11-12,08:31,puts stop,PDC,283.09,,,not a premarket level
+IWM,2026-11-13,08:30,calls trigger,PMK_H,279.3,279.31,279.28,rule change and revision
+IWM,2026-11-13,08:30,calls stop,PDC,278.44,,,not a premarket level
+IWM,2026-11-13,08:30,puts trigger,PMK_L,277.86,277.86,277.87,rule change only
+IWM,2026-11-13,08:30,puts stop,PMK_H,279.3,279.31,279.28,rule change and revision
+IWM,2026-11-16,08:31,calls trigger,PMK_H,278.92,278.92,276.97,rule change only
+IWM,2026-11-16,08:31,calls stop,PMK_L,275.86,275.74,275.74,data revision only
+IWM,2026-11-16,08:31,puts trigger,PMK_L,275.86,275.74,275.74,data revision only
+IWM,2026-11-16,08:31,puts stop,PQL,277.41,,,not a premarket level
