@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-10-feat-cicd-001-architecture-export-r2.md
 branch: feature/feat-cicd-001-architecture-export-recut
 pr: 1775
-status: ready
+status: done
 ---
 
 # On-demand architecture export implementation plan

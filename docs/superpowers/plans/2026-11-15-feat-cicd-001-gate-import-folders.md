@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-15-feat-cicd-001-test-suite-audit-a-import-folders.md
 branch: feature/feat-cicd-001-gate-import-folders
-status: ready
+status: done
 pr: 1971
 ---
 

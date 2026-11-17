@@ -3,7 +3,7 @@ feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-11-09-feat-deploy-001-retire-ew-bindings-own-scope.md
 branch: fix/feat-deploy-001-ew-calendar-bindings-own-scope
 pr: 1789
-status: ready
+status: done
 ---
 
 # EW calendar binding retirement implementation plan

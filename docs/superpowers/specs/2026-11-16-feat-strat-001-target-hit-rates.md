@@ -18,7 +18,7 @@ done_when:
   - "Experiment through the production paths, before any production change: the implementation PR body shows the history writer run on a local copy built like this spec's Experiment (as-traded bars, 2022-01-03 to 2026-11-10, SPY 2025-04-09 and IWM 2026-06-26 left out) producing the same 3,463 trades (same ticker, date, side and stop) and, on every trade filled at the trigger, excursions within 1e-6 of this spec's rung_rows_trades.csv; the reach curve and the out-of-sample table of this spec reproduced from those rows; and the measured wall-clock per ticker, which sets the job's timeout at four times or more; a reproduction for the record, not a gate"
   - "Source identity (DASHBOARD-01): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, DASHBOARD-01) note row carries that source_identity_sha256 with implementation and test prose for this PR"
   - "The FEAT-STRAT-001 catalog record and the PR traceability entry are updated; python3 scripts/gate/spec_gate.py --pr origin/main passes; the owner's merge of the implementation PR is the yes for the table and the policy row, which the apply-schema build creates from gcp/schema.sql on that merge (both additive: CREATE TABLE IF NOT EXISTS and ON CONFLICT DO NOTHING), before any deploy; the deploy and the history run each wait for their own yes and are recorded with their row counts"
-status: approved
+status: superseded
 supersedes: null
 ---
 
