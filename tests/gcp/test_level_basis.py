@@ -971,3 +971,91 @@ def test_a_session_before_the_swap_replays_under_the_level_rule():
     assert _exit_picks(old) == _exit_picks(plain)
     assert old.long.targets and old.long.plan.get("rule") is None
     assert _fresh_qqq(db, session=SESSION).rule_version == MARKS_V6
+
+
+# ── ATR marks spec (2026-11-16), done_when "Rule version and stored briefs" ──
+
+def _with_both_keys(stored: dict) -> dict:
+    """The stored level-rule basis with both new keys recorded in its params,
+    the marks record non-empty, to show it is never checked for that basis."""
+    from lib.strat_levels import policy_wide_param
+    b = json.loads(json.dumps(stored))
+    for key, extra in (("plan_target_marks_atr", {"marks": [0.25, 0.5, 0.75, 1.0]}),
+                       ("ladder_history_sessions", {"sessions": 250})):
+        pol = {"extra": extra, "effective_from": "2015-01-02", "method_id": "policy"}
+        b["params"][key] = policy_wide_param(key, pol, b["ticker"], b["atr_basis"]).to_basis()
+    return b
+
+
+@pytest.mark.parametrize("ticker", ["SPY", "QQQ", "IWM"])
+@pytest.mark.parametrize("shape", ["as_stored", "both_keys"])
+def test_a_level_rule_basis_rebuilds_as_the_base(ticker, shape):
+    from lib.strat_levels import format_levels_for_brief
+    from tests.lib import session_levels_helpers as slh
+    stored = slh.stored_1116(ticker)
+    assert "plan_target_marks_atr" not in stored["params"]
+    b = stored if shape == "as_stored" else _with_both_keys(stored)
+    sl = SessionLevels.from_basis(b)
+    main = slh.main_1116(ticker)
+    assert sl.rule_version == "feat-strat-001.v3"
+    assert slh.side_records(sl) == {"long": main["long"], "short": main["short"]}
+    assert format_levels_for_brief(sl.to_level_map(), "bearish") == slh.main_text_1116(ticker)
+    assert "plan_reach_history" not in sl.to_basis()
+
+
+def test_a_marks_basis_rebuilds_from_what_it_recorded():
+    """After the policy rows change (marks [0.5, 1.0], two legs offered), a
+    stored marks basis rebuilds the four targets, the waypoints and the text
+    from the marks, leg count and reach history it recorded."""
+    from dataclasses import replace
+
+    from lib.strat_levels import format_levels_for_brief
+    from tests.lib import session_levels_helpers as slh
+    first = SessionLevels.from_basis(slh.marks_basis(
+        slh.stored_1116("IWM"), slh.QUARTER_MARKS, 4, reach_history=slh.d7_history()))
+    stored = json.loads(json.dumps(first.to_basis()))
+    assert stored["rule_version"] == "feat-strat-001.v6"
+    assert stored["plan_reach_history"]["long"] == list(slh.CALLS_REACH_D7)
+
+    later = LevelParams_from(stored)
+    for key, extra, value in (("plan_target_marks_atr", {"marks": [0.5, 1.0]}, 2.0),
+                              ("exit_legs", {"legs": 2}, 2.0)):
+        later.params[key] = replace(later.params[key], extra=extra, value=value)
+    assert later.plan_target_marks() == (0.5, 1.0)
+    again = SessionLevels.from_basis(stored, params=later)
+    for side in ("long", "short"):
+        a, b = first.side(side), again.side(side)
+        assert [t["price"] for t in b.targets] == [t["price"] for t in a.targets]
+        assert len(b.targets) == 4 and b.plan_waypoints == a.plan_waypoints
+    assert (format_levels_for_brief(again.to_level_map(), "bearish")
+            == format_levels_for_brief(first.to_level_map(), "bearish"))
+
+
+def LevelParams_from(basis: dict):
+    from lib.strat_levels import LevelParams
+    return LevelParams.from_basis(basis["ticker"], basis["session_date"], basis)
+
+
+def test_plan_inputs_on_a_marks_basis():
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib import session_levels_helpers as slh
+
+    def no_policy():
+        pytest.fail("a basis under the pick rule never reads the policy")
+
+    b = slh.marks_basis(slh.stored_1116("IWM"), slh.QUARTER_MARKS, 4,
+                        reach_history=slh.d7_history())
+    stored = json.loads(json.dumps(SessionLevels.from_basis(b).to_basis()))
+    calls = mod.plan_inputs("calls", {}, stored, no_policy)
+    assert calls.targets == (280.14, 281.36, 282.58, 283.79)
+    assert calls.legs == 4 and calls.plan_available
+    assert (calls.trigger_price, calls.stop_price) == (278.92, 275.86)
+    puts = mod.plan_inputs("puts", {}, stored, no_policy)
+    assert puts.targets == (274.64, 273.42, 272.20, 270.99) and puts.legs == 4
+    for t in slh.TICKERS_1116:
+        main = slh.main_1116(t)
+        for side in ("calls", "puts"):
+            p = mod.plan_inputs(side, {}, slh.stored_1116(t), no_policy)
+            assert {"trigger": p.trigger_price, "stop": p.stop_price, "targets": list(p.targets),
+                    "legs": p.legs, "cutoff": p.cutoff_minutes, "status": p.target_status,
+                    "plan_available": p.plan_available} == main[f"plan_inputs_{side}"], (t, side)

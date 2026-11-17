@@ -315,6 +315,9 @@ MERGE_BASE_CALLS_RATES = {
     "feat-strat-001.v3": (_no_rows("trigger"), _no_rows("t1")),
     "feat-strat-001.v4": (_no_rows("trigger"), _no_rows("t1")),
     "feat-strat-001.v5": (_rate("trigger", 4, 0.8), _rate("t1", 1, 0.2)),
+    # The ATR marks version (2026-11-16 spec r2) is read, and its population
+    # is its own: none of the resolved rows here carry it.
+    "feat-strat-001.v6": (_no_rows("trigger"), _no_rows("t1")),
     "feat-strat-001.v2": (_NOT_TRACKED, _no_rows("trigger")),
     None: (_NOT_TRACKED, _rate("trigger", 4, 0.8)),
 }

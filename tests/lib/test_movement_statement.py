@@ -1302,6 +1302,7 @@ def test_the_reads_propagate_a_backend_outage_but_keep_a_source_envelope():
 V3_RULE = "feat-strat-001.v3"
 V4_RULE = "feat-strat-001.v4"
 V5_RULE = "feat-strat-001.v5"
+V6_RULE = "feat-strat-001.v6"   # the ATR marks version (2026-11-16 spec r2)
 
 
 class _VersionedRows:
@@ -1316,7 +1317,8 @@ class _VersionedRows:
         # (n, hits) of the calls trigger and t1 slots, per stored version.
         self.counts = {V3_RULE: {"trigger": (10, 9), "t1": (10, 8)},
                        V4_RULE: {"trigger": (4, 1), "t1": (4, 0)},
-                       V5_RULE: {"trigger": (3, 2), "t1": (3, 1)}}
+                       V5_RULE: {"trigger": (3, 2), "t1": (3, 1)},
+                       V6_RULE: {"trigger": (2, 2), "t1": (2, 0)}}
 
     def __call__(self, sql, params=None):
         if "premarket_analysis" not in sql:
@@ -1397,3 +1399,32 @@ def test_v3_trigger_on_the_reference_cent_keeps_its_slot():
     assert ms._new_rule_mark({**basis, "rule_version": V5_RULE}, "puts") == 99.5
     assert ms._new_rule_mark({**basis, "rule_version": "feat-strat-001.v2"}, "calls") is None
     assert ms._new_rule_mark(None, "calls") is None
+
+
+# ── ATR marks spec (2026-11-16), Design 6: the marks version's own population ──
+
+@pytest.mark.parametrize("session_rule, want", [
+    (V6_RULE, {"trigger": (2, 2), "t1": (0, 2)}),
+    (V5_RULE, {"trigger": (2, 3), "t1": (1, 3)}),
+])
+def test_reach_rates_do_not_mix_the_marks_version(monkeypatch, session_rule, want):
+    """With resolved rows of the level rule (v3 to v5) and of the marks version
+    in the population, a marks-version session's rates count marks-version
+    rows only and a level-rule session's its own version only."""
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
+    monkeypatch.setattr(ms, "_build_continuation",
+                        lambda *a, **k: ms._unavailable("not under test"))
+    q = _VersionedRows(session_rule)
+    out = ms.assemble_movement_statement(
+        "SPY", "15m", engine=object(), level_map=_sample_level_map(), query_fn=q,
+        gamma_fn=lambda *a, **k: {"available": False}, session_date=SESSION)
+    first, second = out["levels"]["calls"][:2]
+    assert (first["reach_rate"]["hits"], first["reach_rate"]["sample_n"]) == want["trigger"]
+    assert (second["reach_rate"]["hits"], second["reach_rate"]["sample_n"]) == want["t1"]
+    assert q.bound == [session_rule, session_rule]
+
+
+def test_new_rule_mark_reads_a_marks_basis():
+    basis = {"rule_version": V6_RULE, "cleared_above": 100.0, "cleared_below": 99.5}
+    assert ms._new_rule_mark(basis, "calls") == 100.0
+    assert ms._new_rule_mark(basis, "puts") == 99.5
