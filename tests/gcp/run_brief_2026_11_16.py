@@ -93,10 +93,27 @@ def daily_frames(mp) -> dict:
 
 
 class _LevelParams:
-    """Answers load_level_params' one query with the exported rows."""
+    """Answers load_level_params' one query with the exported rows, plus the
+    policy rows gcp/schema.sql seeds that the export predates (the ATR marks
+    spec's two rows, which its merge applies to production before any
+    deploy), so the dry run builds what production builds after that merge.
+    `extra_policy` adds later-dated policy rows, {param_key: (extra,
+    effective_from)}, as a later policy PR would."""
 
-    def __init__(self):
-        self.frame = _table('level_params.json')
+    def __init__(self, extra_policy: dict | None = None):
+        from tests.lib.level_params_fixtures import seeded_policy
+
+        frame = _table('level_params.json')
+        exported = set(frame.loc[frame['row_kind'] == 'policy', 'param_key'])
+        added = [{'row_kind': 'policy', 'param_key': key, 'method_id': row['method_id'],
+                  'extra': row['extra'], 'effective_from': row['effective_from']}
+                 for key, row in sorted(seeded_policy().items()) if key not in exported]
+        added += [{'row_kind': 'policy', 'param_key': key, 'method_id': 'policy',
+                   'extra': extra, 'effective_from': eff}
+                  for key, (extra, eff) in sorted((extra_policy or {}).items())]
+        self.seeded = sorted(r['param_key'] for r in added)
+        self.frame = pd.concat([frame, pd.DataFrame(added, columns=frame.columns)],
+                               ignore_index=True) if added else frame
         self.queries: list = []
 
     def query(self, sql, params=None):
@@ -119,7 +136,7 @@ class _Db(dry.RecordingDb):
         return frame
 
 
-def build_db(frames: dict) -> _Db:
+def build_db(frames: dict, *, extra_policy: dict | None = None) -> _Db:
     stored = _records('brief_rows.json')
     bars = {}
     for ticker in TICKERS:
@@ -139,7 +156,7 @@ def build_db(frames: dict) -> _Db:
         return frame[(frame['ts'] >= start) & (frame['ts'] < end)].reset_index(drop=True)
 
     return _Db(frames, routes=[(BASIS_NEEDLE, live_basis), (BARS_NEEDLE, minute_bars)],
-               params_db=_LevelParams())
+               params_db=_LevelParams(extra_policy))
 
 
 def run(log_path: str | None = None) -> int:

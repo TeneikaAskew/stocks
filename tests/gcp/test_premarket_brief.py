@@ -4313,3 +4313,167 @@ def test_persisted_row_carries_plan_t4():
     (row,) = built.canonical
     assert row["calls_plan_t4_price"] == 283.79 and row["puts_plan_t4_price"] == 270.99
     assert row["calls_plan_t3_price"] == 282.58
+
+
+# ── ATR marks spec (2026-11-16), Design 4: the reach history read ───────
+
+QUARTERS_EXTRA = '{"marks": [0.25, 0.5, 0.75, 1.0]}'
+
+
+def _marks_db(tickers, *, sessions_extra=None):
+    """Level parameters for `tickers` at the #1753 values with the swap rows
+    (marks [0.25, 0.5, 0.75, 1.0], four legs) in force from 2026-11-01."""
+    from datetime import date as _date
+
+    from tests.lib.level_params_fixtures import legacy_db
+    db = legacy_db(list(tickers))
+    db.set_policy("plan_target_marks_atr", effective_from=_date(2026, 11, 1), extra=QUARTERS_EXTRA)
+    db.set_policy("exit_legs", effective_from=_date(2026, 11, 1), extra='{"legs": 4}')
+    if sessions_extra is not None:
+        db.set_policy("ladder_history_sessions", effective_from=_date(2026, 11, 1),
+                      extra=sessions_extra)
+    return db
+
+
+class _ReachReads:
+    """A recording strict reader for the reach history statement."""
+
+    def __init__(self, rows=(), fail=None):
+        self.rows, self.fail, self.calls = list(rows), fail, []
+
+    def __call__(self, sql, params=None):
+        self.calls.append((sql, dict(params or {})))
+        if self.fail is not None:
+            raise self.fail
+        cols = ["ticker", "analysis_date", "calls_plan_mfe_atr", "puts_plan_mfe_atr",
+                "rule_version"]
+        return pd.DataFrame(self.rows, columns=cols)
+
+
+def _read(reads, tickers=("SPY", "QQQ", "IWM"), *, db=None, session="2026-11-16"):
+    from datetime import date as _date
+
+    import gcp.premarket_brief as brief
+    db = db if db is not None else _marks_db(tickers)
+    params = db.load(list(tickers), _date.fromisoformat(session))
+    return brief.read_plan_reach_history(reads, list(tickers), _date.fromisoformat(session), params)
+
+
+def test_one_query_for_all_tickers():
+    reads = _ReachReads()
+    out = _read(reads)
+    assert len(reads.calls) == 1
+    (_sql, params) = reads.calls[0]
+    assert params["session_date"] == "2026-11-16"
+    assert params["sessions"] == 250
+    assert params["rule_version"] == "feat-strat-001.v6"
+    assert sorted(v for k, v in params.items() if k.startswith("t")) == ["IWM", "QQQ", "SPY"]
+    assert set(out) == {"SPY", "QQQ", "IWM"}
+    for t in out:
+        assert out[t] == {"status": "ok", "sessions": 250, "rule_version": "feat-strat-001.v6",
+                          "long": [], "short": []}
+
+
+def test_the_sql_bounds_what_it_reads():
+    import re
+
+    import gcp.premarket_brief as brief
+    sql = " ".join(brief.PLAN_REACH_HISTORY_SQL.split())
+    assert "analysis_date < :session_date" in sql
+    assert "LIMIT :sessions" in sql
+    assert "level_basis->>'rule_version'" in sql and "rule_version = :rule_version" in sql
+    assert "calls_plan_mfe_atr IS NOT NULL" in sql and "puts_plan_mfe_atr IS NOT NULL" in sql
+    assert "CROSS JOIN LATERAL" in sql and "ORDER BY p.analysis_date DESC" in sql
+    assert not re.search(r"analysis_date\s*<=", sql)
+
+
+def test_values_split_by_side():
+    reads = _ReachReads([
+        ("SPY", "2026-11-12", 0.7, None, "feat-strat-001.v6"),
+        ("SPY", "2026-11-10", 0.3, 0.2, "feat-strat-001.v6"),
+        ("SPY", "2026-11-11", None, 1.1, "feat-strat-001.v6"),
+    ])
+    out = _read(reads, ("SPY",))
+    assert out["SPY"]["long"] == [0.3, 0.7]
+    assert out["SPY"]["short"] == [0.2, 1.1]
+
+
+def test_bad_values_and_a_ticker_with_no_rows(caplog):
+    """Review Focus 5: a NaN and a negative value are left out and logged
+    with ticker and date; a ticker with no rows gets empty lists while the
+    others get their values; the read is still one query."""
+    import logging
+    reads = _ReachReads([
+        ("SPY", "2026-11-10", float("nan"), 0.4, "feat-strat-001.v6"),
+        ("SPY", "2026-11-11", 0.5, -0.2, "feat-strat-001.v6"),
+        ("QQQ", "2026-11-11", 1.5, 0.6, "feat-strat-001.v6"),
+    ])
+    with caplog.at_level(logging.ERROR, logger="gcp.premarket_brief"):
+        out = _read(reads)
+    assert len(reads.calls) == 1
+    assert out["SPY"]["long"] == [0.5] and out["SPY"]["short"] == [0.4]
+    assert out["QQQ"]["long"] == [1.5] and out["QQQ"]["short"] == [0.6]
+    assert out["IWM"] == {"status": "ok", "sessions": 250, "rule_version": "feat-strat-001.v6",
+                          "long": [], "short": []}
+    logged = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
+    assert "SPY" in logged and "2026-11-10" in logged and "2026-11-11" in logged
+
+
+def test_level_rule_run_makes_no_query():
+    from tests.lib.level_params_fixtures import legacy_db
+    reads = _ReachReads()
+    out = _read(reads, db=legacy_db(["SPY", "QQQ", "IWM"]))
+    assert reads.calls == []
+    assert out == {"SPY": None, "QQQ": None, "IWM": None}
+
+
+def test_history_sessions_not_ok_makes_no_query():
+    reads = _ReachReads()
+    out = _read(reads, db=_marks_db(["SPY", "QQQ", "IWM"], sessions_extra='{"sessions": 0}'))
+    assert reads.calls == []
+    for t in out:
+        assert out[t]["status"] == "input_unavailable"
+        assert out[t]["long"] == [] and out[t]["short"] == []
+
+
+def test_a_failed_read_raises():
+    reads = _ReachReads(fail=RuntimeError("connection reset"))
+    with pytest.raises(RuntimeError, match="connection reset"):
+        _read(reads)
+
+
+def _qqq_brief(monkeypatch, reads, *, db=None, as_of="2026-11-06"):
+    import gcp.premarket_brief as brief
+    from tests.lib import strat_2026_11_06 as fx
+    monkeypatch.setattr(brief, "_strict_read", reads)
+    return fx.run_brief(monkeypatch, "QQQ", fx.loader_frame("QQQ"), as_of=as_of,
+                        params_db=db if db is not None else _marks_db(["QQQ"]))
+
+
+def test_a_brief_as_of_run_sees_only_earlier_rows(monkeypatch):
+    reads = _ReachReads([("QQQ", "2026-11-05", 1.2, 0.3, "feat-strat-001.v6")])
+    entry = _qqq_brief(monkeypatch, reads)
+    [(sql, params)] = reads.calls
+    assert params["session_date"] == "2026-11-06" and "analysis_date < :session_date" in sql
+    basis = entry["level_basis"]
+    assert basis["rule_version"] == "feat-strat-001.v6"
+    assert basis["plan_reach_history"]["long"] == [1.2]
+    assert "reached 1 of 1" in entry["playbook"]
+
+
+def test_the_brief_raises_on_a_failed_read(monkeypatch):
+    reads = _ReachReads(fail=RuntimeError("connection reset"))
+    with pytest.raises(RuntimeError, match="connection reset"):
+        _qqq_brief(monkeypatch, reads)
+
+
+def test_history_sessions_not_ok_prints_unavailable(monkeypatch):
+    reads = _ReachReads()
+    entry = _qqq_brief(monkeypatch, reads,
+                       db=_marks_db(["QQQ"], sessions_extra='{"sessions": 0}'))
+    assert reads.calls == []
+    assert "reach history unavailable (input_unavailable)" in entry["playbook"]
+    assert "no history yet" not in entry["playbook"]
+    plain = _qqq_brief(monkeypatch, _ReachReads())
+    assert ([t["price"] for t in entry["level_basis"]["long"]["targets"]]
+            == [t["price"] for t in plain["level_basis"]["long"]["targets"]])

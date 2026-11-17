@@ -856,3 +856,109 @@ def test_endpoint_serves_the_corrected_premarket_high_of_2026_11_16_qqq(monkeypa
     assert rungs.get("PMK_H") == 675.49, levels
     assert "679.85" not in r.text
     assert not [x for x in _floats(r.json()) if round(x, 2) == 679.85]
+
+
+# ── ATR mark targets (FEAT-STRAT-001, 2026-11-16 spec r2, Design 6): a
+# session built under the marks, carried from the brief's stored row through
+# HTTP and the response model, with the REAL brief, level-map builder and
+# assembler.
+
+def test_endpoint_serves_a_marks_session_of_2026_11_16_iwm(monkeypatch):
+    """The brief's dry run of 2026-11-16 (tests/gcp/run_brief_2026_11_16.py,
+    the committed read-only exports) with the swap rows of Design 8 dated
+    on the session (marks [0.25, 0.5, 0.75, 1.0], four legs) builds IWM's
+    live row under the marks version, feat-strat-001.v6, with four plan
+    targets. The endpoint serves that session's levels: the trigger rungs
+    are the level rule's, and the reach rates count marks-version rows only,
+    so five resolved IWM rows of the level rule's version (feat-strat-001.v5),
+    each with its trigger hit, count for nothing. On the merge base the brief
+    builds v5 and the endpoint counts those five rows."""
+    import datetime as _dt  # noqa: PLC0415
+    import json  # noqa: PLC0415
+    import sqlite3  # noqa: PLC0415
+
+    import pandas as pd  # noqa: PLC0415
+
+    import lib.movement_statement as ms  # noqa: PLC0415
+    from tests.gcp import brief_dry_run_helpers as dry  # noqa: PLC0415
+    from tests.gcp import run_brief_2026_11_16 as brief_run  # noqa: PLC0415
+    from tests.lib.test_movement_statement_level_basis import COLS, SLOTS, _Db  # noqa: PLC0415
+
+    session = _dt.date(2026, 11, 16)
+    swap = {"plan_target_marks_atr": ({"marks": [0.25, 0.5, 0.75, 1.0]}, "2026-11-16"),
+            "exit_legs": ({"legs": 4}, "2026-11-16")}
+    with pytest.MonkeyPatch.context() as mp:
+        frames = brief_run.daily_frames(mp)
+        brief_db = brief_run.build_db({"IWM": frames["IWM"]}, extra_policy=swap)
+        pb = dry.install(mp, brief_db, as_of=brief_run.SESSION)
+        mp.setenv("BRIEF_PREMARKET_FROM_BARS", "true")
+        assert dry.run_main(pb, ["--no-persist"]) == 0
+        mp.delenv("BRIEF_AS_OF")
+        (row,) = pb.build_persist_rows(brief_db.briefs[0]).canonical
+    assert (row["ticker"], row["analysis_date"], row["run_kind"]) == ("IWM", session, "live")
+
+    def _cell(c, r):
+        v = r.get(c)
+        return v.isoformat() if isinstance(v, _dt.date) else v
+
+    db = _Db()
+    db.add(**{c: _cell(c, row) for c in COLS})
+    # Five earlier sessions resolved under the level rule's version, each
+    # with the same tracked slots and its trigger hit.
+    level_rule = {**row["level_basis"], "rule_version": "feat-strat-001.v5"}
+    for i in range(5):
+        old = {c: _cell(c, row) for c in COLS}
+        old.update(analysis_date=f"2026-11-{9 + i:02d}", level_basis=level_rule,
+                   outcome_resolved_at="2026-11-13T21:00:00Z")
+        for side in ("calls", "puts"):
+            old[f"{side}_trigger_hit_ts"] = "2026-11-13T15:00:00Z"
+        db.add(**old)
+    shared = sqlite3.connect(":memory:", check_same_thread=False)
+    db.conn.commit()
+    db.conn.backup(shared)
+    db.conn = shared
+    bound = []
+
+    def query(sql, params=None):
+        if "outcome_resolved_at IS NOT NULL" in sql:
+            bound.append((params or {}).get("rule_version"))
+        return db.query(sql, params)
+
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "true")
+    monkeypatch.setattr(dashboard_router, "_query_fn", query)
+    monkeypatch.setattr(dashboard_router, "_movement_analysis_date", lambda: session)
+    monkeypatch.setattr(ms, "_build_continuation",
+                        lambda *a, **k: ms._unavailable("not under test"))
+    real_assemble = ms.assemble_movement_statement
+
+    def assemble(ticker, timeframe="15m", **kw):
+        kw.setdefault("query_fn", query)
+        kw.setdefault("gamma_fn", lambda *a, **k: {"available": False})
+        kw.setdefault("engine", object())
+        kw.setdefault("session_date", session)
+        return real_assemble(ticker, timeframe, **kw)
+
+    daily = frames["IWM"][frames["IWM"].index < pd.Timestamp(session)]
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=daily), \
+            patch("lib.movement_statement.assemble_movement_statement", side_effect=assemble):
+        r = _get(TestClient(_build_app()), ticker="IWM")
+
+    assert r.status_code == 200, r.text
+    levels = r.json()["levels"]
+    assert levels["status"] == "OK", levels
+    trigger = levels["calls"][0]
+    assert (trigger["name"], trigger["price"]) == (row["calls_trigger_name"],
+                                                   round(row["calls_trigger_price"], 2))
+    assert trigger["reach_rate"]["slot"] == "trigger"
+    assert trigger["reach_rate"]["status"] == "UNAVAILABLE", trigger
+    assert bound and set(bound) == {"feat-strat-001.v6"}
+    # The stored row the endpoint read: the marks version, four plan targets
+    # at the marks from the trigger, the level rule's gate targets.
+    basis = row["level_basis"] if isinstance(row["level_basis"], dict) else json.loads(row["level_basis"])
+    assert basis["rule_version"] == "feat-strat-001.v6"
+    assert all(row[f"calls_plan_t{k}_price"] is not None for k in (1, 2, 3, 4))
+    assert row["calls_plan_t1_price"] > row["calls_trigger_price"]
+    assert "Targets at 25%, 50%, 75% and 100% of ATR(14)" in row["playbook"]
+    assert [row[f"calls_t{k}_price"] for k in (1, 2, 3)] == [
+        t["price"] for t in basis["long"]["gate_targets"]]
+    assert set(SLOTS) >= {"trigger", "t1"}

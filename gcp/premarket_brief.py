@@ -29,9 +29,9 @@ from lib.indicators import add_brief_indicators, relative_volume
 from lib.strat import (CONTINUITY_DISPLAY_ORDER, StratClassifier, compute_strat_status,
                        timeframe_continuity_record)
 from lib.strat_levels import (
-    LevelParamsUnavailable, build_session_levels,
-    format_levels_for_brief, load_level_params, premarket_snapshot_from_daily,
-    premarket_snapshot_from_row, session_row_from_daily,
+    LADDER_HISTORY_KEY, TARGET_RULE_ATR_MARKS, LevelParamsUnavailable, build_rule_version,
+    build_session_levels, format_levels_for_brief, load_level_params, plan_target_rule,
+    premarket_snapshot_from_daily, premarket_snapshot_from_row, session_row_from_daily,
 )
 from lib.signals import check_call_conditions, check_put_conditions
 from lib.strategies.calibration import resolve_rsi_bands
@@ -1023,6 +1023,95 @@ def _strict_read(sql: str, params: dict):
     return database.query_to_dataframe_strict(sql, params)
 
 
+# The reach history the brief reads for a plan built under the ATR marks
+# (FEAT-STRAT-001 ATR mark targets spec, Design 4): per ticker, its last
+# :sessions rows of premarket_analysis before the session date, then only
+# those whose level_basis records the version being built and whose reach
+# value is not NULL on at least one side. One statement for every ticker of
+# the run; {tickers} is one VALUES row a ticker.
+PLAN_REACH_HISTORY_SQL = (
+    "SELECT t.ticker, r.analysis_date, r.calls_plan_mfe_atr, r.puts_plan_mfe_atr, "
+    "r.rule_version "
+    "FROM (VALUES {tickers}) AS t(ticker) "
+    "CROSS JOIN LATERAL ("
+    "SELECT p.analysis_date, p.calls_plan_mfe_atr, p.puts_plan_mfe_atr, "
+    "p.level_basis->>'rule_version' AS rule_version "
+    "FROM premarket_analysis p "
+    "WHERE p.ticker = t.ticker AND p.analysis_date < :session_date "
+    "ORDER BY p.analysis_date DESC LIMIT :sessions"
+    ") r "
+    "WHERE r.rule_version = :rule_version "
+    "AND (r.calls_plan_mfe_atr IS NOT NULL OR r.puts_plan_mfe_atr IS NOT NULL)"
+)
+
+
+def _reach_value(value, ticker: str, analysis_date, side: str) -> Optional[float]:
+    """A stored reach value, or None when there is none on that side. A
+    NaN or a negative value is a resolver defect (INTERNAL, CLAUDE.md 3.7):
+    it is logged at error level with the row and never counted."""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        v = float('nan')
+    if v != v or v < 0 or v in (float('inf'), float('-inf')):
+        logger.error("plan reach history: %s %s %s_plan_mfe_atr is %r, not a reach; not counted",
+                     ticker, analysis_date, side, value)
+        return None
+    return v
+
+
+def read_plan_reach_history(query_fn, tickers, session_date, level_params: dict) -> dict:
+    """Per upper-case ticker, the reach history a plan built under the ATR
+    marks prints its counts from: {'status', 'sessions', 'rule_version',
+    'long': [...], 'short': [...]}, each list in date order.
+
+    A ticker whose build records the level rule's version gets None and no
+    query is made for it. With the ladder_history_sessions row not ok each
+    marks ticker gets that status and empty lists, and no query is made.
+    Otherwise ONE statement reads every marks ticker's rows (the brief
+    passes its strict reader), bounded to rows before the session date, so a
+    BRIEF_AS_OF run reads only earlier sessions; a failed read raises
+    (CLAUDE.md 3.7), never an empty history."""
+    names = sorted({str(t).upper() for t in tickers if t})
+    out: dict = {t: None for t in names}
+    # The version each build will record; the population is that version's
+    # own (rates never mix rule versions), and the marks row is policy-wide,
+    # so every marks ticker of a run builds the same one.
+    versions = {t: build_rule_version(level_params[t]) for t in names}
+    marks = [t for t in names if plan_target_rule(versions[t]) == TARGET_RULE_ATR_MARKS]
+    if not marks:
+        return out
+    version = versions[marks[0]]
+    history = level_params[marks[0]].param(LADDER_HISTORY_KEY)
+    if not history.ok:
+        for t in marks:
+            out[t] = {'status': history.status, 'sessions': None,
+                      'rule_version': version, 'long': [], 'short': []}
+        return out
+    sessions = int(history.value)
+    placeholders = ', '.join(f'(:t{i})' for i in range(len(marks)))
+    params = {f't{i}': t for i, t in enumerate(marks)}
+    params.update(session_date=session_date.isoformat(), sessions=sessions,
+                  rule_version=version)
+    df = query_fn(PLAN_REACH_HISTORY_SQL.format(tickers=placeholders), params)
+    rows = sorted(df.to_dict('records') if df is not None and len(df) else [],
+                  key=lambda r: str(r['analysis_date']))
+    for t in marks:
+        out[t] = {'status': 'ok', 'sessions': sessions, 'rule_version': version,
+                  'long': [], 'short': []}
+    for r in rows:
+        t = str(r['ticker']).upper()
+        if t not in marks:
+            continue
+        for side, col in (('long', 'calls_plan_mfe_atr'), ('short', 'puts_plan_mfe_atr')):
+            v = _reach_value(r.get(col), t, r['analysis_date'], col.split('_')[0])
+            if v is not None:
+                out[t][side].append(v)
+    return out
+
+
 # The nightly's own premarket bars statement
 # (gcp/fetchers/fetch_market_data.py, compute_and_upsert_daily_indicators).
 PREMARKET_BARS_SQL = (
@@ -1229,6 +1318,9 @@ def generate_premarket_brief(cfg=None, data_dir: str = None, *,
     # query raises LevelParamsUnavailable here, before any ticker is built,
     # so the brief exits non-zero without writing a row.
     level_params = load_level_params(_level_params_query, tickers, analysis_date)
+    # The reach history a plan built under the ATR marks prints its counts
+    # from: one query for every ticker, none when the level rule builds.
+    reach_history = read_plan_reach_history(_strict_read, tickers, analysis_date, level_params)
 
     loader = DataLoader(data_dir=data_dir)
     strat = StratClassifier(strat_config=cfg.strat)
@@ -1664,6 +1756,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None, *,
                 ticker, analysis_date, df, atrs, session_premarket,
                 level_params[ticker.upper()],
                 daily_strat_class=str(d.get('strat_candle') or ''),
+                reach_history=reach_history.get(ticker.upper()),
             )
             atr_for_filter = session_levels.atr
             level_map = session_levels.to_level_map()
