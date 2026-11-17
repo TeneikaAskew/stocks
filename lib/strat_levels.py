@@ -1065,6 +1065,22 @@ class LevelParamsUnavailable(RuntimeError):
     reason = 'level_params_unavailable'
 
 
+class LevelRuleVersionUnknown(RuntimeError):
+    """A stored level basis names a rule version this image does not know
+    (`rule_version_newer`) or cannot read (`rule_version_unreadable`), as
+    rule_version_status classifies it. It is refused, never rebuilt under an
+    older rule: each reader turns it into its own unavailable state (spec
+    2026-11-16-feat-strat-001-unknown-rule-version, Design 2 and 3).
+    `reason` is the status and `recorded` the stored value, unchanged."""
+
+    def __init__(self, reason: str, recorded):
+        self.reason = reason
+        self.recorded = recorded
+        super().__init__(
+            f"{reason}: level_basis rule_version {recorded!r}; this image knows up to "
+            f"{newest_pick_rule_version()}")
+
+
 class LevelParamUnavailable(LookupError):
     """A caller asked for the value of a parameter whose status is not ok.
     Names the key, the status and the sample so the copy can say why."""
@@ -1551,8 +1567,81 @@ def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]
 # target_min_spacing_atr and planned in exit_legs legs; gate_targets keep the
 # v2 targets for the signal monitor and the structured t1..t3 columns. A
 # stored v2 basis is rebuilt with the v2 rule.
+# v4 (2026-11-16 premarket extremes): the pick rule is v3's. Only how the
+# premarket high and low were taken differs (a confirmed print, not a thin
+# bar, not a stale closing-price report), so the version marks which
+# extremes a basis was built on and reach rates count one version at a time.
+# v5 (2026-11-16 prior-close prints): the pick rule is v3's. A print at the
+# prior close inside a bar that traded elsewhere no longer sets the premarket
+# high or low (rule prior-close-print-v1), so v5 marks those extremes and v4
+# marks the ones before it.
 LEVEL_RULE_V2 = 'feat-strat-001.v2'
-LEVEL_RULE_VERSION = 'feat-strat-001.v3'
+LEVEL_RULE_V3 = 'feat-strat-001.v3'
+LEVEL_RULE_V4 = 'feat-strat-001.v4'
+LEVEL_RULE_VERSION = 'feat-strat-001.v5'
+PICK_RULE_VERSIONS = (LEVEL_RULE_V3, LEVEL_RULE_V4, LEVEL_RULE_VERSION)
+
+
+def is_current_pick_rule(version) -> bool:
+    """True when `version` names a rule that picks as the current one does
+    (v3, v4 or v5). Every reader that asks "is this basis under the pick rule"
+    asks here; only the reach-rate population filters on one exact version."""
+    return isinstance(version, str) and version in PICK_RULE_VERSIONS
+
+
+# What a reader makes of a stored level_basis.rule_version (FEAT-STRAT-001,
+# spec 2026-11-16-feat-strat-001-unknown-rule-version, Design 1). A reader
+# rebuilds `legacy` under the v2 rule and `known` under its own recorded rule;
+# it refuses the two statuses in REFUSED_RULE_VERSION_STATUSES by name.
+RULE_VERSION_LEGACY = 'legacy'
+RULE_VERSION_KNOWN = 'known'
+RULE_VERSION_NEWER = 'rule_version_newer'
+RULE_VERSION_UNREADABLE = 'rule_version_unreadable'
+REFUSED_RULE_VERSION_STATUSES = frozenset({RULE_VERSION_NEWER, RULE_VERSION_UNREADABLE})
+
+_RULE_VERSION_NUMBER = re.compile(r'feat-strat-001\.v([1-9][0-9]*)', re.ASCII)
+
+
+def rule_version_number(version) -> Optional[int]:
+    """The N of a `feat-strat-001.vN` string (ASCII digits, no leading zero,
+    nothing before or after), else None. Anything not a `str` is None."""
+    if not isinstance(version, str):
+        return None
+    m = _RULE_VERSION_NUMBER.fullmatch(version)
+    return int(m.group(1)) if m else None
+
+
+def newest_pick_rule_version() -> str:
+    """The member of PICK_RULE_VERSIONS with the largest number, read from the
+    module attribute at call time (so a patched list is what is read)."""
+    return max(PICK_RULE_VERSIONS, key=rule_version_number)
+
+
+def rule_version_status(version) -> str:
+    """Classify a stored level_basis.rule_version, first match wins:
+
+    1. None (key absent or JSON null): `legacy`.
+    2. no `feat-strat-001.vN` number: `rule_version_unreadable`.
+    3. is_current_pick_rule(version): `known`.
+    4. number at or below 2: `legacy`.
+    5. number above the newest in PICK_RULE_VERSIONS: `rule_version_newer`.
+    6. otherwise (between 2 and the newest, not in the list):
+       `rule_version_unreadable`.
+
+    The one place a stored version is classified (spec
+    2026-11-16-feat-strat-001-unknown-rule-version, Design 1)."""
+    if version is None:
+        return RULE_VERSION_LEGACY
+    number = rule_version_number(version)
+    if number is None:
+        return RULE_VERSION_UNREADABLE
+    if is_current_pick_rule(version):
+        return RULE_VERSION_KNOWN
+    if number <= 2:
+        return RULE_VERSION_LEGACY
+    if number > rule_version_number(newest_pick_rule_version()):
+        return RULE_VERSION_NEWER
+    return RULE_VERSION_UNREADABLE
 
 # Trigger candidates in tie-break priority: at one price to the cent the
 # earlier name wins, so a structural level beats the parent bar and both beat
@@ -1983,6 +2072,11 @@ class SessionLevels:
         is orb_only with reason params_unavailable."""
         if not isinstance(basis, dict):
             raise ValueError('level_basis must be a JSON object')
+        # A version this image does not know, or cannot read, is refused by
+        # name before anything is built, never rebuilt under the v2 rule.
+        status = rule_version_status(basis.get('rule_version'))
+        if status in REFUSED_RULE_VERSION_STATUSES:
+            raise LevelRuleVersionUnknown(status, basis.get('rule_version'))
         session = _to_date(basis.get('session_date'))
         if session is None:
             raise ValueError('level_basis has no session_date')
@@ -2001,11 +2095,12 @@ class SessionLevels:
             atr_14 = _opt_float(basis.get('atr'))
         atrs = {'atr_14': atr_14, 'atr_5': atr_5}
         basis_atr = atrs.get(atr_basis) if atr_basis else None
-        # A v3 basis is rebuilt with the v3 rule and its recorded values; any
-        # earlier basis with the v2 rule (no spacing, three targets), so a
-        # stored brief and its replay do not change.
-        rule = (LEVEL_RULE_VERSION if basis.get('rule_version') == LEVEL_RULE_VERSION
-                else LEVEL_RULE_V2)
+        # A v3 or v4 basis is rebuilt with the pick rule they share, under
+        # its own recorded version and values; any earlier basis with the v2
+        # rule (no spacing, three targets), so a stored brief and its replay
+        # do not change.
+        recorded_rule = basis.get('rule_version')
+        rule = recorded_rule if is_current_pick_rule(recorded_rule) else LEVEL_RULE_V2
         base = cls(
             ticker=ticker,
             session_date=session,
@@ -2470,7 +2565,13 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
               reference: Optional[float], reference_source: Optional[str]) -> SessionLevels:
     """Recompute reference, cleared marks, broken status and picks from a
     SessionLevels' structural levels plus a premarket snapshot."""
-    rule = base.rule_version if base.rule_version == LEVEL_RULE_V2 else LEVEL_RULE_VERSION
+    # A version this image does not know, or cannot read, is refused, not
+    # relabelled as the current version.
+    status = rule_version_status(base.rule_version)
+    if status in REFUSED_RULE_VERSION_STATUSES:
+        raise LevelRuleVersionUnknown(status, base.rule_version)
+    keeps = base.rule_version == LEVEL_RULE_V2 or is_current_pick_rule(base.rule_version)
+    rule = base.rule_version if keeps else LEVEL_RULE_VERSION
     out = SessionLevels(
         ticker=base.ticker, session_date=base.session_date, status=base.status,
         rule_version=rule, built_at=base.built_at,
@@ -3004,20 +3105,29 @@ def read_live_level_basis(query_fn, ticker: str, session_date) -> Optional[dict]
     return parse_level_basis(df.iloc[0]['level_basis'])
 
 
+def session_row_from_daily(df: pd.DataFrame, session_date) -> Optional[pd.Series]:
+    """The row dated `session_date` of a daily frame (the session's own row,
+    written by fetch-premarket-refresh at 08:20 ET), or None when the frame
+    has none. A prior day's row is never returned."""
+    if df is None or len(df) == 0:
+        return None
+    frame = _normalize_daily(df) if not isinstance(df.index, pd.DatetimeIndex) else df
+    idx = frame.index.tz_localize(None) if frame.index.tz is not None else frame.index  # tz-ok: session-date labels, wall date kept
+    rows = frame.loc[idx.normalize() == pd.Timestamp(_to_date(session_date))]
+    if rows.empty:
+        return None
+    return rows.iloc[-1]
+
+
 def premarket_snapshot_from_daily(df: pd.DataFrame, session_date) -> Optional[dict]:
     """The premarket snapshot dated `session_date` from a daily frame whose
     rows carry pre_high / pre_low / pre_vwap / gap_pct (the session's own
     row, written by fetch-premarket-refresh at 08:20 ET), or None when that
     row is absent. A prior day's pre_* is never returned."""
-    if df is None or len(df) == 0:
+    row = session_row_from_daily(df, session_date)
+    if row is None:
         return None
-    frame = _normalize_daily(df) if not isinstance(df.index, pd.DatetimeIndex) else df
-    idx = frame.index.tz_localize(None) if frame.index.tz is not None else frame.index  # tz-ok: session-date labels, wall date kept
-    session = _to_date(session_date)
-    rows = frame.loc[idx.normalize() == pd.Timestamp(session)]
-    if rows.empty:
-        return None
-    return premarket_snapshot_from_row(rows.iloc[-1], session)
+    return premarket_snapshot_from_row(row, _to_date(session_date))
 
 
 # ─── LevelMap compatibility wrapper ───────────────────────────────────────
@@ -3492,6 +3602,66 @@ def _trading_days_between(source_ts: pd.Timestamp, ref_ts: pd.Timestamp) -> int:
     return session_count(source_ts.date(), ref_ts.date())
 
 
+def check_source_freshness(
+    level_map: 'LevelMap',
+    *,
+    source_data_as_of=None,
+    max_age_business_days: int = 2,
+    today=None,
+) -> None:
+    """The stale-source refusal of persist_level_map, apart from the write.
+
+    ONE check with two callers: persist_level_map, before it writes, and the
+    premarket brief's dry run (--no-persist), which writes nothing and must
+    still reach the status a run that writes reaches. It reads no table: the
+    count of NYSE trading days comes from the shared calendar.
+
+    Returns None when the level map may be written: it has no levels (nothing
+    would be written, so nothing is refused), `source_data_as_of` is None, or
+    the source is at most `max_age_business_days` NYSE trading days behind
+    `today`. Raises StaleSourceDataError otherwise, and lets a calendar
+    failure propagate (Rule 3.7). The arguments are persist_level_map's.
+    """
+    if not level_map.levels:
+        return
+
+    # Freshness check (skipped only when source_data_as_of is None for
+    # back-compat with callers that haven't been wired through yet —
+    # those callers should be migrated; the None path is a transitional
+    # convenience, not a long-term position).
+    if source_data_as_of is not None:
+        from datetime import datetime, timezone
+        # Normalize to UTC so tz-aware vs naive comparisons don't raise.
+        # The caller may pass a date, datetime (naive or aware), or
+        # pandas Timestamp — coerce all to a UTC pd.Timestamp.
+        ts = pd.Timestamp(source_data_as_of)
+        if ts.tz is None:
+            ts = ts.tz_localize('UTC')
+        else:
+            ts = ts.tz_convert('UTC')
+
+        ref = today if today is not None else datetime.now(timezone.utc)
+        ref_ts = pd.Timestamp(ref)
+        if ref_ts.tz is None:
+            ref_ts = ref_ts.tz_localize('UTC')
+        else:
+            ref_ts = ref_ts.tz_convert('UTC')
+
+        # Business-day staleness via NYSE trading calendar.
+        biz_days = _trading_days_between(ts, ref_ts)
+        if biz_days > max_age_business_days:
+            raise StaleSourceDataError(
+                f"persist_level_map({level_map.ticker}): refusing to write — "
+                f"source_data_as_of={ts.isoformat()} is {biz_days} NYSE "
+                f"trading days behind {ref_ts.isoformat()} (threshold: "
+                f"{max_age_business_days} trading days). The level map "
+                f"was built off stale `market_data_daily` data; writing "
+                f"it would propagate the staleness to every downstream "
+                f"reader. Investigate the daily fetcher (likely a sticky "
+                f"--date latch per docs/RUNBOOK_BACKFILL.md) before retrying."
+            )
+
+
 def persist_level_map(
     level_map: 'LevelMap',
     conn,
@@ -3534,7 +3704,8 @@ def persist_level_map(
                Defaults to datetime.now() in UTC.
 
     Raises:
-        StaleSourceDataError: when source_data_as_of is more than
+        StaleSourceDataError: from check_source_freshness, which makes the
+            refusal, when source_data_as_of is more than
             max_age_business_days NYSE trading days behind `today`.
             The caller's transaction should roll back. Pre-fix this
             path was silent — the row was written with stale prices
@@ -3547,41 +3718,10 @@ def persist_level_map(
     if not level_map.levels:
         return 0
 
-    # Freshness check (skipped only when source_data_as_of is None for
-    # back-compat with callers that haven't been wired through yet —
-    # those callers should be migrated; the None path is a transitional
-    # convenience, not a long-term position).
-    if source_data_as_of is not None:
-        from datetime import datetime, timezone
-        # Normalize to UTC so tz-aware vs naive comparisons don't raise.
-        # The caller may pass a date, datetime (naive or aware), or
-        # pandas Timestamp — coerce all to a UTC pd.Timestamp.
-        ts = pd.Timestamp(source_data_as_of)
-        if ts.tz is None:
-            ts = ts.tz_localize('UTC')
-        else:
-            ts = ts.tz_convert('UTC')
-
-        ref = today if today is not None else datetime.now(timezone.utc)
-        ref_ts = pd.Timestamp(ref)
-        if ref_ts.tz is None:
-            ref_ts = ref_ts.tz_localize('UTC')
-        else:
-            ref_ts = ref_ts.tz_convert('UTC')
-
-        # Business-day staleness via NYSE trading calendar.
-        biz_days = _trading_days_between(ts, ref_ts)
-        if biz_days > max_age_business_days:
-            raise StaleSourceDataError(
-                f"persist_level_map({level_map.ticker}): refusing to write — "
-                f"source_data_as_of={ts.isoformat()} is {biz_days} NYSE "
-                f"trading days behind {ref_ts.isoformat()} (threshold: "
-                f"{max_age_business_days} trading days). The level map "
-                f"was built off stale `market_data_daily` data; writing "
-                f"it would propagate the staleness to every downstream "
-                f"reader. Investigate the daily fetcher (likely a sticky "
-                f"--date latch per docs/RUNBOOK_BACKFILL.md) before retrying."
-            )
+    check_source_freshness(
+        level_map, source_data_as_of=source_data_as_of,
+        max_age_business_days=max_age_business_days, today=today,
+    )
 
     sql = (
         "INSERT INTO strat_levels "

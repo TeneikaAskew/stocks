@@ -219,7 +219,7 @@ def test_a_session_with_no_bars_or_no_basis_is_reported_and_left_alone(patched):
 
 def test_the_brief_replay_writes_nothing_and_never_reaches_the_model(monkeypatch):
     """brief_basis on the committed 2026-11-06 fixture: the brief's own path
-    with persist_levels=False; persist_level_map and the null-close cleanup
+    with no_persist=True; persist_level_map and the null-close cleanup
     fail the test if reached, and the model client must be called zero
     times. The basis equals the one
     the live brief path builds for the same session."""

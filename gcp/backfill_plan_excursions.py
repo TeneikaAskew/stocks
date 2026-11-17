@@ -4,7 +4,7 @@ Design 4 "History, once", and Design 6).
 
 For each session and ticker it rebuilds the level basis the way the brief
 builds it under BRIEF_AS_OF (generate_premarket_brief with
-persist_levels=False, BRIEF_AMC_REACTIONS=0 and BRIEF_LLM_DISABLE=1, so no
+no_persist=True, BRIEF_AMC_REACTIONS=0 and BRIEF_LLM_DISABLE=1, so no
 session writes strat_levels or premarket rows and no session makes a model
 call), scores both sides with the resolver's own plan_inputs and
 plan_excursion on the session's as-traded 1-minute bars from
@@ -107,7 +107,7 @@ def brief_basis(ticker: str, session: date, cfg=None) -> Optional[dict]:
     from gcp.premarket_brief import generate_premarket_brief  # noqa: PLC0415
     from lib.strat_levels import parse_level_basis  # noqa: PLC0415
     with _replay_env(ticker, session):
-        brief = generate_premarket_brief(cfg=cfg, persist_levels=False)
+        brief = generate_premarket_brief(cfg=cfg, no_persist=True)
     entry = (brief.get('tickers') or {}).get(ticker.upper()) or {}
     if entry.get('status') in ('PLAYBOOK_FAILED', 'STALE_DAILY_DATA'):
         return None
@@ -129,7 +129,7 @@ def read_month_bars(engine, ticker: str, sessions: List[date]) -> pd.DataFrame:
     bars = pd.read_sql(_MONTH_BARS_SQL, engine,
                        params={'t': ticker.upper(), 'start': start, 'end': end})
     if not bars.empty:
-        bars['time'] = pd.to_datetime(bars['time'], utc=True)
+        bars['time'] = pd.to_datetime(bars['time'], utc=True)  # tz-ok: ts is TIMESTAMPTZ, UTC by contract
     return bars
 
 

@@ -32,7 +32,7 @@ SPEC = "docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.m
 CLOSEOUT_SPEC = "docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md"
 MODULE = "scripts/maintenance/doc_source_snapshot.py"
 MAX_SECONDS = 5.0
-MAX_BYTES = 12582912
+MAX_BYTES = 16777216
 # Separate per-file limit: docs_audit.py refuses a registry file larger than
 # this before reading it. It is not the combined verifier input ceiling above.
 MAX_FILE_BYTES = 8388608

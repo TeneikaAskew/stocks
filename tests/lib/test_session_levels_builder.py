@@ -175,6 +175,8 @@ def test_the_brief_reads_the_sessions_own_premarket_row(monkeypatch):
     out = fx.run_brief(monkeypatch, "QQQ", frame)
     pm = out["level_basis"]["premarket"]
     assert pm["date"] == "2026-11-06"
-    assert pm["pre_high"] == pytest.approx(660.398)
-    assert pm["pre_low"] == pytest.approx(649.62)
+    # FEAT-PLAYBOOK-001 B7: the confirmed extremes of the session (660.398
+    # and 649.62 until then, each one bar's lone wick).
+    assert pm["pre_high"] == pytest.approx(660.29)
+    assert pm["pre_low"] == pytest.approx(649.65)
     assert out["premarket_status"] == "ok"

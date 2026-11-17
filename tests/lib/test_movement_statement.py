@@ -1295,3 +1295,105 @@ def test_the_reads_propagate_a_backend_outage_but_keep_a_source_envelope():
         ms._build_regime("SPY", None, outage)
     assert ms._build_regime("SPY", None, bug)["status"] == "UNAVAILABLE"
 
+
+
+# ── FEAT-PLAYBOOK-001 B8b: rates never mix the old and the new rule ─────
+
+V3_RULE = "feat-strat-001.v3"
+V4_RULE = "feat-strat-001.v4"
+V5_RULE = "feat-strat-001.v5"
+
+
+class _VersionedRows:
+    """A query_fn stand-in holding resolved rows of v3, v4 and v5. The reach
+    statement gets the counts of the rule_version it bound, and nothing else;
+    the tracked-levels statement gets the session's own row."""
+
+    def __init__(self, session_rule):
+        self.session_rule = session_rule
+        self.bound = []
+        self.sql = []
+        # (n, hits) of the calls trigger and t1 slots, per stored version.
+        self.counts = {V3_RULE: {"trigger": (10, 9), "t1": (10, 8)},
+                       V4_RULE: {"trigger": (4, 1), "t1": (4, 0)},
+                       V5_RULE: {"trigger": (3, 2), "t1": (3, 1)}}
+
+    def __call__(self, sql, params=None):
+        if "premarket_analysis" not in sql:
+            return pd.DataFrame()
+        if "FILTER" not in sql:
+            lb = None if self.session_rule is None else {
+                "rule_version": self.session_rule, "cleared_above": 100.0, "cleared_below": 99.5}
+            row = {"analysis_date": SESSION, "price": 100.0, "level_basis": lb,
+                   "calls_trigger_price": 101.0, "calls_t1_price": 102.0,
+                   "puts_trigger_price": 99.0, "puts_t1_price": 98.0}
+            return pd.DataFrame([row])
+        self.sql.append(sql)
+        self.bound.append(params["rule_version"])
+        counts = self.counts.get(params["rule_version"], {})
+        row = {}
+        for k in ("trigger", "t1", "t2", "t3"):
+            n, hits = counts.get(k, (0, 0))
+            row[f"{k}_n"], row[f"{k}_hits"] = n, hits
+        return pd.DataFrame([row])
+
+
+@pytest.mark.parametrize("session_rule, want", [
+    (V5_RULE, {"trigger": (2, 3), "t1": (1, 3)}),
+    (V4_RULE, {"trigger": (1, 4), "t1": (0, 4)}),
+    (V3_RULE, {"trigger": (9, 10), "t1": (8, 10)}),
+])
+def test_reach_rates_do_not_mix_rule_versions(monkeypatch, session_rule, want):
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "1")
+    monkeypatch.setattr(ms, "_build_continuation",
+                        lambda *a, **k: ms._unavailable("not under test"))
+    q = _VersionedRows(session_rule)
+    out = ms.assemble_movement_statement(
+        "SPY", "15m", engine=object(), level_map=_sample_level_map(), query_fn=q,
+        gamma_fn=lambda *a, **k: {"available": False}, session_date=SESSION)
+    first, second = out["levels"]["calls"][:2]
+    assert first["reach_rate"]["slot"] == "trigger" and second["reach_rate"]["slot"] == "t1"
+    assert (first["reach_rate"]["hits"], first["reach_rate"]["sample_n"]) == want["trigger"]
+    assert (second["reach_rate"]["hits"], second["reach_rate"]["sample_n"]) == want["t1"]
+    # Both sides' populations bound the session row's own version.
+    assert q.bound == [session_rule, session_rule]
+    assert all("level_basis->>'rule_version' = :rule_version" in s for s in q.sql)
+
+
+def test_reach_rates_default_to_the_current_rule():
+    """Called without a version (or for a session with no tracked row) the
+    population is the current rule's, never every version."""
+    from lib.strat_levels import LEVEL_RULE_VERSION
+    q = _VersionedRows(V5_RULE)
+    out = ms._fetch_reach_rates("SPY", "calls", q)
+    assert q.bound == [LEVEL_RULE_VERSION] == [V5_RULE]
+    assert out["slots"]["trigger"]["sample_n"] == 3
+    ms._fetch_reach_rates("SPY", "calls", q, rule_version=V3_RULE)
+    assert q.bound[-1] == V3_RULE
+    got = ms._fetch_tracked_levels("SPY", q, SESSION)
+    assert got["rule_version"] == V5_RULE
+    assert ms._fetch_tracked_levels("SPY", _VersionedRows(None), SESSION)["rule_version"] is None
+
+
+def test_v3_trigger_on_the_reference_cent_keeps_its_slot():
+    """A stored v3 row whose calls trigger is its reference price to the
+    cent, with cleared_above on that cent: the trigger keeps its slot and
+    the next rung is T1. Read as a legacy row the trigger would be dropped
+    (strictly beyond `price`) and T1 relabelled as the trigger."""
+    basis = {"rule_version": V3_RULE, "reference": 100.0,
+             "cleared_above": 100.0, "cleared_below": 99.5}
+
+    def q(sql, params=None):
+        return pd.DataFrame([{"analysis_date": SESSION, "price": 100.0, "level_basis": basis,
+                              "calls_trigger_price": 100.0, "calls_t1_price": 102.0}])
+
+    got = ms._fetch_tracked_levels("SPY", q, SESSION)
+    assert [(t["slot"], t["price"]) for t in got["calls"]] == [("trigger", 100.0), ("t1", 102.0)]
+
+    assert ms._new_rule_mark(basis, "calls") == 100.0
+    assert ms._new_rule_mark({**basis, "rule_version": V4_RULE}, "calls") == 100.0
+    assert ms._new_rule_mark({**basis, "rule_version": V4_RULE}, "puts") == 99.5
+    assert ms._new_rule_mark({**basis, "rule_version": V5_RULE}, "calls") == 100.0
+    assert ms._new_rule_mark({**basis, "rule_version": V5_RULE}, "puts") == 99.5
+    assert ms._new_rule_mark({**basis, "rule_version": "feat-strat-001.v2"}, "calls") is None
+    assert ms._new_rule_mark(None, "calls") is None

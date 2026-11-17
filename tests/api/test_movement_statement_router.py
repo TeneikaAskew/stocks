@@ -680,3 +680,179 @@ def test_missing_atr_serves_levels_unavailable_not_an_empty_ladder(monkeypatch):
     out_stored = _build_levels(stored, reach, reach, tracked)
     assert out_stored["status"] == "UNAVAILABLE"
     assert out_stored["reason"].startswith("atr_unavailable")
+
+
+# ── Unknown rule version spec (2026-11-16), U6 through the endpoint (Codex
+# review on #2043): the changed response is proved through HTTP and the
+# response model, with the REAL level-map builder and the REAL assembler.
+
+@pytest.mark.parametrize("kind", ["newer", "unreadable"])
+def test_endpoint_reports_a_rule_version_it_does_not_know(monkeypatch, kind):
+    """A live SPY row whose level_basis carries a rule version this image does
+    not know (newest plus 1) or cannot read (''): the builder refuses it
+    (returns None), the assembler issues no reach-rate query, and the endpoint
+    returns 200 with the levels block UNAVAILABLE, naming the reason, the
+    stored version and its status. On the merge base the builder relabels the
+    row under the oldest rule and the levels block reads OK."""
+    import lib.movement_statement as ms  # noqa: PLC0415
+    from tests.lib.session_levels_helpers import newer_rule_versions  # noqa: PLC0415
+    from tests.lib.test_movement_statement_level_basis import (  # noqa: PLC0415
+        SESSION, _stamped_session)
+
+    version, status = ((newer_rule_versions()[0], "rule_version_newer") if kind == "newer"
+                       else ("", "rule_version_unreadable"))
+    db, _ = _stamped_session(version)
+    # The endpoint runs in Starlette's threadpool; give the in-memory SQLite
+    # copy a connection any thread may use.
+    import sqlite3  # noqa: PLC0415
+    shared = sqlite3.connect(":memory:", check_same_thread=False)
+    db.conn.commit()
+    db.conn.backup(shared)
+    db.conn = shared
+    statements = []
+
+    def query(sql, params=None):
+        statements.append(sql)
+        return db.query(sql, params)
+
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "true")
+    monkeypatch.setattr(dashboard_router, "_query_fn", query)
+    monkeypatch.setattr(dashboard_router, "_movement_analysis_date", lambda: SESSION)
+    monkeypatch.setattr(ms, "_build_continuation",
+                        lambda *a, **k: ms._unavailable("not under test"))
+    real_assemble = ms.assemble_movement_statement
+    real_builder = dashboard_router._build_movement_level_map
+    built = []
+
+    def builder(ticker, analysis_date=None):
+        out = real_builder(ticker, analysis_date=analysis_date)
+        built.append(out)
+        return out
+
+    def assemble(ticker, timeframe="15m", **kw):
+        kw.setdefault("query_fn", query)
+        kw.setdefault("gamma_fn", lambda *a, **k: {"available": False})
+        kw.setdefault("engine", object())
+        kw.setdefault("session_date", SESSION)
+        return real_assemble(ticker, timeframe, **kw)
+
+    daily = _synthetic_daily(end=SESSION.isoformat())
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=daily), \
+            patch.object(dashboard_router, "_build_movement_level_map", side_effect=builder), \
+            patch("lib.movement_statement.assemble_movement_statement", side_effect=assemble):
+        r = _get(TestClient(_build_app()), ticker="SPY")
+
+    assert r.status_code == 200, r.text
+    assert built == [None]
+    assert not [s for s in statements if "outcome_resolved_at IS NOT NULL" in s]
+    levels = r.json()["levels"]
+    assert levels["status"] == "UNAVAILABLE", levels
+    assert levels["reason"].startswith(status), levels
+    assert levels["rule_version"] == version
+    assert levels["rule_version_status"] == status
+    assert not [k for k in ("calls", "puts", "current_price") if k in levels]
+
+
+# ── Prior-close prints (FEAT-PLAYBOOK-001, rule prior-close-print-v1; Codex P1
+# on #2046): the corrected premarket high of a session with such a print,
+# carried from the brief's stored level basis through HTTP and the response
+# model, with the REAL level-map builder and the REAL assembler.
+
+def _floats(node):
+    """Every number in a JSON-shaped value."""
+    if isinstance(node, dict):
+        for value in node.values():
+            yield from _floats(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _floats(value)
+    elif isinstance(node, (int, float)) and not isinstance(node, bool):
+        yield float(node)
+
+
+def test_endpoint_serves_the_corrected_premarket_high_of_2026_11_16_qqq(monkeypatch):
+    """2026-11-16 QQQ: the 07:00 ET bar's high 679.8507 sits four cents under
+    the prior close 679.89 while the bar's open, low and close are near 672,
+    so prior-close-print-v1 drops it and the confirmed premarket high is
+    675.49 (tests/lib/test_premarket_print_filter.py, CONFIRMED_1116).
+
+    The level basis is the one the brief builds: gcp.premarket_brief.main
+    (['--no-persist']) as the dry run of tests/gcp/run_brief_2026_11_16.py
+    runs it, over the committed read-only exports of
+    tests/fixtures/premarket_2026_11_16/ (the daily frame through the
+    loader's own method, the level parameters, the stored bars to the live
+    row's recorded cutoff, premarket_snapshot with the recorded filter). The
+    row it would write as the session's live premarket_analysis row
+    (build_persist_rows, run_kind live) is stored, and the endpoint serves it.
+    On the merge base the premarket high, and so PMK_H in the levels block,
+    is 679.8507."""
+    import datetime as _dt  # noqa: PLC0415
+    import sqlite3  # noqa: PLC0415
+
+    import pandas as pd  # noqa: PLC0415
+
+    import lib.movement_statement as ms  # noqa: PLC0415
+    from tests.gcp import brief_dry_run_helpers as dry  # noqa: PLC0415
+    from tests.gcp import run_brief_2026_11_16 as brief_run  # noqa: PLC0415
+    from tests.lib.test_movement_statement_level_basis import COLS, _Db  # noqa: PLC0415
+
+    session = _dt.date(2026, 11, 16)
+    # The brief's patches are undone before the request.
+    with pytest.MonkeyPatch.context() as mp:
+        frames = brief_run.daily_frames(mp)
+        brief_db = brief_run.build_db({"QQQ": frames["QQQ"]})
+        pb = dry.install(mp, brief_db, as_of=brief_run.SESSION)
+        mp.setenv("BRIEF_PREMARKET_FROM_BARS", "true")
+        assert dry.run_main(pb, ["--no-persist"]) == 0
+        mp.delenv("BRIEF_AS_OF")
+        (row,) = pb.build_persist_rows(brief_db.briefs[0]).canonical
+    assert (row["ticker"], row["analysis_date"], row["run_kind"]) == ("QQQ", session, "live")
+
+    db = _Db()
+    db.add(**{c: (row[c].isoformat() if isinstance(row.get(c), _dt.date) else row.get(c))
+              for c in COLS})
+    # The endpoint runs in Starlette's threadpool; give the in-memory SQLite
+    # copy a connection any thread may use.
+    shared = sqlite3.connect(":memory:", check_same_thread=False)
+    db.conn.commit()
+    db.conn.backup(shared)
+    db.conn = shared
+
+    monkeypatch.setenv("MOVEMENT_STATEMENT_ENABLED", "true")
+    monkeypatch.setattr(dashboard_router, "_query_fn", db.query)
+    monkeypatch.setattr(dashboard_router, "_movement_analysis_date", lambda: session)
+    monkeypatch.setattr(ms, "_build_continuation",
+                        lambda *a, **k: ms._unavailable("not under test"))
+    real_assemble = ms.assemble_movement_statement
+    real_builder = dashboard_router._build_movement_level_map
+    built = []
+
+    def builder(ticker, analysis_date=None):
+        out = real_builder(ticker, analysis_date=analysis_date)
+        built.append(out)
+        return out
+
+    def assemble(ticker, timeframe="15m", **kw):
+        kw.setdefault("query_fn", db.query)
+        kw.setdefault("gamma_fn", lambda *a, **k: {"available": False})
+        kw.setdefault("engine", object())
+        kw.setdefault("session_date", session)
+        return real_assemble(ticker, timeframe, **kw)
+
+    # The daily frame to the session before: the ladder comes from the stored
+    # basis, and a fallback to a live build would have no premarket high.
+    daily = frames["QQQ"][frames["QQQ"].index < pd.Timestamp(session)]
+    assert daily.index[-1] == pd.Timestamp("2026-11-13")
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=daily), \
+            patch.object(dashboard_router, "_build_movement_level_map", side_effect=builder), \
+            patch("lib.movement_statement.assemble_movement_statement", side_effect=assemble):
+        r = _get(TestClient(_build_app()), ticker="QQQ")
+
+    assert r.status_code == 200, r.text
+    assert len(built) == 1 and built[0] is not None
+    levels = r.json()["levels"]
+    assert levels["status"] == "OK", levels
+    rungs = {lv["name"]: lv["price"] for lv in levels["calls"] + levels["puts"]}
+    assert rungs.get("PMK_H") == 675.49, levels
+    assert "679.85" not in r.text
+    assert not [x for x in _floats(r.json()) if round(x, 2) == 679.85]
