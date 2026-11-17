@@ -1,4 +1,4 @@
-# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 01:50Z
+# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 05:20Z
 
 Keep this note current: whoever finishes a task updates its row in section 2 and its part of
 section 3 in the same PR or a docs PR right after (owner, 2026-11-16).
@@ -6,6 +6,69 @@ section 3 in the same PR or a docs PR right after (owner, 2026-11-16).
 Written for whoever continues this work (another model session or a person). Everything below was
 true when written. Before acting on any line, re-read the PR or branch it names: several things were
 in flight.
+
+
+## 0. Update, 2026-11-17 05:20Z: what landed, and the order from here
+
+Sections 1 to 7 below were written at 01:50Z. This section supersedes them where they differ. The
+order below was read from each spec's own order section on main (not from memory) and confirmed by
+the owner on 2026-11-17.
+
+### 0.1 Landed and deployed
+
+- #2010 (brief, rule v4) merged as 6243496db. #2020 (09:20 ET late refresh and brief) merged as
+  94e902fc2. Deployed with the owner's approval from main e5bd59eba, in this order, each exit 0:
+  playbook-resolver, monitor, insights, premarket, market-data, schedulers (03:40Z to 04:41Z). Job
+  digests before and after are on #2010; the two 09:20 schedulers, read back, are on #2020. Not yet
+  verified: the first live v4 brief (08:30 ET) and the first late run (09:20 ET); session check-ins
+  are set for 13:50Z and 14:40Z.
+- #2001 (bad-print flags) merged as a92a93692 after a schema pin fix (the schema test #2010 added
+  pinned the pre-#2001 schema). Its close-out is the owner's yes, given: confirm the schema apply,
+  deploy fetchers, the history dry run, then report to the owner before any committed history write.
+- Specs merged: #2025 (unknown rule version), #2026 (premarket reads as read), #2009 (conviction).
+  Plans merged: #2032 (no adjusted prices), #2033 (SPY, QQQ and IWM only), #2034 (admin editor).
+
+### 0.2 The level rule chain, in this order
+
+1. Refuse a rule version the reader does not know. Plan PR #2039. Build, merge, then deploy every
+   reader of a stored basis (resolver, API, signal monitor, insight pipeline, brief). Its spec
+   (Design 5): this deploy comes before any writer of v5.
+2. Prior-close prints (rule v5). Built on `feature/feat-playbook-001-prior-close-prints`, not yet
+   pushed. Its PR stays a draft until step 1 has merged; its brief is deployed only after step 1 is
+   deployed; then the one-time replay of 2026-11-16, on the owner's yes.
+3. ATR quarter targets, entry plus T1 to T4 (rule v6). Its plan refuses to start until v5 is on
+   main. The owner chose on 2026-11-17 that this goes before the insight work.
+4. Insight one plan one voice. r2 spec #2038 (figures from the brief row's own plan, and the
+   owner's 2026-11-16 bare-number decision written into D6) is held as a draft: re-check its
+   examples against four-target briefs first. Then its build (the r1 branch's four local commits
+   carry over by merge, per the r2 plan), then conviction (plan #2037, held as a draft).
+5. After quarters (owner, 2026-11-17): target hit rates (plan on main, not built) and signals carry
+   their plan r2 with its history attach (specs approved, no plans). Each is written for T1 to T3
+   and is re-checked against T1 to T4, with any change brought to the owner, before it is built.
+
+### 0.3 The data chain
+
+- No adjusted prices: building now (not pushed). Its branch was cut before #2001 merged; both edit
+  `gcp/fetchers/fetch_alphavantage_intraday.py`, so the main merge must keep #2001's flags. Its
+  Task 1 needs a records PR first (two retired scripts' citations in `docs/product/`). It can merge,
+  but its deploy waits on the SPY, QQQ and IWM only spec's companion specs B (drop
+  `adjusted_close`) and C (retire the weekday earnings schedulers, set the reaction job's timeout),
+  which are not written yet.
+- Then SPY, QQQ and IWM only, then the admin watchlist editor (its order section also names #1937).
+- Premarket reads as read: plan PR #2036 (fixed for the columnless empty fetch Codex found); build
+  after it merges.
+
+### 0.4 Older open PRs (owner, 2026-11-17)
+
+- #1985, #1916, #1886 (after its spec #2029), #1670, #1671: one extra push and one extra Codex round
+  each, only to clear conflicts with main; they land one at a time because each carries the site
+  snapshot.
+- #1430, #1478, #1520, #1700, #1831, #1860, #1914: close the ones replaced or superseded; for the
+  ones stuck on the review cap, first establish whether the change is still needed.
+- #2022 (job count) had a main merge pushed; #1581 marked ready. Draft specs #1645, #1828, #1965,
+  #2029, #2035 and #1528 wait on the owner, who gets a short summary of each.
+- Records to fix: the plans for the superseded three-targets spec and for watched-tickers deploy r2
+  (#1963 closed unmerged) still read `status: ready`.
 
 ## 1. The goal and the owner's standing rules
 
