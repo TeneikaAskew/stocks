@@ -27,7 +27,6 @@ import sys
 import json
 import requests
 from pathlib import Path
-from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -35,6 +34,7 @@ import pandas as pd
 import numpy as np
 
 from gcp.trade_logger import TradeLogger
+from lib.eastern_time import market_today
 from lib.config import load_config, get_signal_strength_label
 
 
@@ -113,7 +113,7 @@ def generate_weekly_review(cfg=None, trades_dir: str = None) -> dict:
 
     trades = logger.get_weekly_trades()
     review = {
-        'week_ending': datetime.now().strftime('%Y-%m-%d'),
+        'week_ending': market_today().strftime('%Y-%m-%d'),
         'has_trades': not trades.empty,
     }
 

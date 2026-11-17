@@ -33,7 +33,7 @@ _RTH_CLOSE = time(16, 0)
 _FULL_POSITION_FRACTION = 1.0
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.eastern_time import ET, ET_NAME
+from lib.eastern_time import ET, ET_NAME, market_today
 
 # Cloud Run runs in UTC. All market-hours comparisons must be in ET so the
 # monitor doesn't think the market closes at noon ET (= 16:00 UTC, which
@@ -378,7 +378,7 @@ class SignalMonitor:
             df = df.sort_index()
 
             # Filter to today only
-            today = datetime.now().date()
+            today = market_today()
             df = df[df.index.date == today]
 
             if df.empty:
@@ -534,7 +534,9 @@ class SignalMonitor:
                 'trigger_level': put_side.trigger['price'],
                 'trigger_name': put_side.trigger['name'],
                 'stop': put_side.stop['price'] if put_side.stop else None,
-                'targets': put_side.targets,
+                # The gating targets (exits spec): the monitor's tracker and
+                # alert targets keep their pre-spacing meaning.
+                'targets': put_side.gate_targets,
             }
             tgts = [t.get('price') for t in (put.get('targets') or [])]
             out = {

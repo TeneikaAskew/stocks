@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from lib.agents import summarizers
+from lib.eastern_time import market_today
 from lib.agents.schema import JournalRef
 
 
@@ -1080,11 +1081,11 @@ def _recent_business_day() -> date:
     """Yesterday-or-earlier business day, so the freshness tier stays 'fresh'.
 
     as_of=None makes summarize_gamma_levels measure staleness against
-    date.today(), so a fixed fixture date would age into hard-stale.
+    the exchange's date, so a fixed fixture date would age into hard-stale.
     """
     import numpy as _np
 
-    return _np.busday_offset(date.today(), -1, roll="backward").astype(date)
+    return _np.busday_offset(market_today(), -1, roll="backward").astype(date)
 
 
 def test_gamma_levels_forwards_a_parseable_date_when_as_of_is_none(

@@ -18,6 +18,11 @@ from datetime import date
 import pandas as pd
 import pytest
 
+from tests.fixtures.market_clock import freeze_market_clock
+
+# Thursday 2026-11-12 21:00 EST: the container's UTC date is already 2026-11-13.
+THURSDAY_21_EST = "2026-11-13T02:00:00Z"
+
 
 # ──────────────────────────────────────────────────────────────────────
 # fetch_av_options — error / rate-limit handling
@@ -455,8 +460,9 @@ def test_resolve_start_from_latest_no_rows_at_all_falls_back_to_today(monkeypatc
         "gcp.database.query_to_dataframe",
         lambda *a, **k: pd.DataFrame(columns=["ticker", "d"]),
     )
+    freeze_market_clock(monkeypatch, THURSDAY_21_EST, mod)
     out = mod._resolve_start_from_latest(["NEW_TICKER"])
-    assert out == date.today()
+    assert out == date(2026, 11, 12)
 
 
 def test_resolve_start_from_latest_filters_null_d(monkeypatch):
@@ -474,12 +480,13 @@ def test_resolve_start_from_latest_filters_null_d(monkeypatch):
     assert out == date(2026, 5, 1)  # SPY's MAX+1, BAD ignored
 
 
-def test_resolve_start_from_latest_no_tickers():
+def test_resolve_start_from_latest_no_tickers(monkeypatch):
     """Empty ticker list → today fallback (no SQL query attempted)."""
     from gcp.fetchers import fetch_av_historical_options as mod
 
+    freeze_market_clock(monkeypatch, THURSDAY_21_EST, mod)
     out = mod._resolve_start_from_latest([])
-    assert out == date.today()
+    assert out == date(2026, 11, 12)
 
 
 def test_resolve_start_from_latest_sql_shape(monkeypatch):

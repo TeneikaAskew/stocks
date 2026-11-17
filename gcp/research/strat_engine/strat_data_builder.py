@@ -60,7 +60,7 @@ from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from lib.eastern_time import (
-    ET_NAME, eastern_index_to_utc, stored_intraday_to_eastern, utc_to_eastern_naive,
+    ET_NAME, eastern_index_to_utc, place_stored_rows, utc_to_eastern_naive,
 )
 
 from gcp.database import execute_sql, get_engine, upsert_dataframe, bulk_copy_upsert, bulk_copy_update
@@ -178,16 +178,21 @@ def _max_cached_date(engine, ticker: str, tf_label: str) -> Optional[_date]:
 def _load_1m_bars(engine, ticker: str, start_date: str) -> pd.DataFrame:
     """Pull 1-min RTH bars for one ticker, indexed by the true UTC instant.
 
-    Rows are read whole-day and resolved by lib.eastern_time.
-    stored_intraday_to_eastern before the 09:30-15:59 ET filter. Until the
+    Rows are read whole-day and placed by lib.eastern_time.place_stored_rows
+    before the 09:30-15:59 ET filter: a row proven a true UTC instant (by its
+    date or its ``inserted_at``) is read where it is stored, and any other row
+    is placed by the resolver, as before (FEAT-DATA-001, Design H). Until the
     re-framing migration finishes a row may be an Eastern label stored as UTC,
     and filtering in SQL with ``AT TIME ZONE`` kept raw 13:30-15:59 labels as
     "09:30-11:59 ET" and dropped the real open (Codex P1 on #1185). Loading
     extended hours too costs ~2.4x the rows; the daily run reads ~45 days.
+
+    Rows that come back without ``inserted_at`` raise KeyError: the reader
+    never falls back to the resolver alone.
     """
     table = INTRADAY_TABLE[ticker]
     sql = text(f"""
-        SELECT ts, open, high, low, close, volume
+        SELECT ts, open, high, low, close, volume, inserted_at
         FROM {table}
         WHERE interval = '1min'
           AND ts >= :start_ts
@@ -199,13 +204,17 @@ def _load_1m_bars(engine, ticker: str, start_date: str) -> pd.DataFrame:
     with engine.connect() as conn:
         df = pd.read_sql(sql, conn, params={"start_ts": start_ts})
     if df.empty:
+        # Before the placement: an empty read has no row to place.
+        if "inserted_at" in df.columns:
+            df = df.drop(columns="inserted_at")
         return df.set_index("ts")
-    idx, keep = stored_intraday_to_eastern(df["ts"], df["volume"])
-    df, eastern = df.loc[keep].drop(columns="ts"), idx[keep]
+    instants, keep, _proven = place_stored_rows(df["ts"], df["volume"], df["inserted_at"])
+    df, instants = df.loc[keep].drop(columns=["ts", "inserted_at"]), instants[keep]
+    eastern = utc_to_eastern_naive(instants)
     t = eastern.hour * 60 + eastern.minute
     rth = (t >= 570) & (t <= 959) & (eastern.date >= pd.Timestamp(start_date).date())
     df = df.loc[rth]
-    df.index = eastern_index_to_utc(eastern[rth])
+    df.index = instants[rth]
     df.index.name = "ts"
     return df.sort_index()
 

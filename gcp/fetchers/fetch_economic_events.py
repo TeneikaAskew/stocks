@@ -23,7 +23,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, date, timedelta, time as dt_time
+from datetime import datetime, timedelta, time as dt_time
 from pathlib import Path
 
 import pandas as pd
@@ -31,6 +31,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
+from lib.eastern_time import market_today
 from lib.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -259,7 +260,7 @@ def fetch_fred_releases(days_ahead: int = 90) -> pd.DataFrame:
         logger.warning("requests not available")
         return pd.DataFrame()
 
-    today = date.today()
+    today = market_today()
     end = today + timedelta(days=days_ahead)
 
     # Keywords to match high/medium-impact FRED release names

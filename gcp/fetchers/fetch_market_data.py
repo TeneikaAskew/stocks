@@ -16,6 +16,7 @@ import argparse
 import logging
 import os
 import sys
+from collections.abc import Callable
 from datetime import datetime, date, timedelta, timezone, time as dt_time
 from pathlib import Path
 
@@ -23,7 +24,13 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import ET, eastern_bounds_utc, eastern_index_to_utc
+from lib.eastern_time import (
+    ET,
+    eastern_bounds_utc,
+    eastern_index_to_utc,
+    market_today,
+    utc_now,
+)
 
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
@@ -332,6 +339,112 @@ def read_level_params_for_run(tickers, session_date):
     return load_level_params(query_to_dataframe_strict, list(tickers), session_date)
 
 
+# The premarket columns of market_data_daily, in the order a report lists them.
+PREMARKET_COLUMNS = (
+    'pre_high', 'pre_low', 'pre_vwap', 'pre_volume', 'gap_pct', 'pre_range_atr',
+    'pre_fetched_at', 'pre_excluded_stale_prints', 'pre_excluded_spikes',
+    'pre_filter_status', 'pre_filter_params',
+)
+# The six computed from prices. The nightly sets one only when its new value
+# is not None; the other five, the provenance of the snapshot, always.
+_PREMARKET_PRICE_COLUMNS = PREMARKET_COLUMNS[:6]
+_PREMARKET_PROVENANCE_COLUMNS = PREMARKET_COLUMNS[6:]
+
+
+def prior_session_inputs(df: pd.DataFrame, enriched: pd.DataFrame) -> dict:
+    """The last completed session's close, open and ATR columns: the inputs
+    of the premarket snapshot that do not come from the premarket bars.
+
+    `df` is the daily frame up to and including the session, oldest first;
+    `enriched` is `add_all_indicators` of it. The values are the row before
+    the last: the session's own ATR includes the session being filtered. A
+    NULL or NaN is None, never a number, and fewer than two rows give four
+    None. add_all_indicators names the ATR columns ATR14 and ATR5 (atr_14 and
+    atr_5 are their SQL names); a frame it gave no such column has no ATR.
+    """
+    if len(df) < 2:
+        return {'close': None, 'open': None, 'atr_14': None, 'atr_5': None}
+
+    def number(value):
+        return float(value) if value is not None and pd.notna(value) else None
+
+    prior_row = enriched.iloc[-2]
+    return {
+        'close': number(df['Close'].iloc[-2]),
+        'open': number(df['Open'].iloc[-2]),
+        'atr_14': number(prior_row.get('ATR14')),
+        'atr_5': number(prior_row.get('ATR5')),
+    }
+
+
+def premarket_snapshot(ticker: str, session_date, bars: pd.DataFrame, prior: dict,
+                       level_params, read_at: datetime) -> dict | None:
+    """The eleven premarket columns of one session, from its premarket bars.
+
+    The one place that turns a session's 04:00 to 09:30 Eastern bars, the
+    prior session's close, open and ATR (`prior`, from prior_session_inputs)
+    and the ticker's level parameters into `PREMARKET_COLUMNS`. The nightly
+    and the bars-only recompute both call it, so they run the same print
+    filter, VWAP rule and provenance rule.
+
+    `bars` holds ts (aware UTC), open, high, low, close and volume.
+    `level_params` is the ticker's LevelParams in force on the session; None
+    means the run could not read the tables, and the snapshot is labelled
+    level_params_unavailable. `read_at` is when the bars were read.
+
+    Returns the eleven values, None where the computation gives none, or
+    None when `bars` is empty or holds no bar in the premarket window. It
+    makes no query, reads no clock and catches nothing.
+    """
+    from lib.indicators import calculate_premarket_context
+
+    if bars.empty:
+        return None
+    if level_params is None:
+        pm_filter = {'status': 'level_params_unavailable', 'atr': None,
+                     'stale_print_atr': None, 'spike_atr': None, 'params': None}
+    else:
+        from lib.strat_levels import premarket_filter_inputs
+        pm_filter = premarket_filter_inputs(
+            level_params, {'atr_14': prior['atr_14'], 'atr_5': prior['atr_5']})
+    pm = calculate_premarket_context(
+        times=bars['ts'],
+        open_=bars['open'],
+        high=bars['high'],
+        low=bars['low'],
+        close=bars['close'],
+        volume=bars['volume'],
+        prev_close=prior['close'],
+        atr=pm_filter['atr'],
+        prev_open=prior['open'],
+        stale_print_atr=pm_filter['stale_print_atr'],
+        spike_atr=pm_filter['spike_atr'],
+    )
+    if not pm['bar_count'] > 0:
+        return None
+    # Provenance (FEAT-STRAT-001): when the bars were read and how many
+    # prints the filter dropped. Whether the prints were filtered with the
+    # ticker's own thresholds, and which (Design 8). Not ok: NULL counts and
+    # the builder refuses the snapshot (premarket_unfiltered).
+    filtered = bool(pm.get('filtered'))
+    return {
+        'pre_high': pm['pre_high'],
+        'pre_low': pm['pre_low'],
+        'pre_vwap': pm['pre_vwap'],
+        'pre_volume': pm['pre_volume'],
+        'gap_pct': pm['gap_pct'],
+        'pre_range_atr': pm['pre_range_atr'],
+        'pre_fetched_at': read_at,
+        'pre_excluded_stale_prints': (
+            int(pm['excluded_prior_close_prints']) if filtered else None),
+        'pre_excluded_spikes': (
+            int(pm['excluded_spike_prints']) if filtered else None),
+        'pre_filter_status': 'ok' if filtered else (
+            pm_filter['status'] if pm_filter['status'] != 'ok' else 'atr_unavailable'),
+        'pre_filter_params': pm_filter['params'],
+    }
+
+
 def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
                                         level_params=None):
     """
@@ -364,6 +477,9 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
         ORDER BY date DESC
         LIMIT 250
     """
+    # AUDIT-2026-05-13: silent fallback — query_to_dataframe answers an empty
+    # frame for a failed read, so a database outage here reads as "not enough
+    # daily history" and the row's indicators are skipped with a warning.
     df = query_to_dataframe(sql, {'ticker': ticker.upper(), 'fetch_date': fetch_date})
     if df.empty or len(df) < 2:
         log.warning("    Not enough daily history for %s to compute indicators", ticker)
@@ -449,7 +565,6 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
     # (and strat_levels engine) can calibrate triggers to today's
     # actual pre-market range, not just yesterday's session H/L.
     try:
-        from lib.indicators import calculate_premarket_context
         # Pull today's intraday bars (extended hours included)
         # The Eastern premarket window as UTC instants. The old bounds were
         # UTC midnights (20:00 ET the day before under EDT), which read a
@@ -465,6 +580,9 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
                AND ts <  :end
              ORDER BY ts
         """
+        # AUDIT-2026-05-13: silent fallback — query_to_dataframe answers an
+        # empty frame for a failed read, so an outage here reads as "no
+        # premarket bars" and the row keeps whatever premarket values it had.
         intraday = query_to_dataframe(
             intraday_sql,
             {'ticker': ticker.upper(), 'start': pm_start, 'end': pm_end},
@@ -474,70 +592,19 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str, *,
             # Every input describes the last completed session (the row
             # before fetch_date): its close, its open and its ATR columns.
             # The fetch date's own ATR includes the session being filtered.
-            prev_close = None
-            prev_open = None
-            atrs = {'atr_14': None, 'atr_5': None}
-            if len(df) >= 2:
-                prior_row = enriched.iloc[-2]
-                try:
-                    prev_close = float(df['Close'].iloc[-2])
-                except Exception:
-                    pass
-                try:
-                    prev_open = float(df['Open'].iloc[-2])
-                except Exception:
-                    pass
-                # add_all_indicators names the columns ATR14 / ATR5 (atr_14
-                # and atr_5 are their SQL names, which this frame never carries).
-                for col, frame_col in (('atr_14', 'ATR14'), ('atr_5', 'ATR5')):
-                    try:
-                        v = prior_row.get(frame_col)
-                        atrs[col] = float(v) if v is not None and pd.notna(v) else None
-                    except Exception:
-                        pass
-
-            if level_params is None:
-                pm_filter = {'status': 'level_params_unavailable', 'atr': None,
-                             'stale_print_atr': None, 'spike_atr': None, 'params': None}
-            else:
-                from lib.strat_levels import premarket_filter_inputs
-                pm_filter = premarket_filter_inputs(level_params, atrs)
-            pm = calculate_premarket_context(
-                times=intraday['ts'],
-                open_=intraday['open'],
-                high=intraday['high'],
-                low=intraday['low'],
-                close=intraday['close'],
-                volume=intraday['volume'],
-                prev_close=prev_close,
-                atr=pm_filter['atr'],
-                prev_open=prev_open,
-                stale_print_atr=pm_filter['stale_print_atr'],
-                spike_atr=pm_filter['spike_atr'],
-            )
-            if pm['bar_count'] > 0:
-                if pm['pre_high'] is not None: row['pre_high'] = pm['pre_high']
-                if pm['pre_low'] is not None: row['pre_low'] = pm['pre_low']
-                if pm['pre_vwap'] is not None: row['pre_vwap'] = pm['pre_vwap']
-                if pm['pre_volume'] is not None: row['pre_volume'] = pm['pre_volume']
-                if pm['gap_pct'] is not None: row['gap_pct'] = pm['gap_pct']
-                if pm['pre_range_atr'] is not None: row['pre_range_atr'] = pm['pre_range_atr']
-                # Provenance (FEAT-STRAT-001): when these bars were read and
-                # how many prints the filter dropped. upsert_dataframe drops
-                # the keys while market_data_daily lacks the columns.
-                row['pre_fetched_at'] = intraday_read_at
-                filtered = bool(pm.get('filtered'))
-                row['pre_excluded_stale_prints'] = (
-                    int(pm['excluded_prior_close_prints']) if filtered else None)
-                row['pre_excluded_spikes'] = (
-                    int(pm['excluded_spike_prints']) if filtered else None)
-                # Whether the prints were filtered with the ticker's own
-                # thresholds, and which (Design 8). Not ok: NULL counts and
-                # the builder refuses the snapshot (premarket_unfiltered).
-                row['pre_filter_status'] = 'ok' if filtered else (
-                    pm_filter['status'] if pm_filter['status'] != 'ok' else 'atr_unavailable')
-                row['pre_filter_params'] = pm_filter['params']
-                log.info("    ✓ pre-market context computed (%d bars)", pm['bar_count'])
+            snapshot = premarket_snapshot(
+                ticker, fetch_date, intraday, prior_session_inputs(df, enriched),
+                level_params, intraday_read_at)
+            if snapshot is not None:
+                # A price column is set only when its new value is not None;
+                # upsert_dataframe drops the provenance keys while
+                # market_data_daily lacks the columns.
+                for col in _PREMARKET_PRICE_COLUMNS:
+                    if snapshot[col] is not None:
+                        row[col] = snapshot[col]
+                for col in _PREMARKET_PROVENANCE_COLUMNS:
+                    row[col] = snapshot[col]
+                log.info("    ✓ pre-market context computed (%d bars)", len(intraday))
             else:
                 log.info("    no pre-market bars for %s on %s (likely weekend / holiday)",
                          ticker, fetch_date)
@@ -819,12 +886,18 @@ def _backfill_targets() -> list:
     if backfill_all:
         # Skip the eligible filter — every earnings_history ticker counts,
         # PLUS every ticker already in market_data_daily (catches
-        # universe-expansion orphans not yet in earnings_history).
+        # universe-expansion orphans not yet in earnings_history). Only real
+        # bars from other writers count: a ticker whose daily rows all came
+        # from the watched-ticker job, or are indicator-only (null close),
+        # is not a target, so leaving the watched set stops its pulls.
         sql = """
             WITH targets AS (
                 SELECT DISTINCT ticker FROM earnings_history
               UNION
-                SELECT DISTINCT ticker FROM market_data_daily
+                SELECT ticker FROM market_data_daily
+                 GROUP BY ticker
+                HAVING bool_or(close IS NOT NULL
+                               AND data_source IS DISTINCT FROM 'av_watched_backfill')
             )
             SELECT t.ticker,
                    COALESCE(mdd.n, 0)        AS bar_count,
@@ -972,7 +1045,10 @@ def _exclude_partial_today(df: pd.DataFrame, today_et: date,
     return df[df['date'] < today_et]
 
 
-def _run_backfill(tickers: list | None = None) -> None:
+def _run_backfill(tickers: list | None = None, *,
+                  outputsize: str | None = None,
+                  data_source: str = 'av_daily_backfill',
+                  on_rows: Callable[[int], None] | None = None) -> int:
     """--backfill mode: pull historical daily bars for every ticker in
     earnings_history that the brief would render but lacks depth.
 
@@ -981,7 +1057,25 @@ def _run_backfill(tickers: list | None = None) -> None:
 
     `tickers` (from --tickers) pulls exactly those, each in full, for a
     ticker the default targets cannot reach: BF.B and MOG.A have no
-    earnings_history row (#1188)."""
+    earnings_history row (#1188).
+
+    `outputsize` ('compact' | 'full'), with explicit `tickers`, plans every
+    ticker at that size instead of consulting `_pick_backfill_outputsize`.
+    `data_source` is the label written on every upserted row. Either one
+    without `tickers` (None or empty) raises ValueError: it would otherwise
+    apply to the whole earnings universe.
+
+    `on_rows`, when given, is called with each ticker's row count right
+    after its `upsert_dataframe` returns, so a caller can count the rows
+    already written when a later ticker's write raises.
+
+    Returns the number of rows passed to `upsert_dataframe` (conflict
+    updates included); 0 when nothing was written."""
+    if not tickers and (outputsize is not None or data_source != 'av_daily_backfill'):
+        raise ValueError(
+            f"_run_backfill: outputsize={outputsize!r} and data_source={data_source!r} "
+            "need explicit tickers; without them they would apply to every backfill target")
+
     now_et = datetime.now(ET)
     today_et = now_et.date()
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
@@ -992,8 +1086,11 @@ def _run_backfill(tickers: list | None = None) -> None:
         raise RuntimeError("ALPHA_VANTAGE_API_KEY not set — backfill cannot proceed")
 
     targets = [(t, 0, None) for t in tickers] if tickers else _backfill_targets()
-    plan = [(t, n, mx, _pick_backfill_outputsize(n, mx, today_et))
-            for (t, n, mx) in targets]
+    if outputsize is not None and tickers:
+        plan = [(t, n, mx, outputsize) for (t, n, mx) in targets]
+    else:
+        plan = [(t, n, mx, _pick_backfill_outputsize(n, mx, today_et))
+                for (t, n, mx) in targets]
     pending = [(t, n, mx, sz) for (t, n, mx, sz) in plan if sz is not None]
 
     n_full = sum(1 for _, _, _, sz in pending if sz == 'full')
@@ -1019,7 +1116,7 @@ def _run_backfill(tickers: list | None = None) -> None:
 
     if not pending:
         log.info("Nothing to do — all eligible tickers are already current.")
-        return
+        return 0
 
     cutoff = today_et - timedelta(days=BACKFILL_LOOKBACK_DAYS)
     upserted = 0
@@ -1048,9 +1145,11 @@ def _run_backfill(tickers: list | None = None) -> None:
                 # fetch-market-data pass re-stamps its enriched tickers
                 # afterwards, preserving that distinction.
                 df = df.copy()
-                df['data_source'] = 'av_daily_backfill'
+                df['data_source'] = data_source
                 upsert_dataframe(df, 'market_data_daily', ['ticker', 'date'])
                 upserted += len(df)
+                if on_rows is not None:
+                    on_rows(len(df))
                 log.info("    %d bars upserted: %s..%s",
                          len(df), df['date'].min(), df['date'].max())
         if i < len(pending) - 1 and sleep_secs > 0:
@@ -1060,6 +1159,7 @@ def _run_backfill(tickers: list | None = None) -> None:
              upserted, len(pending) - len(failures))
     if failures:
         log.warning("Failures (%d): %s", len(failures), failures[:20])
+    return upserted
 
 
 def _assert_fetch_date_fresh(fetch_date: str, today_et: date | None = None,
@@ -1185,15 +1285,343 @@ def build_parser() -> argparse.ArgumentParser:
                         help=('Bypass the fetch-date freshness guard for DELIBERATE '
                               'historical backfills of specific --tickers; never set '
                               'this in scheduled jobs.'))
+    parser.add_argument('--recompute-premarket', action='store_true',
+                        help=('Fetches nothing: recompute the premarket columns of '
+                              'market_data_daily for SPY, QQQ and IWM in [--from, --to] '
+                              'from stored 1-minute bars proven true UTC. Writes a '
+                              'report; writes the rows only with --commit.'))
+    parser.add_argument('--from', dest='first', default=None, metavar='YYYY-MM-DD',
+                        help='First session of --recompute-premarket')
+    parser.add_argument('--to', dest='last', default=None, metavar='YYYY-MM-DD',
+                        help="Last session of --recompute-premarket; before today's "
+                             "Eastern date")
+    parser.add_argument('--commit', action='store_true',
+                        help=('With --recompute-premarket or --revert-run: write. '
+                              'Without it nothing is written to the database.'))
+    parser.add_argument('--revert-run', default=None, metavar='RUN_ID',
+                        help=('Write back the premarket values a committed '
+                              '--recompute-premarket run replaced, from its ledger '
+                              'rows. Writes only with --commit.'))
+    parser.add_argument('--report-dir', default=None, metavar='PATH',
+                        help='Write rows.csv and summary.json under PATH instead of '
+                             'the bucket')
     return parser
+
+
+# -- Premarket columns from stored bars (FEAT-DATA-001) --------------------------
+#
+# --recompute-premarket rewrites the premarket columns of past sessions from
+# the 1-minute bars the table holds now. It fetches nothing and needs no API
+# key. Spec: docs/superpowers/specs/2026-11-14-feat-data-001-recompute-after-bar-rewrite.md
+# (Design 5); what it shares with the resolver's --re-resolve is
+# gcp/bar_recompute.py.
+
+# The rows that are recomputed: a session of the run's tickers that has a
+# close and already holds a premarket value. pre_filter_params is read as the
+# database's own text and bound back as that text: a stored number with more
+# digits than a float holds would not survive a parse.
+PREMARKET_ROWS_SQL = """
+    SELECT ticker, date, close, pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr,
+           pre_fetched_at, pre_excluded_stale_prints, pre_excluded_spikes, pre_filter_status,
+           pre_filter_params::text AS pre_filter_params, pre_recompute_run
+      FROM market_data_daily
+     WHERE ticker = ANY(:tickers) AND date >= :first AND date <= :last AND close IS NOT NULL
+       AND (pre_high IS NOT NULL OR pre_low IS NOT NULL OR pre_vwap IS NOT NULL
+            OR gap_pct IS NOT NULL)
+     ORDER BY ticker, date
+"""
+
+# One ticker's daily bars, from far enough back that every session of the
+# window has the 250 rows the nightly computes its indicators on.
+DAILY_BARS_SQL = """
+    SELECT date, open AS "Open", high AS "High", low AS "Low", close AS "Close",
+           volume AS "Volume"
+      FROM market_data_daily
+     WHERE ticker = :ticker AND date >= :lo AND date <= :hi
+     ORDER BY date
+"""
+DAILY_HISTORY_DAYS = 400
+DAILY_FRAME_ROWS = 250
+
+
+def premarket_bars_sql(sessions: int) -> str:
+    """One (ticker, month) of premarket bars: one window a selected session.
+
+    Each window's bounds are compared to ``ts`` inside a lateral subquery that
+    ``OFFSET 0`` keeps the planner from flattening, so the bars are read as
+    one index range a window and the rows read are the rows returned,
+    whatever the planner estimates. A plain join of the windows to the bars
+    does not guarantee that: with a month's 22 sessions listed, production
+    read the whole SPY partition through its primary key and filtered it
+    against the windows, 2,536,918 rows for 7,251 returned in 19.9 s
+    (db-query-xzdx7, 2026-11-14). This form read 330 rows a loop over 22
+    loops in 8.6 ms (db-query-lndtv).
+    """
+    windows = ", ".join(f"(:s{i}, :e{i})" for i in range(sessions))
+    return (
+        "SELECT b.ts, b.open, b.high, b.low, b.close, b.volume, b.inserted_at\n"
+        f"  FROM (VALUES {windows}) AS w(start_ts, end_ts)\n"
+        " CROSS JOIN LATERAL (\n"
+        "       SELECT m.ts, m.open, m.high, m.low, m.close, m.volume, m.inserted_at\n"
+        "         FROM market_data_intraday m\n"
+        "        WHERE m.ticker = :t AND m.interval = '1min'\n"
+        "          AND m.ts >= w.start_ts::timestamptz AND m.ts < w.end_ts::timestamptz\n"
+        "       OFFSET 0) AS b\n"
+        " ORDER BY b.ts"
+    )
+
+
+def _recompute_month(ticker: str, sessions: pd.DataFrame, daily: pd.DataFrame,
+                     params_for, basis_code: dict):
+    """Recompute the selected sessions of one (ticker, month).
+
+    Returns the report rows, one a session, and the units to write.
+    """
+    from gcp import bar_recompute
+    from gcp.database import query_to_dataframe_strict
+    from lib.indicators import add_all_indicators
+
+    days = list(sessions['date'])
+    windows = [eastern_bounds_utc(day, dt_time(4, 0), dt_time(9, 30)) for day in days]
+    bind: dict = {'t': ticker}
+    for i, (start, end) in enumerate(windows):
+        bind[f's{i}'] = start
+        bind[f'e{i}'] = end
+    bars = query_to_dataframe_strict(premarket_bars_sql(len(days)), bind)
+    # The time the bars were read, which is what pre_fetched_at means.
+    read_at = utc_now()
+
+    rows, units = [], []
+    for record, (start, end) in zip(sessions.to_dict('records'), windows):
+        day = record['date']
+        old = {column: record[column] for column in PREMARKET_COLUMNS}
+        marker = record['pre_recompute_run']
+
+        def left(status: str, basis_bars: dict | None = None, *, day=day, old=old):
+            rows.append(bar_recompute.ReportRow(
+                ticker=ticker, session_date=day, row_key=day.isoformat(), old=old,
+                new=None, changed=None, status=status,
+                bars_rows=basis_bars['rows'] if basis_bars else None,
+                bars_sha256=basis_bars['sha256'] if basis_bars else None))
+
+        session_bars = bars[(bars['ts'] >= start) & (bars['ts'] < end)]
+        if session_bars.empty:
+            left('no_bars')
+            continue
+        try:
+            bar_recompute.require_proven(session_bars['ts'], session_bars['inserted_at'])
+        except bar_recompute.UnprovenRows as unproven:
+            log.warning("%s %s: %s; the session is left", ticker, day, unproven)
+            left('unproven_rows')
+            continue
+
+        # The nightly's daily frame for this session: the last 250 rows up to
+        # it, oldest first, with the indicators the nightly computes on it.
+        frame = daily[daily['date'] <= day].tail(DAILY_FRAME_ROWS).reset_index(drop=True)
+        if len(frame) < 2 or frame['date'].iloc[-1] != day:
+            left('daily_incomplete')
+            continue
+        enriched = add_all_indicators(frame, close_col='Close')
+        prior = prior_session_inputs(frame, enriched)
+
+        level_params = params_for(day)[ticker]
+        basis_bars = bar_recompute.bars_basis(session_bars)
+        new = premarket_snapshot(ticker, day, session_bars, prior, level_params, read_at)
+        if new is None:
+            left('no_bars', basis_bars)
+            continue
+
+        changed, write = bar_recompute.decide(
+            old, new, marker, bar_recompute.PREMARKET_COMPARED)
+        rows.append(bar_recompute.ReportRow(
+            ticker=ticker, session_date=day, row_key=day.isoformat(), old=old, new=new,
+            changed=changed, status='recomputed' if write else 'already_current',
+            bars_rows=basis_bars['rows'], bars_sha256=basis_bars['sha256']))
+        if write:
+            units.append(bar_recompute.WriteUnit(
+                ticker=ticker, session_date=day, row_key=day.isoformat(),
+                primary=bar_recompute.TableWrite(
+                    spec=bar_recompute.DAILY_PREMARKET,
+                    key={'ticker': ticker, 'date': day},
+                    old={**old, 'pre_recompute_run': marker},
+                    new=new),
+                follower=None, changed=changed,
+                basis={
+                    'bars': basis_bars,
+                    'code': basis_code,
+                    'filter': {'status': new['pre_filter_status'],
+                               'params': new['pre_filter_params']},
+                    'prior': prior,
+                }))
+    return rows, units
+
+
+def recompute_premarket(tickers: list, first: date, last: date, *, commit: bool,
+                        run_id: str, report_dir: str | None) -> int:
+    """Recompute the premarket columns of *tickers* in ``[first, last]`` from
+    stored bars and return the exit code.
+
+    One strict selection; one strict daily read a ticker; then one
+    (ticker, month) at a time, with that month's premarket bars in memory:
+    one strict read of the bars, each session refused unless every one of its
+    rows is proven a true UTC instant, and `premarket_snapshot`, the function
+    the nightly runs, for the values. The level parameters are the ones in
+    force on each session's own date, read once a distinct date; a failed
+    parameter read raises and is never written as an unfiltered snapshot.
+    """
+    from gcp import bar_recompute
+    from gcp.database import query_to_dataframe_strict
+
+    selected = query_to_dataframe_strict(
+        PREMARKET_ROWS_SQL, {'tickers': list(tickers), 'first': first, 'last': last})
+    log.info("recompute-premarket %s..%s tickers=%s candidates=%d commit=%s run_id=%s",
+             first, last, " ".join(tickers), len(selected), commit, run_id)
+    code = bar_recompute.code_version()
+
+    params_by_date: dict = {}
+
+    def params_for(day):
+        if day not in params_by_date:
+            params_by_date[day] = read_level_params_for_run(tickers, day)
+        return params_by_date[day]
+
+    rows: list = []
+    groups: list = []
+    if not selected.empty:
+        for ticker, of_ticker in selected.groupby('ticker', sort=False):
+            daily = query_to_dataframe_strict(DAILY_BARS_SQL, {
+                'ticker': ticker, 'lo': first - timedelta(days=DAILY_HISTORY_DAYS), 'hi': last})
+            months = of_ticker['date'].map(lambda d: (d.year, d.month))
+            for (year, month), sessions in of_ticker.groupby(months, sort=False):
+                group_rows, units = _recompute_month(ticker, sessions, daily, params_for, code)
+                computed = [r for r in group_rows if r.new is not None]
+                log.info(
+                    "RECOMPUTE-PREMARKET %s %04d-%02d candidates=%d changed=%d "
+                    "unchanged=%d refused=%d",
+                    ticker, year, month, len(group_rows),
+                    sum(1 for r in computed if r.changed),
+                    sum(1 for r in computed if not r.changed),
+                    len(group_rows) - len(computed))
+                rows.extend(group_rows)
+                groups.append((f"{ticker} {year:04d}-{month:02d}", units))
+
+    summary = {
+        'target': bar_recompute.TARGET_PREMARKET,
+        'run_id': run_id,
+        'arguments': {'tickers': list(tickers), 'from': str(first), 'to': str(last),
+                      'commit': bool(commit)},
+        'code_version': code,
+    }
+    return bar_recompute.finish_run(
+        target=bar_recompute.TARGET_PREMARKET, run_id=run_id, commit=commit,
+        action='recompute', rows=rows, groups=groups, summary=summary,
+        csv_columns=PREMARKET_COLUMNS, report_dir=report_dir)
+
+
+def revert_premarket_run(revert_of: str, *, commit: bool, run_id: str,
+                         report_dir: str | None) -> int:
+    """Write back the premarket values the committed run *revert_of*
+    replaced, from its ledger rows, and return the exit code.
+
+    A row is restored only while it still holds what that run wrote; a row a
+    later run or another writer changed is left and reported. The revert
+    writes its own ledger rows and sets the marker to its own run id. Without
+    *commit* it reads only the ledger and reports what it would restore.
+    """
+    from gcp import bar_recompute
+
+    target = bar_recompute.TARGET_PREMARKET
+    held = bar_recompute.ledger_of_run(revert_of, target)
+    if not held:
+        log.error("refused: the ledger holds no row of run %s for target %s; "
+                  "nothing to revert", revert_of, target)
+        return 1
+    units = bar_recompute.revert_units(held, target)
+    rows = [bar_recompute.ReportRow(
+        ticker=unit.ticker, session_date=unit.session_date, row_key=unit.row_key,
+        old={c: unit.primary.old[c] for c in PREMARKET_COLUMNS},
+        new=dict(unit.primary.new), changed=unit.changed,
+        status='reverted' if commit else 'would_revert',
+        bars_rows=None, bars_sha256=None) for unit in units]
+    by_group: dict = {}
+    for unit in units:
+        month = (unit.ticker, unit.session_date.year, unit.session_date.month)
+        by_group.setdefault(month, []).append(unit)
+    groups = [(f"{ticker} {year:04d}-{month:02d}", members)
+              for (ticker, year, month), members in by_group.items()]
+    log.info("revert-run %s target=%s rows=%d groups=%d commit=%s run_id=%s",
+             revert_of, target, len(units), len(groups), commit, run_id)
+    summary = {
+        'target': target,
+        'run_id': run_id,
+        'arguments': {'revert_run': revert_of, 'commit': bool(commit)},
+        'code_version': bar_recompute.code_version(),
+    }
+    return bar_recompute.finish_run(
+        target=target, run_id=run_id, commit=commit, action='revert', rows=rows,
+        groups=groups, summary=summary, csv_columns=PREMARKET_COLUMNS,
+        report_dir=report_dir)
+
+
+def _recompute_main(args) -> int:
+    """--recompute-premarket and --revert-run. Returns 2, with the reason on
+    one line, for anything refused before a query or a write."""
+    from gcp import bar_recompute
+
+    try:
+        if not (args.recompute_premarket or args.revert_run):
+            raise bar_recompute.Refusal(
+                "--from, --to, --commit and --report-dir belong to "
+                "--recompute-premarket or --revert-run")
+        if args.recompute_premarket and (args.date or args.backfill or args.revert_run):
+            raise bar_recompute.Refusal(
+                "--recompute-premarket does not combine with --date, --backfill "
+                "or --revert-run")
+        if args.revert_run and (args.first or args.last or args.date or args.backfill
+                                or args.tickers != 'ALL'):
+            raise bar_recompute.Refusal(
+                "--revert-run takes a run id and no --from, --to, --tickers, --date "
+                "or --backfill")
+        window = None
+        if args.recompute_premarket:
+            window = bar_recompute.parse_window(
+                args.tickers, args.first, args.last, market_today())
+        bar_recompute.require_report_destination(args.report_dir)
+    except bar_recompute.Refusal as refusal:
+        log.error("refused: %s", refusal)
+        return 2
+
+    # The first query. The selection reads the marker column, so a database
+    # without it is refused in a dry run too.
+    missing = bar_recompute.schema_missing()
+    if missing:
+        log.error("refused: the database does not hold %s; apply gcp/schema.sql first",
+                  ", ".join(missing))
+        return 2
+
+    run_id = bar_recompute.run_id()
+    if args.revert_run:
+        return revert_premarket_run(args.revert_run, commit=args.commit, run_id=run_id,
+                                    report_dir=args.report_dir)
+    tickers, first, last = window
+    return recompute_premarket(tickers, first, last, commit=args.commit, run_id=run_id,
+                               report_dir=args.report_dir)
 
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    # The two modes that only read stored bars branch before anything else.
+    if (args.recompute_premarket or args.revert_run or args.first or args.last
+            or args.commit or args.report_dir):
+        return _recompute_main(args)
+
     if args.backfill:
-        return _run_backfill(None if args.tickers == 'ALL' else args.tickers.upper().split())
+        # _run_backfill returns the number of rows it wrote, and this module
+        # ends `sys.exit(main())`: the count is not an exit code.
+        _run_backfill(None if args.tickers == 'ALL' else args.tickers.upper().split())
+        return None
 
     # Use ET (market timezone), not the container's UTC. The 23:00 ET cron
     # fires at 03:00–04:00 UTC the NEXT calendar day, so a UTC-based
@@ -1297,4 +1725,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

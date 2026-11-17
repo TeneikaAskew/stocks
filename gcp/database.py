@@ -546,6 +546,7 @@ def replace_rows_in_window(
     clear_tables: Sequence[str] = (),
     clear_key: Sequence[str] = ("ticker",),
     cleared: Optional[dict] = None,
+    spare_ts: Sequence = (),
 ) -> tuple[int, int]:
     """Atomically replace every row of *table* matching *key* with
     ``start <= ts_col < end`` by the rows of *df*. Returns (deleted, inserted).
@@ -586,6 +587,15 @@ def replace_rows_in_window(
     keys no source row has any more (Codex P1 on #1185). A table that does
     not exist is skipped. Counts are written to ``cleared`` when given; the
     caller rebuilds the derived tables afterwards.
+
+    ``spare_ts``: keys (tz-aware, inside the window) the swap leaves exactly as
+    they are: the row lock and the DELETE both exclude them, so they keep their
+    values and their ``inserted_at``, and a frame holding one is refused before
+    the transaction opens. Rows that sit inside the window and are not the
+    caller's to replace (the previous month's late vendor bars, FEAT-DATA-001).
+    The returned ``deleted``, the locked-rows check and ``max_delete_ratio``
+    all count the rows the DELETE removed, so spared rows are in none of them.
+    The ``clear_tables`` deletes still cover the whole window.
     """
     import sqlalchemy
     from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -611,6 +621,20 @@ def replace_rows_in_window(
         for k, v in key.items():
             if k in df.columns and not (df[k] == v).all():
                 raise ValueError(f"replace_rows_in_window({table}): rows with {k} != {v!r}")
+    spare = [pd.Timestamp(k) for k in spare_ts]
+    if any(k.tzinfo is None for k in spare):
+        raise ValueError("replace_rows_in_window: spare_ts must be tz-aware")
+    stray = [k for k in spare if k < pd.Timestamp(start) or k >= pd.Timestamp(end)]
+    if stray:
+        raise ValueError(
+            f"replace_rows_in_window({table}): {len(stray)} spared key(s) fall outside "
+            f"[{start}, {end})")
+    if spare and not df.empty:
+        held_back = int(pd.DatetimeIndex(df[ts_col]).isin(pd.DatetimeIndex(spare)).sum())
+        if held_back:
+            raise ValueError(
+                f"replace_rows_in_window({table}): {held_back} row(s) sit at spared keys; "
+                "a spared row is never rewritten")
 
     engine = get_engine()
     tbl = _REFLECTED_TABLES.get(table)
@@ -628,12 +652,20 @@ def replace_rows_in_window(
     where = " AND ".join(f"{k} = :k_{k}" for k in key)
     params = {f"k_{k}": v for k, v in key.items()}
     params.update({"w_start": start, "w_end": end})
-    delete_sql = sqlalchemy.text(
-        f"DELETE FROM {tbl.name} WHERE {where} "
-        f"AND {ts_col} >= :w_start AND {ts_col} < :w_end")
+    # Spared keys are excluded from the lock and the DELETE only; the derived
+    # clears below keep ``params`` and so the whole window.
+    own = f"{where} AND {ts_col} >= :w_start AND {ts_col} < :w_end"
+    own_params = dict(params)
+    if spare:
+        own += f" AND {ts_col} NOT IN :w_spare"
+        own_params["w_spare"] = [k.to_pydatetime() for k in spare]
+    delete_sql = sqlalchemy.text(f"DELETE FROM {tbl.name} WHERE {own}")
     lock_sql = sqlalchemy.text(
-        f"SELECT count(*) FROM (SELECT 1 FROM {tbl.name} WHERE {where} "
-        f"AND {ts_col} >= :w_start AND {ts_col} < :w_end FOR UPDATE) locked")
+        f"SELECT count(*) FROM (SELECT 1 FROM {tbl.name} WHERE {own} FOR UPDATE) locked")
+    if spare:
+        expanding = sqlalchemy.bindparam("w_spare", expanding=True)
+        delete_sql = delete_sql.bindparams(expanding)
+        lock_sql = lock_sql.bindparams(expanding)
 
     dropped = [c for c in df.columns if c not in table_cols]
     if dropped:
@@ -648,9 +680,9 @@ def replace_rows_in_window(
         locked = None
         if verify is not None:
             conn.execute(sqlalchemy.text("SET LOCAL lock_timeout = '30s'"))
-            locked = int(conn.execute(lock_sql, params).scalar_one())
+            locked = int(conn.execute(lock_sql, own_params).scalar_one())
             verify(conn)
-        deleted = conn.execute(delete_sql, params).rowcount
+        deleted = conn.execute(delete_sql, own_params).rowcount
         if locked is not None and deleted != locked:
             raise WindowChanged(
                 f"replace_rows_in_window({table} {key}): DELETE removed {deleted} rows, "

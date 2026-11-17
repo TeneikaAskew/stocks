@@ -32,6 +32,8 @@ try:
 except ModuleNotFoundError as exc:  # pragma: no cover
     pytest.skip(f"grid router unavailable: {exc}", allow_module_level=True)
 
+from lib.eastern_time import market_today  # noqa: E402
+
 
 # ─── Test fixtures ──────────────────────────────────────────────────────────
 
@@ -157,7 +159,7 @@ class TestGridLive:
 
     def test_eod_fallback_when_no_realtime(self, client, monkeypatch):
         """No REALTIME rows → falls back to EOD with data_source='eod_fallback'."""
-        eod = _chain_df(date.today() - pd.Timedelta(days=1), "EOD")
+        eod = _chain_df(market_today() - pd.Timedelta(days=1), "EOD")
         _install_query_router(monkeypatch, realtime_df=None, eod_df=eod)
 
         r = client.get("/api/options/IWM/grid")
@@ -1100,7 +1102,7 @@ class TestGridLiveProvenance:
         assert data["data_source"] == "realtime"
 
     def test_eod_fallback_with_null_sessions_keeps_market_session_none(self, client, clock, monkeypatch):
-        today = date.today()
+        today = market_today()
         df = _chain_df(today, None, tz="UTC")
         _install_query_router(monkeypatch, eod_df=df)
         clock["now"] = datetime.now(timezone.utc) + timedelta(days=1)
