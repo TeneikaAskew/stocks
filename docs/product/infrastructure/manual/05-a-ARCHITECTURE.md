@@ -924,7 +924,6 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../../gcp/fetchers/fetch_alphavantage_intraday.py) | Cloud Run Job: Fetch AlphaVantage 1-min historical intraday → Cloud SQL. | `fetch-alphavantage-intraday`, `intraday-bulk-backfill` |
 | [`gcp/fetchers/fetch_av_earnings_options_backfill.py`](../../../../gcp/fetchers/fetch_av_earnings_options_backfill.py) | Cloud Run Job: backfill T-1 options snapshots for every earnings event. | `earnings-options-backfill` |
 | [`gcp/fetchers/fetch_av_historical_options.py`](../../../../gcp/fetchers/fetch_av_historical_options.py) | Cloud Run Job: Fetch daily AV HISTORICAL_OPTIONS and write to Cloud SQL. | `fetch-av-options-backfill` |
-| [`gcp/fetchers/fetch_av_indicators.py`](../../../../gcp/fetchers/fetch_av_indicators.py) | Phase-2 fetcher — AlphaVantage pre-computed indicators. | — |
 | [`gcp/fetchers/fetch_av_realtime_options.py`](../../../../gcp/fetchers/fetch_av_realtime_options.py) | Cloud Run Job: Fetch intraday AV REALTIME_OPTIONS and write to Cloud SQL. | `fetch-av-options-realtime` |
 | [`gcp/fetchers/fetch_cross_asset.py`](../../../../gcp/fetchers/fetch_cross_asset.py) | Phase-4 fetcher — cross-asset features (VIX/UST10Y/DXY/Oil/Gold). | — |
 | [`gcp/fetchers/fetch_earnings_history.py`](../../../../gcp/fetchers/fetch_earnings_history.py) | Cloud Run Job: Fetch historical quarterly earnings from AV EARNINGS → Cloud SQL. | `fetch-earnings-history` |

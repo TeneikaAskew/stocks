@@ -16,6 +16,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 import subprocess
 import sys
 import weakref
@@ -434,6 +435,17 @@ def test_gcs_bucket_generation_tells_absent_from_a_failed_read(gcs):
     gcs["get_blob_raises"] = Forbidden("denied")
     with pytest.raises(Forbidden):
         bucket.generation("x/2025-05.parquet")
+
+
+def test_gcs_bucket_write_passes_timeout_and_retry_only_when_given(gcs):
+    """The export's writes keep the library's own timeout and retry; the
+    premarket as-read record (FEAT-DATA-001, Design 3) passes both, and
+    retry=None (no retry) reaches the upload as None."""
+    bucket = xb.GcsBucket("b")
+    bucket.write("x", b"{}", if_generation_match=0)
+    assert gcs["uploads"][-1][2] == {"if_generation_match": 0}
+    bucket.write("x", b"{}", if_generation_match=0, timeout=3.0, retry=None)
+    assert gcs["uploads"][-1][2] == {"if_generation_match": 0, "timeout": 3.0, "retry": None}
 
 
 # -- Task 3: the manifest entry -------------------------------------------------
@@ -1203,8 +1215,16 @@ def test_read_bars_needs_only_pandas_and_pyarrow(monkeypatch, tmp_path):
 MODULE = "export_intraday_bars"
 EXPORT_MODULE = "gcp/fetchers/export_intraday_bars.py"
 FETCH_MODULE = "gcp/fetchers/fetch_alphavantage_intraday.py"
+# FEAT-DATA-001, premarket bars as read: the refresh job writes its own objects
+# through the bucket adapter (bucket_from_env), and the record module's
+# read-only compare command reads the copy by hand (spec Design 5).
+REFRESH_MODULE = "gcp/fetchers/fetch_premarket_refresh.py"
+AS_READ_MODULE = "gcp/fetchers/premarket_as_read.py"
 TREE_ROOTS = ("gcp", "lib", "scripts", "platform")
 TREE_SKIP = {"__pycache__", "node_modules", ".venv", "venv"}
+# ``read_bars`` in a string, as a whole name (``"m.read_bars"`` is one;
+# ``"as_read_bars"`` is another name).
+READ_BARS_IN_TEXT = re.compile(r"(?<![A-Za-z0-9_])read_bars(?![A-Za-z0-9_])")
 
 
 def copy_uses(source: str) -> set[str]:
@@ -1252,7 +1272,7 @@ def copy_uses(source: str) -> set[str]:
                 and id(node) not in docstrings):
             if MODULE in node.value:
                 found.add("imports-module")
-            if "read_bars" in node.value:
+            if READ_BARS_IN_TEXT.search(node.value):
                 found.add("names-read_bars")
             if "intraday-bars/" in node.value:
                 found.add("names-prefix")
@@ -1270,6 +1290,10 @@ def copy_uses(source: str) -> set[str]:
     ("def f(m):\n    return m.read_bars('.', 'SPY', '2025-01', '2025-02')",
      {"names-read_bars"}),
     ('def f(m):\n    return getattr(m, "read_bars")', {"names-read_bars"}),
+    ('X = "xb.read_bars"', {"names-read_bars"}),
+    # a longer identifier that ends in the name is not the name (the as-read
+    # comparison's result key, FEAT-DATA-001)
+    ('X = {"as_read_bars": 4}', set()),
     ('def f():\n    """Bars come from gcp.fetchers.export_intraday_bars (read_bars),\n'
      '    under intraday-bars/v1/1min/."""\n    return 1', set()),
     ('"""The export module is gcp/fetchers/export_intraday_bars.py."""\nX = 1', set()),
@@ -1282,8 +1306,11 @@ def test_the_copy_check_catches_each_way_in(snippet, want):
 def test_nothing_in_the_tree_reads_the_copy():
     # CLAUDE.md 3.7.1: the bucket copy is never a source for the tree. No job,
     # replay, backtest or route imports the export module or names its prefix,
-    # so nothing can fall back to it when Cloud SQL fails. The one caller is
-    # the fetch job, which only writes the copy.
+    # so nothing can fall back to it when Cloud SQL fails. The callers are the
+    # fetch job, which only writes the copy; the premarket refresh job, which
+    # only writes its own as-read objects through the bucket adapter; and the
+    # as-read record module, whose read-only compare command alone reads the
+    # copy (the next test confines it to that command).
     uses = {}
     for root in TREE_ROOTS:
         for path in sorted((REPO / root).rglob("*.py")):
@@ -1295,7 +1322,32 @@ def test_nothing_in_the_tree_reads_the_copy():
     assert uses.pop(EXPORT_MODULE) >= {"names-prefix", "names-read_bars"}   # the module itself
     fetch = uses.pop(FETCH_MODULE, set())
     assert fetch <= {"imports-module"}, fetch         # it writes; it never reads back
+    refresh = uses.pop(REFRESH_MODULE, set())
+    assert refresh <= {"imports-module"}, refresh     # it writes; it never reads back
+    as_read = uses.pop(AS_READ_MODULE, set())
+    assert as_read <= {"imports-module", "names-read_bars"}, as_read
     assert uses == {}
+
+
+def reach_outside_command(source: str) -> set[str]:
+    """``copy_uses`` of every top-level statement of *source* but ``def main``."""
+    found: set[str] = set()
+    for top in ast.parse(source).body:
+        if isinstance(top, ast.FunctionDef) and top.name == "main":
+            continue
+        found |= copy_uses(ast.unparse(top))
+    return found
+
+
+def test_the_as_read_record_reaches_the_copy_only_in_its_command():
+    # The refresh job imports premarket_as_read to write its records; only the
+    # module's read-only command (main, by hand) may read the copy, so no path
+    # the job runs can fall back to it.
+    command = "def main():\n    from gcp.fetchers.export_intraday_bars import read_bars\n"
+    job_path = "def write():\n    from gcp.fetchers.export_intraday_bars import read_bars\n"
+    assert reach_outside_command(command) == set()
+    assert reach_outside_command(job_path) == {"imports-module", "names-read_bars"}
+    assert reach_outside_command((REPO / AS_READ_MODULE).read_text(encoding="utf-8")) == set()
 
 
 # -- Task 6: the nightly run exports after its fetch ----------------------------
