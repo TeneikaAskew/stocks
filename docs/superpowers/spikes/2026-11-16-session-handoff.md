@@ -1,4 +1,4 @@
-# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 12:55Z
+# Handoff: SPY, QQQ and IWM data and brief work, state at 2026-11-17 22:30Z
 
 Keep this note current: whoever finishes a task updates its row in section 2 and its part of
 section 3 in the same PR or a docs PR right after (owner, 2026-11-16).
@@ -8,9 +8,168 @@ true when written. Before acting on any line, re-read the PR or branch it names:
 in flight.
 
 
-## 0. Update, 2026-11-17 12:55Z: deployed, replay redirected, review blocked
+## 0. Update, 2026-11-17 22:30Z: owner decisions taken, specs and re-cuts landed
 
-This section supersedes section 0a (05:20Z) and sections 1 to 7 where they differ.
+This section supersedes section 0a below (16:30Z) where they differ.
+
+### 0.1 Landed since 16:30Z
+
+- stocks: #2066 (plans of #2047, #1985 and #1670 marked done), #1671 (zero whole-job retries on the
+  three news jobs) and its plan close #2070, #2053 (quarter targets r3 spec), #2054 (FEAT-REPLAY-001
+  full-pull replay spec, approved with all ten decisions on the recommended option), #2079
+  (reference inputs r2, the re-cut of #1520), #2080 (quarter targets r3 build plan), #2082 (spec C,
+  FEAT-DEPLOY-001: bounded earnings reaction run and the Sunday chain), #2081 (spec B,
+  FEAT-DATA-001: drop `adjusted_close` after a clear and a writer probe) and #2084 (the re-cut of
+  #1914: retire the EW scorer, keep the NYSE calendar shim; main `379ad19d0`, its identity record
+  verified from an independent full clone after the squash). From the owner's main chat: #1937
+  (web watchlist write routes answer 410, stage B) and its docs, #2071, #2072 and #2073.
+- solyra: #350 (spec), #351 (FEAT-OPTION-001: a one-sided options chain renders as unavailable
+  with a badge, never as `+0`, and Profiles no longer throws on a null put/call ratio) and #352
+  (its plan close and six restamped docs; solyra main `60daa4b`).
+- #1916 carries the one push the owner allowed (`383eda8d1`): `merge_asof` with a 6-day tolerance,
+  so a stalled writer's gamma context is NaN past that age, with tests for a weeks-long gap and for
+  D minus 2 across a holiday weekend. Claude reviewed the whole diff in place of a further Codex
+  round (comment of 19:52Z on #1916).
+
+### 0.2 Owner direction, 2026-11-17 evening
+
+"Overcome all blockers": the recommended option is taken on every pending decision and recorded on
+each PR. Anything that writes to production (a deploy, a schema apply, a data change, the #1916
+migration, a key rotation) still needs the owner's yes at the time.
+
+- #2054: approved with the ten decisions settled; three gaps Codex found go to its plan (#2077).
+- #1520: closed unmerged, re-cut as #2079 (merged), with its four round-2 findings closed.
+- #1914: closed unmerged, re-cut as #2084 (merged).
+- #1700 and #1430: closed unmerged; each binds a spec that is superseded on main.
+- #1860: closed unmerged (discarded), well past the review cap.
+- Spec B plan: `docs/BRIEFING_DECK.md:1090` is reworded with 05-i:1052 and 05-j:508 in the
+  prerequisite docs PR, so the implementation adds no audit finding; `backfill-ticker` (writes
+  `market_data_daily`, no schedule) is covered at Close-out step 4 by its image digest, so no
+  backfill job runs for the probe.
+
+### 0.3 Open, in this order
+
+1. #2087: #2084's plan close (`status: done`). Codex code review clean on `2029a99`; security
+   review and CI running; auto-merge on.
+2. Spec B plan (FEAT-DATA-001 drop `adjusted_close`, 6 tasks, binds
+   `feature/feat-data-001-drop-adjusted-close`): branch `docs/plan-feat-data-001-drop-adjusted-close`
+   pushed at `7ce28aaf0`, no PR yet. Reviewed; both choices above recorded in it; gate ok in PR
+   mode (commit mode refuses a second commit to a new plan on its own branch, the known limitation).
+   Next: rerun the docs audit against main, open the PR from the body draft in the session
+   scratchpad (`plan_spec_b_body.md`), auto-merge. r2's plan Task 13 says "spec B removes both
+   allowances"; spec B keeps the drop line's allowance and governs: whoever builds r2 keeps spec B's
+   file and allowance if spec B merged first.
+3. Spec C plan (FEAT-DEPLOY-001, covers #2083): being written in `/tmp/plan-spec-c`, uncommitted
+   at 22:27Z, branch `docs/plan-feat-deploy-001-earnings-timeout`. Lost if the container restarts
+   before it is pushed; redo from the same brief if so.
+4. FEAT-REPLAY-001: the plan is committed locally (`/tmp/plan-replay`, branch
+   `docs/plan-feat-replay-001-full-pull-replay`, `00050f9bd`, 14 tasks), not pushed. The merged
+   spec declares no `site_source_notes`, so the implementation could never clear its SITE audit
+   findings. Fix, as #1953 and #1898 did: an r2 spec that supersedes #2054's, keeps every decision
+   and declares the notes, plus the plan's spec corrections (D2's test path is
+   `tests/agents/test_agent_model_routing.py`; `BRIEF_RUN_SLOT=late` selects `refresh_0920` under a
+   run; Decision 9's reach is unavailable under a run; the `doc_inventory` row per #2086). Being
+   drafted in `/tmp/spec-replay-r2` (branch `docs/spec-feat-replay-001-full-pull-replay-r2`); the
+   r2 spec merges first, then the plan, retargeted to r2. The experiment files Task 1 needs are on
+   origin: `spike/fullpull-replay-experiment-2026-11-17` (`2ce5cd608`, with `SHA256SUMS`).
+   Merging the implementation creates schema `replay` in production (`apply-schema-on-change`),
+   so that merge needs the owner's yes.
+5. Spec B's prerequisite `docs/` PR (the three reworded script paths) lands just before spec B's
+   implementation PR is marked ready, not earlier: it names the script as retired.
+6. #2062 (hit rates r2 build) belongs to the owner's main chat; the quarters build waits on it.
+
+### 0.4 Waiting on the owner
+
+1. **#2085, security:** the AlphaVantage key was written to Cloud Logging twice on 2026-10-22 by
+   `fetch-av-options-realtime` (execution `-9x5d6`, a vendor 503: `requests` puts the full URL,
+   `apikey` included, in its error text). The `_Default` bucket keeps 30 days, so the entries stay
+   until about 2026-11-21. `fetch_month` in `gcp/fetchers/fetch_alphavantage_intraday.py` still logs
+   that text on any 5xx or transport error. Recommended: rotate the key (owner only), then a spec to
+   stop logging request exception text, with a guard test.
+2. #1916 merges only after both: (a) the owner publishes solyra main (`60daa4b` or later) in
+   Lovable, so the live site carries #351 (checked earlier on 2026-11-17: the live OptionsFlowPage
+   chunk did not contain "Chain completeness"); (b) the owner's explicit yes for the production
+   migration, because `apply-schema-migrations` runs on every merge to main. Then main is merged
+   in, the sidecar regenerated, and it merges.
+3. Spec C's Decision 6: lift the `fetchers` hold at its Close-out step 1 (recommended) or keep it
+   until r2's Close-out step 1.
+
+### 0.5 Do not run
+
+Unchanged from 0a.3: no `./gcp/deploy.sh fetchers` from a main containing #2047 until spec C is
+deployed; no 09:20 scheduler entries, backfill or history job without a merged spec the owner
+names; no data change in place.
+
+### 0.6 Issues opened today
+
+#2061 (registry DOC-24 lines moved), #2064 (05-INFRASTRUCTURE job inventory), #2074 (the gamma
+backfill SQL carries a snapshot forward with no age limit), #2075 (`GEX_nan_VEX_nan` regime label),
+#2077 and #2083 (gaps for the replay and spec C plans), #2085 (above) and #2086 (`doc_inventory`
+reads `replay.runs` as one table named `replay`).
+
+### 0.7 Scheduled
+
+- 2026-11-18 03:10Z: the first bar-flags nightly check, recorded on #2001.
+
+
+## 0a. Update, 2026-11-17 16:30Z: review unblocked, sidecar queue landing
+
+This section supersedes section 0b below (12:55Z) where they differ.
+
+### 0.1 Landed since 12:55Z
+
+- Merged: #2047 (no adjusted prices anywhere, plus the SPLITS request failure that could carry the
+  API key in its reason: it now carries only the HTTP status or the exception class), #1985
+  (catalyst upcoming refresh binds INTEGER columns as integers), #1670 (keyword-only
+  `implied_move_invalid` guard), #2055 (this note), #2056 (hit rates r2 plan) and, from the
+  owner's main chat, #2051 (hit rates r2 spec).
+- Live checks from 12:55Z's list, all done: the 13:30Z brief ran on v5 with IWM's prior-close drop
+  recorded; the premarket refresh wrote its as-read objects; the 09:20 ET late run applied.
+- Open: #2066 marks the plans of #2047, #1985 and #1670 `done`. #1671 (zero retries on the three
+  news jobs) is pushed as `affb3f284`, synced with main, sidecar identity-matched, docs audit 313
+  against 313; it waits for Codex's code review of that head and CI, then its done_when 5 is ticked
+  and it merges. It is the last sidecar PR in the queue.
+- Issues opened: #2061 (MODEL-REGISTRY DOC-24 points at moved lines; a feature branch may edit only
+  the registry rows its spec names, so it is fixed on its own branch) and #2064 (05-INFRASTRUCTURE.md
+  still shows the news jobs at retries 1; a `docs/` fix after #1671 merges).
+
+### 0.2 Owner direction, 2026-11-17 afternoon
+
+- While Codex was out of credits, Claude reviewed in its place: #2047, #1985, #1916, #1670 and
+  #1671. None found anything at or above the merge threshold. The owner then reset Codex, so it can
+  be tagged with `@codex review` again; a push to a PR open for review also triggers it.
+- #2050 merged without a Codex review of its last push, by the owner's call.
+
+### 0.3 Do not run
+
+- `./gcp/deploy.sh fetchers` from any main that contains #2047 (main does now) before spec C is
+  deployed: #2047 gives `compute-earnings-reactions` one SPLITS call per ticker with a 30 s timeout
+  and no early stop, so a transport brownout reaches the job's 1,800 s timeout at about 60 tickers
+  and the end-of-run upsert loses every row. Spec C raises that timeout to at least 16,800 s (#2060,
+  with three fix options). The other deploy targets are unaffected.
+- No 09:20 scheduler entries, backfill or history job unless a merged spec covers it and the owner
+  names it. No data change in place anywhere (0b.2).
+
+### 0.4 Waiting on the owner
+
+1. #1916: may its one remaining push also carry the gamma staleness limit (`merge_asof` tolerance of
+   about 6 days, plus a test with a gap of several weeks)? Recommended yes. Its merge is also held
+   until solyra ships the Profiles-tab null fix. Merged with main locally in `/tmp/conflict-1916`.
+2. #2054 (FEAT-REPLAY-001 full-pull replay): ten decisions before it can be approved. A second-round
+   fix commit is local (`856c3d3c5`), to push with the approval.
+3. #2053 (quarter targets r3, the re-cut of #2052, Codex clean on `b65dae82f`): approval. The
+   quarters build (`/tmp/build-quarters`, 13 of 15 tasks, nothing pushed) is re-planned against r3
+   and opened only after #2053 merges. Hit rates r2 is being built in the main chat (#2062, draft).
+4. Older: #1520, #1700 and #1430 questions; whether to re-cut #1914 and #1860.
+
+### 0.5 Scheduled
+
+- 2026-11-18 03:10Z: the first bar-flags nightly check, recorded on #2001.
+
+
+## 0b. Update, 2026-11-17 12:55Z: deployed, replay redirected, review blocked
+
+This section supersedes section 0c (05:20Z) and sections 1 to 7 where they differ.
 
 ### 0.1 Landed and deployed since 05:20Z
 
@@ -68,7 +227,7 @@ Until the owner adds credits:
 - 14:40Z: the first 09:20 ET late run (#2020). 2026-11-18 03:10Z: the first bar-flags nightly
   (#2001).
 
-## 0a. Update, 2026-11-17 05:20Z: what landed, and the order from here
+## 0c. Update, 2026-11-17 05:20Z: what landed, and the order from here
 
 Sections 1 to 7 below were written at 01:50Z. This section supersedes them where they differ. The
 order below was read from each spec's own order section on main (not from memory) and confirmed by

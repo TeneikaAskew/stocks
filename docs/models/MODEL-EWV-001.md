@@ -3,8 +3,8 @@
 **Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 **Code:** `gcp/fetchers/evaluate_ew_strikes.py` ·
-**Writes:** no scheduled scorer writes; historical `earnings_calendar.ew_*` columns retained ·
-**Job:** retired `evaluate-ew-strikes`; scorer source removal remains pending P-I ·
+**Writes:** none; historical `earnings_calendar.ew_*` columns retained ·
+**Job:** retired `evaluate-ew-strikes`; only the shared NYSE shim remains ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Retired (operationally, 2026-11-13) · **Rec:** REMOVE
 **Doc health:** CURRENT · **Last verified:** 2026-09-26
@@ -24,16 +24,26 @@ execution `premarket-brief-s7kz6` completed at 15:32:06 UTC on November 13, reta
 non-EW earnings, prior-AMC reactions, market analysis and economic-calendar output.
 Historical rows and verdict columns remain intact.
 
-This records operational retirement, not completed source removal. The scorer
-implementation still exists in `gcp/fetchers/evaluate_ew_strikes.py` on main;
-P-I removes it only after its normal source review and checks. The existing
+This source change removes the scorer implementation from
+`gcp/fetchers/evaluate_ew_strikes.py`; it introduces no new deployment claim. The existing
 `nyse_sessions` helper and its AV collector and earnings-session consumers remain
 required. No calendar, schema, secret or historical data is removed here.
 
 The scorer behavior and incident measurements below are retained historical
 context; they do not assert that the retired scheduled scorer is still running.
 
-## What it decides
+## Source and test retirement
+
+Executed collection at d806bfd1 recorded 71 cases over 35 functions: 49 scorer
+cases are retired and 22 vendor cases are moved verbatim. The first implementation
+(#1914, base 6e04eb53) independently collected the same 71 cases. Its re-cut, based
+on main d35d9ce2, collects them again: 71 cases over 35 functions. Five new shim cases
+replace no vendor or consumer assertion. Repository collection there changes from
+11,717 to 11,673 cases, exactly minus 49 plus 5; other files retain their counts.
+The vendor cases move as main holds them, including the `TIME_SERIES_DAILY` reply
+helper that #2047 changed.
+
+## What it decided (historical)
 
 For each Earnings Whispers strike pick (`earnings_calendar` rows with
 `data_source = 'earnings_whispers'` and a non-null `strike`), a **verdict on how the pick
@@ -216,7 +226,7 @@ states it (`:16-18`) without arguing it, and it matches how each position is act
 **present**, not 09:30. On a session with missing early bars the figure is understated by the
 gap.
 
-## Entry points
+## Historical entry points
 
 | Symbol | Role |
 |---|---|
@@ -228,7 +238,24 @@ gap.
 
 ## Tests
 
-`tests/gcp/test_evaluate_ew_strikes.py`: **62 tests** covering several areas.
+`tests/gcp/test_nyse_sessions_shim.py` contains five new tests for the retained
+module: Thanksgiving absence, early close, DST open, missing-library error,
+removed scorer exports and byte-identical wrapper source.
+`tests/gcp/test_av_options_collector_entry.py` remains unchanged and exercises
+the live caller's existing `ew.nyse_sessions` patch boundary.
+
+The seven vendor functions and their helpers moved verbatim to the dedicated
+vendor-answer suite, with all 22 parametrized cases retained. #1914's
+node-disposition receipt (`docs/review-evidence/ew-module-shim/node-disposition.json`,
+carried unchanged by the re-cut) records every old/new node at its base 6e04eb53 and
+the 49 retired scorer cases; the re-cut's own counts are above. Finite-values repair
+obligations and historical results remain separate.
+
+### Historical evaluator test evidence
+
+The former evaluator test module was earlier described as **62 tests** covering
+several areas. That historical count predates the executed 71-case inventory
+above; the following incident evidence is preserved.
 - **Sessions.** The scoring session for every timing, including the Friday, Thanksgiving and
   Memorial Day cases, and the 13:00 early close.
 - **Verdicts.** The first tests of `_compute_verdict`.

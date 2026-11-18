@@ -352,7 +352,7 @@ Declared in `gcp/schema.sql` but absent live: `bar_recompute_ledger`, `intraday_
 
 ## 6. Cloud Run Jobs
 
-66 jobs exist live; 67 are declared by a `deploy_*` function in [`gcp/deploy.sh`](../../../gcp/deploy.sh). All 66 live names are declared, so no live job lacks a `deploy_*` function, and one declared job is not deployed (`compute-spx-greeks-backfill`; read live 2026-11-16). The 10 jobs that were created by hand with `gcloud run jobs create` in May 2026 and were not reproducible from the repo (`backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`; none of them scheduled) were deleted live on 2026-11-14. `p2-build-gamma-levels`, the one hand-made job with a scheduler (`gamma-levels-daily`), was codified as `deploy_p2_build_gamma_levels` in September 2026 (#829, #834). Retry policy is **`--max-retries 0` for 43 of the 67 declared jobs, `1` for 23 and `2` for one** (each row below says which); five fetchers omit `--task-timeout` and run at the Cloud Run default of 600 s.
+66 jobs exist live; 67 are declared by a `deploy_*` function in [`gcp/deploy.sh`](../../../gcp/deploy.sh). All 66 live names are declared, so no live job lacks a `deploy_*` function, and one declared job is not deployed (`compute-spx-greeks-backfill`; read live 2026-11-16). The 10 jobs that were created by hand with `gcloud run jobs create` in May 2026 and were not reproducible from the repo (`backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-outcomes-grid`, `p45-deep-ds`, `p7-analyze-tf`, `p7-build-multi-tf-features`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`, `strat-dir-features`; none of them scheduled) were deleted live on 2026-11-14. `p2-build-gamma-levels`, the one hand-made job with a scheduler (`gamma-levels-daily`), was codified as `deploy_p2_build_gamma_levels` in September 2026 (#829, #834). Retry policy is **`--max-retries 0` for 46 of the 67 declared jobs, `1` for 20 and `2` for one** (each row below says which); five fetchers omit `--task-timeout` and run at the Cloud Run default of 600 s.
 
 <!-- inventory:jobs:start -->
 | Job | Declared | Entrypoint | Memory / CPU / timeout / retries | Image | Last execution (live 2026-09-07) |
@@ -397,9 +397,9 @@ Declared in `gcp/schema.sql` but absent live: `bar_recompute_ledger`, `intraday_
 | `fetch-fred-rates` | [`gcp/deploy.sh:2755`](../../../gcp/deploy.sh#L2755) | python -m gcp.fetchers.fetch_fred_rates | 512Mi / 1 CPU / 600s / retries 1 | main | 2026-09-06 ok |
 | `fetch-insider-transactions` | [`gcp/deploy.sh:2866`](../../../gcp/deploy.sh#L2866) | python -m gcp.fetchers.fetch_insider_transactions | 512Mi / 1 CPU / 1800s / retries 1 | main | 2026-09-04 ok |
 | `fetch-market-data` | [`gcp/deploy.sh:2157`](../../../gcp/deploy.sh#L2157) | python -m gcp.fetchers.fetch_market_data | 1Gi / 1 CPU / 5400s / retries 2 | main | 2026-09-05 ok |
-| `fetch-news-sentiment` | [`gcp/deploy.sh:3127`](../../../gcp/deploy.sh#L3127) | python -m gcp.fetchers.fetch_news_sentiment | 512Mi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-04 ok |
-| `fetch-news-sentiment-earnings` | [`gcp/deploy.sh:3153`](../../../gcp/deploy.sh#L3153) | python -m gcp.fetchers.fetch_news_sentiment | 512Mi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-04 ok |
-| `fetch-news-sentiment-topics` | [`gcp/deploy.sh:3184`](../../../gcp/deploy.sh#L3184) | python -m gcp.fetchers.fetch_news_sentiment | 512Mi / 1 CPU / 600s / retries 1 (defaults) | main | 2026-09-04 ok |
+| `fetch-news-sentiment` | [`gcp/deploy.sh:3127`](../../../gcp/deploy.sh#L3127) | python -m gcp.fetchers.fetch_news_sentiment | 512Mi / 1 CPU / 600s / retries 0 (defaults) | main | 2026-09-04 ok |
+| `fetch-news-sentiment-earnings` | [`gcp/deploy.sh:3153`](../../../gcp/deploy.sh#L3153) | python -m gcp.fetchers.fetch_news_sentiment | 512Mi / 1 CPU / 600s / retries 0 (defaults) | main | 2026-09-04 ok |
+| `fetch-news-sentiment-topics` | [`gcp/deploy.sh:3184`](../../../gcp/deploy.sh#L3184) | python -m gcp.fetchers.fetch_news_sentiment | 512Mi / 1 CPU / 600s / retries 0 (defaults) | main | 2026-09-04 ok |
 | `fetch-premarket-refresh` | [`gcp/deploy.sh:2836`](../../../gcp/deploy.sh#L2836) | python -m gcp.fetchers.fetch_premarket_refresh | 512Mi / 1 CPU / 300s / retries 1 | main | 2026-09-04 ok |
 | `fetch-sec-filings` | [`gcp/deploy.sh:2932`](../../../gcp/deploy.sh#L2932) | python -m gcp.fetchers.fetch_sec_filings | 512Mi / 1 CPU / 1800s / retries 1 | main | 2026-09-04 ok |
 | `fetch-top-movers` | [`gcp/deploy.sh:2904`](../../../gcp/deploy.sh#L2904) | python -m gcp.fetchers.fetch_top_movers | 512Mi / 1 CPU / 300s / retries 0 | main | 2026-09-04 ok |
@@ -520,20 +520,20 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/glossary/gamma` | [`platform/api/routers/glossary.py:30`](../../../platform/api/routers/glossary.py#L30) | Return the UI-safe gamma term dictionary. |
 | `GET` | `/api/health` | [`platform/api/main.py:274`](../../../platform/api/main.py#L274) | Liveness probe: reports the service version and its configured backends. |
 | `GET` | `/api/health/freshness` | [`platform/api/routers/health.py:158`](../../../platform/api/routers/health.py#L158) | Return the cached freshness report (see freshness_report_dict). |
-| `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1120`](../../../platform/api/routers/insights.py#L1120) | Stream a Gemini response for the given mode and message. |
-| `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:822`](../../../platform/api/routers/insights.py#L822) | Return the most recent InsightReport for the ticker. |
-| `GET` | `/api/insights/report/{ticker}/history` | [`platform/api/routers/insights.py:851`](../../../platform/api/routers/insights.py#L851) | Return a scannable list of recent reports for the ticker. |
-| `POST` | `/api/insights/report/{ticker}/refresh` | [`platform/api/routers/insights.py:899`](../../../platform/api/routers/insights.py#L899) | Enqueue a fresh pipeline run for the ticker. |
-| `GET` | `/api/insights/reports/{report_id}` | [`platform/api/routers/insights.py:861`](../../../platform/api/routers/insights.py#L861) | Return a single insight report by row id. |
-| `GET` | `/api/insights/runs/{run_id}` | [`platform/api/routers/insights.py:971`](../../../platform/api/routers/insights.py#L971) | Poll the status of a refresh run. |
-| `GET` | `/api/insights/ticker/search` | [`platform/api/routers/insights.py:552`](../../../platform/api/routers/insights.py#L552) | Search for tickers by keyword (company name, symbol, etc). |
-| `GET` | `/api/insights/ticker/{ticker}/info` | [`platform/api/routers/insights.py:567`](../../../platform/api/routers/insights.py#L567) | Return cached ticker details (AV OVERVIEW), fetching if needed. |
-| `GET` | `/api/insights/ticker/{ticker}/peers` | [`platform/api/routers/insights.py:598`](../../../platform/api/routers/insights.py#L598) | Return peer tickers from FinViz (cached). |
-| `GET` | `/api/insights/ticker/{ticker}/quote` | [`platform/api/routers/insights.py:587`](../../../platform/api/routers/insights.py#L587) | Return latest price/volume from AV GLOBAL_QUOTE. |
-| `GET` | `/api/insights/watchlist` | [`platform/api/routers/insights.py:717`](../../../platform/api/routers/insights.py#L717) | Return today's ranked candidate tickers with score breakdowns. |
-| `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:607`](../../../platform/api/routers/insights.py#L607) | Add a ticker to the watchlist and return its info + quote. |
-| `GET` | `/api/insights/watchlist/default` | [`platform/api/routers/insights.py:782`](../../../platform/api/routers/insights.py#L782) | Return the active default watchlist with its surface flags, read-only. |
-| `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:684`](../../../platform/api/routers/insights.py#L684) | Soft-delete a ticker from the watchlist (sets removed_at=NOW()). |
+| `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1044`](../../../platform/api/routers/insights.py#L1044) | Stream a Gemini response for the given mode and message. |
+| `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:746`](../../../platform/api/routers/insights.py#L746) | Return the most recent InsightReport for the ticker. |
+| `GET` | `/api/insights/report/{ticker}/history` | [`platform/api/routers/insights.py:775`](../../../platform/api/routers/insights.py#L775) | Return a scannable list of recent reports for the ticker. |
+| `POST` | `/api/insights/report/{ticker}/refresh` | [`platform/api/routers/insights.py:823`](../../../platform/api/routers/insights.py#L823) | Enqueue a fresh pipeline run for the ticker. |
+| `GET` | `/api/insights/reports/{report_id}` | [`platform/api/routers/insights.py:785`](../../../platform/api/routers/insights.py#L785) | Return a single insight report by row id. |
+| `GET` | `/api/insights/runs/{run_id}` | [`platform/api/routers/insights.py:895`](../../../platform/api/routers/insights.py#L895) | Poll the status of a refresh run. |
+| `GET` | `/api/insights/ticker/search` | [`platform/api/routers/insights.py:551`](../../../platform/api/routers/insights.py#L551) | Search for tickers by keyword (company name, symbol, etc). |
+| `GET` | `/api/insights/ticker/{ticker}/info` | [`platform/api/routers/insights.py:566`](../../../platform/api/routers/insights.py#L566) | Return cached ticker details (AV OVERVIEW), fetching if needed. |
+| `GET` | `/api/insights/ticker/{ticker}/peers` | [`platform/api/routers/insights.py:597`](../../../platform/api/routers/insights.py#L597) | Return peer tickers from FinViz (cached). |
+| `GET` | `/api/insights/ticker/{ticker}/quote` | [`platform/api/routers/insights.py:586`](../../../platform/api/routers/insights.py#L586) | Return latest price/volume from AV GLOBAL_QUOTE. |
+| `GET` | `/api/insights/watchlist` | [`platform/api/routers/insights.py:641`](../../../platform/api/routers/insights.py#L641) | Return today's ranked candidate tickers with score breakdowns. |
+| `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:610`](../../../platform/api/routers/insights.py#L610) | Retired (FEAT-INSIGHT-001 stage B): answers 410 and writes nothing. |
+| `GET` | `/api/insights/watchlist/default` | [`platform/api/routers/insights.py:706`](../../../platform/api/routers/insights.py#L706) | Return the active default watchlist with its surface flags, read-only. |
+| `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:623`](../../../platform/api/routers/insights.py#L623) | Retired (FEAT-INSIGHT-001 stage B): answers 410 and writes nothing. |
 | `GET` | `/api/journal/examples/{ticker}` | [`platform/api/routers/journal.py:925`](../../../platform/api/routers/journal.py#L925) | Read-only teaching "Examples" — the UNION of the admin's own journal |
 | `POST` | `/api/journal/export/{ticker}` | [`platform/api/routers/journal.py:1376`](../../../platform/api/routers/journal.py#L1376) | Write journal trades to {ticker}_trade_tracker.csv in data/signals/. |
 | `POST` | `/api/journal/import/commit` | [`platform/api/routers/journal.py:1521`](../../../platform/api/routers/journal.py#L1521) | Insert the caller-selected `PairedTrade`s from a preview. |
@@ -823,7 +823,7 @@ Job logs `severity>=ERROR` → sink `gcp-job-failures-sink` (filter excludes `fa
 
 ## 11. Failure handling
 
-1. **Per-job retries**: `--max-retries 0` is the norm (43 of the 67 declared jobs); the 23 `--max-retries 1` jobs are idempotent fetchers whose transient upstream failures are worth one retry. Long-running `signal-monitor` never retries (a restart would drop its window).
+1. **Per-job retries**: `--max-retries 0` is the norm (46 of the 67 declared jobs); the 20 `--max-retries 1` jobs are idempotent fetchers whose transient upstream failures are worth one retry. Long-running `signal-monitor` never retries (a restart would drop its window).
 2. **Notification**: the pipeline in §10.10, ~60 s from exit to Discord; GitHub Actions failures use the separate `handle-workflow-failure.yml` reusable workflow.
 3. **Idempotent writes**: every fetcher upserts with `ON CONFLICT` keys, so re-running a failed job is safe. `apply_schema.py` is re-runnable but drops and recreates the two earnings materialized views, which is why `deploy-staging.yml` follows an apply with `refresh-earnings-views`.
 4. **Fail loud, no silent fallbacks**: data-access code raises rather than returning empty frames (CLAUDE.md Rule 3.7; [`docs/audits/FALLBACK_AUDIT_2026-05-13.md`](../../audits/FALLBACK_AUDIT_2026-05-13.md)).
@@ -899,7 +899,7 @@ Live read 2026-09-07T04:35:16Z. Repo declares 67 jobs / 67 schedulers; live has 
 **Cron drift (same name, different cron)** (0): none
 **Target drift (same name, different job)** (0): none
 **Time-zone drift (same name, different zone)** (0): none
-**Job config drift (declared vs live)** (11): `apply-schema-migrations.task_timeout: repo `1800` live `600``, `backfill-ticker.max_retries: repo `0` live `1``, `compute-earnings-reactions.memory: repo `1Gi` live `2Gi``, `compute-earnings-reactions.task_timeout: repo `1800` live `5400``, `compute-earnings-reactions.max_retries: repo `1` live `0``, `db-query.memory: repo `512Mi` live `8Gi``, `db-query.cpu: repo `1` live `2``, `insight-pipeline.memory: repo `8Gi` live `2Gi``, `insight-pipeline.cpu: repo `2` live `1``, `magnitude-recal.entrypoint: repo `python -m gcp.research.magnitude_engine.mag_walk_forward --phase=phase` live `python -c import os,json;os.environ['MOVEMENT_STATEMENT_ENABLED']='tru``, `phase6-playbook.tasks: repo `3` live `1``
+**Job config drift (declared vs live)** (14): `apply-schema-migrations.task_timeout: repo `1800` live `600``, `backfill-ticker.max_retries: repo `0` live `1``, `compute-earnings-reactions.memory: repo `1Gi` live `2Gi``, `compute-earnings-reactions.task_timeout: repo `1800` live `5400``, `compute-earnings-reactions.max_retries: repo `1` live `0``, `db-query.memory: repo `512Mi` live `8Gi``, `db-query.cpu: repo `1` live `2``, `fetch-news-sentiment.max_retries: repo `0` live `1``, `fetch-news-sentiment-earnings.max_retries: repo `0` live `1``, `fetch-news-sentiment-topics.max_retries: repo `0` live `1``, `insight-pipeline.memory: repo `8Gi` live `2Gi``, `insight-pipeline.cpu: repo `2` live `1``, `magnitude-recal.entrypoint: repo `python -m gcp.research.magnitude_engine.mag_walk_forward --phase=phase` live `python -c import os,json;os.environ['MOVEMENT_STATEMENT_ENABLED']='tru``, `phase6-playbook.tasks: repo `3` live `1``
 **Jobs whose last execution failed** (1): `intraday-bulk-backfill`
 **Jobs that have never executed** (0): none
 <!-- inventory:reconcile:end -->
@@ -942,7 +942,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) | Self-healing backfill of derived indicator columns in market_data_daily. | `backfill-daily-indicators` |
 | [`gcp/fetchers/build_options_daily_features.py`](../../../gcp/fetchers/build_options_daily_features.py) | Populate the materialized `options_daily_features` table (perf fix). | `build-options-daily-features` |
 | [`gcp/fetchers/compute_earnings_reactions.py`](../../../gcp/fetchers/compute_earnings_reactions.py) | Cloud Run Job: Populate earnings_reactions from earnings_history ⨝ market_data_daily. | `compute-earnings-reactions` |
-| [`gcp/fetchers/evaluate_ew_strikes.py`](../../../gcp/fetchers/evaluate_ew_strikes.py) | EW strike verdict evaluator — runs after market close to score how | — |
+| [`gcp/fetchers/evaluate_ew_strikes.py`](../../../gcp/fetchers/evaluate_ew_strikes.py) | Compatibility NYSE calendar shim after scorer retirement. | — |
 | [`gcp/fetchers/export_intraday_bars.py`](../../../gcp/fetchers/export_intraday_bars.py) | A durable bucket file of the SPY, QQQ and IWM 1-min bars, one Parquet | — |
 | [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) | Cloud Run Job: Fetch AlphaVantage 1-min historical intraday → Cloud SQL. | `fetch-alphavantage-intraday`, `intraday-bulk-backfill` |
 | [`gcp/fetchers/fetch_av_earnings_options_backfill.py`](../../../gcp/fetchers/fetch_av_earnings_options_backfill.py) | Cloud Run Job: backfill T-1 options snapshots for every earnings event. | `earnings-options-backfill` |

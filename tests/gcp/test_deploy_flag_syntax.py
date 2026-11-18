@@ -298,22 +298,24 @@ def test_audit_jobs_env_parses_to_the_intended_set():
 # Recorded from the merge base (origin/main 7322f23) with the stub values above, then
 # with only this change's edits applied: the news update loses `--remove-env-vars
 # NEWS_TICKERS`, the SPX greeks calls take `--args=--ticker,SPX`. Everything else stays.
+# Since #1671 (FEAT-DEPLOY-001 news retry0) every news create and update also carries
+# `--max-retries 0`; tests/gcp/test_news_retry_coupling.py holds that change's own proof.
 _IMG = "us-east1-docker.pkg.dev/fake-proj-000/trading/trading-system@sha256:0000"
 _SA = "trading-runner@fake-proj-000.iam.gserviceaccount.com"
 MERGE_BASE_CALLS: dict[str, list[list[str]]] = {
     'deploy_fetch_news_sentiment': [
-        ['run', 'jobs', 'create', 'fetch-news-sentiment', '--image', _IMG, '--region', 'us-east1', '--memory', '512Mi', '--cpu', '1', '--max-retries', '1', '--service-account', _SA, '--command', 'python,-m,gcp.fetchers.fetch_news_sentiment', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
-        ['run', 'jobs', 'update', 'fetch-news-sentiment', '--image', _IMG, '--region', 'us-east1', '--command', 'python,-m,gcp.fetchers.fetch_news_sentiment', '--args', '', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
+        ['run', 'jobs', 'create', 'fetch-news-sentiment', '--image', _IMG, '--region', 'us-east1', '--memory', '512Mi', '--cpu', '1', '--max-retries', '0', '--service-account', _SA, '--command', 'python,-m,gcp.fetchers.fetch_news_sentiment', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
+        ['run', 'jobs', 'update', 'fetch-news-sentiment', '--image', _IMG, '--region', 'us-east1', '--max-retries', '0', '--command', 'python,-m,gcp.fetchers.fetch_news_sentiment', '--args', '', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
     ],
     'deploy_fetch_news_sentiment_earnings': [
-        ['run', 'jobs', 'create', 'fetch-news-sentiment-earnings', '--image', _IMG, '--region', 'us-east1', '--memory', '512Mi', '--cpu', '1', '--max-retries', '1', '--service-account', _SA, '--command', 'python,-m,gcp.fetchers.fetch_news_sentiment', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
-        ['run', 'jobs', 'update', 'fetch-news-sentiment-earnings', '--image', _IMG, '--region', 'us-east1', '--command', 'python,-m,gcp.fetchers.fetch_news_sentiment', '--args', '', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
-        ['run', 'jobs', 'update', 'fetch-news-sentiment-earnings', '--region', 'us-east1', '--update-env-vars', '^@^EARNINGS_WINDOW_DAYS=7@NEWS_SINCE_LAST=1@MAX_TICKERS=300', '--quiet'],
+        ['run', 'jobs', 'create', 'fetch-news-sentiment-earnings', '--image', _IMG, '--region', 'us-east1', '--memory', '512Mi', '--cpu', '1', '--max-retries', '0', '--service-account', _SA, '--command', 'python,-m,gcp.fetchers.fetch_news_sentiment', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
+        ['run', 'jobs', 'update', 'fetch-news-sentiment-earnings', '--image', _IMG, '--region', 'us-east1', '--max-retries', '0', '--command', 'python,-m,gcp.fetchers.fetch_news_sentiment', '--args', '', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
+        ['run', 'jobs', 'update', 'fetch-news-sentiment-earnings', '--region', 'us-east1', '--max-retries', '0', '--update-env-vars', '^@^EARNINGS_WINDOW_DAYS=7@NEWS_SINCE_LAST=1@MAX_TICKERS=300', '--quiet'],
     ],
     'deploy_fetch_news_sentiment_topics': [
-        ['run', 'jobs', 'create', 'fetch-news-sentiment-topics', '--image', _IMG, '--region', 'us-east1', '--memory', '512Mi', '--cpu', '1', '--max-retries', '1', '--service-account', _SA, '--command', 'python,-m,gcp.fetchers.fetch_news_sentiment', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
-        ['run', 'jobs', 'update', 'fetch-news-sentiment-topics', '--image', _IMG, '--region', 'us-east1', '--command', 'python,-m,gcp.fetchers.fetch_news_sentiment', '--args', '', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
-        ['run', 'jobs', 'update', 'fetch-news-sentiment-topics', '--region', 'us-east1', '--update-env-vars', '^@^NEWS_TOPICS=mergers_and_acquisitions,technology,financial_markets,earnings,life_sciences', '--quiet'],
+        ['run', 'jobs', 'create', 'fetch-news-sentiment-topics', '--image', _IMG, '--region', 'us-east1', '--memory', '512Mi', '--cpu', '1', '--max-retries', '0', '--service-account', _SA, '--command', 'python,-m,gcp.fetchers.fetch_news_sentiment', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
+        ['run', 'jobs', 'update', 'fetch-news-sentiment-topics', '--image', _IMG, '--region', 'us-east1', '--max-retries', '0', '--command', 'python,-m,gcp.fetchers.fetch_news_sentiment', '--args', '', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
+        ['run', 'jobs', 'update', 'fetch-news-sentiment-topics', '--region', 'us-east1', '--max-retries', '0', '--update-env-vars', '^@^NEWS_TOPICS=mergers_and_acquisitions,technology,financial_markets,earnings,life_sciences', '--quiet'],
     ],
     'deploy_compute_spx_greeks_backfill': [
         ['run', 'jobs', 'create', 'compute-spx-greeks-backfill', '--image', _IMG, '--region', 'us-east1', '--memory', '2Gi', '--cpu', '1', '--max-retries', '0', '--task-timeout', '43200', '--service-account', _SA, '--command', 'python,-m,scripts.maintenance.compute_spx_greeks', '--args=--ticker,SPX', DB_SECRET_FLAG, '--set-env-vars', ENV_STRING, '--quiet'],
