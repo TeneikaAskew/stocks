@@ -11,7 +11,7 @@ done_when:
   - "The real _fetch_on_demand and get_grid_live paths produce controlled HTTPExceptions whose traceback.format_exception(type(exc), exc, exc.__traceback__, chain=True) and TracebackException.from_exception(exc, capture_locals=False).format(chain=True) outputs contain no literal or encoded sentinel, URL or provider text. Exercise both implicit __context__ and explicit __cause__ chains with synthetic HTTP/transport/JSON/typed-provider failures, and logging.Formatter.formatException for any emitted exc_info. Assert the entire rendered output, not only str(exc), HTTP detail or __suppress_context__. A causal control without chaining suppression must fail."
   - "The unchanged applicable grid/API suites and new redaction tests pass in mock mode; no unrelated assertions, cases, status codes, retries, formulas or timeouts change."
   - "FEAT-OPTION-001 delivery records, OPTIONS-01 committed source proof, matched no-new docs audits and ordinary gate checks pass under existing limits; normal current-head review and hosted checks pass before merge. Deployed verification and historical exposure are separate close-out obligations."
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -39,7 +39,7 @@ Clients may inspect free-text error detail; only its sensitive free text intenti
 
 ## Admission and ownership
 
-Proposed, not approved. The coordinator authorized preparation and normal specification publication for issue #2085; this does not claim approval of previously unseen acceptance wording. No implementation branch starts before its covering approved specification is on main and a fresh ready plan binds it. Keep existing review history and the two-round limit. No review has been requested for this bundle.
+Scope admitted on 2026-11-18 through the coordinator’s explicit confirmation of the owner’s instruction “Get those issues fixed”. The admission covers controlled diagnostic text in the two fetchers and the grid logging, HTTP-detail and rendered-traceback boundaries, preserving statuses, retry counts, reasons and successful behavior, with the synthetic tests specified here and in the companion. This records scope admission; it does not claim the owner reviewed every technical word, that implementation is complete, or that merge, auto-merge, deployment or credential rotation is authorized. No implementation branch starts before its covering approved specification is on main and a fresh ready plan binds it. Keep existing review history and the two-round limit. No review has been requested for this bundle.
 
 At preparation, the open-PR search for #2085 found only handoff #2088; #2085 had no comments. This does not prove absence of unpublished work. Before implementation/publication, recheck overlapping PRs and coordinate through the internal coordinator; do not contact external agents. #1828's broad credential-safe-errors draft is not on main and is neither superseded nor implemented by this narrow work.
 

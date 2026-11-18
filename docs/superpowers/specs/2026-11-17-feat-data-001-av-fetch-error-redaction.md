@@ -11,7 +11,7 @@ done_when:
   - "Synthetic caller tests exercise both fetch_month callers (process_symbol and replace_month) through their existing failure/status outputs, and the actual scheduled main delegation to _av_realtime_collector.main with poisoned transport exceptions; terminal logs and captured stdout/stderr contain no sentinel, URL or provider text, nonzero failure exit and successful sibling handling remain unchanged. The collector and its transport source stay byte-identical; any demonstrated new defect there requires separate scope admission. Tests render every exception escaping these identified external boundaries with traceback.format_exception(type(exc), exc, exc.__traceback__, chain=True) and TracebackException.from_exception(exc, capture_locals=False).format(chain=True), and assert the complete output excludes literal and encoded sentinels. If no exception escapes, assert that and inspect all emitted records/output instead. Do not claim direct legacy-library exceptions are sanitized."
   - "The unchanged affected intraday and realtime-options suites and the new synthetic suite pass in mock mode with fail-on-call network, database, subprocess and gcloud guards; all tests use fake keys and no environment or secret-store credential reads. No unrelated test is deleted, skipped or weakened."
   - "FEAT-DATA-001 delivery records, SHARED-07 committed source proof, matched no-new docs audits and the ordinary gate checks pass under existing limits; normal current-head review and hosted checks pass before merge, with release and historical exposure remaining separate."
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -39,7 +39,7 @@ Changing failure classifications can change scheduler outcomes; exact FETCH_* an
 
 ## Admission and ownership
 
-Proposed, not approved. The coordinator authorized preparation and normal specification publication for issue #2085; this does not claim approval of previously unseen acceptance wording. No implementation branch starts before its covering approved specification is on main and a fresh ready plan binds it. Keep existing review history and the two-round limit. No review has been requested for this bundle.
+Scope admitted on 2026-11-18 through the coordinator’s explicit confirmation of the owner’s instruction “Get those issues fixed”. The admission covers controlled diagnostic text in the two fetchers and the grid logging, HTTP-detail and rendered-traceback boundaries, preserving statuses, retry counts, reasons and successful behavior, with the synthetic tests specified here and in the companion. This records scope admission; it does not claim the owner reviewed every technical word, that implementation is complete, or that merge, auto-merge, deployment or credential rotation is authorized. No implementation branch starts before its covering approved specification is on main and a fresh ready plan binds it. Keep existing review history and the two-round limit. No review has been requested for this bundle.
 
 At preparation, the open-PR search for #2085 found only handoff #2088; #2085 had no comments. This does not prove absence of unpublished work. Before implementation/publication, recheck overlapping PRs and coordinate through the internal coordinator; do not contact external agents. #1828's broad credential-safe-errors draft is not on main and is neither superseded nor implemented by this narrow work.
 
