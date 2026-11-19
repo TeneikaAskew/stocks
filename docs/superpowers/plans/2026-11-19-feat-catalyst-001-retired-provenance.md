@@ -2,7 +2,7 @@
 feat_id: FEAT-CATALYST-001
 spec: docs/superpowers/specs/2026-11-19-feat-catalyst-001-retired-provenance-output.md
 branch: fix/feat-catalyst-001-retired-provenance
-pr: null
+pr: 2107
 status: ready
 ---
 
