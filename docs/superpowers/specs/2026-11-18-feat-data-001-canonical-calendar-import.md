@@ -13,7 +13,7 @@ done_when:
   - "A frozen-clock TestClient test of /api/config/market-hours proves holidays_2026 equals exactly the ten 2026 NYSE weekday closures and holidays exactly the twenty 2026 and 2027 ones (so 2026-06-19 is in both and 2026-11-27 in neither), early_closes equals exactly 2026-11-27, 2026-12-24 and 2027-11-26 at 13:00, and the two-year window rolls over at 2027-01-01 00:00 Eastern; the first calendar call's latency with the API requirements is recorded in the PR; after merge, the same values read from staging are recorded on the PR as a close-out step"
   - "The stocks OpenAPI snapshot is regenerated, and solyra's contract test passes when run locally against it before merge; the solyra contract sync PR follows the merge as a close-out step"
   - "02-FEATURE-CATALOG FEAT-DATA-001 record and 12-PR-ISSUE-TRACEABILITY list this PR"
-status: draft
+status: approved
 supersedes: docs/superpowers/specs/2026-10-19-feat-data-001-shared-market-calendar.md
 ---
 
