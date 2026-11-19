@@ -46,10 +46,13 @@ def _raw():
     ])
 
 
-def test_missing_gex_is_null_genuine_zero_preserved(monkeypatch):
-    monkeypatch.setattr(mod.pd, "read_sql", lambda *a, **k: _raw())
+@pytest.mark.parametrize("builder", ["p7", "strat"])
+def test_missing_gex_is_null_genuine_zero_preserved(monkeypatch, builder):
+    from gcp.research import p7_build_multi_tf_features
+    module = p7_build_multi_tf_features if builder == "p7" else mod
+    monkeypatch.setattr(module.pd, "read_sql", lambda *a, **k: _raw())
 
-    out = mod._load_gamma_levels(_Engine(), "SPY")
+    out = module._load_gamma_levels(_Engine(), "SPY")
 
     missing = out.loc[pd.Timestamp("2026-06-17").date(), "total_gex"]
     assert missing is None or (isinstance(missing, float) and math.isnan(missing)), \
@@ -229,3 +232,191 @@ def test_research_combo_features_keep_declared_legacy_patterns(builder,bars,expe
     assert result.iloc[-1]['strat_combo'] == expected
     assert bool(result.iloc[-1]['is_reversal']) is expected.endswith('_reversal')
     assert result.attrs['strat_rule_version'] == 'legacy-pattern-v1'
+
+
+# ── Strict-prior snapshot selection (feature builders) ───────────────────────
+
+import datetime as _dt
+
+_SP_D2 = _dt.date(2026, 10, 6)
+_SP_D1 = _dt.date(2026, 10, 7)
+_SP_D = _dt.date(2026, 10, 8)
+_SP_D3 = _dt.date(2026, 10, 9)
+_SP_COLS = ["total_gex", "gamma_balance_price", "gamma_flip", "regime", "spot",
+            "min_king_strike", "min_gate_strike"]
+
+
+def _sp_row(date, gex, bal, flip, regime, king, gate):
+    return {"snapshot_date": date, "total_gex": gex, "gamma_balance_price": bal,
+            "gamma_flip": flip, "regime": regime, "spot": 500.0,
+            "min_king_strike": king, "min_gate_strike": gate}
+
+
+def _sp_d2_row():
+    return _sp_row(_SP_D2, 1.5e7, 498.0, float("nan"), "positive_gamma", 505.0, 495.0)
+
+
+def _sp_d_row():
+    return _sp_row(_SP_D, 2.5e7, 600.0, 610.0, "negative_gamma", 620.0, 590.0)
+
+
+def _sp_d3_row():
+    return _sp_row(_SP_D3, 2.6e7, 601.0, 611.0, "negative_gamma", 621.0, 591.0)
+
+
+def _sp_levels(rows):
+    return pd.DataFrame(rows, columns=["snapshot_date"] + _SP_COLS).set_index("snapshot_date")
+
+
+def _sp_run(builder, rows):
+    from gcp.research import p7_build_multi_tf_features
+    module = p7_build_multi_tf_features if builder == "p7" else mod
+    vix_df = pd.DataFrame([
+        {"date": _SP_D1, "vix_close": 17.0},
+        {"date": _SP_D, "vix_close": 18.0},
+    ]).set_index("date")
+    out = pd.DataFrame({"bar_date": [_SP_D, _SP_D], "close": [500.0, 501.0]})
+    return module._add_context(out, "SPY", vix_df, _sp_levels(rows), pd.DataFrame(),
+                               gex_terciles=(1e7, 3e7), vex_terciles=(4e6, 7e6))
+
+
+def _assert_flip_distance_nan(res):
+    # Only the strat builder emits dist_to_gamma_flip_pct; p7's columns are unchanged.
+    if "dist_to_gamma_flip_pct" in res.columns:
+        assert res["dist_to_gamma_flip_pct"].isna().all()
+
+
+def _assert_d2_context(res):
+    assert (res["total_gex"] == 1.5e7).all()
+    assert (res["gamma_balance_price"] == 498.0).all()
+    assert res["gamma_flip"].isna().all()
+    _assert_flip_distance_nan(res)
+    assert (res["gamma_regime"] == "positive_gamma").all()
+    assert res["distance_to_king_pct"].tolist() == pytest.approx(
+        [(500.0 - 505.0) / 500.0 * 100, (501.0 - 505.0) / 501.0 * 100])
+    assert res["distance_to_gate_pct"].tolist() == pytest.approx(
+        [(500.0 - 495.0) / 500.0 * 100, (501.0 - 495.0) / 501.0 * 100])
+
+
+@pytest.mark.parametrize("builder", ["p7", "strat"])
+def test_strict_prior_with_bar_date_snapshot_present(builder):
+    _assert_d2_context(_sp_run(builder, [_sp_d2_row(), _sp_d_row(), _sp_d3_row()]))
+
+
+@pytest.mark.parametrize("builder", ["p7", "strat"])
+def test_strict_prior_with_bar_date_snapshot_absent(builder):
+    _assert_d2_context(_sp_run(builder, [_sp_d2_row(), _sp_d3_row()]))
+
+
+@pytest.mark.parametrize("builder", ["p7", "strat"])
+def test_strict_prior_never_reads_same_day_or_later(builder):
+    res = _sp_run(builder, [_sp_d2_row(), _sp_d_row(), _sp_d3_row()])
+    forbidden = {2.5e7, 2.6e7, 600.0, 601.0, 610.0, 611.0, 620.0, 621.0, 590.0, 591.0}
+    for col in ["total_gex", "gamma_balance_price", "gamma_flip"]:
+        assert not set(res[col].dropna()) & forbidden
+    assert not (res["gamma_regime"] == "negative_gamma").any()
+    _assert_flip_distance_nan(res)
+
+
+@pytest.mark.parametrize("builder", ["p7", "strat"])
+def test_marker_row_on_prior_day_blocks_older_snapshot(builder):
+    nan = float("nan")
+    marker = _sp_row(_SP_D1, nan, nan, nan, None, nan, nan)
+    marker["spot"] = nan
+    res = _sp_run(builder, [_sp_d2_row(), marker, _sp_d_row()])
+    assert res["total_gex"].isna().all()
+    assert res["gamma_balance_price"].isna().all()
+    assert res["distance_to_king_pct"].isna().all()
+    assert (res["gamma_regime"] == "unknown").all()
+
+
+@pytest.mark.parametrize("builder", ["p7", "strat"])
+def test_no_prior_snapshot_is_nan_never_zero(builder):
+    res = _sp_run(builder, [_sp_d_row(), _sp_d3_row()])
+    assert res["total_gex"].isna().all()
+    assert (res["gamma_regime"] == "unknown").all()
+    _assert_flip_distance_nan(res)
+    for col in ["distance_to_king_pct", "distance_to_gate_pct"]:
+        assert res[col].isna().all()
+
+
+# ── Staleness bound on the strict-prior lookup (review P1 on #1916) ──────────
+#
+# A stalled gamma_levels_eod writer (precedent: 2026-05-22 to 2026-06-19) must
+# not leave every later bar carrying the last snapshot's context: past the
+# bound the context is NaN, as the builder's FRESHNESS guard says it will be.
+
+_ST_SNAPSHOTS = [_dt.date(2026, 5, d) for d in (18, 19, 20, 21, 22)]   # Mon..Fri
+_ST_HOLIDAY = _dt.date(2026, 5, 25)                                    # Memorial Day
+
+
+def _st_row(i, date):
+    """Snapshot i carries values no other snapshot shares."""
+    return _sp_row(date, (i + 1) * 1e7, 400.0 + i, 410.0 + i, "positive_gamma",
+                   420.0 + i, 380.0 + i)
+
+
+def _st_run(builder, snapshot_dates, bar_dates):
+    from gcp.research import p7_build_multi_tf_features
+    module = p7_build_multi_tf_features if builder == "p7" else mod
+    rows = [_st_row(i, d) for i, d in enumerate(snapshot_dates)]
+    vex_df = pd.DataFrame([{"snapshot_date": d, "total_vex": (i + 1) * 1e6}
+                           for i, d in enumerate(snapshot_dates)]).set_index("snapshot_date")
+    vix_df = pd.DataFrame([{"date": d, "vix_close": 18.0} for d in bar_dates]).set_index("date")
+    out = pd.DataFrame({"bar_date": bar_dates, "close": [500.0] * len(bar_dates)})
+    res = module._add_context(out, "SPY", vix_df, _sp_levels(rows), vex_df,
+                              gex_terciles=(1e7, 3e7), vex_terciles=(1e6, 3e6))
+    return res.set_index("bar_date")
+
+
+def _st_bars():
+    days = pd.bdate_range("2026-05-19", "2026-06-19").date
+    return [d for d in days if d != _ST_HOLIDAY]
+
+
+def _assert_context_of(res, bar, i):
+    assert res.loc[bar, "total_gex"] == (i + 1) * 1e7
+    assert res.loc[bar, "gamma_balance_price"] == 400.0 + i
+    assert res.loc[bar, "gamma_flip"] == 410.0 + i
+    assert res.loc[bar, "gamma_regime"] == "positive_gamma"
+    assert res.loc[bar, "total_vex"] == (i + 1) * 1e6
+
+
+def _assert_no_context(res, bar):
+    for col in ("total_gex", "gamma_balance_price", "gamma_flip", "total_vex",
+                "distance_to_king_pct", "distance_to_gate_pct"):
+        assert pd.isna(res.loc[bar, col]), (bar, col)
+    assert res.loc[bar, "gamma_regime"] == "unknown"
+    # Only the strat builder emits dist_to_gamma_flip_pct and NULLs dealer_regime
+    # on a missing tercile (#640); p7's dealer_regime is unchanged by this PR.
+    if "dist_to_gamma_flip_pct" in res.columns:
+        assert pd.isna(res.loc[bar, "dist_to_gamma_flip_pct"])
+        assert pd.isna(res.loc[bar, "dealer_regime"])
+
+
+@pytest.mark.parametrize("builder", ["p7", "strat"])
+def test_stalled_writer_context_is_nan_past_the_staleness_bound(builder):
+    """Snapshots stop on Fri 2026-05-22; bars run to 2026-06-19. Bars up to six
+    calendar days after the last snapshot keep it; every later bar is NaN."""
+    res = _st_run(builder, _ST_SNAPSHOTS, _st_bars())
+    _assert_context_of(res, _dt.date(2026, 5, 19), 0)   # D-1 present: Mon's row
+    last = len(_ST_SNAPSHOTS) - 1
+    for bar in (_dt.date(2026, 5, 26), _dt.date(2026, 5, 27), _dt.date(2026, 5, 28)):
+        _assert_context_of(res, bar, last)               # 4, 5, 6 days after 05-22
+    stale = [d for d in _st_bars() if d >= _dt.date(2026, 5, 29)]   # 7+ days after
+    assert stale[0] == _dt.date(2026, 5, 29) and stale[-1] == _dt.date(2026, 6, 19)
+    for bar in stale:
+        _assert_no_context(res, bar)
+
+
+@pytest.mark.parametrize("builder", ["p7", "strat"])
+def test_d_minus_2_is_selected_across_a_holiday_weekend_when_d_minus_1_is_missing(builder):
+    """Tue 2026-05-26 follows Memorial Day; its D-1 (Fri 05-22) is missing, so
+    it takes D-2 (Thu 05-21, five calendar days back). The bound is inclusive at
+    six days (Wed 05-27) and excludes seven (Thu 05-28)."""
+    snapshots = _ST_SNAPSHOTS[:-1]                       # 05-18 .. 05-21
+    bars = [_dt.date(2026, 5, 26), _dt.date(2026, 5, 27), _dt.date(2026, 5, 28)]
+    res = _st_run(builder, snapshots, bars)
+    _assert_context_of(res, bars[0], len(snapshots) - 1)
+    _assert_context_of(res, bars[1], len(snapshots) - 1)
+    _assert_no_context(res, bars[2])

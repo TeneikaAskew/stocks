@@ -1,10 +1,12 @@
 -- Backfill gamma_flip + dist_to_gamma_flip_pct (and refresh gamma_balance_price)
 -- into one strat_features_{tf} table via a PRIOR-TRADING-DAY join from
--- gamma_levels_eod — matching strat_data_builder's `prior_gamma = shift(1)`
--- semantics (gamma snapshot from the most recent date STRICTLY BEFORE the bar's
--- date; not calendar date-1, so weekends/holidays don't leak). gday is
--- MATERIALIZED so the per-date LATERAL lookup hits an 8k-row CTE once instead of
--- recomputing the 91k-row GROUP BY per date. NULL gamma_flip => NULL dist (§3.7).
+-- gamma_levels_eod: the gamma snapshot from the most recent date STRICTLY BEFORE
+-- the bar's date (not calendar date-1, so weekends/holidays don't leak), the
+-- selection strat_data_builder's prior_snapshot_context makes. Unlike that
+-- helper, this query applies no PRIOR_SNAPSHOT_MAX_AGE bound (six calendar
+-- days), so after a gamma_levels_eod stall it carries the last snapshot forward.
+-- gday is MATERIALIZED so the per-date LATERAL lookup hits an 8k-row CTE once
+-- instead of recomputing the 91k-row GROUP BY per date. NULL gamma_flip => NULL dist (§3.7).
 -- {TF} is substituted by the dispatcher loop.
 WITH gday AS MATERIALIZED (
     SELECT ticker AS tk, snapshot_date AS gdate,

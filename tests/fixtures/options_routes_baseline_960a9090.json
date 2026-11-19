@@ -1,0 +1,678 @@
+{
+  "chain": {
+    "cached": false,
+    "date": "2026-06-01",
+    "metadata": {
+      "data_source": "alphavantage",
+      "row_count": 6,
+      "source": "cloud_sql"
+    },
+    "options": [
+      {
+        "ask": 5.6,
+        "bid": 5.5,
+        "contract_symbol": "X1",
+        "delta": 0.85,
+        "expiration": "2026-06-19",
+        "gamma": 0.02,
+        "implied_volatility": 0.18,
+        "last": 5.55,
+        "mark": 5.55,
+        "open_interest": 500.0,
+        "rho": 0.05,
+        "strike": 95.0,
+        "theta": -0.01,
+        "type": "call",
+        "vega": 0.1,
+        "volume": 100.0
+      },
+      {
+        "ask": 0.6,
+        "bid": 0.5,
+        "contract_symbol": "X2",
+        "delta": -0.15,
+        "expiration": "2026-06-19",
+        "gamma": 0.02,
+        "implied_volatility": 0.2,
+        "last": 0.55,
+        "mark": 0.55,
+        "open_interest": 800.0,
+        "rho": -0.01,
+        "strike": 95.0,
+        "theta": -0.01,
+        "type": "put",
+        "vega": 0.1,
+        "volume": 80.0
+      },
+      {
+        "ask": 2.6,
+        "bid": 2.5,
+        "contract_symbol": "X3",
+        "delta": 0.5,
+        "expiration": "2026-06-19",
+        "gamma": 0.05,
+        "implied_volatility": 0.2,
+        "last": 2.55,
+        "mark": 2.55,
+        "open_interest": 1000.0,
+        "rho": 0.04,
+        "strike": 100.0,
+        "theta": -0.02,
+        "type": "call",
+        "vega": 0.2,
+        "volume": 250.0
+      },
+      {
+        "ask": 2.55,
+        "bid": 2.45,
+        "contract_symbol": "X4",
+        "delta": -0.5,
+        "expiration": "2026-06-19",
+        "gamma": 0.05,
+        "implied_volatility": 0.2,
+        "last": 2.5,
+        "mark": 2.5,
+        "open_interest": 800.0,
+        "rho": -0.04,
+        "strike": 100.0,
+        "theta": -0.02,
+        "type": "put",
+        "vega": 0.2,
+        "volume": 220.0
+      },
+      {
+        "ask": 3.6,
+        "bid": 3.5,
+        "contract_symbol": "X5",
+        "delta": 0.5,
+        "expiration": "2026-09-18",
+        "gamma": 0.04,
+        "implied_volatility": 0.22,
+        "last": 3.55,
+        "mark": 3.55,
+        "open_interest": 400.0,
+        "rho": 0.08,
+        "strike": 100.0,
+        "theta": -0.01,
+        "type": "call",
+        "vega": 0.35,
+        "volume": 50.0
+      },
+      {
+        "ask": 3.55,
+        "bid": 3.45,
+        "contract_symbol": "X6",
+        "delta": -0.5,
+        "expiration": "2026-09-18",
+        "gamma": 0.04,
+        "implied_volatility": 0.22,
+        "last": 3.5,
+        "mark": 3.5,
+        "open_interest": 350.0,
+        "rho": -0.08,
+        "strike": 100.0,
+        "theta": -0.01,
+        "type": "put",
+        "vega": 0.35,
+        "volume": 40.0
+      }
+    ],
+    "snapshot_timestamp": "2026-06-01T15:55:00+00:00",
+    "ticker": "SPY"
+  },
+  "greeks": {
+    "aggregated": [
+      {
+        "call_gamma": 10.0,
+        "call_oi": 500.0,
+        "call_vega": 50.0,
+        "call_volume": 100.0,
+        "net_gamma": -6.0,
+        "net_vega": -30.0,
+        "put_gamma": 16.0,
+        "put_oi": 800.0,
+        "put_vega": 80.0,
+        "put_volume": 80.0,
+        "strike": 95.0
+      },
+      {
+        "call_gamma": 66.0,
+        "call_oi": 1400.0,
+        "call_vega": 340.0,
+        "call_volume": 300.0,
+        "net_gamma": 12.0,
+        "net_vega": 57.500000000000014,
+        "put_gamma": 54.0,
+        "put_oi": 1150.0,
+        "put_vega": 282.5,
+        "put_volume": 260.0,
+        "strike": 100.0
+      }
+    ],
+    "config": {
+      "atm_tolerance": 0.02,
+      "node_min_gamma": 500.0,
+      "strike_range_pct": 0.15
+    },
+    "gex_by_strike": [
+      {
+        "call_gex": 1001.0002499999999,
+        "gex": -600.60015,
+        "put_gex": -1601.6003999999998,
+        "strike": 95.0
+      },
+      {
+        "call_gex": 6606.60165,
+        "gex": 1201.2003,
+        "put_gex": -5405.401349999999,
+        "strike": 100.0
+      }
+    ],
+    "metrics": {
+      "implied_move": 4.367672408088204,
+      "max_pain": 100.0,
+      "put_call_ratio": 1.0263157894736843,
+      "total_gex": 600.60015,
+      "total_vex": -75287.625,
+      "zero_gamma": 96.66666666666667
+    },
+    "nodes": {
+      "allNodes": [],
+      "gatekeepers": [],
+      "kingNode": null,
+      "midpoints": []
+    }
+  },
+  "grid_dated": {
+    "cells": [
+      {
+        "call_gamma": 10.0,
+        "call_gex": 1001.0002499999999,
+        "call_oi": 500,
+        "call_vega": 50.0,
+        "call_vex": -5002.5,
+        "call_volume": 100,
+        "distance_pct": -5.047476261869063,
+        "dte": 18,
+        "expiration": "2026-06-19",
+        "gex": -600.60015,
+        "net_gamma": -6.0,
+        "net_vega": -30.0,
+        "put_gamma": 16.0,
+        "put_gex": -1601.6003999999998,
+        "put_oi": 800,
+        "put_vega": 80.0,
+        "put_vex": -8004.0,
+        "put_volume": 80,
+        "strike": 95.0,
+        "vex": -13006.5
+      },
+      {
+        "call_gamma": 50.0,
+        "call_gex": 5005.001249999999,
+        "call_oi": 1000,
+        "call_vega": 200.0,
+        "call_vex": -20010.0,
+        "call_volume": 250,
+        "distance_pct": -0.04997501249375028,
+        "dte": 18,
+        "expiration": "2026-06-19",
+        "gex": 1001.0002499999999,
+        "net_gamma": 10.0,
+        "net_vega": 40.0,
+        "put_gamma": 40.0,
+        "put_gex": -4004.0009999999997,
+        "put_oi": 800,
+        "put_vega": 160.0,
+        "put_vex": -16008.0,
+        "put_volume": 220,
+        "strike": 100.0,
+        "vex": -36018.0
+      },
+      {
+        "call_gamma": 16.0,
+        "call_gex": 1601.6003999999998,
+        "call_oi": 400,
+        "call_vega": 140.0,
+        "call_vex": -14007.0,
+        "call_volume": 50,
+        "distance_pct": -0.04997501249375028,
+        "dte": 109,
+        "expiration": "2026-09-18",
+        "gex": 200.20004999999998,
+        "net_gamma": 2.0,
+        "net_vega": 17.500000000000014,
+        "put_gamma": 14.0,
+        "put_gex": -1401.4003499999997,
+        "put_oi": 350,
+        "put_vega": 122.49999999999999,
+        "put_vex": -12256.124999999998,
+        "put_volume": 40,
+        "strike": 100.0,
+        "vex": -26263.125
+      }
+    ],
+    "data_source": "eod_fallback",
+    "expirations": [
+      "2026-06-19",
+      "2026-09-18"
+    ],
+    "gamma_balance": 98.33333333333333,
+    "gamma_flip": null,
+    "regime": "positive_gamma",
+    "snapshot_date": "2026-06-01",
+    "snapshot_provenance": {
+      "completeness_status": "unknown",
+      "freshness_status": "unknown",
+      "market_session": "REALTIME",
+      "observed_at": "2026-06-03T14:00:00+00:00",
+      "provider": "alphavantage",
+      "reason": "legacy_snapshot_unqualified",
+      "snapshot_age_seconds": 165900,
+      "snapshot_ts": "2026-06-01T15:55:00+00:00"
+    },
+    "snapshot_ts": "2026-06-01T15:55:00+00:00",
+    "spot": {
+      "method": "parity",
+      "note": "K=100.0 C=2.55 P=2.50 exp=2026-06-19",
+      "price": 100.05
+    },
+    "strikes": [
+      95.0,
+      100.0
+    ],
+    "ticker": "SPY",
+    "total_gex": 600.60015,
+    "total_vex": -75287.625,
+    "warnings": [],
+    "window_pct": 8.0
+  },
+  "grid_live": {
+    "cells": [
+      {
+        "call_gamma": 10.0,
+        "call_gex": 1001.0002499999999,
+        "call_oi": 500,
+        "call_vega": 50.0,
+        "call_vex": -5002.5,
+        "call_volume": 100,
+        "distance_pct": -5.047476261869063,
+        "dte": 18,
+        "expiration": "2026-06-19",
+        "gex": -600.60015,
+        "net_gamma": -6.0,
+        "net_vega": -30.0,
+        "put_gamma": 16.0,
+        "put_gex": -1601.6003999999998,
+        "put_oi": 800,
+        "put_vega": 80.0,
+        "put_vex": -8004.0,
+        "put_volume": 80,
+        "strike": 95.0,
+        "vex": -13006.5
+      },
+      {
+        "call_gamma": 50.0,
+        "call_gex": 5005.001249999999,
+        "call_oi": 1000,
+        "call_vega": 200.0,
+        "call_vex": -20010.0,
+        "call_volume": 250,
+        "distance_pct": -0.04997501249375028,
+        "dte": 18,
+        "expiration": "2026-06-19",
+        "gex": 1001.0002499999999,
+        "net_gamma": 10.0,
+        "net_vega": 40.0,
+        "put_gamma": 40.0,
+        "put_gex": -4004.0009999999997,
+        "put_oi": 800,
+        "put_vega": 160.0,
+        "put_vex": -16008.0,
+        "put_volume": 220,
+        "strike": 100.0,
+        "vex": -36018.0
+      },
+      {
+        "call_gamma": 16.0,
+        "call_gex": 1601.6003999999998,
+        "call_oi": 400,
+        "call_vega": 140.0,
+        "call_vex": -14007.0,
+        "call_volume": 50,
+        "distance_pct": -0.04997501249375028,
+        "dte": 109,
+        "expiration": "2026-09-18",
+        "gex": 200.20004999999998,
+        "net_gamma": 2.0,
+        "net_vega": 17.500000000000014,
+        "put_gamma": 14.0,
+        "put_gex": -1401.4003499999997,
+        "put_oi": 350,
+        "put_vega": 122.49999999999999,
+        "put_vex": -12256.124999999998,
+        "put_volume": 40,
+        "strike": 100.0,
+        "vex": -26263.125
+      }
+    ],
+    "data_source": "realtime",
+    "expirations": [
+      "2026-06-19",
+      "2026-09-18"
+    ],
+    "gamma_balance": 98.33333333333333,
+    "gamma_flip": null,
+    "regime": "positive_gamma",
+    "snapshot_date": "2026-06-01",
+    "snapshot_provenance": {
+      "completeness_status": "unknown",
+      "freshness_status": "unknown",
+      "market_session": "REALTIME",
+      "observed_at": "2026-06-03T14:00:00+00:00",
+      "provider": "alphavantage",
+      "reason": "legacy_snapshot_unqualified",
+      "snapshot_age_seconds": 165900,
+      "snapshot_ts": "2026-06-01T15:55:00+00:00"
+    },
+    "snapshot_ts": "2026-06-01T15:55:00+00:00",
+    "spot": {
+      "method": "parity",
+      "note": "K=100.0 C=2.55 P=2.50 exp=2026-06-19",
+      "price": 100.05
+    },
+    "strikes": [
+      95.0,
+      100.0
+    ],
+    "ticker": "SPY",
+    "total_gex": 600.60015,
+    "total_vex": -75287.625,
+    "warnings": [],
+    "window_pct": 8.0
+  },
+  "levels": {
+    "chain_size": 6,
+    "gamma_balance": 98.33333333333333,
+    "gamma_balance_levels": [
+      {
+        "call_oi": 500,
+        "distance_pct": -5.047476261869063,
+        "gex": -600.60015,
+        "kind": "king",
+        "net_gamma": -6.0,
+        "put_oi": 800,
+        "score": 0.49905496145237505,
+        "strike": 95.0,
+        "tags": [
+          "king",
+          "gamma_balance"
+        ]
+      },
+      {
+        "call_oi": 1400,
+        "distance_pct": -0.04997501249375028,
+        "gex": 1201.2003,
+        "kind": "king",
+        "net_gamma": 12.0,
+        "put_oi": 1150,
+        "score": 0.9960415635823852,
+        "strike": 100.0,
+        "tags": [
+          "king",
+          "spot",
+          "gamma_balance"
+        ]
+      }
+    ],
+    "gamma_flip": null,
+    "gates": [],
+    "kings": [
+      {
+        "call_oi": 500,
+        "distance_pct": -5.047476261869063,
+        "gex": -600.60015,
+        "kind": "king",
+        "net_gamma": -6.0,
+        "put_oi": 800,
+        "score": 0.49905496145237505,
+        "strike": 95.0,
+        "tags": [
+          "king",
+          "gamma_balance"
+        ]
+      },
+      {
+        "call_oi": 1400,
+        "distance_pct": -0.04997501249375028,
+        "gex": 1201.2003,
+        "kind": "king",
+        "net_gamma": 12.0,
+        "put_oi": 1150,
+        "score": 0.9960415635823852,
+        "strike": 100.0,
+        "tags": [
+          "king",
+          "spot",
+          "gamma_balance"
+        ]
+      }
+    ],
+    "levels": [
+      {
+        "call_oi": 500,
+        "distance_pct": -5.047476261869063,
+        "gex": -600.60015,
+        "kind": "king",
+        "net_gamma": -6.0,
+        "put_oi": 800,
+        "score": 0.49905496145237505,
+        "strike": 95.0,
+        "tags": [
+          "king",
+          "gamma_balance"
+        ]
+      },
+      {
+        "call_oi": 1400,
+        "distance_pct": -0.04997501249375028,
+        "gex": 1201.2003,
+        "kind": "king",
+        "net_gamma": 12.0,
+        "put_oi": 1150,
+        "score": 0.9960415635823852,
+        "strike": 100.0,
+        "tags": [
+          "king",
+          "spot",
+          "gamma_balance"
+        ]
+      }
+    ],
+    "regime": "positive_gamma",
+    "snapshot_date": "2026-06-01",
+    "snapshot_provenance": {
+      "completeness_status": "unknown",
+      "freshness_status": "unknown",
+      "market_session": "REALTIME",
+      "observed_at": "2026-06-03T14:00:00+00:00",
+      "provider": "alphavantage",
+      "reason": "legacy_snapshot_unqualified",
+      "snapshot_age_seconds": 165900,
+      "snapshot_ts": "2026-06-01T15:55:00+00:00"
+    },
+    "snapshot_timestamp": "2026-06-01T15:55:00+00:00",
+    "spot": {
+      "method": "parity",
+      "note": "K=100.0 C=2.55 P=2.50 exp=2026-06-19",
+      "price": 100.05
+    },
+    "ticker": "SPY",
+    "total_gex": 600.60015,
+    "warnings": [],
+    "window_pct": 8.0
+  },
+  "live_chain": {
+    "cached": false,
+    "date": "2025-01-17",
+    "metadata": {
+      "data_source": "alphavantage",
+      "row_count": 2,
+      "source": "alphavantage_live"
+    },
+    "options": [
+      {
+        "ask": 12.6,
+        "bid": 12.5,
+        "contract_symbol": "SPY250117C00500000",
+        "delta": 0.55,
+        "expiration": "2025-01-17",
+        "gamma": 0.04,
+        "implied_volatility": 0.18,
+        "last": 12.55,
+        "mark": 12.55,
+        "open_interest": 8000.0,
+        "rho": 0.05,
+        "strike": 500.0,
+        "theta": -0.08,
+        "type": "call",
+        "vega": 0.12,
+        "volume": 1500.0
+      },
+      {
+        "ask": 10.2,
+        "bid": 10.1,
+        "contract_symbol": "SPY250117P00500000",
+        "delta": -0.45,
+        "expiration": "2025-01-17",
+        "gamma": 0.04,
+        "implied_volatility": 0.19,
+        "last": 10.15,
+        "mark": 10.15,
+        "open_interest": 6500.0,
+        "rho": -0.04,
+        "strike": 500.0,
+        "theta": -0.07,
+        "type": "put",
+        "vega": 0.12,
+        "volume": 900.0
+      }
+    ],
+    "snapshot_timestamp": "2026-06-03T14:00:00Z",
+    "ticker": "SPY"
+  },
+  "nodes_dated": {
+    "data_source": "eod_fallback",
+    "gamma_balance": 98.33333333333333,
+    "gamma_flip": null,
+    "gates": [],
+    "hedge_nodes": [],
+    "king": {
+      "call_oi": 1400,
+      "distance_pct": -0.04997501249375028,
+      "dominant_side": "call",
+      "gex": 1201.2003,
+      "net_gamma": 12.0,
+      "put_oi": 1150,
+      "score": 0.9960415635823852,
+      "strike": 100.0
+    },
+    "midpoints": [],
+    "opex_nodes": [
+      {
+        "call_oi": 500,
+        "dte": 18,
+        "expiration": "2026-06-19",
+        "gex": -600.60015,
+        "put_oi": 800,
+        "strike": 95.0
+      },
+      {
+        "call_oi": 1000,
+        "dte": 18,
+        "expiration": "2026-06-19",
+        "gex": 1001.0002499999999,
+        "put_oi": 800,
+        "strike": 100.0
+      },
+      {
+        "call_oi": 400,
+        "dte": 109,
+        "expiration": "2026-09-18",
+        "gex": 200.20004999999998,
+        "put_oi": 350,
+        "strike": 100.0
+      }
+    ],
+    "regime": "positive_gamma",
+    "snapshot_date": "2026-06-01",
+    "snapshot_ts": "2026-06-01T15:55:00+00:00",
+    "spot": {
+      "method": "parity",
+      "note": "K=100.0 C=2.55 P=2.50 exp=2026-06-19",
+      "price": 100.05
+    },
+    "tactical_summary": null,
+    "ticker": "SPY",
+    "total_gex": 600.60015,
+    "total_vex": -75287.625,
+    "warnings": []
+  },
+  "nodes_live": {
+    "data_source": "realtime",
+    "gamma_balance": 98.33333333333333,
+    "gamma_flip": null,
+    "gates": [],
+    "hedge_nodes": [],
+    "king": {
+      "call_oi": 1400,
+      "distance_pct": -0.04997501249375028,
+      "dominant_side": "call",
+      "gex": 1201.2003,
+      "net_gamma": 12.0,
+      "put_oi": 1150,
+      "score": 0.9960415635823852,
+      "strike": 100.0
+    },
+    "midpoints": [],
+    "opex_nodes": [
+      {
+        "call_oi": 500,
+        "dte": 18,
+        "expiration": "2026-06-19",
+        "gex": -600.60015,
+        "put_oi": 800,
+        "strike": 95.0
+      },
+      {
+        "call_oi": 1000,
+        "dte": 18,
+        "expiration": "2026-06-19",
+        "gex": 1001.0002499999999,
+        "put_oi": 800,
+        "strike": 100.0
+      },
+      {
+        "call_oi": 400,
+        "dte": 109,
+        "expiration": "2026-09-18",
+        "gex": 200.20004999999998,
+        "put_oi": 350,
+        "strike": 100.0
+      }
+    ],
+    "regime": "positive_gamma",
+    "snapshot_date": "2026-06-01",
+    "snapshot_ts": "2026-06-01T15:55:00+00:00",
+    "spot": {
+      "method": "parity",
+      "note": "K=100.0 C=2.55 P=2.50 exp=2026-06-19",
+      "price": 100.05
+    },
+    "tactical_summary": null,
+    "ticker": "SPY",
+    "total_gex": 600.60015,
+    "total_vex": -75287.625,
+    "warnings": []
+  }
+}

@@ -45,3 +45,14 @@ def test_default_is_the_eastern_date(monkeypatch):
 
     monkeypatch.setattr(mod, "_datetime", _Frozen)
     assert _default_year_range() == (2026, 2026)
+
+
+def test_partial_chain_emits_no_level_rows_and_no_zero_total(monkeypatch):
+    import pandas as pd
+
+    from gcp.research import p2_build_gamma_levels as p2
+
+    rows = pd.DataFrame([{"option_type": "calls", "strike": s, "expiration": date(2026, 6, 19), "open_interest": 100,
+                          "gamma": 0.05, "vega": 0.1, "delta": d, "bid": 1.0, "ask": 1.1, "mark": 1.05, "last_price": 1.05}
+                         for s, d in ((98.0, 0.7), (100.0, 0.5), (102.0, 0.3))])
+    assert p2._process_one_day("SPY", date(2026, 6, 1), rows) == []

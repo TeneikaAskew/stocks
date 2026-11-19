@@ -593,7 +593,10 @@ def _load_chain_entry(ticker: str, date_str: str) -> "tuple[dict, dict | None, b
         """
         df = query_to_dataframe(sql, {"ticker": ticker_upper, "snap_date": parsed_date})
 
-        if df.empty:
+        # A chain with no call or put row (including rows whose option_type is
+        # unrecognised) is the same 404 as no rows (FEAT-OPTION-001).
+        contracts = _df_to_contracts(df) if not df.empty else []
+        if gamma.chain_sides(contracts) == gamma.SIDES_EMPTY:
             # Look up the nearest available date for a helpful error message.
             nearest_sql = """
                 SELECT MAX(snapshot_date) AS nearest
@@ -617,8 +620,6 @@ def _load_chain_entry(ticker: str, date_str: str) -> "tuple[dict, dict | None, b
             )
             raise HTTPException(status_code=404, detail=msg)
 
-        contracts = _df_to_contracts(df)
-
         # Take the max snapshot_ts as the "as of" marker.
         snapshot_ts_val = df["snapshot_ts"].max() if "snapshot_ts" in df.columns else None
         if isinstance(snapshot_ts_val, (pd.Timestamp, datetime)):
@@ -637,6 +638,7 @@ def _load_chain_entry(ticker: str, date_str: str) -> "tuple[dict, dict | None, b
                 "row_count": len(contracts),
             },
         }
+        _apply_chain_state(response)
         # Group validation of the selected rows' own clocks and sessions lives
         # in the provenance object; the legacy `snapshot_timestamp` string above
         # is unchanged. The `data_source = 'alphavantage'` literal in the WHERE
@@ -646,6 +648,27 @@ def _load_chain_entry(ticker: str, date_str: str) -> "tuple[dict, dict | None, b
         )
         _CHAIN_CACHE[cache_key] = {"payload": response, "provenance": provenance}
         return response, provenance, False
+
+
+def _chain_state_fields(contracts: list[dict]) -> tuple[str, str, str | None]:
+    """(sides_present, chain_state, reason) for a non-empty normalised chain.
+
+    A one-sided chain keeps its rows but is `unavailable` (FEAT-OPTION-001).
+    """
+    sides = gamma.chain_sides(contracts)
+    if sides == gamma.SIDES_BOTH:
+        return sides, "available", None
+    return sides, "unavailable", gamma.partial_chain_reason(sides)
+
+
+def _apply_chain_state(payload: dict) -> None:
+    """Set sides_present / chain_state / reason on a chain payload in place,
+    before it is cached so hits and misses carry identical state."""
+    sides, state, reason = _chain_state_fields(payload["options"])
+    payload["metadata"]["sides_present"] = sides
+    payload["chain_state"] = state
+    if reason is not None:
+        payload["reason"] = reason
 
 
 @router.get("/api/options/{ticker}/{date_str}", response_model=OptionsChainResponse, response_model_exclude_unset=True)
@@ -717,7 +740,7 @@ async def get_options_live(ticker: str, date_str: str, response: Response):
 
     rows = data.get("data") or []
     contracts = _av_to_contracts(rows)
-    if not contracts:
+    if gamma.chain_sides(contracts) == gamma.SIDES_EMPTY:
         raise HTTPException(
             status_code=404,
             detail=(
@@ -737,6 +760,7 @@ async def get_options_live(ticker: str, date_str: str, response: Response):
             "row_count": len(contracts),
         },
     }
+    _apply_chain_state(payload)
     _LIVE_CACHE[cache_key] = payload
     response.headers["Cache-Control"] = "public, max-age=300"
     return {**payload, "cached": False}
@@ -794,23 +818,27 @@ def compute_options_greeks(req: _GreeksRequest) -> dict:
         "node_min_gamma": NODE_MIN_GAMMA,
     }
 
-    if req.spot_price <= 0 or not req.options:
+    opts = _opts_to_dicts(req.options)
+    sides = gamma.chain_sides(opts)
+    if sides != gamma.SIDES_BOTH or req.spot_price <= 0:
+        # A one-sided, empty or spotless chain has no defensible aggregate:
+        # null metrics plus a reason, never a 0.0 the caller cannot tell from data.
         return {
             "aggregated": [],
             "gex_by_strike": [],
             "metrics": {
-                "total_gex": 0.0,
-                "total_vex": 0.0,
+                "total_gex": None,
+                "total_vex": None,
                 "zero_gamma": None,
                 "max_pain": None,
                 "implied_move": None,
-                "put_call_ratio": 0.0,
+                "put_call_ratio": None,
             },
             "nodes": {"kingNode": None, "gatekeepers": [], "midpoints": [], "allNodes": []},
             "config": config,
+            "reason": gamma.partial_chain_reason(sides) or "spot_unavailable",
         }
 
-    opts = _opts_to_dicts(req.options)
     aggregated = gamma.aggregate_by_strike(opts)
     gex_strikes = gamma.gex_by_strike(aggregated, req.spot_price)
 
@@ -872,8 +900,11 @@ def get_gamma_levels(
         window_pct=window_pct,
     )
 
+    summary_dict = summary.to_dict()
+    if summary_dict.get("reason") is None:
+        summary_dict.pop("reason", None)
     return {
-        **summary.to_dict(),
+        **summary_dict,
         "snapshot_timestamp": chain_response.get("snapshot_timestamp"),
         "chain_size": len(options),
         # `with_observation` returns a new dict stamped with this response's

@@ -181,7 +181,7 @@ def _process_one_day(ticker: str, snap_date: _date, chain_rows: pd.DataFrame) ->
         ticker=ticker,
         snapshot_date=snap_date,
         regime=summary.regime,
-        total_gex=float(summary.total_gex or 0.0),
+        total_gex=float(summary.total_gex) if summary.total_gex is not None else None,
         gamma_balance_price=float(summary.gamma_balance) if summary.gamma_balance is not None else None,
         gamma_flip=float(summary.gamma_flip) if summary.gamma_flip is not None else None,
         spot_estimate=float(summary.spot.price) if summary.spot.price else None,
