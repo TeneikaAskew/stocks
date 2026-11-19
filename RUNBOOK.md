@@ -164,7 +164,9 @@ gcloud storage ls gs://adept-mountain-474619-d4-trading-data/parquet/ | head
   ```
 
 **Recovery — AV outage**
-- The pipeline degrades gracefully: `compute_earnings_reactions` and `evaluate_ew_strikes` read existing rows; the brief reads the most recent `market_data_daily` row even if today's didn't land.
+
+The EW scorer is retired and is not an outage-recovery consumer. The remaining `evaluate_ew_strikes.py` compatibility module supplies only the shared NYSE calendar; it performs no scoring or fetching.
+- The pipeline degrades gracefully: `compute_earnings_reactions` reads existing rows; the brief reads the most recent `market_data_daily` row even if today's didn't land.
 - The watchdog GitHub Actions workflow (`freshness-watchdog.yml`) will eventually fire alerts on stale data — see [05-g-DATA_PIPELINE.md §1](docs/product/infrastructure/05-g-DATA_PIPELINE.md) for the alert criteria.
 
 **Verification**
