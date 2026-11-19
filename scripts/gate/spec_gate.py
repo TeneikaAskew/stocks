@@ -253,6 +253,59 @@ WORKFLOW_CONTRACTS = {
     },
 }
 
+# FEAT-CICD-001: the base suites move out of spec-gate.yml (pull_request_target, base context) into a
+# `base-suite` job of registry-check.yml (plain pull_request, read-only token, the PR's own cache scope).
+# Until the move is complete a pair of gate workflows, the live pair and, separately, the pinned pair,
+# holds the base-suite duties in exactly ONE of two layouts: today's, which WORKFLOW_CONTRACTS gives
+# (spec-gate.yml job base-suite after the verdict, artifact handoff), or the moved one, which
+# MOVED_CONTRACTS and MOVED_BASE_SUITE give. A pair holding both, or neither, is refused.
+BASE_SUITE_PAIRS = ((".github/workflows/spec-gate.yml", ".github/workflows/registry-check.yml"),
+                    ("scripts/gate/pinned/spec-gate.yml", "scripts/gate/pinned/registry-check.yml"))
+MOVED_HEAD_DIR = "proposed-head"
+# The moved job as the Design section of the FEAT-CICD-001 spec gives it, read from the parsed YAML: the
+# base sha and a sparse checkout of the head's two gate files, both keeping no credentials; one step that
+# copies the two proposed files over scripts/gate, removes the head's directory and runs the base's suites;
+# no `git fetch`, no secret, no cache, no action after the copy, contents: read.
+MOVED_BASE_SUITE = {
+    "runs-on": "ubuntu-latest",
+    "timeout-minutes": 10,
+    "permissions": {"contents": "read"},
+    "steps": [
+        {"uses": "actions/checkout@v4",
+         "with": {"ref": "${{ github.event.pull_request.base.sha }}", "persist-credentials": False}},
+        {"uses": "actions/checkout@v4",
+         "with": {"ref": "${{ github.event.pull_request.head.sha }}", "path": MOVED_HEAD_DIR, "persist-credentials": False,
+                  "sparse-checkout": "".join(f"{p}\n" for p in GATE_SCRIPTS), "sparse-checkout-cone-mode": False}},
+        {"run": [f"cp {MOVED_HEAD_DIR}/{p} {p}" for p in GATE_SCRIPTS] + [
+            f"rm -rf {MOVED_HEAD_DIR}",
+            "python3 -m pip install --quiet pytest pyyaml pytest-xdist==3.8.0",
+            "python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest -n 4",
+            "python3 -m pytest tests/scripts/test_export_model_registry.py -q -p no:cacheprovider --noconftest"]},
+    ],
+}
+MOVED_COPY = tuple(f"cp {MOVED_HEAD_DIR}/{p} {p}" for p in GATE_SCRIPTS)
+MOVED_SUITES = ("python3 -m pytest tests/scripts/test_spec_gate.py", "python3 -m pytest tests/scripts/test_export_model_registry.py")
+_REGISTRY, _SPEC_GATE = WORKFLOW_CONTRACTS[".github/workflows/registry-check.yml"], WORKFLOW_CONTRACTS[".github/workflows/spec-gate.yml"]
+MOVED_CONTRACTS = {
+    # every rule of today's registry contract, and the base-suite job beside the registry job
+    ".github/workflows/registry-check.yml": {
+        **_REGISTRY,
+        # red-team round two: the base-suite job also runs the gate suite, so the registry job's own run of
+        # the PR's suite is tied to it by job; its first run is the registry job's
+        "jobs": {**_REGISTRY["jobs"], MOVED_SUITES[0]: "registry", MOVED_COPY[0]: "base-suite"},
+        "run": _REGISTRY["run"] + MOVED_COPY + (MOVED_SUITES[1],),
+        "base_suite": MOVED_BASE_SUITE,
+    },
+    # every rule of today's spec-gate contract that concerns the verdict; the base-suite duties left with the job
+    ".github/workflows/spec-gate.yml": {
+        **{k: v for k, v in _SPEC_GATE.items() if k not in ("isolated", "handoff")},
+        "jobs": {_SPEC_GATE["run"][0]: "gate"},
+        "run": (_SPEC_GATE["run"][0], 'git fetch --no-tags origin "$HEAD_SHA"'),
+        "run_if_present": {},
+        "order": ('git fetch --no-tags origin "$HEAD_SHA"', _SPEC_GATE["run"][0]),
+    },
+}
+
 # The names the gate reads from its environment. A workflow or hook that assigns, exports,
 # unsets or reads into one of them (a prefix assignment, a line of its own, a write to
 # $GITHUB_ENV) runs the gate on inputs the PR chose (solyra#72 r4120775915).
@@ -997,6 +1050,160 @@ def checkout_violation(body: str, side: str) -> str | None:
         if side == "base" and ref and re.sub(r"\s+", "", ref) != "${{github.event.pull_request.base.sha}}":
             # solyra#72 r4120167273: the merge ref and merge_commit_sha carry the PR's code too
             return f"checks out {ref!r} instead of the event's base sha under pull_request_target"
+    return None
+
+
+def base_suite_layout(spec_text: str | None, registry_text: str | None) -> str:
+    """Where a pair of gate workflows holds the base suites (FEAT-CICD-001): "today" (spec-gate.yml
+    carries them), "moved" (registry-check.yml carries them), "both" or "neither". Read from the
+    comment-stripped text wherever it stands, so a weakened copy of a layout is still that layout and is
+    judged by its contract."""
+    def carries(text: str | None, marks: str, suites: tuple[str, ...]) -> bool:
+        if text is None:
+            return False
+        body = workflow_executes(text)[1]
+        # red-team round one: a job written as a YAML flow mapping has no `base-suite:` line of its own
+        return ("base-suite" in parsed_job_names(text) or bool(re.search(marks, body, re.M))
+                or any(st.startswith(suites) for st in shell_statements(every_run_text(body))))
+    today = carries(spec_text, r"^\s*base-suite:\s*$|^\s*(-\s+)?uses:\s*['\"]?actions/(upload|download)-artifact@", MOVED_SUITES)
+    moved = carries(registry_text, rf"^\s*base-suite:\s*$|{MOVED_HEAD_DIR}|sparse-checkout", MOVED_SUITES[1:])
+    return "both" if today and moved else "today" if today else "moved" if moved else "neither"
+
+
+def parsed_job_names(text: str) -> list[str]:
+    """The job names a workflow's parsed YAML holds, in block or flow form; none when it does not parse."""
+    import yaml
+    try:
+        jobs = (yaml.safe_load(text) or {}).get("jobs")
+    except (yaml.YAMLError, AttributeError):
+        return []
+    return [str(k) for k in jobs] if isinstance(jobs, dict) else []
+
+
+def moved_job(jobs: list[dict]) -> int:
+    """Index of the job that copies the proposed gate over the base's in the moved layout, or -1."""
+    return job_of(jobs, MOVED_COPY[0])[0]
+
+
+def moved_isolation(jobs: list[dict], verdict: str) -> str | None:
+    """The moved base-suite job runs PR-controlled code: it is never the registry job, and none of its
+    checkouts keeps credentials. Read before the generic scans, which would name the copy as a write."""
+    jv = job_of(jobs, verdict)[0]
+    bs = moved_job(jobs)
+    for command in MOVED_COPY + MOVED_SUITES[1:]:
+        if jv >= 0 and any(invokes(st, command) for st in jobs[jv]["statements"]) or \
+                bs >= 0 and command in MOVED_COPY and any(persists for _, persists, _ in jobs[bs]["checkouts"]):
+            return (f"{command!r} runs PR-controlled code, so its job holds no checkout credentials (persist-credentials: "
+                    "false on each checkout) and is never the registry job")
+    if bs >= 0:
+        statements = jobs[bs]["statements"]
+        copies = [k for k, st in enumerate(statements) if any(invokes(st, c) for c in MOVED_COPY)]
+        for suite in MOVED_SUITES:
+            early = [k for k, st in enumerate(statements) if invokes(st, suite) and k < max(copies)]
+            if early:
+                return (f"{suite!r} does not follow {MOVED_COPY[-1]!r} in job {jobs[bs]['name']}; the proposed files "
+                        "replace the base's before the base's suites run")
+        # solyra#72 r4127523239, moved: the copy is this layout's handoff download, and an action after it
+        # (a second checkout above all) would put the base's gate back before the suites run
+        last_copy = max(line_of(jobs[bs], c) for c in MOVED_COPY)
+        if any(re.match(r"^\s*(-\s+)?uses:", ln) for ln in jobs[bs]["lines"][last_copy + 1:]):
+            return (f"an action runs after the handoff download in the suite's job {jobs[bs]['name']} (the copy of the "
+                    "proposed files over scripts/gate); the copy is the last action before the suites, so nothing puts "
+                    "the base's gate back")
+    return None
+
+
+def without_moved_job(body: str, jobs: list[dict]) -> tuple[str, list[str]]:
+    """(the workflow without the block of the job that copies the proposed gate files (whatever its name; the
+    jobs rule refuses any name but base-suite), that block's executed run lines other than
+    the copy itself): the copy over scripts/gate and the job's two checkouts are what the moved job is for,
+    so the scans for writes and for checkout refs read the rest of the file, and the block is held to its
+    own design by moved_base_suite_offence."""
+    bs = moved_job(jobs)
+    if bs < 0:
+        return body, []
+    block = jobs[bs]["lines"]
+    lines = body.splitlines()
+    start = next(i for i in range(len(lines)) if lines[i:i + len(block)] == block)
+    rest = "\n".join(lines[:start] + lines[start + len(block):])
+    return rest, [ln for ln in every_run_text("\n".join(block)).split("\n") if ln.strip(" ") not in MOVED_COPY]
+
+
+def moved_base_suite_offence(text: str, jobs: list[dict]) -> str | None:
+    """Why the moved base-suite job (registry-check.yml, FEAT-CICD-001) differs from its design, read from
+    the parsed YAML: two checkouts that keep no credentials, the base sha and the head's two gate files
+    sparse into their own directory; no `git fetch`; one step that copies the proposed files over
+    scripts/gate, removes the head's directory and then runs the base's two suites, with no action after
+    the copy; contents: read; no other key."""
+    import yaml
+    bs = moved_job(jobs)
+    want = MOVED_BASE_SUITE
+    if bs < 0:
+        return None
+    name = jobs[bs]["name"]
+    job = (yaml.safe_load(text) or {}).get("jobs", {}).get(name)
+    if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
+        return f"job {name} has no steps the gate can read; the base-suite job is the one FEAT-CICD-001 designs"
+    if any(re.search(r"(^|[;&|({]\s*)git\b[^\n]*\bfetch\b", ln) for ln in every_run_text("\n".join(jobs[bs]["lines"])).split("\n")):
+        return (f"job {name} runs `git fetch`; actions/checkout reaches the head with the job's read-only token and keeps no "
+                "credentials, so the job fetches nothing itself")
+    steps = job["steps"]
+    checkouts = [st for st in steps if isinstance(st, dict) and str(st.get("uses", "")).startswith("actions/checkout@")]
+    flat = lambda v: re.sub(r"\s+", "", str(v))
+    base = [st for st in checkouts if flat((st.get("with") or {}).get("ref")) == flat(want["steps"][0]["with"]["ref"])]
+    head = [st for st in checkouts if flat((st.get("with") or {}).get("ref")) == flat(want["steps"][1]["with"]["ref"])]
+    if (len(head) != 1 or head[0].get("with") != want["steps"][1]["with"] or set(head[0]) - {"name"} != {"uses", "with"}
+            or (len(base) == 1 and steps.index(head[0]) != steps.index(base[0]) + 1)):
+        return (f"the proposed gate no longer reaches the suite's job: job {name} does not check out the head once, right "
+                f"after the base checkout, sparse to exactly {' and '.join(GATE_SCRIPTS)} (`sparse-checkout` of those two "
+                f"paths, `sparse-checkout-cone-mode: false`, `path: {MOVED_HEAD_DIR}`, `persist-credentials: false`, "
+                "no other key); nothing else of the pull request reaches the job")
+    if len(base) != 1 or base[0].get("with") != want["steps"][0]["with"] or len(checkouts) != 2:
+        return (f"job {name} does not check out the base sha once, at the workspace root, with `persist-credentials: false`; "
+                "the base's suites run from the base's tree")
+    if job.get("permissions") != want["permissions"]:
+        return f"job {name} does not declare `permissions: contents: read`; the job that runs PR-controlled code holds a read-only token"
+    run = steps[-1].get("run") if isinstance(steps[-1], dict) else None
+    # red-team round two: str.strip() also drops U+00A0 and the other Unicode spaces, which bash reads as
+    # part of a word, so `cp ... spec_gate.py<U+00A0>` wrote a second file and the suites judged the base's gate
+    if re.search(r"[^\S \n]", str(run or "")):
+        return (f"job {name} carries whitespace other than spaces and newlines in its run step; bash reads a "
+                "non-breaking or other Unicode space as part of a word, so a copy or suite line is not the designed one")
+    # red-team round three: GitHub expands `${{ }}` in the whole run text, comment lines included, before bash
+    # reads it, so an expression returning a newline put unread commands into the step; the designed step has none
+    if "${{" in str(run or ""):
+        return (f"job {name} carries a `${{{{ }}}}` expression in its run step; GitHub expands it, in a comment too, before "
+                "bash reads the step, so the step would run text the gate never read")
+    lines = [ln.strip(" ") for ln in str(run or "").splitlines() if ln.strip(" ") and not ln.lstrip(" ").startswith("#")]
+    wanted_run = want["steps"][2]["run"]
+    tail = lines[3:]
+    # red-team round one: after the copy, the pinned installs (the designed one, and pytest-xdist alone at
+    # its pinned version), then the base's gate suite, then the exporter suite exactly as designed; a suite
+    # line holds no shell operator, because a redirect glued to a separator (`2>&1|true`,
+    # `>/dev/null||true`) masked a suite, and no other install reaches the default index
+    installs = (wanted_run[3], "python3 -m pip install --quiet pytest-xdist==3.8.0")
+    shaped = (lines[:3] == wanted_run[:3] and len(tail) >= 3 and tail[-1] == wanted_run[-1]
+              and invokes(tail[-2], MOVED_SUITES[0]) and not re.search(r"[|&;<>()$`\\'\"]", tail[-2])
+              and wanted_run[3] in tail[:-2] and all(ln in installs for ln in tail[:-2]))
+    steps_shaped = (len(steps) == 3 and all(isinstance(st, dict) for st in steps)
+                    and [set(st) - {"name"} for st in steps] == [{"uses", "with"}, {"uses", "with"}, {"run"}]
+                    # red-team round one: a commit sha resolves from any fork in the action's network
+                    and all(steps[i]["uses"] == "actions/checkout@v4" for i in (0, 1))
+                    and all(isinstance(st.get("name", ""), str) for st in steps)
+                    and steps[0]["with"] == want["steps"][0]["with"] and steps[1]["with"] == want["steps"][1]["with"])
+    others = sorted(map(str, set(parsed_job_names(text)) - {"registry", "base-suite"}))
+    registry = (yaml.safe_load(text) or {}).get("jobs", {}).get("registry")
+    if isinstance(registry, dict) and "needs" in registry:
+        # red-team round two: a registry job that needs base-suite reports skipped, which a required check
+        # counts as passing, whenever base-suite fails
+        return "the registry job needs no other job in the moved layout; each of the two jobs reports its own result"
+    if others:
+        return (f"registry-check.yml in the moved layout holds jobs {', '.join(others)} beside registry and base-suite; "
+                "a job the gate's line reader cannot see (a YAML flow mapping) or a second suite job is not part of the design")
+    if not shaped or not steps_shaped or name != "base-suite" or {k: v for k, v in job.items() if k != "steps"} != {k: v for k, v in want.items() if k != "steps"}:
+        return (f"job {name} differs from the base-suite job FEAT-CICD-001 designs (the base checkout, the sparse head "
+                "checkout, then one step: the copy over scripts/gate, `rm -rf proposed-head`, the pinned installs and the "
+                "base's two suites; runs-on ubuntu-latest, timeout-minutes 10, contents: read, and no other key)")
     return None
 
 
@@ -2160,12 +2367,39 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                         or any(re.search(rf"^  {re.escape(job)}:\s*$", text, re.M) for job in contract["jobs"].values()):
                     return [f"{path}: takes the name or a job key of {cpath} ({contract['name']}); a required check's name belongs to "
                             "the gate's workflow alone"], None
-    for path, contract in WORKFLOW_CONTRACTS.items():
+    # FEAT-CICD-001: each pair a change touches holds the base suites in exactly one layout. A pair with
+    # registry-check.yml's base-suite job has both its files judged, the unchanged one included, by
+    # MOVED_CONTRACTS; any other pair by today's contracts. Each file's own refusals come first; a pair that
+    # holds both layouts, or neither where its base held one (a change never takes the suites out), is
+    # refused after the other gate-file checks.
+    layouts: dict[str, str] = {}
+    unpaired: list[str] = []
+    for spec_path, registry_path in BASE_SUITE_PAIRS:
+        if spec_path not in ch.changed and registry_path not in ch.changed:
+            continue
+        layout = base_suite_layout(ch.tree.read(spec_path), ch.tree.read(registry_path))
+        if layout == "both":
+            unpaired.append(f"{spec_path} and {registry_path}: both carry the base suites (spec-gate.yml's after the verdict, "
+                            "registry-check.yml's job base-suite); the pair holds them in exactly one of the two layouts FEAT-CICD-001 allows")
+        if layout == "neither" and base_suite_layout(ch.base.read(spec_path), ch.base.read(registry_path)) != "neither":
+            unpaired.append(f"{spec_path} and {registry_path}: neither carries the base suites; the pair holds them in exactly one of "
+                            "the two layouts FEAT-CICD-001 allows, spec-gate.yml job base-suite after the verdict or registry-check.yml "
+                            "job base-suite")
+        if layout in ("moved", "both"):
+            layouts[spec_path] = layouts[registry_path] = "moved"
+        # red-team round two: in the moved layout spec-gate.yml keeps only its gate job, read from the parsed
+        # YAML, so a second job under pull_request_target (in block or flow form) is not part of the design
+        if layout == "moved" and (spec_text := ch.tree.read(spec_path)) is not None and parsed_job_names(spec_text) != ["gate"]:
+            unpaired.append(f"{spec_path}: in the moved layout spec-gate.yml keeps only its gate job (it holds "
+                            f"{', '.join(map(str, parsed_job_names(spec_text))) or 'no job the gate can read'}); nothing else runs under pull_request_target")
+    for key, today in WORKFLOW_CONTRACTS.items():
         # (round six: the pinned copy is the future workflow, so a changed copy is judged as that workflow at step one)
-        for shown, text in ((p, ch.tree.read(p)) for p in (path, PINNED[path]) if p in ch.changed):
+        for shown, text in ((p, ch.tree.read(p)) for p in (key, PINNED[key]) if p in ch.changed or layouts.get(p) == "moved"):
             if text is None:
                 continue
             path = shown   # messages name the file judged: the workflow, or its pinned copy at step one
+            moved = layouts.get(shown) == "moved"
+            contract = MOVED_CONTRACTS[key] if moved else today
             if why := valid_yaml(text):
                 return [f"{path}: {why}; GitHub would not load the workflow and every later PR would lose the gate"], None
             runs, body = workflow_executes(text)
@@ -2200,6 +2434,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 if j >= 0 and (job_of(jobs, contract["run"][0])[0] == j or any(persists for _, persists, _ in jobs[j]["checkouts"])):
                     return [f"{path}: {command!r} runs PR-controlled code, so its job holds no checkout credentials "
                             "(persist-credentials: false) and never the base's verdict"], None
+            if contract.get("base_suite") and (why := moved_isolation(jobs, contract["run"][1])):
+                return [f"{path}: {why}"], None
             if handoff := contract.get("handoff"):
                 (je, _), (js, _) = job_of(jobs, handoff["export"]), job_of(jobs, handoff["suite"])
                 # solyra#72 r4121374648: the exact directory the export writes, not a path containing it
@@ -2268,7 +2504,10 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 # steps outside the pull-request context the verdict step binds, with a required check's name
                 return [f"{path}: declares triggers other than {contract['trigger']} ({', '.join(extra)}); a gate workflow "
                         "runs on exactly one event"], None
-            if bad := checkout_violation(body, contract["checkout"]):
+            # the moved base-suite job checks out the base, and the head into its own directory: its block is held to
+            # its design below, and every other checkout to the contract's side
+            rest, block_runs = without_moved_job(body, jobs) if contract.get("base_suite") else (body, [])
+            if bad := checkout_violation(rest, contract["checkout"]):
                 return [f"{path}: {bad}; the gate's workflows check out the side the contract names"], None
             if grant := workflow_write_grant(body):
                 return [f"{path}: grants a write permission ({grant}); the gate's workflows run head-controlled code "
@@ -2285,7 +2524,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             # later invocation a no-op with the contract's text intact
             # stocks#1205 r4121777299: a step that rewrites a gate file, or runs inline code
             # that could, before the contract command leaves the command intact and the gate gone
-            everything = every_run_text(text)
+            everything = every_run_text(text) if not contract.get("base_suite") else "\n".join([every_run_text(rest)] + block_runs)
             if tool := tool_offence(everything):
                 return [f"{path}: `{tool}` runs pip or pytest beyond what the gate needs; pip installs named packages from the "
                         "default index and pytest is the contract command with its permitted arguments"], None
@@ -2360,6 +2599,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 if j >= 0 and jobs[j]["name"] != job_name:
                     return [f"{path}: {command!r} runs in job `{jobs[j]['name']}`, not `{job_name}`; the required check "
                             f"`{contract['name']} / {job_name}` keeps its job name"], None
+            if contract.get("base_suite") and (why := moved_base_suite_offence(text, jobs)):
+                return [f"{path}: {why}"], None
     for SUITE in SUITES:
       if SUITE in ch.changed and (head_suite := ch.tree.read(SUITE)) is not None and (base_suite := ch.base.read(SUITE)):
           # solyra#72 r4119957711: the head-run registry check executes the suite the PR ships,
@@ -2415,6 +2656,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     if removed:
         return [f"{summarize(removed)}: the gate's entrypoints and policy documents cannot be removed by a change; "
                 "retiring the gate is a decision taken on main, not in a branch"], None
+    if unpaired:
+        return unpaired[:1], None
     # A spec is documentation that becomes policy once merged, so every changed spec is
     # validated here, before the documentation-only return, against the base's catalog
     # and requirements; a malformed spec must not land and then block or mislead the
