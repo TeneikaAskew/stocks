@@ -543,7 +543,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [91](../../../lib/agents/ranker/candidates.py#L91)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1711](../../../lib/agents/summarizers.py#L1711)
 - [`lib/strategies/catalyst_proximity.py`](../../../lib/strategies/catalyst_proximity.py) — line [235](../../../lib/strategies/catalyst_proximity.py#L235)
-- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [477](../../../platform/api/routers/catalysts.py#L477), [763](../../../platform/api/routers/catalysts.py#L763)
+- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [509](../../../platform/api/routers/catalysts.py#L509), [797](../../../platform/api/routers/catalysts.py#L797)
 - [`platform/api/routers/earnings.py`](../../../platform/api/routers/earnings.py) — line [131](../../../platform/api/routers/earnings.py#L131)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [666](../../../scripts/audit_data_freshness.py#L666), [667](../../../scripts/audit_data_freshness.py#L667), [826](../../../scripts/audit_data_freshness.py#L826)
 - [`scripts/fetch_earnings_calendar.py`](../../../scripts/fetch_earnings_calendar.py) — line [360](../../../scripts/fetch_earnings_calendar.py#L360)
@@ -561,7 +561,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/fetch_earnings_history.py`](../../../gcp/fetchers/fetch_earnings_history.py) — line [332](../../../gcp/fetchers/fetch_earnings_history.py#L332), [373](../../../gcp/fetchers/fetch_earnings_history.py#L373)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [927](../../../gcp/fetchers/fetch_market_data.py#L927), [957](../../../gcp/fetchers/fetch_market_data.py#L957)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [356](../../../lib/agents/ranker/signals.py#L356)
-- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [778](../../../platform/api/routers/catalysts.py#L778)
+- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [812](../../../platform/api/routers/catalysts.py#L812)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [141](../../../scripts/backfill_watchlist_data.py#L141)
 
 ### `earnings_options_snapshots`
@@ -596,7 +596,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [198](../../../lib/agents/ranker/candidates.py#L198)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1702](../../../lib/agents/summarizers.py#L1702)
 - [`lib/strategies/catalyst_proximity.py`](../../../lib/strategies/catalyst_proximity.py) — line [195](../../../lib/strategies/catalyst_proximity.py#L195)
-- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [445](../../../platform/api/routers/catalysts.py#L445)
+- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [477](../../../platform/api/routers/catalysts.py#L477)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [666](../../../scripts/audit_data_freshness.py#L666), [667](../../../scripts/audit_data_freshness.py#L667), [826](../../../scripts/audit_data_freshness.py#L826)
 - [`scripts/check_event_window_concentration.py`](../../../scripts/check_event_window_concentration.py) — line [61](../../../scripts/check_event_window_concentration.py#L61)
 
@@ -649,7 +649,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/earnings_reactions_brief.py`](../../../gcp/earnings_reactions_brief.py) — line [469](../../../gcp/earnings_reactions_brief.py#L469)
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [147](../../../lib/agents/ranker/candidates.py#L147)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [422](../../../lib/agents/ranker/signals.py#L422)
-- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [527](../../../platform/api/routers/catalysts.py#L527), [750](../../../platform/api/routers/catalysts.py#L750)
+- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [559](../../../platform/api/routers/catalysts.py#L559), [784](../../../platform/api/routers/catalysts.py#L784)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [148](../../../scripts/backfill_watchlist_data.py#L148)
 
 ### `insight_reports`
@@ -729,7 +729,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/features/experimental/vol_regime.py`](../../../lib/features/experimental/vol_regime.py) — line [52](../../../lib/features/experimental/vol_regime.py#L52)
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [2169](../../../lib/strat_levels.py#L2169)
 - [`platform/api/main.py`](../../../platform/api/main.py) — line [1123](../../../platform/api/main.py#L1123), [1289](../../../platform/api/main.py#L1289), [1459](../../../platform/api/main.py#L1459), [1461](../../../platform/api/main.py#L1461)
-- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [791](../../../platform/api/routers/catalysts.py#L791)
+- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [825](../../../platform/api/routers/catalysts.py#L825)
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [150](../../../platform/api/routers/dashboard.py#L150), [285](../../../platform/api/routers/dashboard.py#L285)
 - [`platform/api/routers/live.py`](../../../platform/api/routers/live.py) — line [546](../../../platform/api/routers/live.py#L546)
 - [`platform/api/routers/me_watchlist.py`](../../../platform/api/routers/me_watchlist.py) — line [38](../../../platform/api/routers/me_watchlist.py#L38)
@@ -803,7 +803,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [194](../../../lib/agents/ranker/signals.py#L194), [268](../../../lib/agents/ranker/signals.py#L268)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1726](../../../lib/agents/summarizers.py#L1726), [1887](../../../lib/agents/summarizers.py#L1887), [1904](../../../lib/agents/summarizers.py#L1904)
 - [`lib/features/experimental/news_sentiment.py`](../../../lib/features/experimental/news_sentiment.py) — line [83](../../../lib/features/experimental/news_sentiment.py#L83)
-- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [119](../../../platform/api/routers/catalysts.py#L119), [724](../../../platform/api/routers/catalysts.py#L724)
+- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [119](../../../platform/api/routers/catalysts.py#L119), [758](../../../platform/api/routers/catalysts.py#L758)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [133](../../../scripts/backfill_watchlist_data.py#L133)
 
 ### `options_daily_features`
@@ -849,7 +849,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [542](../../../lib/agents/ranker/signals.py#L542)
 - [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1741](../../../lib/agents/summarizers.py#L1741)
 - [`lib/strategies/catalyst_proximity.py`](../../../lib/strategies/catalyst_proximity.py) — line [278](../../../lib/strategies/catalyst_proximity.py#L278)
-- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [568](../../../platform/api/routers/catalysts.py#L568), [734](../../../platform/api/routers/catalysts.py#L734), [737](../../../platform/api/routers/catalysts.py#L737)
+- [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [600](../../../platform/api/routers/catalysts.py#L600), [768](../../../platform/api/routers/catalysts.py#L768), [771](../../../platform/api/routers/catalysts.py#L771)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [155](../../../scripts/backfill_watchlist_data.py#L155)
 
 ### `signal_alerts`

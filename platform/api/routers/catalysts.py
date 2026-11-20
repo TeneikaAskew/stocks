@@ -126,6 +126,37 @@ def _news_sql() -> str:
     )
 
 
+def _has_retired_provenance(event: dict) -> bool:
+    """Reject positively identified retired origins, never arbitrary prose.
+
+    Walk only provenance fields and descriptor names. Iteration handles deeply
+    nested cache payloads without recursion or mutation of historical records.
+    """
+    keys = ("source", "data_source", "provider", "sources", "provenance")
+    retired = {"earnings_whispers", "EarningsWhispers", "Earnings Whispers"}
+    pending = [event[key] for key in keys if key in event]
+    seen = set()
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            token = value.strip()
+            if token in retired:
+                return True
+            if token.startswith("earnings_calendar (") and token.endswith(")"):
+                if any(part.strip() in retired for part in token[19:-1].split(",")):
+                    return True
+        elif isinstance(value, (dict, list)):
+            identity = id(value)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if isinstance(value, list):
+                pending.extend(value)
+            else:
+                pending.extend(value[key] for key in (*keys, "name") if key in value)
+    return False
+
+
 def _load_cached_events():
     """Load catalyst events from the local JSON cache."""
     if not CATALYSTS_FILE.exists():
@@ -278,7 +309,7 @@ def get_catalyst_events(
         events = cached.get("events", []) if cached else []
 
     # Apply filters
-    filtered = events
+    filtered = [e for e in events if not _has_retired_provenance(e)]
     if d_from:
         filtered = [e for e in filtered if e.get("date", "") >= d_from]
     if d_to:
@@ -290,7 +321,8 @@ def get_catalyst_events(
     # + 8-K filings with material item codes). These complement Benzinga's
     # earnings/M&A/dividend/IPO coverage with the realtime news stream
     # and SEC filings we now collect ourselves.
-    db_events = _db_catalyst_events(d_from, d_to, ticker_list)
+    db_events = [e for e in _db_catalyst_events(d_from, d_to, ticker_list)
+                 if not _has_retired_provenance(e)]
     filtered = filtered + db_events
 
     if type_list:
@@ -630,7 +662,8 @@ def get_catalysts_for_ticker(
     # Filter to ticker and date range
     filtered = [
         e for e in events
-        if e.get("ticker", "").upper() == ticker_upper
+        if not _has_retired_provenance(e)
+        and e.get("ticker", "").upper() == ticker_upper
         and d_from <= e.get("date", "") <= d_to
     ]
 
@@ -638,7 +671,8 @@ def get_catalysts_for_ticker(
         # Try live fetch
         live = _fetch_live_events(d_from, d_to, [ticker_upper])
         if live:
-            filtered = [e for e in live if e.get("ticker", "").upper() == ticker_upper]
+            filtered = [e for e in live if e.get("ticker", "").upper() == ticker_upper
+                        and not _has_retired_provenance(e)]
 
     return {
         "ticker": ticker_upper,
