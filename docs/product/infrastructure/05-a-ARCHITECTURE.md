@@ -64,7 +64,6 @@ flowchart LR
     FF[ForexFactory]:::ext
     EDGAR[SEC EDGAR]:::ext
     FV[FinViz]:::ext
-    EW[Earnings Whispers]:::ext
     UW[Unusual Whales]:::ext
     BZ[Benzinga]:::ext
     VAI[Vertex AI Gemini + embeddings]:::ext
@@ -86,7 +85,7 @@ flowchart LR
     DSC[Discord channels]:::out
     GH[GitHub issues]:::out
 
-    AV & FRED & FF & EDGAR & FV & EW & UW --> JOBS
+    AV & FRED & FF & EDGAR & FV & UW --> JOBS
     SCH --> JOBS
     JOBS -- upsert --> SQL
     JOBS -- parquet / reports --> GCS
@@ -704,7 +703,7 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 | 21:00 | `av-options-daily` (Mon–Fri), `av-intraday-nightly` (Mon–Sat, `--symbol=ALL --force`), `premarket-brief-sunday` (Sun: week-ahead mode) |
 | 21:15 | `premarket-playbook-resolver-daily` |
 | 22:00 / 22:30 | `options-daily-features`, `gamma-levels-daily` (→ `p2-build-gamma-levels`) |
-| 23:00 / 23:15 / 23:35 | `fetch-market-data-daily` + `evaluate-ew-strikes-daily`, `options-daily-greeks`, `strat-engine-daily` |
+| 23:00 / 23:15 / 23:35 | `fetch-market-data-daily`, `options-daily-greeks`, `strat-engine-daily` |
 | Sat 09:00 / Sun 10:00 | `weekend-review-weekly`, `audit-walkforward-weekly` / `audit-brief-bias-weekly` |
 | hourly | `reconcile-failure-notifier-hourly` |
 | monthly / quarterly | `av-intraday-monthly` (1st 21:00), `av-options-monthly` (1st 05:00), `calibrate-thresholds-quarterly` (1st of Jan/Apr/Jul/Oct 02:00, never fired yet) |
@@ -728,7 +727,7 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 | ForexFactory | `ff_calendar_thisweek.json` (event times) | none | falls back to FRED-only events (no times) |
 | SEC EDGAR | `company_tickers.json`, `submissions/CIK*.json` → `sec_filings` | `sec-user-agent` | 429/5xx retried with backoff and a per-run budget (#947) |
 | FinViz | peers and ticker news (`lib/ticker_info.py`, `gcp/fetchers/fetch_rss_news.py`) | none (HTML) | brittle; `fetch_rss_news.py` has no deploy block and is not scheduled |
-| Earnings Whispers | strategy and strike picks in `earnings_calendar` | `ew-user`/`ew-pass` cookie flow; four historical exports are committed under `archive/google-apps-script/data/` (#998) | falls back to AlphaVantage + Unusual Whales |
+| Earnings Whispers (retired) | Historical strategy/strike records only; no current fetching or scoring | Secret resources retained; four historical exports remain under `archive/google-apps-script/data/` (#998) | Not an active provider or fallback |
 | Unusual Whales | earnings calendar with market-cap ranking | API key | falls back to AlphaVantage |
 | Benzinga | catalyst calendar for the catalysts router | `benzinga-api-key` | page degrades; not a scheduled fetcher |
 | Vertex AI | Gemini for `brief_explanations` (`BRIEF_LLM_MODEL`, default `gemini-3.1-flash-lite`, [`gcp/brief_explanations.py:86`](../../../gcp/brief_explanations.py#L86)) and the six insight roles in `model_routing`; `text-embedding-005` for `journal_entries.embedding` | ADC via `trading-runner@` / `trading-platform-svc@` | `BRIEF_LLM_DISABLE=1` bypasses the brief LLM; reflection memory is skipped without embeddings |
@@ -742,7 +741,7 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 1. **21:00** `av-options-daily` → `fetch-av-options-backfill` (`fetch_av_historical_options --tickers SPY IWM QQQ SPX --from-latest`) appends the day's option chain to `etf_options_snapshots`; `av-intraday-nightly` pulls the prior session's 1-minute bars into `market_data_intraday`.
 2. **21:15** `premarket-playbook-resolver` walks the day's RTH bars for every `(analysis_date, ticker)` in `premarket_analysis` and records trigger/target/stop outcomes.
 3. **22:00** `build-options-daily-features` materializes `options_daily_features` from the snapshots; **22:30** `p2-build-gamma-levels` (`deploy_p2_build_gamma_levels`, codified from the live job on 2026-09-07) writes `gamma_levels_eod`.
-4. **23:00** `fetch-market-data` upserts daily OHLCV + indicators into `market_data_daily` (and the current month's intraday), writes parquet to GCS; `evaluate-ew-strikes` scores the Earnings Whispers picks into `earnings_calendar.ew_*`.
+4. **23:00** `fetch-market-data` upserts daily OHLCV + indicators into `market_data_daily` (and the current month's intraday), writes parquet to GCS. Historical `earnings_calendar.ew_*` values are retained; the retired scorer no longer updates them.
 5. **23:15** `build-options-greeks` writes `etf_options_daily_greeks`; **23:35** `strat-engine-daily` runs `strat_data_builder` to refresh `strat_features_*`; **02:00** `strat-enrich-daily` runs `strat_enrich_levels --mode=backfill-all`.
 6. **01:00–03:00** `historical-signals-watchlist`, `signal-quality-report-nightly`, `signal-quality-alarm`, `backfill-daily-indicators`, `options-retention`.
 
@@ -885,6 +884,8 @@ Backup and restore procedures are in [CLAUDE.md → Backup and disaster recovery
 | Cloud Build | [`gcp/cloudbuild/`](../../../gcp/cloudbuild) | `deploy-solyra-api-staging` (push to `main`), `deploy-solyra-api-prod` (manual), `apply-schema-on-change` (push to `main`) | the API and schema deploy paths (§10.9) <!-- verify-docs-ok: Cloud Build trigger names, read live with gcloud builds triggers list 2026-09-07 --> |
 
 ## 15. Live-vs-repo reconciliation
+
+The generated block below preserves its dated 2026-09-07 observation. Its EW job/scheduler entries are historical evidence, not current run instructions or proof that those resources still exist. Current source rejects the retired deployment target; release verification is recorded separately.
 
 <!-- inventory:reconcile:start -->
 Live read 2026-09-07T04:35:16Z. Repo declares 67 jobs / 67 schedulers; live has 76 / 65. <!-- verify-docs-ok: repo-declared and live counts side by side -->

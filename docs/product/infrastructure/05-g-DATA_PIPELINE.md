@@ -155,7 +155,7 @@ is needed. SPX *option chains* remain fully covered in
 **Feeds into**
 - [`fetch_earnings_options.py`](../gcp/fetchers/fetch_earnings_options.py) — resolves the 7-day ticker universe
 - [`premarket_brief.py`](../../../gcp/premarket_brief.py) — morning Discord brief ("5 tickers have earnings this week")
-- Future: Earnings page ticker dropdown (P1 = EW+AV+UW, P2 = AV+UW)
+- Earnings consumers exclude retired EW rows; source coverage reflects retained providers, not the old EW-based tiers.
 
 **Alternatives considered** — Earnings dates are published weeks in advance and rarely change mid-week. Weekly refresh is the right cadence. **Do not promote to daily** — it would waste API calls without adding value.
 
@@ -166,7 +166,7 @@ is needed. SPX *option chains* remain fully covered in
 plus `weekly-earnings-refresh-calendar` (`0 19 * * 0`) — 7:00 PM ET Sunday.
 Read live 2026-09-06; the scheduler this section used to name,
 `earnings-calendar-daily` at 7:15 AM, does not exist.
-**Sources** — AV `EARNINGS_CALENDAR` endpoint (date of truth) + Unusual Whales CSV (expected moves) + Earnings Whispers CSV (strategy picks, requires login)
+**Sources** — AlphaVantage `EARNINGS_CALENDAR` (date truth), Unusual Whales (expected moves), and Yahoo (independent date cross-check). `scripts/fetch_earnings_calendar.py --source all` invokes these retained sources; EW fetching is retired and historical rows are excluded by current readers.
 **Writes** — ~50-200 rows/week depending on earnings season
 **Freshness budget** — 192h (8 days — allows one missed weekly run)
 
