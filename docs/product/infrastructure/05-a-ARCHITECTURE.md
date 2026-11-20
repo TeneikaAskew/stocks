@@ -498,11 +498,11 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/backtest/equity/{ticker}` | [`platform/api/routers/backtest.py:258`](../../../platform/api/routers/backtest.py#L258) | Return equity curve from the most recent equity CSV for the given ticker, |
 | `POST` | `/api/backtest/replay-trades` | [`platform/api/routers/backtest.py:517`](../../../platform/api/routers/backtest.py#L517) | Score the signed-in user's labeled journal trades against actual bars |
 | `GET` | `/api/backtest/results/{ticker}` | [`platform/api/routers/backtest.py:189`](../../../platform/api/routers/backtest.py#L189) | Return trades from the most recent backtest CSV for the given ticker, |
-| `GET` | `/api/catalysts/asof/{ticker}` | [`platform/api/routers/catalysts.py:651`](../../../platform/api/routers/catalysts.py#L651) | Unified point-in-time catalyst view for a ticker. |
-| `GET` | `/api/catalysts/events` | [`platform/api/routers/catalysts.py:163`](../../../platform/api/routers/catalysts.py#L163) | Get catalyst events grouped by date. |
-| `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:652`](../../../platform/api/routers/catalysts.py#L652) | Unified point-in-time catalyst view for a ticker. |
-| `GET` | `/api/catalysts/ticker/{ticker}` | [`platform/api/routers/catalysts.py:614`](../../../platform/api/routers/catalysts.py#L614) | Get all catalyst events for a specific ticker. |
-| `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:821`](../../../platform/api/routers/catalysts.py#L821) | Return available catalyst types and WSH upgrade info. |
+| `GET` | `/api/catalysts/asof/{ticker}` | [`platform/api/routers/catalysts.py:685`](../../../platform/api/routers/catalysts.py#L685) | Unified point-in-time catalyst view for a ticker. |
+| `GET` | `/api/catalysts/events` | [`platform/api/routers/catalysts.py:194`](../../../platform/api/routers/catalysts.py#L194) | Get catalyst events grouped by date. |
+| `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:686`](../../../platform/api/routers/catalysts.py#L686) | Unified point-in-time catalyst view for a ticker. |
+| `GET` | `/api/catalysts/ticker/{ticker}` | [`platform/api/routers/catalysts.py:646`](../../../platform/api/routers/catalysts.py#L646) | Get all catalyst events for a specific ticker. |
+| `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:855`](../../../platform/api/routers/catalysts.py#L855) | Return available catalyst types and WSH upgrade info. |
 | `GET` | `/api/config/firebase` | [`platform/api/routers/config.py:47`](../../../platform/api/routers/config.py#L47) | Public runtime auth config for the frontend bootstrap. |
 | `GET` | `/api/config/indicators` | [`platform/api/routers/config.py:77`](../../../platform/api/routers/config.py#L77) | Return indicator periods, signal thresholds, and zone labels. |
 | `GET` | `/api/config/market-hours` | [`platform/api/routers/config.py:145`](../../../platform/api/routers/config.py#L145) | Return US equity market session windows, holidays and early closes. |
