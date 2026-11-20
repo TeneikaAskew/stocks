@@ -2,7 +2,7 @@
 feat_id: FEAT-CATALYST-001
 spec: docs/superpowers/specs/2026-11-19-feat-catalyst-001-retired-provenance-output.md
 branch: fix/feat-catalyst-001-retired-provenance-recut
-pr: null
+pr: 2116
 status: ready
 ---
 
@@ -78,3 +78,6 @@ This local successor starts directly from actual main e678601a, preserving the s
 The owner directed a minimal clean replacement through normal repository admission. CLAUDE's post-round-two rule requires a split/re-cut/discard for work needing a further push; this is the spec-bound re-cut route, not a third push or review on #2107. A successor's review admission must retain that ledger and be confirmed before any review event; creating this local plan does not reset historical review accounting.
 
 Prior 47-case offline HTTP receipt applies to the exact imported functional bytes; final candidate proof, matched audits, full applicable checks and exact-head review remain outstanding. Fresh producer/verifier must bind this actual named branch and committed plan under unchanged limits. Release coordination remains separate because platform paths match automatic schema/API triggers.
+
+## First-head review and final bookkeeping
+PR #2116 first head 4511cb40a4c8bebf493828d2fa6a69927b92d9be passed all six required hosted checks. CODE completed with no findings at 2026-11-20T21:53:21.194888Z (receipt 7052003975); SECURITY explicitly reported no issues at 22:24:39.989547Z (receipt 7052539915). These receipts apply only to that head. This bookkeeping binds the actual PR and preserves both historical #2107 rounds; the final committed head still requires its own CI and review. Live API/Solyra readback, deployment and sidecar close-out remain pending.

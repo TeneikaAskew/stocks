@@ -791,7 +791,7 @@ Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) f
 
 Implementation draft [#1670](https://github.com/TeneikaAskew/stocks/pull/1670) adds the keyword-only `implied_move_invalid` flag to `lib/earnings_reactions.py::recommended_structure` under specification #1650 and its approved successor #1675 (CATALYSTS-04 source note). It is default-off, and no caller passes it yet. Its new tests fail on main and pass on the branch, and the existing caller suites are unchanged. Current-head review and CI remain required, and nothing is deployed.
 
-Local catalyst-provenance re-cut: plan `docs/superpowers/plans/2026-11-20-feat-catalyst-001-retired-provenance-recut.md` carries [#2107](https://github.com/TeneikaAskew/stocks/pull/2107), including its two completed CODE reviews, onto main containing #2103. No successor PR, final-head review, deployment or historical-data modification is claimed.
+Catalyst-provenance successor [#2116](https://github.com/TeneikaAskew/stocks/pull/2116): plan `docs/superpowers/plans/2026-11-20-feat-catalyst-001-retired-provenance-recut.md` carries [#2107](https://github.com/TeneikaAskew/stocks/pull/2107), including its two completed CODE reviews, onto main containing #2103. First-head CODE and SECURITY receipts are retained on #2116; final-head qualification remains required. No deployment or historical-data modification is claimed.
 
 ### FEAT-LIVE-001 — Intraday monitoring (20 open)
 
