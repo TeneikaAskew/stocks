@@ -109,14 +109,20 @@ def test_ew_only_tickers_are_absent(api):
 
 
 def test_main_shaped_events_query_keeps_ew(api):
-    """Negative control: without the predicate the EW-only tickers appear and
-    the EW row decides T's title."""
+    """Mutate SQL selection independently of the final HTTP boundary."""
     client, state = api
     state["strip"] = True
-    by_tk = {e["ticker"]: e for e in _earnings_events(client)}
+    by_tk = {e["ticker"]: e for e in catalysts._db_catalyst_events(DAY, DAY, None)}
     assert {"E", "R"} <= set(by_tk)
     assert by_tk["T"]["title"] == "Zz Corp earnings (premarket)"
     assert "earnings_whispers" in by_tk["T"]["source"]
+    assert "EarningsWhispers" in by_tk["R"]["source"]
+    # The SQL mutation must never make retired provenance HTTP-visible.
+    assert {e["ticker"] for e in _earnings_events(client)} == {"Y", "N", "K"}
+    state["strip"] = False
+    selected = {e["ticker"]: e for e in catalysts._db_catalyst_events(DAY, DAY, None)}
+    assert set(selected) == {"T", "Y", "N", "K"}
+    assert selected["T"]["source"] == "earnings_calendar (alphavantage, unusual_whales)"
 
 
 def _next_earnings(client, ticker):
