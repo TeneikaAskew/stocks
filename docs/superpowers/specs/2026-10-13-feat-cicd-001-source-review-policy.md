@@ -9,7 +9,7 @@ done_when:
   - "Actual branch-versus-main documentation audit reports no new findings, including all existing .claude watcher documents; standing unknown-review findings are retained, never hidden or falsely stamped."
   - "The delivery skill/template contain exactly the literal replacement and appended text in this specification, with all other original bytes preserved; removing or changing a defined eligibility, registry equality, bootstrap, close-out or retirement rule fails direct file-diff review. No verifier or SITE allowance is activated by this policy-only change."
   - "The own catalog record truthfully says policy wording verified with verifier/global remediation pending; normal current-head external CODE review, required CI, conversation resolution and two-round cap are satisfied before merge."
-status: approved
+status: superseded
 supersedes: null
 ---
 
