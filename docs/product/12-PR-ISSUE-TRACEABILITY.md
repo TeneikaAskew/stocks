@@ -453,6 +453,8 @@ EW fetcher reader implementation follows the admitted #1685 contract on a fresh 
 
 ### FEAT-CICD-001 — CI / testing (12 open)
 
+Conditional atomic EW registry policy: approved contract [#2119](https://github.com/TeneikaAskew/stocks/pull/2119); implementation plan `docs/superpowers/plans/2026-11-22-feat-cicd-001-ew-atomic-policy.md`. Exact two-file append and unchanged registry verified locally; implementation PR binding and external review pending. Verifier capability and calendar retirement remain separate.
+
 | Issue | Sev | Title |
 |---|---|---|
 | [#844](https://github.com/TeneikaAskew/stocks/issues/844) | HIGH | [audit] G2 — No end-to-end test of the fire path <-> EOD resolver |
