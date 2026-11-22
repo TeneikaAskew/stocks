@@ -18,7 +18,7 @@ done_when:
   - "The implementation PR records, from the unchanged CLI on its head, `counted_bytes` and `elapsed_seconds` for a main self-check and for the head, each inside the unchanged five-second deadline and 20000-entry ceiling, and names by SHA at least one real ref that the 8388608-byte ceiling refused with the reason `object exceeds remaining input-byte allowance`, with its result under the new ceiling (identity-matched, or a refusal for a different stated reason)."
   - "`.claude/skills/product-delivery/SKILL.md` shows the verify command with `--max-input-bytes 12582912`; no other process document changes its meaning."
   - "Source identity (SHARED-01): on the implementation PR head the existing producer and verifier, run from the committed HEAD with its fixed ceilings, prove committed source and SITE body identity bound to this approved spec at the actual merge base, where its blob equals the one on current main; the plan binds this spec; the only SITE change is the FEAT-CICD-001 / SHARED-01 row of the Implementation-source notes table with the prefix source_identity_sha256=<current source hash> and nonempty prose describing this change and its tests while keeping the earlier accurate own content of that row; the sidecar is produced from the final committed SITE body and committed; the matched main and branch `scripts/maintenance/docs_audit.py` runs report no finding that main does not; the registry `docs/DOC_REGISTRY.md` blob, mode and type equal main's; the required current-head checks pass before merge under the repository's existing review rules, which this spec does not extend."
-status: approved
+status: superseded
 supersedes: docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.md
 ---
 
