@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-22-feat-cicd-001-ew-atomic-registry-policy.md
 branch: feature/feat-cicd-001-ew-atomic-policy
-pr: null
+pr: 2120
 status: ready
 ---
 
