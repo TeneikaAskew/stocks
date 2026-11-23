@@ -453,6 +453,8 @@ EW fetcher reader implementation follows the admitted #1685 contract on a fresh 
 
 ### FEAT-CICD-001 — CI / testing (12 open)
 
+**PR lineage:** Conditional atomic EW registry policy [#2120](https://github.com/TeneikaAskew/stocks/pull/2120): approved contract [#2119](https://github.com/TeneikaAskew/stocks/pull/2119); implementation plan `docs/superpowers/plans/2026-11-22-feat-cicd-001-ew-atomic-policy.md`. Exact two-file append and unchanged registry verified locally; implementation PR bound; external review pending. Verifier capability and calendar retirement remain separate.
+
 | Issue | Sev | Title |
 |---|---|---|
 | [#844](https://github.com/TeneikaAskew/stocks/issues/844) | HIGH | [audit] G2 — No end-to-end test of the fire path <-> EOD resolver |
@@ -790,6 +792,8 @@ Finite nullable estimate contract: [#1618](https://github.com/TeneikaAskew/stock
 Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) follows merged finite-nullable specification #1618. Numeric-title portion of #1301 only; no claim of fixing its source-dedup concern or broad #1269. Local full unit7719passed/51skipped/112warnings and separate realPG/API proof; current-head hosted review and actual existing API/producer rollout remain required.
 
 Implementation draft [#1670](https://github.com/TeneikaAskew/stocks/pull/1670) adds the keyword-only `implied_move_invalid` flag to `lib/earnings_reactions.py::recommended_structure` under specification #1650 and its approved successor #1675 (CATALYSTS-04 source note). It is default-off, and no caller passes it yet. Its new tests fail on main and pass on the branch, and the existing caller suites are unchanged. Current-head review and CI remain required, and nothing is deployed.
+
+- Successor [#2118](https://github.com/TeneikaAskew/stocks/pull/2118) preserves prior catalyst-provenance attempts [#2107](https://github.com/TeneikaAskew/stocks/pull/2107) and [#2116](https://github.com/TeneikaAskew/stocks/pull/2116) retain all review receipts and findings. The fresh plan `docs/superpowers/plans/2026-11-22-feat-catalyst-001-provenance-closeout.md` prepares the same functional scope directly on main; actual successor PR binding is complete before first review. No deployment or historical-data modification is claimed.
 
 ### FEAT-LIVE-001 — Intraday monitoring (20 open)
 

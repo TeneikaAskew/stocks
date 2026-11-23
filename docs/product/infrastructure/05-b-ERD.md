@@ -224,7 +224,7 @@ erDiagram
 
 | Table | PK / UQ | Writer | Notes |
 |---|---|---|---|
-| `earnings_calendar` | `id` PK · `UQ (ticker, earnings_date, strategy, data_source)` | `fetch-earnings-calendar`, `evaluate-ew-strikes`, `compute-earnings-reactions` | One row per (ticker, date, strategy=EW/UW/AV, data_source). Holds EW strike picks, premium, score, hit/miss verdict, minutes-to-hit. Trigger `trg_earnings_calendar_updated`. |
+| `earnings_calendar` | `id` PK · `UQ (ticker, earnings_date, strategy, data_source)` | `fetch-earnings-calendar` | One row per (ticker, date, strategy, data_source). Historical EW strike picks, premium, score, hit/miss verdict and minutes-to-hit remain stored; the retired scorer is no longer a writer. Trigger `trg_earnings_calendar_updated`. |
 | `earnings_history` | `id` PK · `UQ (ticker, fiscal_date_ending)` | `fetch-earnings-history` (weekly) | AV `EARNINGS` endpoint — reported vs estimated EPS, surprise %, BMO/AMC. |
 | `earnings_reactions` | `id` PK · `UQ (ticker, fiscal_date_ending)` | `compute-earnings-reactions` | Joins `earnings_history × market_data_daily` to compute pre-drift, gap, sustain horizons, MAE/MFE, archetype tag. |
 | `earnings_calibration` ★ | PK `calibration_date` | `earnings-sweep` | Calibrated playability knobs (min_nq, lookback_quarters) + Q5 directional attribution + straddle pricing. Latest dated row wins. |
