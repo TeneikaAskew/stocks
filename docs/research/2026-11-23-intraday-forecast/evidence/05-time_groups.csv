@@ -1,0 +1,11 @@
+policy,timing,entries,scored,targets,stops,full_half_hour,median_farthest_30m_ATR
+Break and hold,10:00 or later,159,159,30,39,158,0.09990149863424044
+Break and hold,Before 10:00,153,153,59,56,153,0.14468114251172978
+Break and retest,10:00 or later,156,156,31,34,153,0.09431841049400728
+Break and retest,Before 10:00,68,68,22,26,68,0.11763833606075755
+Inner retest or range,10:00 or later,183,183,23,53,179,0.1103495943310314
+Inner retest or range,Before 10:00,273,273,69,122,273,0.14063299147434527
+Range touch,10:00 or later,175,175,24,50,170,0.11645268724800767
+Range touch,Before 10:00,256,256,68,115,256,0.14203744402657903
+Range touch with T1,10:00 or later,150,150,24,41,146,0.11599513098874928
+Range touch with T1,Before 10:00,222,222,68,98,222,0.14203744402657903

@@ -1,0 +1,22 @@
+premarket-brief-5fhcp | 2026-11-20T14:21:35.366406Z | 6b00576f0005974694ce3e1b
+
+  CALLS above 264.81 (PMK_H) -- only if bias denied, new entries 09:30 to 16:00 ET
+    No entry if the open is at or above 264.81.
+    Stop: 262.73 (PMK_L)
+    T1: 269.88 (PML), sell 1/3
+    T2: 271.80 (PDH), sell 1/3, hold the last 1/3 to the close or the stop
+    Room to trigger: 0.48%
+
+  PUTS below 262.73 (PMK_L), new entries 09:30 to 16:00 ET
+    No entry if the open is at or below 262.73.
+    Stop: 263.74 (PDL)
+    T1: 258.20 (PYH), sell 1/3, hold the last 2/3 to the close or the stop
+    Room to trigger: 0.30%
+
+  NEXT LEVELS:
+    Calls (up):  264.81 PMK_H (intraday) +0.49%, 269.88 PML (month) +2.41%
+    Puts (down): 262.73 PMK_L (intraday) -0.30%, 258.20 PYH (year) -2.02%
+    ATR levels, ATR(14) 5.13: up 266.31 (PDL+0.5), 267.86 (PMK_L+1); down 261.17 (PDL-0.5), 259.68 (PMK_H-1), 256.04 (PDL-1.5 stretch), 254.54 (PMK_H-2 stretch), 252.46 (PMK_L-2 stretch)
+
+  PMG ZONES:
+    277.48 (PQL, PWC) [strength: 2.5]

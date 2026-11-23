@@ -1,0 +1,37 @@
+part,symbol,rank,size,sum,opportunities,skips,replacements,policy
+test,IWM,1,143,22.46038955293581,168,25,0,One position until exit
+test,IWM,2,128,9.25625965201561,168,40,0,One position until exit
+test,IWM,3,110,4.010553991660143,168,58,0,One position until exit
+test,QQQ,1,141,-12.916296348187323,161,20,0,One position until exit
+test,QQQ,2,124,6.7714003724346945,161,37,0,One position until exit
+test,QQQ,3,104,12.913172633873721,161,57,0,One position until exit
+test,SPY,1,120,22.33596222037781,138,18,0,One position until exit
+test,SPY,2,99,60.048397805270575,138,39,0,One position until exit
+test,SPY,3,85,72.56043703111953,138,53,0,One position until exit
+train,IWM,1,417,7.758535544468815,526,109,0,One position until exit
+train,IWM,2,384,24.09461714342398,526,142,0,One position until exit
+train,IWM,3,331,13.013077104180866,526,195,0,One position until exit
+train,QQQ,1,382,-25.80306171868374,425,43,0,One position until exit
+train,QQQ,2,321,-8.208656363707355,425,104,0,One position until exit
+train,QQQ,3,272,5.3627835892016975,425,153,0,One position until exit
+train,SPY,1,339,18.697861091579938,387,48,0,One position until exit
+train,SPY,2,298,51.34910427366133,387,89,0,One position until exit
+train,SPY,3,263,31.176825513462525,387,124,0,One position until exit
+test,IWM,1,143,22.46038955293581,168,25,0,Reassess after a paid level
+test,IWM,2,141,9.400799585041911,168,27,14,Reassess after a paid level
+test,IWM,3,140,11.408645462991604,168,28,28,Reassess after a paid level
+test,QQQ,1,141,-12.916296348187323,161,20,0,Reassess after a paid level
+test,QQQ,2,140,-0.8310810226711491,161,21,21,Reassess after a paid level
+test,QQQ,3,138,6.011150284741291,161,23,40,Reassess after a paid level
+test,SPY,1,120,22.33596222037781,138,18,0,Reassess after a paid level
+test,SPY,2,118,38.86609496440465,138,20,18,Reassess after a paid level
+test,SPY,3,118,36.87345912647479,138,20,33,Reassess after a paid level
+train,IWM,1,417,7.758535544468815,526,109,0,Reassess after a paid level
+train,IWM,2,408,12.161887139311048,526,118,22,Reassess after a paid level
+train,IWM,3,399,6.949826413003184,526,127,52,Reassess after a paid level
+train,QQQ,1,382,-25.80306171868374,425,43,0,Reassess after a paid level
+train,QQQ,2,380,-12.654412411347078,425,45,71,Reassess after a paid level
+train,QQQ,3,379,-3.402692650276622,425,46,105,Reassess after a paid level
+train,SPY,1,339,18.697861091579938,387,48,0,Reassess after a paid level
+train,SPY,2,338,48.4432722593122,387,49,39,Reassess after a paid level
+train,SPY,3,335,39.39715100104598,387,52,72,Reassess after a paid level

@@ -1,0 +1,7 @@
+policy,interval,total_touches,observable,session_clipped_observable,first_closed_beyond,first_closed_inside,equal_first,any_inside,any_inside_full60,full60_n,no_inside_by_60,censored_no_inside,ever_beyond,confirmed_then_lost,available_farther,no_farther,adverse_first_or_only,next_first_or_only,ambiguous,neither
+nearest,1,121,121,0,67,50,4,110,110,121,11,0,114,92,109,12,90,16,2,1
+nearest,5,121,121,0,66,53,2,98,98,121,23,0,103,64,109,12,77,27,3,2
+nearest,10,121,121,0,65,53,3,92,92,121,29,0,101,51,109,12,71,30,5,3
+nearest,15,121,121,0,73,47,1,84,84,121,37,0,98,45,109,12,62,37,4,6
+nearest,30,121,121,0,79,41,1,65,65,121,56,0,88,23,109,12,46,41,2,20
+nearest,60,121,121,0,74,47,0,47,47,121,74,0,74,0,109,12,32,41,9,27

@@ -1,0 +1,21 @@
+day,setup,objective,comment,entry_time,side,entry,stop,risk,target,horizon,exit,exit_time,exit_type,gross_R
+2026-11-17,first 5m close below 15m opening range,issued PUT trigger,Alternative exits on one entry,10:10,PUT,736.805,738.17,1.365000000000009,735.68,60,735.68,10:31,target,0.8241758241758187
+2026-11-17,first 5m close below 15m opening range,issued ATR guide,Alternative exits on one entry,10:10,PUT,736.805,738.17,1.365000000000009,732.7,60,732.7,10:40,target,3.007326007325917
+2026-11-17,first 5m close below 15m opening range,issued PUT T1,Alternative exits on one entry,10:10,PUT,736.805,738.17,1.365000000000009,729.1,60,729.1,10:47,target,5.644688644688554
+2026-11-17,first 5m close below 15m opening range,exit at 10:45,Alternative exits on one entry,10:10,PUT,736.805,738.17,1.365000000000009,,35,730.97,10:45,time,4.274725274725189
+2026-11-17,break below prior 15m low,retest issued T1,5m confirming-bar stop,14:45,PUT,730.56,730.73,0.17000000000007276,729.1,30,730.73,14:45,stop,-1.0
+2026-11-17,break below prior 15m low,retest issued T1,15m confirming-bar stop,14:45,PUT,730.56,731.16,0.6000000000000227,729.1,30,729.1,14:56,target,2.4333333333331124
+2026-11-17,15:05 reclaim of previous quarter low,exit at 15:45,Alternative exits on one entry,15:05,CALL,729.2,727.86,1.3400000000000318,,40,731.0457,15:45,time,1.3773880597014339
+2026-11-17,15:05 reclaim of previous quarter low,issued ATR guide,Alternative exits on one entry,15:05,CALL,729.2,727.86,1.3400000000000318,732.7,40,731.0457,15:45,time,1.3773880597014339
+2026-11-17,15:05 reclaim of previous quarter low,1R target,Alternative exits on one entry,15:05,CALL,729.2,727.86,1.3400000000000318,730.54,40,730.54,15:30,target,0.9999999999999152
+2026-11-18,first 5m close below 5m opening range,issued PUT T1 first touch,5m confirming-bar stop,09:40,PUT,732.17,734.24,2.07000000000005,729.1,30,729.1,09:48,target,1.4830917874395468
+2026-11-18,first 5m close below 5m opening range,issued ATR guide,5m confirming-bar stop,09:40,PUT,732.17,734.24,2.07000000000005,722.48,30,734.24,10:00,stop,-1.0
+2026-11-18,first 5m close below 15m opening range,issued PUT T1 retest,5m confirming-bar stop,09:50,PUT,729.74,730.85,1.1100000000000136,729.1,30,729.1,09:50,target,0.5765765765765573
+2026-11-18,first 5m close below 15m opening range,next untouched structure,5m confirming-bar stop,09:50,PUT,729.74,730.85,1.1100000000000136,727.0,30,730.85,09:52,stop,-1.0
+2026-11-17,every upward recross of 729.10,next issued checkpoint,Independent opportunities; overlapping positions possible,11:00,CALL,731.35,727.2,4.149999999999977,732.7,45,732.7,11:02,target,0.3253012048192844
+2026-11-17,every upward recross of 729.10,next issued checkpoint,Independent opportunities; overlapping positions possible,12:00,CALL,731.0,728.629,2.370999999999981,732.7,45,732.7,12:05,target,0.7169970476592404
+2026-11-17,every upward recross of 729.10,next issued checkpoint,Independent opportunities; overlapping positions possible,15:05,CALL,729.2,727.86,1.3400000000000318,732.7,45,730.64,15:50,time,1.074626865671572
+2026-11-18,every upward recross of 729.10,next issued checkpoint,Independent opportunities; overlapping positions possible,10:55,CALL,729.29,728.39,0.8999999999999773,732.16,45,728.39,11:16,stop,-1.0
+2026-11-18,every upward recross of 729.10,next issued checkpoint,Independent opportunities; overlapping positions possible,11:25,CALL,729.75,726.795,2.955000000000041,732.16,45,729.92,12:10,time,0.05752961082908857
+2026-11-18,every upward recross of 729.10,next issued checkpoint,Independent opportunities; overlapping positions possible,11:35,CALL,729.21,728.13,1.080000000000041,732.16,45,728.13,11:39,stop,-1.0
+2026-11-18,every upward recross of 729.10,next issued checkpoint,Independent opportunities; overlapping positions possible,12:00,CALL,729.38,727.16,2.2200000000000273,732.16,45,732.16,12:23,target,1.2522522522522246
