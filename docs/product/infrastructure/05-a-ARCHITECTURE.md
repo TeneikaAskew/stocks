@@ -64,7 +64,6 @@ flowchart LR
     FF[ForexFactory]:::ext
     EDGAR[SEC EDGAR]:::ext
     FV[FinViz]:::ext
-    EW[Earnings Whispers]:::ext
     UW[Unusual Whales]:::ext
     BZ[Benzinga]:::ext
     VAI[Vertex AI Gemini + embeddings]:::ext
@@ -86,7 +85,7 @@ flowchart LR
     DSC[Discord channels]:::out
     GH[GitHub issues]:::out
 
-    AV & FRED & FF & EDGAR & FV & EW & UW --> JOBS
+    AV & FRED & FF & EDGAR & FV & UW --> JOBS
     SCH --> JOBS
     JOBS -- upsert --> SQL
     JOBS -- parquet / reports --> GCS
@@ -500,11 +499,11 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/backtest/equity/{ticker}` | [`platform/api/routers/backtest.py:258`](../../../platform/api/routers/backtest.py#L258) | Return equity curve from the most recent equity CSV for the given ticker, |
 | `POST` | `/api/backtest/replay-trades` | [`platform/api/routers/backtest.py:517`](../../../platform/api/routers/backtest.py#L517) | Score the signed-in user's labeled journal trades against actual bars |
 | `GET` | `/api/backtest/results/{ticker}` | [`platform/api/routers/backtest.py:189`](../../../platform/api/routers/backtest.py#L189) | Return trades from the most recent backtest CSV for the given ticker, |
-| `GET` | `/api/catalysts/asof/{ticker}` | [`platform/api/routers/catalysts.py:651`](../../../platform/api/routers/catalysts.py#L651) | Unified point-in-time catalyst view for a ticker. |
-| `GET` | `/api/catalysts/events` | [`platform/api/routers/catalysts.py:163`](../../../platform/api/routers/catalysts.py#L163) | Get catalyst events grouped by date. |
-| `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:652`](../../../platform/api/routers/catalysts.py#L652) | Unified point-in-time catalyst view for a ticker. |
-| `GET` | `/api/catalysts/ticker/{ticker}` | [`platform/api/routers/catalysts.py:614`](../../../platform/api/routers/catalysts.py#L614) | Get all catalyst events for a specific ticker. |
-| `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:821`](../../../platform/api/routers/catalysts.py#L821) | Return available catalyst types and WSH upgrade info. |
+| `GET` | `/api/catalysts/asof/{ticker}` | [`platform/api/routers/catalysts.py:685`](../../../platform/api/routers/catalysts.py#L685) | Unified point-in-time catalyst view for a ticker. |
+| `GET` | `/api/catalysts/events` | [`platform/api/routers/catalysts.py:194`](../../../platform/api/routers/catalysts.py#L194) | Get catalyst events grouped by date. |
+| `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:686`](../../../platform/api/routers/catalysts.py#L686) | Unified point-in-time catalyst view for a ticker. |
+| `GET` | `/api/catalysts/ticker/{ticker}` | [`platform/api/routers/catalysts.py:646`](../../../platform/api/routers/catalysts.py#L646) | Get all catalyst events for a specific ticker. |
+| `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:855`](../../../platform/api/routers/catalysts.py#L855) | Return available catalyst types and WSH upgrade info. |
 | `GET` | `/api/config/firebase` | [`platform/api/routers/config.py:47`](../../../platform/api/routers/config.py#L47) | Public runtime auth config for the frontend bootstrap. |
 | `GET` | `/api/config/indicators` | [`platform/api/routers/config.py:77`](../../../platform/api/routers/config.py#L77) | Return indicator periods, signal thresholds, and zone labels. |
 | `GET` | `/api/config/market-hours` | [`platform/api/routers/config.py:145`](../../../platform/api/routers/config.py#L145) | Return US equity market session windows, holidays and early closes. |
@@ -705,7 +704,7 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 | 21:00 | `av-options-daily` (Mon–Fri), `av-intraday-nightly` (Mon–Sat, `--symbol=ALL --force`), `premarket-brief-sunday` (Sun: week-ahead mode) |
 | 21:15 | `premarket-playbook-resolver-daily` |
 | 22:00 / 22:30 | `options-daily-features`, `gamma-levels-daily` (→ `p2-build-gamma-levels`) |
-| 23:00 / 23:15 / 23:35 | `fetch-market-data-daily` + `evaluate-ew-strikes-daily`, `options-daily-greeks`, `strat-engine-daily` |
+| 23:00 / 23:15 / 23:35 | `fetch-market-data-daily`, `options-daily-greeks`, `strat-engine-daily` |
 | Sat 09:00 / Sun 10:00 | `weekend-review-weekly`, `audit-walkforward-weekly` / `audit-brief-bias-weekly` |
 | hourly | `reconcile-failure-notifier-hourly` |
 | monthly / quarterly | `av-intraday-monthly` (1st 21:00), `av-options-monthly` (1st 05:00), `calibrate-thresholds-quarterly` (1st of Jan/Apr/Jul/Oct 02:00, never fired yet) |
@@ -729,7 +728,7 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 | ForexFactory | `ff_calendar_thisweek.json` (event times) | none | falls back to FRED-only events (no times) |
 | SEC EDGAR | `company_tickers.json`, `submissions/CIK*.json` → `sec_filings` | `sec-user-agent` | 429/5xx retried with backoff and a per-run budget (#947) |
 | FinViz | peers and ticker news (`lib/ticker_info.py`, `gcp/fetchers/fetch_rss_news.py`) | none (HTML) | brittle; `fetch_rss_news.py` has no deploy block and is not scheduled |
-| Earnings Whispers | strategy and strike picks in `earnings_calendar` | `ew-user`/`ew-pass` cookie flow; four historical exports are committed under `archive/google-apps-script/data/` (#998) | falls back to AlphaVantage + Unusual Whales |
+| Earnings Whispers (retired) | Historical strategy/strike records only; no current fetching or scoring | Secret resources retained; four historical exports remain under `archive/google-apps-script/data/` (#998) | Not an active provider or fallback |
 | Unusual Whales | earnings calendar with market-cap ranking | API key | falls back to AlphaVantage |
 | Benzinga | catalyst calendar for the catalysts router | `benzinga-api-key` | page degrades; not a scheduled fetcher |
 | Vertex AI | Gemini for `brief_explanations` (`BRIEF_LLM_MODEL`, default `gemini-3.1-flash-lite`, [`gcp/brief_explanations.py:86`](../../../gcp/brief_explanations.py#L86)) and the six insight roles in `model_routing`; `text-embedding-005` for `journal_entries.embedding` | ADC via `trading-runner@` / `trading-platform-svc@` | `BRIEF_LLM_DISABLE=1` bypasses the brief LLM; reflection memory is skipped without embeddings |
@@ -743,7 +742,7 @@ All entries run in `America/New_York`. `gcp/deploy.sh` declares 65 entries <!-- 
 1. **21:00** `av-options-daily` → `fetch-av-options-backfill` (`fetch_av_historical_options --tickers SPY IWM QQQ SPX --from-latest`) appends the day's option chain to `etf_options_snapshots`; `av-intraday-nightly` pulls the prior session's 1-minute bars into `market_data_intraday`.
 2. **21:15** `premarket-playbook-resolver` walks the day's RTH bars for every `(analysis_date, ticker)` in `premarket_analysis` and records trigger/target/stop outcomes.
 3. **22:00** `build-options-daily-features` materializes `options_daily_features` from the snapshots; **22:30** `p2-build-gamma-levels` (`deploy_p2_build_gamma_levels`, codified from the live job on 2026-09-07) writes `gamma_levels_eod`.
-4. **23:00** `fetch-market-data` upserts daily OHLCV + indicators into `market_data_daily` (and the current month's intraday), writes parquet to GCS; `evaluate-ew-strikes` scores the Earnings Whispers picks into `earnings_calendar.ew_*`.
+4. **23:00** `fetch-market-data` upserts daily OHLCV + indicators into `market_data_daily` (and the current month's intraday), writes parquet to GCS. Historical `earnings_calendar.ew_*` values are retained; the retired scorer no longer updates them.
 5. **23:15** `build-options-greeks` writes `etf_options_daily_greeks`; **23:35** `strat-engine-daily` runs `strat_data_builder` to refresh `strat_features_*`; **02:00** `strat-enrich-daily` runs `strat_enrich_levels --mode=backfill-all`.
 6. **01:00–03:00** `historical-signals-watchlist`, `signal-quality-report-nightly`, `signal-quality-alarm`, `backfill-daily-indicators`, `options-retention`.
 
@@ -887,6 +886,8 @@ Backup and restore procedures are in [CLAUDE.md → Backup and disaster recovery
 
 ## 15. Live-vs-repo reconciliation
 
+The generated block below preserves its dated 2026-09-07 observation. Its EW job/scheduler entries are historical evidence, not current run instructions or proof that those resources still exist. Current source rejects the retired deployment target; release verification is recorded separately.
+
 <!-- inventory:reconcile:start -->
 Live read 2026-09-07T04:35:16Z. Repo declares 67 jobs / 67 schedulers; live has 76 / 65. <!-- verify-docs-ok: repo-declared and live counts side by side -->
 
@@ -944,7 +945,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) | Self-healing backfill of derived indicator columns in market_data_daily. | `backfill-daily-indicators` |
 | [`gcp/fetchers/build_options_daily_features.py`](../../../gcp/fetchers/build_options_daily_features.py) | Populate the materialized `options_daily_features` table (perf fix). | `build-options-daily-features` |
 | [`gcp/fetchers/compute_earnings_reactions.py`](../../../gcp/fetchers/compute_earnings_reactions.py) | Cloud Run Job: Populate earnings_reactions from earnings_history ⨝ market_data_daily. | `compute-earnings-reactions` |
-| [`gcp/fetchers/evaluate_ew_strikes.py`](../../../gcp/fetchers/evaluate_ew_strikes.py) | EW strike verdict evaluator — runs after market close to score how | — |
+| [`gcp/fetchers/evaluate_ew_strikes.py`](../../../gcp/fetchers/evaluate_ew_strikes.py) | Compatibility NYSE calendar shim after scorer retirement. | — |
 | [`gcp/fetchers/export_intraday_bars.py`](../../../gcp/fetchers/export_intraday_bars.py) | A durable bucket file of the SPY, QQQ and IWM 1-min bars, one Parquet | — |
 | [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) | Cloud Run Job: Fetch AlphaVantage 1-min historical intraday → Cloud SQL. | `fetch-alphavantage-intraday`, `intraday-bulk-backfill` |
 | [`gcp/fetchers/fetch_av_earnings_options_backfill.py`](../../../gcp/fetchers/fetch_av_earnings_options_backfill.py) | Cloud Run Job: backfill T-1 options snapshots for every earnings event. | `earnings-options-backfill` |

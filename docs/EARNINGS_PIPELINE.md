@@ -49,7 +49,6 @@ All scheduled jobs run via Cloud Scheduler against Cloud Run Jobs in `us-east1`.
 | Mon–Fri 19:15 | 23:15 | `daily-earnings-refresh-history` | `earnings_history` |
 | Mon–Fri 19:30 | 23:30 | `daily-earnings-refresh-reactions` | `earnings_reactions` |
 | **Mon–Fri 23:00** | **03:00 next-day** | **`fetch-market-data-daily`** | `market_data_daily` (OHLCV + 30+ indicators for SPY/IWM/QQQ/SPX + watchlist + earnings union) |
-| Mon–Fri 23:00 | 03:00 next-day | `evaluate-ew-strikes-daily` | `earnings_calendar.ew_strike_verdict` |
 | Tue–Sat 01:30 | 05:30 | `signal-quality-report-nightly` | `signal_metrics` (after `historical-signals-watchlist-daily` at 01:00, #1166) |
 | Sun 19:00 | 23:00 | `weekly-earnings-refresh-calendar` | `earnings_calendar` |
 | **Sun 19:15** | **23:15** | **`weekly-earnings-refresh-history`** | `earnings_history` (10y of quarterly EPS for tickers reporting in next N days) |
@@ -275,7 +274,7 @@ gcloud run jobs execute backfill-ticker \
 
 ## Operational notes
 
-- **The 23:00 ET window is contested.** Three jobs fire at the same minute (`fetch-market-data`, `compute-earnings-reactions`, `evaluate-ew-strikes`). They share Cloud SQL but talk to different tables. If any of them needs more time, stagger by 5 min — Cloud Scheduler precision is per-minute.
+- **The retired EW scorer is not part of the current nightly pipeline.** Do not schedule or restart it to refresh historical `ew_*` fields. Check the current deployment schedule before diagnosing contention among the retained jobs; historical same-minute job counts are not current scheduling evidence.
 - **AV rate limiting is the binding constraint.** The May 4 sizing assumed 150 RPM before the May 22 plan upgrade. Separate 150-RPM process throttles do not enforce an account-wide budget. Admit requests through the existing shared guard and measure whole-cycle capacity before changing universe size or pacing; the purchased 600-RPM ceiling is not unused headroom.
 - **`has_options=true` filter depends on UW running its fetch first.** EW, the other writer of the flag, was retired on 2026-10-31 and writes no new rows (its historical rows are retained). Mitigation for a missed UW run: watchlist union (existing) + 7-day-window (the next run fills it).
 - **Smoke test for any ticker change:** trigger `backfill-ticker` Cloud Run Job with `BACKFILL_TICKER=<TICKER>,BACKFILL_HISTORY_DAYS=400`, then dispatch `db-query.yml` with:
