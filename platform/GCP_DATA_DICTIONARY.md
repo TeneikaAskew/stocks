@@ -106,7 +106,7 @@ Consequences for the data flows below:
 
 ## 1. Per-page mapping
 
-12 pages, routed in `platform/src/App.tsx`. "Job(s) that populate the data" = the Cloud Run
+15 app pages plus the public landing page at `/` and `/auth/action`, routed in [solyra `src/App.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/App.tsx) (read 2026-11-24; the frontend left this repo in #957). "Job(s) that populate the data" = the Cloud Run
 Job(s) that write the Cloud SQL tables / GCS objects the page reads (the page itself never
 writes them, except Journal).
 
