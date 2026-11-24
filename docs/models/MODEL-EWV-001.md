@@ -1,6 +1,6 @@
 # MODEL-EWV-001 — Earnings Whispers strike verdicts
 
-**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-24 · **Owner:** TBD
 
 **Code:** `gcp/fetchers/evaluate_ew_strikes.py` ·
 **Writes:** none; historical `earnings_calendar.ew_*` columns retained ·
@@ -203,10 +203,10 @@ symbols and one day without bars exited 1 on both attempts and opened #1180.
   `Error Message` as an unknown symbol. The code before this cleared every verdict on any empty
   call.
 - **Share classes are sent dashed.** Earnings Whispers writes `BF.B` and `MOG.A`; AlphaVantage
-  lists `BF-B` and `MOG-A` (SYMBOL_SEARCH, 2026-09-26). `av_listed_symbol` sends that form, and
-  only this job uses it. The daily fetcher still sends the dotted form, which AlphaVantage
-  refuses, so it stores no bars for any share class
-  ([#1188](https://github.com/TeneikaAskew/stocks/issues/1188)).
+  lists `BF-B` and `MOG-A` (SYMBOL_SEARCH, 2026-09-26). `av_listed_symbol` sends that form. The daily fetcher
+  sent the dotted form, which AlphaVantage refuses, until [#1207](https://github.com/TeneikaAskew/stocks/pull/1207)
+  (merged 2026-09-28) made every price call in `gcp/fetchers/fetch_market_data.py` send the listed form
+  ([#1188](https://github.com/TeneikaAskew/stocks/issues/1188), closed 2026-09-28).
 
 The job makes one vendor call per (ticker, session), paced by `lib/config.py`'s AlphaVantage
 plan limit. A call measured 1.1 to 1.4 s on 2026-09-25 and 26, most of it spent downloading a month

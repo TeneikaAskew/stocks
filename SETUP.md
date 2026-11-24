@@ -1,6 +1,6 @@
 # Setup: Workload Identity Federation for the deploy and verify workflows
 
-**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-24 · **Owner:** TBD
 
 One-time setup of the Workload Identity Federation (WIF) trust that `.github/workflows/deploy-staging.yml` and `.github/workflows/verify-docs-against-live.yml` use to reach GCP without a long-lived JSON key. The monthly documentation refresh this file was first written for was retired on 2026-11-10; its Vertex AI, Gemini and billing-export steps are gone, and what remains is the identity both workflows still share.
 

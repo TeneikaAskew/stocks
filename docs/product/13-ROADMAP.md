@@ -1,6 +1,6 @@
 # Dependency-Driven Roadmap
 
-**Last reviewed:** 2026-09-14 · **Last scanned:** 2026-11-03 · **Owner:** TBD · Dates, releases and owners are **TBD**. Status is planning
+**Last reviewed:** 2026-09-14 · **Last scanned:** 2026-11-24 · **Owner:** TBD · Dates, releases and owners are **TBD**. Status is planning
 status, never a production claim.
 
 Sequenced by **dependency**, not severity: a CRITICAL issue whose fix cannot be validated
@@ -48,7 +48,7 @@ cannot establish a baseline or promotion result.
 |---|---|---|---|---|---|---|
 | **0** | Baseline & governance | all | catalog completeness; evidence tags; every open issue mapped | **In progress** — this plan | — | Traceability is complete and maintained; REQ-GOV-001 enforced by branch protection |
 | **1** | Correctness foundation | FEAT-DATA-001, FEAT-SIGNAL-001, FEAT-AUTH-001, FEAT-STRAT-001, FEAT-IND-001 | explicit data contracts; fail-closed identity; shared clock | Planned | [#830](https://github.com/TeneikaAskew/stocks/issues/830) [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#908](https://github.com/TeneikaAskew/stocks/issues/908) [#866](https://github.com/TeneikaAskew/stocks/issues/866) | No decision path silently substitutes empty data; no deployment is fail-open |
-| **2** | Replay & evaluation trust | FEAT-REPLAY-001, FEAT-REPORT-001 | Phase 1 clock and provenance | In progress — the **provenance half is done** (#820, #1095: every API-served table now labels replay/backfill rows and the live surfaces filter them); the **as-of-leakage half is not** | [#824](https://github.com/TeneikaAskew/stocks/issues/824) [#823](https://github.com/TeneikaAskew/stocks/issues/823) [#822](https://github.com/TeneikaAskew/stocks/issues/822) [#821](https://github.com/TeneikaAskew/stocks/issues/821) [#819](https://github.com/TeneikaAskew/stocks/issues/819) | Point-in-time-safe replay; leaked artifacts quarantined and rerun; live/replay parity fixtures pass |
+| **2** | Replay & evaluation trust | FEAT-REPLAY-001, FEAT-REPORT-001 | Phase 1 clock and provenance | In progress — the **provenance half is done** (#820, #1095: every API-served table now labels replay/backfill rows and the live surfaces filter them); the **as-of-leakage half is not** | [#824](https://github.com/TeneikaAskew/stocks/issues/824) [#821](https://github.com/TeneikaAskew/stocks/issues/821) | Point-in-time-safe replay; leaked artifacts quarantined and rerun; live/replay parity fixtures pass |
 | **3** | Core product reliability | FEAT-MARKET-001, FEAT-LIVE-001, FEAT-PLAYBOOK-001, FEAT-OPTION-001, FEAT-ALERT-001 | Phases 1–2 plus freshness ownership | Planned | [#861](https://github.com/TeneikaAskew/stocks/issues/861) [#826](https://github.com/TeneikaAskew/stocks/issues/826) [#825](https://github.com/TeneikaAskew/stocks/issues/825) [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#812](https://github.com/TeneikaAskew/stocks/issues/812) | A dependable plan-to-alert workflow with measured freshness and explicit unavailability |
 | **4** | Model validation | FEAT-MODEL-001, FEAT-INSIGHT-001 | valid replay and evaluation from Phase 2 | Planned | [#817](https://github.com/TeneikaAskew/stocks/issues/817) [#813](https://github.com/TeneikaAskew/stocks/issues/813) [#910](https://github.com/TeneikaAskew/stocks/issues/910) [#909](https://github.com/TeneikaAskew/stocks/issues/909) [#888](https://github.com/TeneikaAskew/stocks/issues/888) [#875](https://github.com/TeneikaAskew/stocks/issues/875) | Every model is promoted, paused or retired against REQ-MODEL-001..003 with shadow evidence |
 | **5** | Product UX completion | FEAT-UI-001, FEAT-JOURNAL-001, FEAT-SETTINGS-001, FEAT-CHART-001, FEAT-CATALYST-001 | reliable APIs and ownership | Planned | [#722](https://github.com/TeneikaAskew/stocks/issues/722) [#717](https://github.com/TeneikaAskew/stocks/issues/717) [#716](https://github.com/TeneikaAskew/stocks/issues/716) [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) | Every screen satisfies REQ-UX-001; ownership tested; E2E and a11y coverage in CI |
@@ -67,16 +67,16 @@ These two carry the dependency load; their issue sets are listed completely rath
 | [#926](https://github.com/TeneikaAskew/stocks/issues/926) | P0 | [P0][Data Loader] Remove the second silent empty-data swallow |
 | [#925](https://github.com/TeneikaAskew/stocks/issues/925) | P0 | [P0][Data Access] Stop legacy database query failures from becoming empty data |
 | [#908](https://github.com/TeneikaAskew/stocks/issues/908) | P0 | [P0][Levels] Reprice level outcomes with executable gap, spread, and latency semantics |
-| [#866](https://github.com/TeneikaAskew/stocks/issues/866) | P0 | [P0][Levels] Effective PDH/PDL mother-bar walk-back is off by one in premarket mode |
+| ~~[#866](https://github.com/TeneikaAskew/stocks/issues/866)~~ | P0 | ~~[P0][Levels] Effective PDH/PDL mother-bar walk-back is off by one in premarket mode~~ — closed 2026-11-11, fixed by #1753 (e851aef6) |
 | [#863](https://github.com/TeneikaAskew/stocks/issues/863) | HIGH | [audit] S2 + S4 — earnings_options_strategy_winners posted to Discord at 99 days old; signal_metrics rolling classification |
-| [#862](https://github.com/TeneikaAskew/stocks/issues/862) | HIGH | [audit] S3 — exit_config_overrides: 113 days old, on the live fire path, guard trips ~2026-11-04 |
+| ~~[#862](https://github.com/TeneikaAskew/stocks/issues/862)~~ | HIGH | ~~[audit] S3 — exit_config_overrides: 113 days old, on the live fire path, guard trips ~2026-11-04~~ — closed 2026-11-10 via the override lifecycle spec #1711 (4e5efded) |
 | [#850](https://github.com/TeneikaAskew/stocks/issues/850) | HIGH | [audit] K4 + K5 — ADMIN_TOKEN, EW_USER/EW_PASS passed via --set-env-vars instead of --set-secrets |
 | [#828](https://github.com/TeneikaAskew/stocks/issues/828) | HIGH | [audit] H2 — Partially-remediated fallback in gcp/signal_monitor.py:433-513 |
 | [#927](https://github.com/TeneikaAskew/stocks/issues/927) | P1 | [P1][Rates] Do not silently price Greeks with hard-coded rates |
 | [#914](https://github.com/TeneikaAskew/stocks/issues/914) | P1 | [P1][Calendar] Centralize exchange sessions, holidays, half-days, and DST |
 | [#913](https://github.com/TeneikaAskew/stocks/issues/913) | P1 | [P1][Data] Enforce a raw-versus-adjusted corporate-action policy |
 | [#911](https://github.com/TeneikaAskew/stocks/issues/911) | P1 | [P1][Security] Fail closed on application authentication outside local development |
-| [#907](https://github.com/TeneikaAskew/stocks/issues/907) | P1 | [P1][Levels] Remove legacy positional compute_previous_levels fallback |
+| ~~[#907](https://github.com/TeneikaAskew/stocks/issues/907)~~ | P1 | ~~[P1][Levels] Remove legacy positional compute_previous_levels fallback~~ — closed 2026-11-11, fixed by #1753 (e851aef6) |
 | [#894](https://github.com/TeneikaAskew/stocks/issues/894) | P1 | [P1][Indicators] Exclude premarket bars from RTH VWAP |
 | [#892](https://github.com/TeneikaAskew/stocks/issues/892) | P1 | [P1][Indicators] Enforce ATR warm-up and unit contracts |
 | [#870](https://github.com/TeneikaAskew/stocks/issues/870) | P1 | [P1][Indicators] RSI warm-up fabrication causes live/resolver exit divergence |
@@ -86,12 +86,12 @@ These two carry the dependency load; their issue sets are listed completely rath
 | Issue | Sev | Title |
 |---|---|---|
 | [#824](https://github.com/TeneikaAskew/stocks/issues/824) | CRITICAL | [audit] R7 — scripts/backfill_and_replay.py re-implements the daily fetcher with a divergent indicator map |
-| [#823](https://github.com/TeneikaAskew/stocks/issues/823) | CRITICAL | [audit] R6 — As-of leakage: refresh_level_map builds level maps from today's daily bars |
-| [#822](https://github.com/TeneikaAskew/stocks/issues/822) | CRITICAL | [audit] R5 — As-of leakage: summarize_backtest_metrics reads the as-of day's completed bar |
+| ~~[#823](https://github.com/TeneikaAskew/stocks/issues/823)~~ | CRITICAL | ~~[audit] R6 — As-of leakage: refresh_level_map builds level maps from today's daily bars~~ — closed 2026-11-11, fixed by #1022 (3cb3808c) |
+| ~~[#822](https://github.com/TeneikaAskew/stocks/issues/822)~~ | CRITICAL | ~~[audit] R5 — As-of leakage: summarize_backtest_metrics reads the as-of day's completed bar~~ — closed 2026-11-11, fixed by #1005 (7f59be53) |
 | [#821](https://github.com/TeneikaAskew/stocks/issues/821) | CRITICAL | [audit] R4 — scripts/compare_tier_fires.py is a throwaway harness whose numbers gated a calibration PR |
 | ~~[#820](https://github.com/TeneikaAskew/stocks/issues/820)~~ | CRITICAL | ~~[audit] R3 — scripts/backfill_signals.py silently scores zero, into production signal_alerts~~ — **DONE 2026-09-14**: script deleted, 844 simulated rows marked `run_kind='backfill'` |
 | ~~[#1095](https://github.com/TeneikaAskew/stocks/issues/1095)~~ | CRITICAL | ~~Provenance sweep — three more API-served tables could not distinguish backfill from live~~ — **DONE 2026-09-14** via [#1098](https://github.com/TeneikaAskew/stocks/pull/1098); 1,553,629 + 86 + 135 rows labelled, writer/reader guards in CI |
-| [#819](https://github.com/TeneikaAskew/stocks/issues/819) | CRITICAL | [audit] R2 — ORB session window applied against a UTC index in replay (the 5/6 V1 bug, now in production code) |
+| ~~[#819](https://github.com/TeneikaAskew/stocks/issues/819)~~ | CRITICAL | ~~[audit] R2 — ORB session window applied against a UTC index in replay (the 5/6 V1 bug, now in production code)~~ — closed 2026-11-11, fixed by #1005 (7f59be53) |
 | [#814](https://github.com/TeneikaAskew/stocks/issues/814) | CRITICAL | [audit] T3 — Backtest signals and fills use the same bar's close; zero slippage/commission |
 | [#906](https://github.com/TeneikaAskew/stocks/issues/906) | P0 | [P0][Replay] Quarantine and rerun pre-PR-135 future-leaked artifacts |
 | [#898](https://github.com/TeneikaAskew/stocks/issues/898) | P0 | [P0][Replay] Apply RTH filtering regardless of persistence mode |
