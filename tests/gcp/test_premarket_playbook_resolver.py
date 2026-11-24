@@ -669,8 +669,8 @@ def test_resolve_one_sets_and_binds_the_new_outcome_columns(monkeypatch):
     assert bound['puts_eod_pnl_pct'] is None
     assert bound['puts_eod_pnl_dollar'] is None
     assert bound['puts_trigger_hit_ts'] == pd.Timestamp(_ts(0))
-    assert mod.RESOLVER_VERSION == '2026-11-15.v4'
-    assert bound['outcome_resolver_version'] == '2026-11-15.v4'
+    assert mod.RESOLVER_VERSION == '2026-11-17.v5'
+    assert bound['outcome_resolver_version'] == '2026-11-17.v5'
     assert bound['d'] == '2026-05-06' and bound['t'] == 'SPY'
 
 
@@ -989,7 +989,11 @@ class TestPlanInputs:
 
 
 def _plan_set_and_bound(engine):
-    [(sql, bound)] = engine.conn.calls
+    # The premarket_analysis UPDATE is the first statement; a resolved trade
+    # is followed by its plan_excursions write (target hit rates spec).
+    (sql, bound), *rest = engine.conn.calls
+    assert sql.startswith('UPDATE premarket_analysis SET ')
+    assert all('plan_excursions' in later for later, _ in rest) and len(rest) <= 1
     set_list = sql.split(' SET ', 1)[1].split(' WHERE ', 1)[0]
     return set_list, bound
 
@@ -1206,6 +1210,389 @@ def test_a_half_day_close_leg_books_the_last_bar_before_the_close(monkeypatch):
     assert bound['calls_eod_pnl_pct'] == pytest.approx(0.8)
 
 
+# ─── Target hit rates spec (2026-11-16), Design 3: the excursion ───────────
+
+from gcp.premarket_playbook_resolver import (  # noqa: E402
+    ExcursionResult, plan_excursion, trade_of_day,
+)
+
+
+def _puts_plan(**kw) -> PlanInputs:
+    base = dict(trigger_price=100.0, stop_price=101.0, targets=(99.0, 98.0, 97.0),
+                legs=3, cutoff_minutes=CUTOFF_SEEDED, target_status='ok')
+    base.update(kw)
+    return PlanInputs(**base)
+
+
+def _calls_plan(**kw) -> PlanInputs:
+    return _plan(**{'cutoff_minutes': CUTOFF_SEEDED, **kw})
+
+
+def _puts_entered_at_0931(*later: dict) -> pd.DataFrame:
+    """Opens above the 100.00 puts trigger and crosses it in the 09:31 bar."""
+    return _bars([
+        _bar(_ts(0), 100.50, 100.60, 100.20, 100.30),
+        _bar(_ts(1), 100.30, 100.40, 99.80, 99.90),
+        *later,
+    ])
+
+
+def _gap_fill_calls() -> pd.DataFrame:
+    """done_when[2]'s gap fixture: trigger 100, stop 99, the cross bar opens
+    at 102 (fill 102.00) and a later high is 102.90."""
+    return _bars([
+        _bar(_ts(0), 99.50, 99.80, 99.40, 99.70),
+        _bar(_ts(10), 102.00, 103.20, 102.00, 102.60),
+        _bar(_ts(11), 102.60, 102.90, 102.10, 102.50),
+        _bar(_ts(200), 102.50, 102.80, 102.20, 102.40),
+        _bar(_ts(389), 102.40, 102.70, 102.30, 102.50),
+    ])
+
+
+# (direction, plan, bars, excursion_r, excursion_held5_r) on hand-built days.
+EXCURSION_FIXTURES = {
+    'calls_rung_only_on_the_fill_bar': (
+        'call', _calls_plan(), _bars([
+            _bar(_ts(0), 99.50, 99.80, 99.40, 99.70),
+            _bar(_ts(1), 99.70, 101.50, 99.60, 100.10),     # fill bar touches 101
+            _bar(_ts(2), 100.10, 100.40, 99.90, 100.20),
+            _bar(_ts(389), 100.20, 100.30, 100.00, 100.10),
+        ]), 0.40, None),
+    'calls_stop_and_rung_on_one_bar': (
+        'call', _calls_plan(), _entered_at_0931(
+            _bar(_ts(2), 100.10, 100.50, 100.00, 100.30),
+            _bar(_ts(3), 100.30, 101.20, 98.90, 99.00),     # stop and 101 together
+            _bar(_ts(389), 99.00, 102.50, 98.80, 102.00),
+        ), 0.50, None),
+    'calls_nothing_between_fill_and_stop': (
+        'call', _calls_plan(), _entered_at_0931(
+            _bar(_ts(2), 100.00, 101.50, 98.90, 99.00),
+            _bar(_ts(389), 99.00, 103.50, 98.80, 103.00),
+        ), None, None),
+    'calls_five_closes_ending_on_the_stop_bar': (
+        'call', _calls_plan(), _entered_at_0931(
+            _bar(_ts(2), 100.10, 101.20, 100.00, 101.10),
+            _bar(_ts(3), 101.10, 101.30, 101.00, 101.10),
+            _bar(_ts(4), 101.10, 101.30, 101.00, 101.10),
+            _bar(_ts(5), 101.10, 101.30, 101.00, 101.10),
+            _bar(_ts(6), 101.10, 101.20, 98.90, 101.10),    # stop bar, 5th close
+            _bar(_ts(389), 99.00, 99.20, 98.80, 99.10),
+        ), 1.30, None),
+    'calls_five_closes_held': (
+        'call', _calls_plan(), _entered_at_0931(
+            _bar(_ts(2), 100.10, 101.20, 100.00, 101.10),
+            _bar(_ts(3), 101.10, 101.30, 101.00, 101.20),
+            _bar(_ts(4), 101.10, 101.30, 101.00, 101.30),
+            _bar(_ts(5), 101.10, 101.40, 101.00, 101.15),
+            _bar(_ts(6), 101.10, 101.30, 101.00, 101.25),
+            _bar(_ts(389), 101.20, 101.30, 101.00, 101.20),
+        ), 1.40, 1.15),
+    'calls_gap_fill': ('call', _calls_plan(), _gap_fill_calls(), 2.90, None),
+    'calls_t1_t2_then_the_close': (
+        'call', _calls_plan(), _entered_at_0931(
+            _bar(_ts(5), 100.40, 101.10, 100.30, 101.00),
+            _bar(_ts(9), 101.00, 102.20, 100.90, 102.10),
+            _bar(_ts(389), 102.30, 102.60, 102.20, 102.50),
+        ), 2.60, None),
+    'puts_t1_then_the_stop': (
+        'put', _puts_plan(), _puts_entered_at_0931(
+            _bar(_ts(5), 99.60, 99.70, 98.90, 99.00),
+            _bar(_ts(9), 99.00, 101.10, 98.80, 101.00),     # stop and 98.80 together
+            _bar(_ts(389), 101.00, 101.20, 96.00, 96.50),
+        ), 1.10, None),
+    'puts_stop_and_rung_on_one_bar': (
+        'put', _puts_plan(), _puts_entered_at_0931(
+            _bar(_ts(2), 99.90, 101.10, 98.90, 100.50),
+            _bar(_ts(389), 100.50, 100.60, 96.00, 96.50),
+        ), None, None),
+    'puts_gap_fill': (
+        'put', _puts_plan(), _bars([
+            _bar(_ts(0), 100.50, 100.60, 100.20, 100.30),
+            _bar(_ts(10), 98.00, 98.00, 96.80, 97.40),      # opens beyond the trigger
+            _bar(_ts(11), 97.40, 97.90, 97.10, 97.50),
+            _bar(_ts(389), 97.50, 97.80, 97.30, 97.60),
+        ]), 2.90, None),
+}
+
+
+class TestPlanExcursion:
+    @pytest.mark.parametrize('name', sorted(EXCURSION_FIXTURES))
+    def test_each_fixture_gives_its_excursion(self, name):
+        direction, plan, bars, want, want_held = EXCURSION_FIXTURES[name]
+        got = plan_excursion(direction, plan, bars)
+        assert got is not None
+        assert got.excursion_r == (pytest.approx(want) if want is not None else None)
+        assert got.excursion_held5_r == (pytest.approx(want_held) if want_held is not None else None)
+
+    def test_a_rung_touched_only_on_the_fill_bar_is_not_reached(self):
+        _, plan, bars, _, _ = EXCURSION_FIXTURES['calls_rung_only_on_the_fill_bar']
+        assert not plan_excursion('call', plan, bars).excursion_r >= 1.0
+
+    def test_a_bar_touching_the_stop_and_a_rung_counts_the_stop_first(self):
+        for name, rung in (('calls_stop_and_rung_on_one_bar', 1.0),
+                           ('puts_stop_and_rung_on_one_bar', 1.0)):
+            d, plan, bars, _, _ = EXCURSION_FIXTURES[name]
+            got = plan_excursion(d, plan, bars)
+            assert got.stop_i is not None
+            assert got.excursion_r is None or got.excursion_r < rung, name
+
+    def test_no_bar_between_the_fill_bar_and_the_stop_bar_gives_none(self):
+        _, plan, bars, _, _ = EXCURSION_FIXTURES['calls_nothing_between_fill_and_stop']
+        got = plan_excursion('call', plan, bars)
+        assert got.stop_i == got.fill_i + 1
+        assert got.excursion_r is None and got.excursion_held5_r is None
+
+    def test_five_closes_ending_on_the_stop_bar_are_not_held(self):
+        _, plan, bars, _, _ = EXCURSION_FIXTURES['calls_five_closes_ending_on_the_stop_bar']
+        got = plan_excursion('call', plan, bars)
+        assert got.excursion_held5_r is None
+        _, plan, bars, _, _ = EXCURSION_FIXTURES['calls_five_closes_held']
+        assert plan_excursion('call', plan, bars).excursion_held5_r == pytest.approx(1.15)
+
+    def test_a_cross_bar_that_opened_beyond_the_trigger_is_measured_from_the_trigger(self):
+        """done_when[2]'s gap fixture: excursion 2.9, rungs 101 and 102
+        reached (at or behind the 102.00 fill), 103 not."""
+        got = plan_excursion('call', _calls_plan(), _gap_fill_calls())
+        assert got.fill_price == pytest.approx(102.00)
+        assert got.excursion_r == pytest.approx(2.9)
+        reached = [p for p in (101.0, 102.0, 103.0) if got.excursion_r >= (p - 100.0) / 1.0]
+        assert reached == [101.0, 102.0]
+        got = plan_excursion('put', _puts_plan(), EXCURSION_FIXTURES['puts_gap_fill'][2])
+        assert got.fill_price == pytest.approx(98.00)
+        assert got.excursion_r == pytest.approx(2.9)
+
+    @pytest.mark.parametrize('name', sorted(EXCURSION_FIXTURES))
+    def test_a_rung_beyond_the_fill_is_reached_exactly_when_the_exit_walk_sells_there(self, name):
+        direction, plan, bars, _, _ = EXCURSION_FIXTURES[name]
+        got = plan_excursion(direction, plan, bars)
+        out = resolve_plan(direction, plan, bars)
+        sign = 1 if direction == 'call' else -1
+        risk = abs(plan.trigger_price - plan.stop_price)
+        for k, t in enumerate(plan.targets):
+            if sign * (t - out.fill_price) <= 0:
+                continue                         # at or behind the fill: held by resolve_plan
+            d = sign * (t - plan.trigger_price) / risk
+            reached = got.excursion_r is not None and got.excursion_r >= d - 1e-9
+            assert reached == (out.exit.split(',')[k] == f't{k + 1}'), (name, t)
+
+    # r2, done_when[2]: the same distances in the basis's ATR.
+    @staticmethod
+    def _atr_calls():
+        """Trigger 100.00, stop 99.00: the 09:31 bar fills at the trigger, a
+        later high is 103.00, and a still later bar touches the stop."""
+        return _entered_at_0931(
+            _bar(_ts(5), 100.10, 103.00, 100.00, 102.50),
+            _bar(_ts(9), 102.50, 102.60, 98.90, 99.00),
+            _bar(_ts(389), 99.00, 99.20, 98.80, 99.10))
+
+    def test_a_call_three_stop_distances_out_is_one_and_a_half_atr(self):
+        got = plan_excursion('call', _calls_plan(), self._atr_calls(), 2.00)
+        assert got.stop_i is not None
+        assert got.excursion_r == pytest.approx(3.0)
+        assert got.excursion_atr == pytest.approx(1.5)
+        assert got.atr == pytest.approx(2.00)
+
+    def test_the_mirrored_put_gives_the_same(self):
+        bars = _puts_entered_at_0931(
+            _bar(_ts(5), 99.90, 100.00, 97.00, 97.50),
+            _bar(_ts(9), 97.50, 101.10, 97.40, 101.00),
+            _bar(_ts(389), 101.00, 101.20, 100.80, 100.90))
+        got = plan_excursion('put', _puts_plan(), bars, 2.00)
+        assert got.stop_i is not None
+        assert got.excursion_r == pytest.approx(3.0)
+        assert got.excursion_atr == pytest.approx(1.5)
+
+    def test_the_held_distance_in_atr_is_the_held_distance_over_the_atr(self):
+        _, plan, bars, _, _ = EXCURSION_FIXTURES['calls_five_closes_held']
+        got = plan_excursion('call', plan, bars, 2.00)
+        assert got.excursion_held5_atr == pytest.approx(got.excursion_held5_r * 1.0 / 2.00)
+
+    @pytest.mark.parametrize('atr', [None, 0.0, -1.0, float('nan')])
+    def test_no_usable_atr_gives_none_in_atr_and_the_stop_distances_unchanged(self, atr):
+        got = plan_excursion('call', _calls_plan(), self._atr_calls(), atr)
+        assert got.atr is None and got.excursion_atr is None and got.excursion_held5_atr is None
+        assert got.excursion_r == pytest.approx(3.0)
+        _, plan, bars, want, want_held = EXCURSION_FIXTURES['calls_five_closes_held']
+        got = plan_excursion('call', plan, bars, atr)
+        assert got.excursion_r == pytest.approx(want)
+        assert got.excursion_held5_r == pytest.approx(want_held)
+
+    def test_not_entered_or_no_valid_stop_gives_none(self):
+        bars = _bars([_bar(_ts(0), 100.05, 100.30, 99.90, 100.10),
+                      _bar(_ts(389), 100.10, 103.00, 100.00, 102.90)])
+        assert plan_excursion('call', _calls_plan(), bars) is None          # opened through
+        bars = _entered_at_0931(_bar(_ts(389), 100.10, 101.50, 100.00, 101.00))
+        assert plan_excursion('call', _calls_plan(stop_price=None), bars) is None
+        assert plan_excursion('call', _calls_plan(stop_price=100.5), bars) is None
+        assert plan_excursion('call', _calls_plan(cutoff_minutes=None), bars) is None
+        assert plan_excursion('call', _calls_plan(trigger_price=None), bars) is None
+        assert plan_excursion('call', _calls_plan(), bars.iloc[0:0]) is None
+
+
+class TestTradeOfDay:
+    @staticmethod
+    def _r(i):
+        return ExcursionResult(fill_i=i, fill_price=100.0, fill_ts=None, stop_i=None,
+                               stop_ts=None, excursion_r=1.0, excursion_held5_r=None)
+
+    def test_calls_only(self):
+        c = self._r(3)
+        assert trade_of_day(c, None) == ('calls', c)
+
+    def test_puts_only(self):
+        p = self._r(3)
+        assert trade_of_day(None, p) == ('puts', p)
+
+    def test_both_keeps_the_earlier_fill(self):
+        c, p = self._r(2), self._r(5)
+        assert trade_of_day(c, p) == ('calls', c)
+        assert trade_of_day(self._r(7), p) == ('puts', p)
+
+    def test_a_same_bar_tie_or_neither_gives_no_trade(self):
+        assert trade_of_day(self._r(4), self._r(4)) is None
+        assert trade_of_day(None, None) is None
+
+
+
+# ─── Target hit rates spec, Design 4: resolve_one writes the day's trade ──
+
+def _v3_row():
+    import json
+
+    from tests.lib.session_levels_helpers import d8_basis
+    return pd.DataFrame([{
+        'calls_trigger_price': 252.10, 'calls_stop_price': 248.20,
+        'calls_t1_price': 253.00, 'calls_t2_price': 275.00, 'calls_t3_price': 280.00,
+        'puts_trigger_price': 248.20, 'puts_stop_price': 252.10,
+        'puts_t1_price': 247.50, 'puts_t2_price': 247.00, 'puts_t3_price': 225.00,
+        'level_basis': json.dumps(d8_basis()), 'outcome_resolved_at': None,
+    }])
+
+
+_CALLS_TRADE_BARS = [
+    {'time': _ts(0), 'open': 251.00, 'high': 251.50, 'low': 250.80, 'close': 251.40},
+    {'time': _ts(1), 'open': 251.90, 'high': 252.50, 'low': 251.80, 'close': 252.40},
+    {'time': _ts(2), 'open': 260.00, 'high': 276.00, 'low': 259.00, 'close': 270.00},
+    {'time': _ts(389), 'open': 270.00, 'high': 271.00, 'low': 269.00, 'close': 270.00},
+]
+# Opens through the calls trigger (252.10) and never reaches the puts
+# trigger (248.20): no side enters, no trade.
+_NO_TRADE_BARS = [
+    {'time': _ts(0), 'open': 252.50, 'high': 253.00, 'low': 252.20, 'close': 252.80},
+    {'time': _ts(389), 'open': 252.80, 'high': 253.10, 'low': 252.30, 'close': 252.90},
+]
+
+
+def _resolve(monkeypatch, row, bars, force=False):
+    import gcp.premarket_playbook_resolver as mod
+
+    reads = iter([row, pd.DataFrame(bars)])
+    monkeypatch.setattr(mod.pd, 'read_sql', lambda *a, **k: next(reads))
+    engine = _RecordingEngine()
+    updates, reason = mod.resolve_one(_date(2026, 5, 6), 'tst', engine, force=force)
+    assert reason == 'resolved'
+    return updates, engine.conn.calls
+
+
+def test_resolve_one_upserts_the_day_s_trade_in_the_same_transaction(monkeypatch):
+    import gcp.premarket_playbook_resolver as mod
+    from lib.strat_levels import LEVEL_RULE_VERSION
+
+    _, calls = _resolve(monkeypatch, _v3_row(), _CALLS_TRADE_BARS)
+    assert len(calls) == 2
+    assert calls[0][0].startswith('UPDATE premarket_analysis SET ')
+    sql, bound = calls[1]
+    assert sql.startswith('INSERT INTO plan_excursions ')
+    assert 'ON CONFLICT (ticker, session_date, rule_version) DO UPDATE SET' in sql
+    assert "plan_excursions.source = 'history'" not in sql
+    assert (bound['t'], bound['d'], bound['v']) == ('TST', '2026-05-06', LEVEL_RULE_VERSION)
+    assert (bound['side'], bound['source'], bound['rv']) == ('calls', 'resolver', mod.RESOLVER_VERSION)
+    assert (bound['trigger'], bound['stop'], bound['fill']) == (252.10, 248.20, pytest.approx(252.10))
+    assert bound['fill_ts'] == pd.Timestamp(_ts(1)) and bound['stop_ts'] is None
+    assert bound['xr'] == pytest.approx((276.00 - 252.10) / 3.9)
+    assert bound['xh'] is None
+    # r2: the basis's own ATR (d8_basis: atr_14 14.0) and the same move in it.
+    assert bound['atr'] == pytest.approx(14.0)
+    assert bound['xa'] == pytest.approx((276.00 - 252.10) / 14.0)
+    assert bound['xha'] is None
+
+
+@pytest.mark.parametrize('version', ['feat-strat-001.v3', 'feat-strat-001.v4', 'feat-strat-001.v5'])
+def test_the_row_is_keyed_by_the_entry_rule_version(monkeypatch, version):
+    import json
+
+    from lib.strat_levels import entry_rule_version
+
+    row = _v3_row()
+    basis = json.loads(row.loc[0, 'level_basis'])
+    basis['rule_version'] = version
+    row.loc[0, 'level_basis'] = json.dumps(basis)
+    _, calls = _resolve(monkeypatch, row, _CALLS_TRADE_BARS)
+    assert calls[1][1]['v'] == entry_rule_version(version) == version
+
+
+def test_a_basis_with_no_entry_rule_version_writes_nothing(monkeypatch):
+    """entry_rule_version None (v2 today, or a later version that keeps no
+    trigger and stop rule) writes and deletes no plan_excursions row; the
+    premarket_analysis update is as before."""
+    import lib.strat_levels as levels
+    from lib.strat_levels import LEVEL_RULE_V2, entry_rule_version
+
+    assert entry_rule_version(LEVEL_RULE_V2) is None
+    monkeypatch.setattr(levels, 'entry_rule_version', lambda v: None)
+    _, calls = _resolve(monkeypatch, _v3_row(), _CALLS_TRADE_BARS)
+    assert len(calls) == 1 and calls[0][0].startswith('UPDATE premarket_analysis SET ')
+
+
+def test_a_forced_re_resolution_to_no_trade_deletes_the_day_s_row(monkeypatch):
+    from lib.strat_levels import LEVEL_RULE_VERSION
+
+    _, first = _resolve(monkeypatch, _v3_row(), _CALLS_TRADE_BARS)
+    assert first[1][0].startswith('INSERT INTO plan_excursions ')
+    row = _v3_row()
+    row.loc[0, 'outcome_resolved_at'] = pd.Timestamp('2026-05-06T21:00:00Z')
+    _, calls = _resolve(monkeypatch, row, _NO_TRADE_BARS, force=True)
+    assert len(calls) == 2
+    sql, bound = calls[1]
+    assert sql == ('DELETE FROM plan_excursions WHERE ticker = :t AND session_date = :d '
+                   'AND rule_version = :v')
+    assert bound == {'t': 'TST', 'd': '2026-05-06', 'v': LEVEL_RULE_VERSION}
+
+
+def test_a_basis_with_no_rule_version_writes_nothing(monkeypatch):
+    import json
+
+    row = _v3_row()
+    basis = json.loads(row.loc[0, 'level_basis'])
+    basis.pop('rule_version')
+    row.loc[0, 'level_basis'] = json.dumps(basis)
+    _, calls = _resolve(monkeypatch, row, _CALLS_TRADE_BARS)
+    assert len(calls) == 1 and calls[0][0].startswith('UPDATE premarket_analysis SET ')
+
+
+def test_a_history_write_never_replaces_a_resolver_row_and_deletes_only_its_own():
+    import gcp.premarket_playbook_resolver as mod
+
+    plans = {'calls': _calls_plan(), 'puts': _puts_plan()}
+    ex = ExcursionResult(fill_i=1, fill_price=100.0, fill_ts=_ts(1), stop_i=None,
+                         stop_ts=None, excursion_r=1.5, excursion_held5_r=1.2)
+    sql, bound = mod.excursion_statement('spy', '2025-10-22', 'feat-strat-001.v3',
+                                         ('calls', ex), plans, 'history')
+    assert sql.text.endswith("DO UPDATE SET side = EXCLUDED.side, trigger_price = EXCLUDED.trigger_price, "
+                             "stop_price = EXCLUDED.stop_price, fill_price = EXCLUDED.fill_price, "
+                             "fill_ts = EXCLUDED.fill_ts, stop_ts = EXCLUDED.stop_ts, "
+                             "atr = EXCLUDED.atr, excursion_r = EXCLUDED.excursion_r, "
+                             "excursion_held5_r = EXCLUDED.excursion_held5_r, "
+                             "excursion_atr = EXCLUDED.excursion_atr, "
+                             "excursion_held5_atr = EXCLUDED.excursion_held5_atr, "
+                             "source = EXCLUDED.source, resolver_version = EXCLUDED.resolver_version, "
+                             "written_at = EXCLUDED.written_at WHERE plan_excursions.source = 'history'")
+    assert bound['source'] == 'history' and bound['t'] == 'SPY'
+    sql, _ = mod.excursion_statement('spy', '2025-10-22', 'feat-strat-001.v3', None, plans, 'history')
+    assert sql.text.endswith("AND rule_version = :v AND source = 'history'")
+    assert mod.excursion_statement('spy', '2025-10-22', None, ('calls', ex), plans, 'history') is None
+
+
 # ── FEAT-PLAYBOOK-001 B8b: a v3 plan resolves as before the bump ────────
 
 @pytest.mark.parametrize('version', ['feat-strat-001.v3', 'feat-strat-001.v4',
@@ -1371,13 +1758,16 @@ def _table_row(d: _date, ticker: str, rule_version, *, outcome_resolved_at=None,
 class _ResolverTable:
     """premarket_analysis and the day's bars in memory, behind the four
     statements main() issues. An UPDATE premarket_analysis is applied to the
-    row its d and t name; any other statement fails the test."""
+    row its d and t name; the day's plan_excursions write (target hit rates
+    spec, Design 4) is kept apart in excursion_writes; any other statement
+    fails the test."""
 
     def __init__(self, rows: list, bars_for):
         self.rows = rows
         self.bars_for = bars_for
         self.statements = []
         self.writes = []
+        self.excursion_writes = []
         self.pending_answers = []
         table = self
 
@@ -1385,6 +1775,9 @@ class _ResolverTable:
             def execute(self, sql, params=None):
                 sql_text = getattr(sql, 'text', str(sql))
                 bound = dict(params or {})
+                if 'plan_excursions' in sql_text.split('WHERE')[0]:
+                    table.excursion_writes.append((sql_text, bound))
+                    return
                 table.statements.append((sql_text, bound))
                 if not sql_text.startswith('UPDATE premarket_analysis SET '):
                     pytest.fail(f'unexpected write: {sql_text[:80]}')

@@ -17,6 +17,7 @@ WATCHED = {'LEVEL_RULE_VERSION', 'LEVEL_RULE_V3', 'LEVEL_RULE_V4', 'PICK_RULE_VE
 # (file, enclosing function) -> why the site may hold the name.
 ALLOWED = {
     ('lib/strat_levels.py', 'is_current_pick_rule'): 'the helper, through PICK_RULE_VERSIONS',
+    ('lib/strat_levels.py', 'entry_rule_version'): 'the helper, through is_current_pick_rule',
     ('lib/movement_statement.py', '_fetch_reach_rates'): 'the reach population binds one version',
     ('lib/movement_statement.py', '_reach_rate_sql'): 'the reach population filters on one version',
 }
@@ -109,7 +110,7 @@ def test_only_the_helper_and_the_population_compare_the_version():
 # comparison, so the watched-name scan above is what allows them.
 
 LEVEL_RULE_NAMES = WATCHED | {'LEVEL_RULE_V2'}
-VERSION_HELPERS = {'rule_version_status', 'is_current_pick_rule'}
+VERSION_HELPERS = {'rule_version_status', 'is_current_pick_rule', 'entry_rule_version'}
 _LEGACY_CHECK = ("U9: a legacy check against LEVEL_RULE_V2 that keeps a v2 basis's own plan, "
                  "unchanged (spec Non-goals; U3)")
 

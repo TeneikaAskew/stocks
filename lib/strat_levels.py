@@ -1011,8 +1011,18 @@ POLICY_SEEDED_KEYS = (TARGET_SPACING_KEY, GAP_FILL_FLAG_KEY, ATR_RUNG_STEP_KEY,
 # target walk may use. Never a trigger, stop, gate target or ladder rung.
 PLAN_TARGET_LEVEL_TYPES_KEY = 'plan_target_level_types'
 PLAN_TARGET_LEVEL_TYPE_CHOICES = ('gap_high', 'gap_low')
+# FEAT-STRAT-001 target hit rates (r2 spec, Design 1). Policy-wide: the past
+# trades (plan_excursions) a target line's count is read from, the stored
+# measure, and the least trade count printed with a percent. Display only.
+TARGET_REACH_RATE_KEY = 'target_reach_rate'
+# measure -> the plan_excursions column a line's distance is read against.
+TARGET_REACH_MEASURE_COLUMNS = {
+    'touch_atr': 'excursion_atr', 'held_5m_atr': 'excursion_held5_atr',
+    'touch': 'excursion_r', 'held_5m': 'excursion_held5_r',
+}
+TARGET_REACH_MEASURES = tuple(TARGET_REACH_MEASURE_COLUMNS)
 POLICY_WIDE_KEYS = (EXIT_LEGS_KEY, ENTRY_CUTOFF_KEY, ATR_RUNG_ANCHORS_KEY,
-                    PLAN_TARGET_LEVEL_TYPES_KEY)
+                    PLAN_TARGET_LEVEL_TYPES_KEY, TARGET_REACH_RATE_KEY)
 
 
 def target_key(persona: str, k: int) -> str:
@@ -1401,11 +1411,45 @@ def policy_wide_param(key: str, pol: dict, ticker: str, atr_basis: str) -> Level
         # types are the extra.
         types = plan_target_level_types(extra)
         value = float(len(types)) if types is not None else None
+    elif key == TARGET_REACH_RATE_KEY:
+        # The value is the least trade count printed as a rate; the window
+        # (since, lookback_sessions) and the measure ride on the param.
+        if target_reach_policy_usable(pol.get('min_sample'), pol.get('lookback_sessions'), extra):
+            value = float(pol['min_sample'])
+        return LevelParam(
+            key=key, status=PARAM_OK if value is not None else 'input_unavailable',
+            value=value, ticker=ticker, effective_from=pol.get('effective_from'),
+            method_id=pol.get('method_id'), min_sample=pol.get('min_sample'),
+            lookback_sessions=pol.get('lookback_sessions'), atr_basis=atr_basis,
+            policy_effective_from=pol.get('effective_from'), source='policy', extra=extra)
     return LevelParam(
         key=key, status=PARAM_OK if value is not None else 'input_unavailable',
         value=value, ticker=ticker, effective_from=pol.get('effective_from'),
         method_id=pol.get('method_id'), atr_basis=atr_basis,
         policy_effective_from=pol.get('effective_from'), source='policy', extra=extra)
+
+
+def _positive_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 1
+
+
+def target_reach_policy_usable(min_sample, lookback_sessions, extra) -> bool:
+    """The target_reach_rate row is usable when min_sample is a positive
+    int, lookback_sessions is None or a positive int, extra.since is an ISO
+    date and extra.measure is one of TARGET_REACH_MEASURES."""
+    if not _positive_int(min_sample):
+        return False
+    if lookback_sessions is not None and not _positive_int(lookback_sessions):
+        return False
+    extra = extra if isinstance(extra, dict) else {}
+    since = extra.get('since')
+    if not isinstance(since, str):
+        return False
+    try:
+        date_type.fromisoformat(since)
+    except ValueError:
+        return False
+    return extra.get('measure') in TARGET_REACH_MEASURES
 
 
 def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]:
@@ -1548,6 +1592,16 @@ def is_current_pick_rule(version) -> bool:
     (v3, v4 or v5). Every reader that asks "is this basis under the pick rule"
     asks here; only the reach-rate population filters on one exact version."""
     return isinstance(version, str) and version in PICK_RULE_VERSIONS
+
+
+def entry_rule_version(version) -> Optional[str]:
+    """The rule version whose entry trigger and stop rule a basis of
+    `version` uses (target hit rates r2 spec, Design 4): the key of its
+    plan_excursions row, so history written under one version serves every
+    later version that keeps its trigger and stop. On this change that is
+    `version` itself for every version is_current_pick_rule accepts, and None
+    for any other (a None key writes and reads no row)."""
+    return version if is_current_pick_rule(version) else None
 
 
 # What a reader makes of a stored level_basis.rule_version (FEAT-STRAT-001,
@@ -3185,8 +3239,17 @@ def format_levels_for_brief(
     regime_short: Optional[str] = None,
     regime_compute_error: Optional[str] = None,
     atr: Optional[float] = None,
+    reach=None,
+    reach_min_sample: Optional[int] = None,
 ) -> str:
     """Format a SessionLevels' LevelMap projection into the playbook block.
+
+    `reach` (target hit rates r2 spec, Design 5): the ticker's
+    lib.target_reach.ReachTable, REACH_UNAVAILABLE when the read failed, or
+    None (every caller but the brief). It is passed to each side's plan block
+    and prints nothing there: on a basis whose targets the level rule picked
+    the output is the same with or without it. The quarter-target change
+    prints the counts on its target and level lines from it.
 
     Output (a side with a trigger):
       CALLS above 215.85 (PDH)
@@ -3230,7 +3293,8 @@ def format_levels_for_brief(
             line += ' -- only if bias denied'
         plan = trig.get('plan')
         if plan is not None:
-            return _plan_block(line, side, trig, plan, room, plan.get('atr_basis') or atr_basis)
+            return _plan_block(line, side, trig, plan, room, plan.get('atr_basis') or atr_basis,
+                               reach=reach, reach_min_sample=reach_min_sample)
         out = [line]
         if trig.get('stop') is not None:
             out.append(f"    Stop: {trig['stop']:.2f} ({_display_level_name(trig['stop_name'])})")
@@ -3281,7 +3345,8 @@ def _clock_text(t) -> str:
 
 
 def _plan_block(line: str, side: str, trig: dict, plan: dict, room: Optional[float],
-                atr_basis: Optional[str]) -> list:
+                atr_basis: Optional[str], reach=None,
+                reach_min_sample: Optional[int] = None) -> list:
     """A side's exit plan (exits in thirds spec, Design 8): the entry
     window, the opened-through rule, the stop, up to `legs` spaced targets
     each selling 1/legs, the legs left over held to the close or the stop,
@@ -3335,6 +3400,12 @@ def _plan_block(line: str, side: str, trig: dict, plan: dict, room: Optional[flo
     if room is not None:
         out.append(f"    Room to trigger: {room:.2f}%")
     return out
+
+
+# FEAT-STRAT-001 target hit rates (r2 spec, Design 5): the reach argument of
+# format_levels_for_brief when the read failed. This change prints no count;
+# the quarter-target change prints them on its target and level lines.
+REACH_UNAVAILABLE = 'input_unavailable'
 
 
 def _format_next_levels(level_map: LevelMap) -> list:
