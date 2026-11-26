@@ -9,7 +9,7 @@ done_when:
   - "The same tests assert each function's return value for those failures equals base behaviour (the empty frame, the empty dict, or FETCH_REQUEST_ERROR), and that the outgoing request parameters, timeout and attempt count are unchanged; the existing suites for the six modules and tests/gcp/test_compute_earnings_reactions*.py pass with no test deleted, skipped or loosened."
   - "tests/lib/test_api_client.py covers lib.api_client.request_failure_reason for an HTTPError with a response, a transport error with none, a JSON decode error, and a non-request exception, and compute_earnings_reactions._request_failure delegates to it with byte-identical output for a RequestException."
   - "02-FEATURE-CATALOG FEAT-DATA-001 record shows Status and Last reviewed for this PR, 12-PR-ISSUE-TRACEABILITY lists it, docs_audit.py reports no finding over origin/main, and spec_gate.py --pr origin/main passes."
-status: approved
+status: superseded
 supersedes: null
 ---
 
