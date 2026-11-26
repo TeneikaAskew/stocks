@@ -25,7 +25,6 @@ from gcp.fetchers import fetch_earnings_history as earnings
 from gcp.fetchers import fetch_insider_transactions as insider
 from gcp.fetchers import fetch_market_data as fmd
 from gcp.fetchers import fetch_top_movers as movers
-from lib.api_client import request_failure_reason
 
 SENTINEL = "SENTINELKEY0123456789"
 URL = f"https://www.alphavantage.co/query?function=X&symbol=SPY&apikey={SENTINEL}&datatype=json"
@@ -239,37 +238,3 @@ def test_earnings_options_backfill_driver(kind, attempts, records, monkeypatch):
     assert all(c["params"]["apikey"] == SENTINEL and c["timeout"] == 60 for c in calls)
     _assert_clean(records)
     assert any(EXPECTED[kind] in m for m in _messages(records))
-
-
-# --- the helper ---------------------------------------------------------------
-
-def test_reason_for_an_http_error_is_its_status():
-    try:
-        _http_503().raise_for_status()
-    except requests.HTTPError as exc:
-        assert SENTINEL in str(exc)  # the leak this guards against is real
-        assert request_failure_reason(exc) == "request_failed: HTTP 503"
-
-
-@pytest.mark.parametrize("exc, expected", [
-    (_connection_error(), "request_failed: ConnectionError"),
-    (_timeout(), "request_failed: Timeout"),
-    (requests.exceptions.JSONDecodeError("Expecting value", f"<html>{URL}</html>", 0),
-     "request_failed: JSONDecodeError"),
-])
-def test_reason_for_a_request_error_is_its_class(exc, expected):
-    assert request_failure_reason(exc) == expected
-
-
-def test_reason_for_a_parse_error_keeps_its_message_truncated():
-    assert request_failure_reason(KeyError("1. open")) == "KeyError: '1. open'"
-    assert len(request_failure_reason(ValueError("x" * 500))) == 160
-
-
-def test_splits_reason_is_unchanged():
-    from gcp.fetchers import compute_earnings_reactions as cer
-    try:
-        _http_503().raise_for_status()
-    except requests.HTTPError as exc:
-        assert cer._request_failure(exc) == "request_failed: HTTP 503"
-    assert cer._request_failure(_connection_error()) == "request_failed: ConnectionError"

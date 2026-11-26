@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-26-feat-data-001-av-request-failure-reasons.md
 branch: fix/feat-data-001-av-request-failure-reasons
-pr: null
+pr: 2148
 status: ready
 ---
 
