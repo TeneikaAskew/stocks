@@ -14,7 +14,7 @@ done_when:
   - "Source identity for the governance implementation is bound to this approved spec and a fresh ready plan, with registry equal to trusted main and only FEAT-CICD-001 / SHARED-01's implementation-source note changed under the existing route. Preserve prior own evidence and every foreign SITE byte, produce one canonical sidecar from final committed source/body and verify it under unchanged ceilings. Required original verifier/audit/gate suites, applicable executed gate-file red-team, exact-head external reviews, required CI and conversation disposition pass within the existing two-round process."
   - "Catalog and PR records distinguish delivered verifier capability from unperformed EW migration and rollout. The later DATA branch requires its separately approved matching successor and tests; this governance implementation performs no actual registry rebind or calendar deletion. Source identity reports implementation-source; rollout-pending, never authenticated review, terminal proof, deployed image or business-output success."
 status: approved
-supersedes: docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md
+supersedes: null
 ---
 
 # Verify only the atomic MODEL-EWV-001 calendar locator transition
@@ -47,7 +47,7 @@ Production `scripts/maintenance/docs_audit.py` and `scripts/gate/spec_gate.py` r
 
 ## Preservation of earlier contracts
 
-The predecessor's original committed-source, declared-note, bootstrap, review-authentication distinction, ordinary closeout, fail-closed parsing and actual gate/audit obligations remain. Its earlier twelve-MiB numerical value is historical: the independently approved `2026-11-16-feat-cicd-001-verifier-sixteen-mib.md` remains binding. Preserve `2026-11-02-feat-cicd-001-closeout-spec-binding.md` and current policy verbatim. Historical initial-bootstrap implementation tasks do not recur on already initialized main. The only semantic exception is the exact authorized atomic transition. This verifier's own implementation still has an unchanged registry and must qualify using the existing source-proof route; it cannot self-authorize by using the capability it adds.
+The independently approved twelve-MiB contract's original committed-source, declared-note, bootstrap, review-authentication distinction, ordinary closeout, fail-closed parsing and actual gate/audit obligations remain. Its earlier twelve-MiB numerical value is historical: the independently approved `2026-11-16-feat-cicd-001-verifier-sixteen-mib.md` remains binding. Preserve `2026-11-02-feat-cicd-001-closeout-spec-binding.md` and current policy verbatim. Historical initial-bootstrap implementation tasks do not recur on already initialized main. The only semantic exception is the exact authorized atomic transition. This verifier's own implementation still has an unchanged registry and must qualify using the existing source-proof route; it cannot self-authorize by using the capability it adds.
 
 ## Capacity and review order
 
@@ -57,4 +57,8 @@ Spec alone lands before the fresh verifier branch/plan. Required gate-suite red-
 
 ## Trigger evidence and limits
 
-A read-only global trigger inventory on November 22 showed enabled main filters for `platform/**`, `lib/**`, `requirements.txt`, `gcp/database.py`, and separately `gcp/schema.sql`. This spec-only pair of paths and the proposed verifier source/test paths match neither observed trigger. Repository staging workflow is workflow_dispatch. Recheck actual filters before later publication/merge; this observation is not a guarantee about all future configurations or other regions. No trigger was modified.
+A read-only global trigger inventory on November 22 showed enabled main filters for `platform/**`, `lib/**`, `requirements.txt`, `gcp/database.py`, and separately `gcp/schema.sql`. This specification-only file set and the proposed verifier source/test paths match neither observed trigger. Repository staging workflow is workflow_dispatch. Recheck actual filters before later publication/merge; this observation is not a guarantee about all future configurations or other regions. No trigger was modified.
+
+## Additive contract and retained closeout binding
+
+The approved sequencing successor `docs/superpowers/specs/2026-11-26-feat-cicd-001-ew-verifier-companion-sequence.md` permits this independent companion contract. It supersedes no existing verifier or closeout contract. Preserve the twelve-MiB closeout spec byte-for-byte with approved status and no superseding declaration; preserve the independent sixteen-MiB resource contract and closeout-binding contract. The November 26 owner-directed repair changes no runtime decision or acceptance item above. Both SHA-1 and SHA-256 actual producer/verifier DOC closeout tests and retained binding-refusal controls must pass with unchanged production and test sources. These checks qualify this additive specification arrangement; they do not prove the future atomic-transition implementation.
