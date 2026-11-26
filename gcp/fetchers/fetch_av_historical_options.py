@@ -31,6 +31,7 @@ from lib.config import AlphaVantageConfig
 from lib.eastern_time import market_today, sessions_between
 
 from lib.logging_config import setup_logging
+from lib.api_client import request_failure_reason
 setup_logging()
 log = logging.getLogger(__name__)
 
@@ -72,7 +73,8 @@ def fetch_av_options(ticker: str, fetch_date: str, api_key: str) -> pd.DataFrame
         return _normalize_av_response(df, ticker, fetch_date)
 
     except Exception as e:
-        log.error("  AV options fetch failed for %s %s: %s", ticker, fetch_date, e)
+        log.error("  AV options fetch failed for %s %s: %s", ticker, fetch_date,
+                  request_failure_reason(e))
         return pd.DataFrame()
 
 
