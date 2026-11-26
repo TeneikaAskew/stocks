@@ -32,6 +32,7 @@ from lib.eastern_time import ET, market_today
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from lib.logging_config import setup_logging
+from lib.api_client import request_failure_reason
 
 setup_logging()
 log = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ def fetch_top_movers(api_key: str) -> pd.DataFrame:
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        log.error("AV TOP_GAINERS_LOSERS request failed: %s", e)
+        log.error("AV TOP_GAINERS_LOSERS request failed: %s", request_failure_reason(e))
         return pd.DataFrame()
 
     if "Information" in data:

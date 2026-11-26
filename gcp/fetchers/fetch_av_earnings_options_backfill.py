@@ -59,6 +59,7 @@ from gcp.database import (
 )
 from lib.config import AlphaVantageConfig
 from lib.logging_config import setup_logging
+from lib.api_client import request_failure_reason
 
 setup_logging()
 log = logging.getLogger(__name__)
@@ -315,18 +316,19 @@ def main() -> None:
             # bounded retry, then surface. One retry here covers
             # transient blips; persistent failures continue with the
             # next event so a single bad ticker doesn't tank a 4h run.
-            log.warning("  %s %s HTTPError %s — sleeping 5s, retrying once",
-                        symbol, snapshot_dt, e)
+            log.warning("  %s %s %s — sleeping 5s, retrying once",
+                        symbol, snapshot_dt, request_failure_reason(e))
             time.sleep(5)
             try:
                 raw = _fetch_av_options(symbol, snapshot_dt, api_key)
             except Exception as e2:
                 log.error("  %s %s: retry failed (%s) — skipping",
-                          symbol, snapshot_dt, e2)
+                          symbol, snapshot_dt, request_failure_reason(e2))
                 n_errors += 1
                 continue
         except Exception as e:
-            log.error("  %s %s: %s — skipping", symbol, snapshot_dt, e)
+            log.error("  %s %s: %s — skipping", symbol, snapshot_dt,
+                      request_failure_reason(e))
             n_errors += 1
             continue
 
