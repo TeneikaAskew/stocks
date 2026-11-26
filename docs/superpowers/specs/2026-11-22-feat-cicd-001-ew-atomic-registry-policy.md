@@ -8,7 +8,7 @@ done_when:
   - "The unchanged trusted main commit and PR gates accept the correctly bound policy feature branch after this approved spec lands; the DOC-branch executable-policy control remains refused. Actual matched base/head documentation audits have no new findings, with baseline unknown-review findings retained. Record actual command results; no synthetic gate or audit success is accepted."
   - "A byte comparison of both policy files against their actual merge base proves that the only new text is the literal allowance. Review verifies the exception names exactly MODEL-EWV-001's Class D document selector, the one old path, four replacement paths and atomic consumer migration, and that every other registry inequality, resource ceiling and review rule remains unchanged. Policy wording alone must not make any currently refused source transition pass."
   - "Own catalog and PR records state conditional policy wording delivered, verifier capability and calendar retirement pending. Current-head normal CODE/SECURITY review, required CI and conversation disposition satisfy the existing two-round process. No source-identity, terminal retirement or deployed-output completion is claimed by this policy-only change."
-status: approved
+status: superseded
 supersedes: docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-policy.md
 ---
 
