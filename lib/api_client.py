@@ -92,6 +92,24 @@ class _CircuitBreaker:
 _breaker = _CircuitBreaker(failure_threshold=3, cooldown_seconds=60)
 
 
+def request_failure_reason(exc: BaseException) -> str:
+    """A failed request's reason with no part of the request in it.
+
+    The text of a requests HTTPError, and of most transport errors, holds the
+    full request URL, and an AlphaVantage URL holds the API key, so a log line
+    that prints the exception writes the key to Cloud Logging (#2085). This
+    names the failure by its HTTP status when there was a reply, else by the
+    exception's class. Any other exception can only come from parsing a reply
+    already received, so its own message is kept, truncated.
+    """
+    status = getattr(getattr(exc, 'response', None), 'status_code', None)
+    if status is not None:
+        return f'request_failed: HTTP {status}'
+    if isinstance(exc, requests.RequestException):
+        return f'request_failed: {type(exc).__name__}'
+    return f'{type(exc).__name__}: {exc}'[:160]
+
+
 def _should_retry_status(response: requests.Response) -> bool:
     """Return True if the HTTP status code warrants a retry."""
     return response.status_code in (429, 500, 502, 503, 504)
