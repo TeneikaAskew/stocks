@@ -3,7 +3,7 @@ feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-26-feat-data-001-av-request-failure-reasons-r2.md
 branch: fix/feat-data-001-av-failure-reasons-r2
 pr: 2150
-status: ready
+status: done
 ---
 
 # Name AlphaVantage request failures without the URL (r2): implementation plan
