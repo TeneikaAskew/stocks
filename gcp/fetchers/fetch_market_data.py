@@ -36,6 +36,7 @@ from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 
 from lib.logging_config import setup_logging
+from lib.api_client import request_failure_reason
 setup_logging()
 log = logging.getLogger(__name__)
 
@@ -156,7 +157,7 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str) -> tuple[pd.Da
         df.index.name = 'timestamp'
         df = df.sort_index()
     except requests.RequestException as e:
-        log.error("    AV intraday fetch failed for %s: %s", ticker, e)
+        log.error("    AV intraday fetch failed for %s: %s", ticker, request_failure_reason(e))
         return pd.DataFrame(), FETCH_REQUEST_ERROR
     except ValueError as e:
         # A body that is not JSON, or bars that do not parse: the reply's
@@ -258,7 +259,7 @@ def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str,
     # (or skips the ticker when it has none), so a changed reply shape reads
     # as "AV daily unavailable" rather than as an error.
     except Exception as e:
-        log.warning("    AV daily fetch failed for %s: %s", ticker, e)
+        log.warning("    AV daily fetch failed for %s: %s", ticker, request_failure_reason(e))
         return {}
 
 
@@ -1053,7 +1054,7 @@ def _av_get_full_daily_series(ticker: str, api_key: str,
             return pd.DataFrame()
         return pd.DataFrame(rows).sort_values('date').reset_index(drop=True)
     except Exception as e:
-        log.warning("    AV daily fetch failed for %s: %s", ticker, e)
+        log.warning("    AV daily fetch failed for %s: %s", ticker, request_failure_reason(e))
         return pd.DataFrame()
 
 

@@ -36,6 +36,7 @@ from lib.eastern_time import market_today, market_today_sql
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from lib.config import AlphaVantageConfig
 from lib.logging_config import setup_logging
+from lib.api_client import request_failure_reason
 
 setup_logging()
 log = logging.getLogger(__name__)
@@ -65,7 +66,8 @@ def fetch_for_ticker(ticker: str, api_key: str) -> pd.DataFrame:
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        log.warning("    AV INSIDER_TRANSACTIONS request failed for %s: %s", ticker, e)
+        log.warning("    AV INSIDER_TRANSACTIONS request failed for %s: %s", ticker,
+                    request_failure_reason(e))
         return pd.DataFrame()
 
     if "Information" in data:
