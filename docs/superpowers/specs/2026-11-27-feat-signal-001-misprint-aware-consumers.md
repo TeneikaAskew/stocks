@@ -15,7 +15,7 @@ done_when:
   - "The PR body gives: the shipped helper run over the bucket copy of the three tickers for 2026-09-01 to 2026-11-18, listing every regular-hours bar-side it flags with the trigger, stop, target or guide it crosses on the day's stored level_basis, beside the nine bars this spec's Problem names, and the count of resolved premarket_analysis rows for that window whose entry_status, exit_reason or plan_r changes under the clean walk, computed read-only through scripts/db_query_cr.sh with its execution id; and the measured seconds of touch_extremes over one 100-bar snapshot and over one 390-bar session"
   - "make test passes on the PR head with lib/bar_prints.py, gcp/fetchers/intraday_bar_flags.py, gcp/fetchers/fetch_alphavantage_intraday.py, lib/indicators.py and lib/strat_levels.py's level builder (build_session_levels and everything it calls) not in the PR's diff, and tests/meta/test_production_writers.py unmodified"
   - "02-FEATURE-CATALOG FEAT-SIGNAL-001 record shows Status and Last reviewed for this PR, 12-PR-ISSUE-TRACEABILITY lists it, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing that origin/main does not, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 
