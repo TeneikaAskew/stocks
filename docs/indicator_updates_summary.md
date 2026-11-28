@@ -1,6 +1,6 @@
 # Indicator Calculation Updates & Complete Reference Guide
 
-**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-24 · **Owner:** TBD
 
 ## Table of Contents
 1. [Technical Indicators Overview](#technical-indicators-overview)

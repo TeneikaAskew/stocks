@@ -1,6 +1,6 @@
 # MODEL-EARN-001 — Earnings-reaction analytics
 
-**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
+**Last reviewed:** 2026-11-24 · **Depth:** verified · **Against:** `f181f37f9ebf` · **Last scanned:** 2026-11-24 · **Owner:** TBD
 
 **Code:** `lib/earnings_reactions.py` (958 lines) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·

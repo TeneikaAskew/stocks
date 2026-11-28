@@ -1,6 +1,6 @@
 # Google Sheets Download Setup
 
-**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-24 · **Owner:** TBD
 
 This guide explains how to set up automated downloads of your Google Sheets data to this repository.
 
@@ -192,4 +192,4 @@ Each strategy sheet should have these columns (at minimum):
 - `Strike_Hit` - JSON array of daily strike hit data
 - Indicator columns: `Hit_RSI`, `Hit_SMA20`, etc.
 
-See [data_loader.py](../earnings_options_analytics/modules/data_loader.py) for full column list.
+See [data_loader.py](../archive/earnings_options_analytics/modules/data_loader.py) for full column list.

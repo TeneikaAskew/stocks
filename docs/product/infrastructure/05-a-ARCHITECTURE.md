@@ -6,7 +6,7 @@
 >
 > Live state below was read on **2026-09-07** with `gcloud` as `claude-web@` (jobs, schedulers, services, Cloud SQL, IAM, Cloud Build, domain mappings) and `scripts/db_query_cr.sh` (table stats). Everything below is written against `main`. The pull requests that moved this fleet during the audit have all merged: [#990](https://github.com/TeneikaAskew/stocks/pull/990) (service rename to `solyra-api-prod` / `-staging`, Cloud Build deploy triggers), [#1004](https://github.com/TeneikaAskew/stocks/pull/1004) (scheduler consolidation, image pinning, Discord warm window), [#1005](https://github.com/TeneikaAskew/stocks/pull/1005) (`phase6-playbook` schedule, hourly quality report retired), [#1006](https://github.com/TeneikaAskew/stocks/pull/1006) (branded auth emails), [#1007](https://github.com/TeneikaAskew/stocks/pull/1007) (legacy image retirement) and [#1010](https://github.com/TeneikaAskew/stocks/pull/1010) / [#1013](https://github.com/TeneikaAskew/stocks/pull/1013) (the committed OpenAPI snapshot and its response models). Where the repo and the live fleet still disagree, §15 says so rather than this paragraph.
 
-**Last reviewed:** unknown · **Last scanned:** 2026-11-10 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-24 · **Owner:** TBD
 
 ## Table of contents
 

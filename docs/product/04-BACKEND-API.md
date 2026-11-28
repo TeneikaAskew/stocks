@@ -1,6 +1,6 @@
 # Backend and API Product Plan
 
-**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-11-03 · **Owner:** TBD
+**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-11-24 · **Owner:** TBD
 
 **VERIFIED — CODE.** Extracted from FastAPI decorators in `platform/api` using Python AST parsing of all `@router|@app.<method>(...)` calls, including decorators whose path is declared on a later line. The inventory also inspects the enclosing handler, docstring, and SQL identifiers. **101 platform API endpoints** resolved this way; the Discord service contributes 2 additional HTTP endpoints.
 
@@ -279,7 +279,7 @@ instead of reporting "via `lib/`".
 Neither endpoint has a frontend caller — a repository-wide search of `platform/src` finds no
 `/api/magnitude` reference — so both are `—` in the UI column and are candidates for the dead-
 endpoint review in [#921](https://github.com/TeneikaAskew/stocks/issues/921). MODEL-MAG-001 is
-**Invalidated** ([07](07-MODEL-REGISTRY.md)), so serving it over HTTP at all is a product decision,
+**Experimental** ([07](07-MODEL-REGISTRY.md), moved from Invalidated on 2026-09-21), so serving it over HTTP at all is a product decision,
 not just a cleanup question.
 
 ## Known defects

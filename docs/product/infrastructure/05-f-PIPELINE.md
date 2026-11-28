@@ -1,6 +1,6 @@
 # Pipeline Architecture — Live vs Research
 
-**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
+**Last reviewed:** 2026-11-24 · **Depth:** verified · **Against:** `f181f37f9ebf` · **Last scanned:** 2026-11-24 · **Owner:** TBD
 
 > Authoritative map of how the trading platform runs end-to-end: which jobs
 > fire when, how data flows, and where the indicator-combination work (regime

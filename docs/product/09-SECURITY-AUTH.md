@@ -1,6 +1,6 @@
 # Security, Authentication, Authorization, Tenancy
 
-**Last reviewed:** 2026-09-04 · **Last scanned:** 2026-11-03 · **Owner:** TBD · **Trust status:** Production but needs remediation
+**Last reviewed:** 2026-09-04 · **Last scanned:** 2026-11-24 · **Owner:** TBD · **Trust status:** Production but needs remediation
 
 > 2026-09-04 refresh: admin authorization is now role-based (the shared
 > `X-Admin-Token` gate is gone), the open-path list split into exact vs
@@ -449,4 +449,4 @@ to close registration. It is unset here on purpose.
 | Secret hardening | [#318](https://github.com/TeneikaAskew/stocks/pull/318) · [#424](https://github.com/TeneikaAskew/stocks/pull/424) split Discord webhooks · [#385](https://github.com/TeneikaAskew/stocks/pull/385) IaC drift + secret hardening |
 | Open issues | [#911](https://github.com/TeneikaAskew/stocks/issues/911) · [#830](https://github.com/TeneikaAskew/stocks/issues/830) · [#850](https://github.com/TeneikaAskew/stocks/issues/850) · [#836](https://github.com/TeneikaAskew/stocks/issues/836) · [#837](https://github.com/TeneikaAskew/stocks/issues/837) · [#839](https://github.com/TeneikaAskew/stocks/issues/839) |
 | Code | `platform/api/auth.py`, `platform/api/main.py:70,245,366-372`, `platform/api/routers/admin.py:51`, `platform/api/routers/profile.py`, `platform/deploy.sh:25-64,91-98`, `.github/workflows/deploy-staging.yml`, solyra `src/lib/authedFetch.ts:45,91` |
-| Tests | solyra `tests/auth-gate.spec.ts`, `admin-auth.spec.ts` (moved in #957); `dev.spec.ts` deleted in #957; stocks `tests/api/test_platform_auth.py` and `tests/api/test_dev_page_auth.py` ([#1360](https://github.com/TeneikaAskew/stocks/pull/1360)) |
+| Tests | solyra `tests/shared/auth-gate.spec.ts`, `tests/admin/admin-auth.spec.ts` (moved in #957); `dev.spec.ts` deleted in #957; stocks `tests/api/test_platform_auth.py` and `tests/api/test_dev_page_auth.py` ([#1360](https://github.com/TeneikaAskew/stocks/pull/1360)) |

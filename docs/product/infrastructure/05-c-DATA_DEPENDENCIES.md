@@ -1,6 +1,6 @@
 # Data Dependencies — table-level write/read graph
 
-**Last reviewed:** unknown · **Last scanned:** 2026-11-10 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-24 · **Owner:** TBD
 
 **Generated 2026-09-07** from [`gcp/schema.sql`](../../../gcp/schema.sql), a whole-word scan of `gcp/`, `lib/`, `scripts/` and `platform/api` (tests and `archive/` excluded), and the 2026-09-07 live table statistics, by [`scripts/maintenance/doc_inventory.py`](../../../scripts/maintenance/doc_inventory.py). Every citation is a `file:line` you can open. The blocks between `<!-- inventory:*:start/end -->` markers are rendered by `doc_inventory.py`, and the pull request that changes what they cite carries the new render (REQ-GOV-004); the prose between them is maintained by hand.
 

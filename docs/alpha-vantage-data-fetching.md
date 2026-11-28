@@ -1,6 +1,6 @@
 # Alpha Vantage Data Fetching Scripts
 
-**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
+**Last reviewed:** 2026-11-24 · **Depth:** verified · **Against:** `f181f37f9ebf` · **Last scanned:** 2026-11-24 · **Owner:** TBD
 
 This document describes the Alpha Vantage data fetching scripts for historical intraday and options chain data.
 
