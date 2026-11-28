@@ -39,6 +39,7 @@ from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from lib.config import AlphaVantageConfig
 from lib.logging_config import setup_logging
+from lib.api_client import request_failure_reason
 
 setup_logging()
 log = logging.getLogger(__name__)
@@ -164,7 +165,7 @@ def fetch_history_for_ticker(
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        log.warning("    AV EARNINGS request failed for %s: %s", ticker, e)
+        log.warning("    AV EARNINGS request failed for %s: %s", ticker, request_failure_reason(e))
         return pd.DataFrame()
 
     if "Information" in data:

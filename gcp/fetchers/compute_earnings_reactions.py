@@ -44,6 +44,7 @@ from lib.eastern_time import market_today
 from gcp.database import upsert_dataframe, query_to_dataframe, is_cloud_sql_configured
 from gcp.fetchers.fetch_market_data import AV_BASE_URL, av_listed_symbol
 from lib.logging_config import setup_logging
+from lib.api_client import request_failure_reason
 
 setup_logging()
 log = logging.getLogger(__name__)
@@ -607,10 +608,7 @@ def fetch_calendar_timing_map(tickers: list[str]) -> dict[tuple[str, date], Opti
 def _request_failure(exc: Exception) -> str:
     """A failed request's reason with no part of the request in it: the HTTP
     status when there was a reply, else the exception's class name."""
-    status = getattr(getattr(exc, 'response', None), 'status_code', None)
-    if status is not None:
-        return f'request_failed: HTTP {status}'
-    return f'request_failed: {type(exc).__name__}'
+    return request_failure_reason(exc)
 
 
 def fetch_splits(ticker: str, api_key: str) -> Splits:
