@@ -1,0 +1,6 @@
+time_ET,side,spot,score,strength,target,time_stop_minutes,RSI,RVOL,routing,execution,trade_log_insert_id
+09:33:29,PUT,263.77,4.0,weak,262.77,35,53.7,0.88,suppressed,signal-monitor-74qlf,6b005a390008d3ed6462d7bf
+09:36:33,PUT,264.25,3.2,weak,263.25,35,62.9,0.18,suppressed,signal-monitor-74qlf,6b005af1000d83a66c945d1a
+09:37:35,PUT,264.33,3.2,weak,263.33,35,63.5,0.62,suppressed,signal-monitor-74qlf,6b005b2f00062aabe2d880c1
+09:38:39,PUT,264.21,5.0,medium,263.21,35,59.9,1.08,eligible; receipt unverified,signal-monitor-74qlf,6b005b6f0006183bcb2bdaee
+09:39:40,PUT,264.45,3.0,weak,263.45,35,65.2,0.71,suppressed,signal-monitor-74qlf,6b005bac000aaf279efc95d2

@@ -1,0 +1,62 @@
+{
+  "evidence": "retrospective no-refit execution at reconstructed issue time using real archived minute bars",
+  "runtime_symbol": "gcp.signal_monitor.SignalMonitor.observe_opening",
+  "grade_symbol": "grade_opening.grade",
+  "maps_sha256": "9ed219889348cf1ae89d6acc8a2d64910aaa38b4dd2537a007b648ba6bae5788",
+  "historical_comparator_sha256": "0c262b24366ee211f9462f3c3f9c6b803d50feda97b326979d239d5298ffc044",
+  "training_through": "2026-08-31",
+  "holdout": [
+    "2026-09-01",
+    "2026-11-18"
+  ],
+  "states": {
+    "resolved": 59,
+    "forecast": 107,
+    "unavailable / missing or unbracketed trigger pair": 2
+  },
+  "eligible_sessions": 50,
+  "paired": {
+    "observations": 107,
+    "previous_correct": 45,
+    "updated_correct": 65
+  },
+  "previous_brier": 0.6371226545696373,
+  "updated_brier": 0.5254841564680783,
+  "changed_wrong_to_correct": 32,
+  "changed_correct_to_wrong": 12,
+  "by_symbol": {
+    "IWM": {
+      "observations": 31,
+      "previous_correct": 12,
+      "updated_correct": 17
+    },
+    "QQQ": {
+      "observations": 37,
+      "previous_correct": 15,
+      "updated_correct": 25
+    },
+    "SPY": {
+      "observations": 39,
+      "previous_correct": 18,
+      "updated_correct": 23
+    }
+  },
+  "by_outcome": {
+    "Lower": {
+      "observations": 40,
+      "previous_correct": 23,
+      "updated_correct": 29
+    },
+    "Neither": {
+      "observations": 37,
+      "previous_correct": 6,
+      "updated_correct": 20
+    },
+    "Upper": {
+      "observations": 30,
+      "previous_correct": 16,
+      "updated_correct": 16
+    }
+  },
+  "provenance_limit": "Maps and issue/publication clocks are reconstructions. First touch is a price observation, with no assumption of entry, fill or return."
+}
