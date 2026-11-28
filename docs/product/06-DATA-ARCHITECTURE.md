@@ -52,7 +52,7 @@ evidence, this table is a starting point.
 
 | Relation | Kind | Producer (static) | Consumers | Expected cadence | Known problem |
 |---|---|---|---|---|---|
-| `earnings_calendar` | table | `gcp/fetchers/evaluate_ew_strikes.py`, `scripts/fetch_earnings_calendar.py` | `gcp/earnings_long_watchlist.py`, `gcp/earnings_reactions_brief.py`, +16 | daily | — |
+| `earnings_calendar` | table | `scripts/fetch_earnings_calendar.py` | `gcp/earnings_long_watchlist.py`, `gcp/earnings_reactions_brief.py`, +16 | daily | — |
 | `earnings_history` | table | `gcp/fetchers/fetch_earnings_history.py` | `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_earnings_history.py`, +4 | TBD | — |
 | `earnings_reactions` | table | `gcp/fetchers/compute_earnings_reactions.py` | `gcp/earnings_reactions_brief.py`, `gcp/fetchers/compute_earnings_reactions.py`, +3 | TBD | — |
 | `earnings_calibration` | table | `scripts/calibrate_earnings.py` | `lib/earnings_reactions.py`, `platform/api/routers/earnings.py` | TBD | — |
